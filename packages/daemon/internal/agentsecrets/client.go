@@ -140,7 +140,7 @@ type LoginState struct {
 // PodEnrollment is one pod generation's identity as the daemon knows it: the pod UID the runtime
 // recorded at spawn, the thumbprint and projected token the shim's hello carried, and the
 // agent's session id — "" before the agent registered, which the broker records as null. The
-// broker picks a request's approver at request time; the enrollment carries no issue.
+// broker picks a request's approver at request time, so the enrollment names none.
 // Slot names one of several pod enrollments when an issue pod holds role processes side by side
 // (`<role>-g<generation>`); empty is the pod's one identity. Claim is the role claim token the
 // process runs for, which every later generation and replacement pod of the role states again, so

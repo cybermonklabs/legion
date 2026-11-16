@@ -6023,9 +6023,20 @@ A predecessor is an enrollment of that pair that still holds something, live or 
 a dormant one stops being dormant once it has been adopted from, so the carry sweep has nothing of it left to revoke, and a live one is left live, holding nothing.
 So a session reads the secret a person approved after a helper restart, a rebuilt machine, a second sign-in or a replaced Legion pod, with no second request and no second approval, while an enrollment of the same name under another principal takes none of it.
 An approval that lands after such a move is granted to the enrollment the `requests` row names then, which is why `requests.Machine.ApplyDecision` reads the enrollment from that row rather than from the `credential_requests` record the request was filed under, which is append-only and cannot be re-pointed.
+Every enrollment also records whose its requests are (`enrollments.owner`, migration 0032, written at `Create` by `enroll.ownerKey` and never changed):
+`person:<login>` under a credential that carries an `operator`, `claim:<credential service>/<claim>` for a pod whose launcher states a `claim`, `machine:<credential service>/<credential subject>` for a machine's own session, and `machine:<credential service>/<pod uid>` for a pod that states none.
+`GET /v1/requests/{id}` and `POST /v1/requests/{id}/cancel` answer any enrollment whose owner equals the owner of the enrollment the request hangs off now (`requests.Machine.OwnerOf`, `EnrollmentOwner`, `Cancel`), and `403 NOT_YOURS` to every other;
+a row with no owner, every row from before 0032, answers as `enrollment:<id>`, which no owner spells, so its requests are its own alone, as every request was before.
+A grant's read (`Values`) and its session revoke (`RevokeGrant`) stay keyed by the grant's own enrollment.
+`adopt` moves by owner for a claim alone, after the session carry and in the same statement that locks the carry's predecessors (in id order): the next enrollment of a claim takes every grant and request a dormant enrollment of that claim still holds (`holdsForItsSession`), and leaves its withheld names, which bind a session name;
+a live enrollment of the claim keeps what it holds, and a person's and a machine's grants move by the session carry alone, so a person's other session reads and cancels their request and never takes its grant.
+Its `enrollment.adopted` row names the rule, `session` or `claim`, and the partial index `enrollments_claim_owner_dormant` serves the claim arm.
+The Legion daemon states the role's claim token (`supervise.PodEnrollment.Claim`), stable across role generations and pod replacements, so a role's request made from a pod whose box ended is read, cancelled and granted to the role's next pod, which comes up under a session of its own.
+A broker from before the field answers a body carrying `claim` `400 INVALID_ENROLLMENT` naming an unknown field, and the daemon's `agentsecrets.Client.Enroll` asks such a broker once more without the new fields (`withoutNewFields`), so a daemon release can roll before its broker.
 A live enrollment is unique per launcher credential, runtime id and slot:
 `POST /v1/enrollments` takes an optional pod-only `slot` (`^[a-z][a-z0-9-]{0,62}$`, else `400 INVALID_SLOT`, and a slot on a `session` enrollment is refused the same way) naming one of several independent identities in one pod.
-The launcher whose proof authenticates the enrollment chooses the slot; a session's proof cannot enroll anything (`401 LAUNCHER_INVALID`).
+It takes an optional pod-only `claim` too (`^[a-z][a-z0-9-]{0,127}$`, else `400 INVALID_CLAIM`, refused the same way on a `session` enrollment and on a pod enrolling itself, which may name whose it is no more than it may name a session), kept as `enrollments.claim` beside the owner it gives.
+The launcher whose proof authenticates the enrollment chooses the slot and the claim; a session's proof cannot enroll anything (`401 LAUNCHER_INVALID`).
 So each slot of a pod holds its own key, lease, requests and grants, while a pod's `runtime_id` stays the pod UID its token proves.
 A pod token past its expiry is `403 POD_TOKEN_EXPIRED`, naming that expiry, and any other token that does not prove the pod is `403 POD_IDENTITY_MISMATCH`.
 Omitted or `""` is the runtime's one enrollment, every `session` enrollment's.
