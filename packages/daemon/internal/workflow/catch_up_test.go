@@ -17,8 +17,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// An admitted root's architect has no turn of its own: admission's start launches it with no task.
-// Once its claim is ready, the daemon tells it what its tree holds, which is its first instruction.
+// An admitted root's architect is launched with the start admission queues, which carries its
+// first task (workflow.ArchitectStartTask). Once its claim is ready, the daemon also tells it what
+// its tree holds.
 // Each launch's ready tells it again, as the TypeScript daemon sends the catch-up at every ready of
 // an active root: a relaunch in the same generation may be an architect that died during its first
 // turn, or a fresh agent whose workspace was lost, and neither was woken. A ready is one fact per

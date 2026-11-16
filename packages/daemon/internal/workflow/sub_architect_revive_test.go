@@ -78,8 +78,8 @@ func architectStartsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.
 	return starts
 }
 
-// plainArchitectStart is the start of a child's architect in reviveRoot's tree at generation: the
-// one admission gives a root's architect, with no phase, task, entry, slot mark or kept decisions.
+// plainArchitectStart is the start of a child's architect in reviveRoot's tree at generation
+// (childArchitectStart), with no phase, task, entry, slot mark or kept decisions.
 func plainArchitectStart(generation uint64) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: reviveRoot, Role: claim.RoleArchitect, Generation: generation}
 }
@@ -142,7 +142,7 @@ func (move reviveMove) moved(t *testing.T, pool *pgxpool.Pool, engine *Engine, k
 
 // A child's own architect whose claim has failed starts again at the child's next phase start:
 // every transition that starts a phase of the child, the move into accepting among them, whose
-// role is the architect itself. The start is the plain one admission gives a root's architect,
+// role is the architect itself. The start is the plain one (childArchitectStart),
 // queued on the child in the transaction that moves it, and the outbox's start retries the failed
 // claim with fresh budgets in its session. The engine reads the claim's state in that transaction
 // and queues the start only when the claim has failed: a claim that runs, is suspended (by the

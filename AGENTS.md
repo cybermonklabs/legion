@@ -1089,6 +1089,7 @@ Such a wait is a wait by design, in any project, when nothing in the issue's own
 A wait on an open child the architect filed and has not released is not one, because releasing that child is the tree's own work.
 Nothing of the work stops: no claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
 The worker at work goes on, but every start of a phase worker of the issue up to its review, its next phase's or a restart of its current one, waits until the issue holds a slot again; a start of a phase past the review (`retro`, `merging`) takes no slot and runs at once.
+A root's own architect is no phase worker, so a root that gives its slot back for a wait keeps its architect reached: the daemon still sends that architect the work of its entry when the architect has not taken it, and still reads the root's stall wakes for the controller.
 The state names such an issue under `admission.waiting` and under `admission.blocked`, never under `admission.active`, which is how a reader tells it from an issue a person parked, which is in none of the three.
 A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took, unless a wait of the two above takes that slot back.
 Work already under way is never stopped, and no link undoes its admission, though a wait gives its slot back as above; those are the two exemptions:

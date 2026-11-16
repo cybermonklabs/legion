@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  `envoy-infra:gcp:Dispatch`'s `hostname` refuses a name with `--` as its third and fourth
+  characters (RFC 5890 section 2.3.1's reserved form) other than an `xn--` label the IDNA lookup
+  profile takes, before anything registers, each refusal with its own reason. The front door puts
+  `<hostname>.<tailnetDnsName>` on a certificate, and public certificate authorities refuse to
+  issue for the form's labels that do not begin with `xn--`, such as `ab--cd`; an `xn--` label
+  that profile refuses, such as `xn--a`, is a Fake A-label. It is refused in every mode, so a
+  stack in the cluster-only mode or the sandbox, which builds no front door, keeps a hostname a
+  front door can later serve. An `xn--` label that profile takes, and a name whose `--` is
+  elsewhere, are accepted as before.
+time: 2026-11-16T04:14:08Z
+custom:
+    Issue: pr4132

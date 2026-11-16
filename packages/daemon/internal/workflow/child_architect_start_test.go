@@ -71,9 +71,9 @@ func branchRowsOf(queued []queuedRow) []int {
 // outbox holds, on the child and in this order, the row that creates the child's branch, the
 // start of the child's architect, and the planner's start, so the outbox, which runs an issue's
 // starts oldest first, starts the architect before the worker it owns, and both after the branch
-// exists. The architect's start is the plain one admission gives a root's architect: no phase,
-// no task, no entry and no slot mark, so it waits for no slot. A root's first phase start starts
-// no architect: admission started the root's with its tree.
+// exists. The architect's start is the plain one (childArchitectStart): no phase, no task, no
+// entry and no slot mark, so it waits for no slot. A root's first phase start starts no architect:
+// admission started the root's with its tree.
 func TestAChildsFirstPhaseStartQueuesItsArchitectBeforeItsPlanner(t *testing.T) {
 	t.Run("a child", func(t *testing.T) {
 		pool := migratedPool(t)

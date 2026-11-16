@@ -17,26 +17,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// claimReady gives an architect its first instruction. Nothing else starts a turn of it:
-// admission's start launches a tree's root architect with no task, or with only the decisions kept
-// while nobody in its tree could hear them (ParkedDecisionTask), a child's first phase start
-// launches the child's own architect with no task, and a re-admitted tree or a re-entered child
-// resumes its architect's session. So at each launch's ready the daemon sends it a catch-up notice
-// of the issues it owns (QueueCatchUp) — a root architect its whole tree, a child's architect the
-// child and every issue under it — and so does a start that finds the claim still running (the
-// outbox's start), as the TypeScript daemon sends the overseer catch-up at every ready of an active
-// root (onTreeReady). A relaunch in the same generation is told again: it may be an architect that
-// died during the turn a catch-up started, resumed idle, or a fresh agent whose workspace was lost,
-// and nothing else wakes either. The ready is one fact per launch (workflowRuntime.applyTerminal
-// keys it by the claim's launch generation), so the boot's replay of a ready already applied tells
-// nothing more, and one never applied tells it once. The catch-up a root architect's ready writes
-// names every decision nobody else claims, so a decision a release left unclaimed reaches this
-// architect here; one still claimed by a queued start or catch-up is that row's to settle. A
-// child's names none: what a person decided while nobody could hear it is kept for the tree, and
-// stays its root architect's. A tree that lingers or has left the workflow is told nothing, and so
-// is the architect of an issue the daemon has not recorded, or of a child that has left the
-// workflow or is done. A phase worker's ready is answered differently: it is given its phase's
-// task again when it holds that phase with nothing pending (readyWorkerTask).
+// claimReady tells an architect at each launch the issues it owns. For a child's own architect it
+// is the first instruction: a child's first phase start launches that architect with no task, and
+// a re-entered child resumes its session. A tree's root architect is launched with the task its
+// record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
+// nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
+// none, and a re-admitted tree resumes its session. So at each launch's ready the daemon sends it
+// a catch-up notice of the issues it owns (QueueCatchUp) — a root architect its whole tree, a
+// child's architect the child and every issue under it — and so does a start that finds the claim
+// still running (the outbox's start), as the TypeScript daemon sends the overseer catch-up at
+// every ready of an active root (onTreeReady). A relaunch in the same generation is told again: it
+// may be an architect that died during the turn a catch-up started, resumed idle, or a fresh agent
+// whose workspace was lost, and nothing else wakes either. The ready is one fact per launch
+// (workflowRuntime.applyTerminal keys it by the claim's launch generation), so the boot's replay
+// of a ready already applied tells nothing more, and one never applied tells it once. The catch-up
+// a root architect's ready writes names every decision nobody else claims, so a decision a release
+// left unclaimed reaches this architect here; one still claimed by a queued start or catch-up is
+// that row's to settle. A child's names none: what a person decided while nobody could hear it is
+// kept for the tree, and stays its root architect's. A tree that lingers or has left the workflow
+// is told nothing, and so is the architect of an issue the daemon has not recorded, or of a child
+// that has left the workflow or is done. A phase worker's ready is answered differently: it is
+// given its phase's task again when it holds that phase with nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -162,28 +163,11 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
-// about queued rows, read without its question about the claim's own liveness: this claim is
-// live, which is precisely why it is being given its task.
+// about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
+// liveness: this claim is live, which is precisely why it is being given its task.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
-	var stop int64
-	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
-			stop = max(stop, queued.ID)
-		}
-	}
-	if stop != 0 {
-		return true
-	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current {
-			return true
-		}
-	}
-	return false
+	stop := actingStop(run, root)
+	return stop != 0 || queuedStartActs(run, stop, current)
 }
 
 // readyWorkerTask gives a phase worker whose claim has just become ready its phase's task again,
@@ -310,11 +294,11 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		handed, err := store.HandedOverRoot(ctx, tx, issue.Key)
+		handed, err := ArchitectCarried(ctx, tx, store, issue)
 		if err != nil {
 			return record.CatchUp{}, nil, err
 		}
-		if handed != nil && handed.Generation == issue.Generation {
+		if handed != nil {
 			catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 		}
 		gates, err := store.GatesOf(ctx, tx, issue.Key)
