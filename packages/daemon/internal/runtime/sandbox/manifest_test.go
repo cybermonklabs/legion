@@ -2477,6 +2477,32 @@ func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 	}
 }
 
+// An issue's sandbox is the project's type, or the other one when the canary list names the
+// issue's exact key: a key the list's entry is only a prefix of takes the type, and the zero
+// value, which no loaded file holds, reads as gVisor.
+func TestAnIssuesSandboxIsTheTypeOrTheOtherOneForItsExactKeyOnTheCanaryList(t *testing.T) {
+	gVisorProject := SandboxConfig{Type: SandboxGVisor, CanaryIssues: []string{"LEGSMOKE-7"}}
+	microVMProject := SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGSMOKE-7"}}
+	for _, tc := range []struct {
+		name   string
+		config SandboxConfig
+		issue  string
+		want   SandboxType
+	}{
+		{"a canary of a gVisor project", gVisorProject, "LEGSMOKE-7", SandboxMicroVM},
+		{"another issue of a gVisor project", gVisorProject, "LEGSMOKE-8", SandboxGVisor},
+		{"a key the canary's is a prefix of", gVisorProject, "LEGSMOKE-70", SandboxGVisor},
+		{"a canary of a microVM project", microVMProject, "LEGSMOKE-7", SandboxGVisor},
+		{"another issue of a microVM project", microVMProject, "LEGSMOKE-8", SandboxMicroVM},
+		{"an issue of a gVisor project with no canary", SandboxConfig{Type: SandboxGVisor}, "LEGSMOKE-7", SandboxGVisor},
+		{"an issue under the zero value", SandboxConfig{}, "LEGSMOKE-7", SandboxGVisor},
+	} {
+		if got := tc.config.Of(tc.issue); got != tc.want {
+			t.Errorf("%s: Of(%s) = %s, want %s", tc.name, tc.issue, got, tc.want)
+		}
+	}
+}
+
 // A gVisor project whose canary list names an issue runs that issue's pod in a microVM, and every
 // other issue's in gVisor, as a project with no sandbox block renders it: the root's Sandbox is its
 // golden byte for byte.

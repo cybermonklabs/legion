@@ -298,19 +298,6 @@ type MetadataConfig struct {
 	IdentityProvider string
 }
 
-// Of is the sandbox issue's pod runs in: Type, or the other one when CanaryIssues names the
-// issue's exact key. A Type that is not microvm, the zero value's included, reads as gVisor.
-func (c SandboxConfig) Of(issue string) SandboxType {
-	microVM := c.Type == SandboxMicroVM
-	if slices.Contains(c.CanaryIssues, issue) {
-		microVM = !microVM
-	}
-	if microVM {
-		return SandboxMicroVM
-	}
-	return SandboxGVisor
-}
-
 // AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
 // names an issue, whose pod then runs in a microVM on a gVisor project.
 func (c SandboxConfig) AnyMicroVM() bool {

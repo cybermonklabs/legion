@@ -13,7 +13,10 @@ body: |-
   round on each pod it moves and on no other.
   In a microVM pod the gVisor memory guard is off. The launcher instead raises every command a
   role runs to `oom_score_adj` 1000, so the pod's own kernel stops a command and not Oh My Pi, and
-  names each process that kernel kills in the guard's `ended` line, and the role is told. It also
+  names each process that kernel kills in the guard's `ended` line, and the role is told; a note
+  of its own says when the process was one that runs the role's session. A pod that sets
+  `workload-identity-token` as a `runtime.kubernetes.pod.volumes` name is now refused: that name is
+  Legion's own, as the other names it puts in every pod are. It also
   logs the guest's memory once an hour (`launcher: guest memory: hour ...`).
   With `microvm.metadata` set, the launcher serves the metadata server's paths for the pod's own
   account at `127.0.0.1:8169`, from the pod's projected token exchanged at Google's Security Token

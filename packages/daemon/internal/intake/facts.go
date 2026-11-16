@@ -1050,7 +1050,8 @@ func (SessionStoreFault) isFact() {}
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
-// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel), as the pod's
+// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
 // launcher reported it on the connection of the role whose process it was
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id

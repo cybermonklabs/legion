@@ -1922,13 +1922,16 @@ package api
 // `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
 // issuePod.launcherContainer). The daemon's answer to an issue pod launcher's hello gains
 // `kernelKills` (`shimwire.LauncherHelloAck.KernelKills`), set on every issue pod's answer and on
-// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`):
-// empty for the gVisor guard's own kill, as 144 sends it, and `kernel` for a process a microVM
-// pod's own kernel stopped, which the launcher's guest watch names (memoryguard.Guest); the daemon
-// tells that role with a note of its own (workflow's kernelKillNote) under the same event id
-// `memory-guard-kill:<id>:<sequence>`. The state's settings block carries the new
-// `runtime.kubernetes.sandbox` key as `settings.runtime.kubernetes.sandbox`, which the plugin
-// parses loosely (35 above), so that key alone would bump nothing.
+// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`,
+// a `shimwire.MemoryKillCause`): empty for the gVisor guard's own kill, as 144 sends it; `kernel`
+// for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
+// of the processes that run a role's session (its agent, shim, role-init or a helper) that the
+// kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
+// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
+// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// state's settings block carries the new `runtime.kubernetes.sandbox` key as
+// `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
+// alone would bump nothing.
 //
 // The skew is safe in both directions. An older launcher refuses an unknown flag and exits, so a
 // daemon of this release must never render the microVM flags into a pod whose image predates
@@ -1939,8 +1942,9 @@ package api
 // (`internal/launcher`'s manager.serve), so such a daemon never tells a role of the kernel's kill
 // in the guard's words, and the launcher's own line in the pod's log keeps what it would have
 // said. An older launcher ignores `kernelKills`, as it ignored `memoryGuard` (144), and sends no
-// `cause`. The member is left out when false and `cause` when empty, so a gVisor pod's
-// acknowledgement and the guard's report are the bytes 144 writes.
+// `cause`. `kernelKills` is set on every issue pod's acknowledgement, a gVisor pod's included, so
+// only the controller pod's acknowledgement is the bytes 144 writes, where the member is left
+// out; the guard's report is those bytes too, since `cause` is left out when empty.
 //
 // An earlier loader refuses the `runtime.kubernetes.sandbox` key by name, so a file that sets it
 // takes the block out before an earlier image is pinned (docs/kubernetes.md, "Issue pods in

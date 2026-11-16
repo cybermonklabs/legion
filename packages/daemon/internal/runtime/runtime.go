@@ -268,7 +268,8 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
 // kernel stopped because the pod ran out of memory (the report's Cause,
-// shimwire.MemoryKillCauseKernel), which the launcher's guest watch names
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the role's session), which the launcher's guest watch names
 // (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
 // process it was, and the daemon tells that role why the process is gone. The session gives it the
 // issue key, the claim token of the role the connection authenticated for, the uid of the pod the
