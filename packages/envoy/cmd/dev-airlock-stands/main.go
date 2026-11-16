@@ -125,7 +125,7 @@ var stands = []string{
 	standModel, standDispatch, standMetadata,
 }
 
-// plainStands are the five served over http rather than https. The broker mints a kind's value
+// plainStands are the five served over http rather than https. The broker mints a type's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
 // behind TLS would need a root in the pod's trust store, and the three the model judge calls
 // are reached by that same sort of client; the metadata server could be nothing else, since

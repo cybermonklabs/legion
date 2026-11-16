@@ -7270,9 +7270,9 @@ A machine login is pending while it carries no terminal event, and `PendingForAp
 A pending record whose signed request does not verify for this broker — one signed for another `BROKER_PUBLIC_URL`, after the public URL changed while it waited or where a second broker shares the database, which reads `aud does not match` — is left out of `PendingForApprover`'s list, and the WARN `requests.PendingLeftOutMessage` names its `record_id` and `reason` once per process, so the approval page and `GET /v1/pending` list the approver's other records rather than answering 503 for all of them (dispatch://INFRA-3950).
 The process remembers that line until the later of the record's expiry and ten minutes after the last list that left it out (`leftOutRetention`), since the list reads a record past its expiry until the sweeper ends it.
 `Values` releases a live grant's values, each read from the secret its request froze (its source: the ARN, or the Secret Manager resource name).
-A kind source is `mint:<kind>:<source>`:
+A type source is `mint:<type>:<source>`:
 `Machine.release` parses it (`policy.ParseTypeSource`;
-a malformed one is `policy.ErrTypeSourceMalformed`), reads `<source>` through the store's own `Read`, and passes that value to `Machine.Minters[kind]`.
+a malformed one is `policy.ErrTypeSourceMalformed`), reads `<source>` through the store's own `Read`, and passes that value to `Machine.Minters[<type>]`.
 It never returns the stored value.
 Both of release's reads of the store pass through `policy.TrimLineEnding` (`requests.trimmedValue`), so the value a session is handed and the input a minter is given are read by the one rule.
 Each value the rule changed writes one INFO line, `requests.TrailingLineEndingRemovedMessage`, carrying the secret's name and nothing else.

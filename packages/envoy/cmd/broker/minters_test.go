@@ -28,7 +28,7 @@ import (
 // GitHub App minter, a google-login secret's to the Google login minter and a
 // google-service-account secret's to the service account minter, each against an endpoint of its
 // own, so wiring a type to another type's minter, which would refuse the value, fails here.
-func TestEachKindReachesItsOwnMinter(t *testing.T) {
+func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 	_, pemText := githubapptest.Key(t)
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

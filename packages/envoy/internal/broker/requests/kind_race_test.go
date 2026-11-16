@@ -32,7 +32,7 @@ func (r retagDuringRead) Read(ctx context.Context, source string) (string, error
 // type, that release returns nothing the store holds: its values are discarded and the grant ends
 // for good, as a type change found before the read ends it. Each route to a grant is held to it: a
 // grant made at once, the same grant a later request reuses, and one a person approved.
-func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T) {
+func TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores(t *testing.T) {
 	const canary = "refresh-token-canary-9f3c"
 	for _, route := range []string{"automatic", "reused", "approved"} {
 		t.Run(route, func(t *testing.T) {
@@ -99,14 +99,14 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			}
 			for _, value := range release.Values {
 				if strings.Contains(value, canary) {
-					t.Fatal("Values released the credential the secret stores once it is a kind")
+					t.Fatal("Values released the credential the secret stores once it has a type")
 				}
 			}
 			if err != nil && strings.Contains(err.Error(), canary) {
-				t.Fatal("Values' error holds the credential the secret stores once it is a kind")
+				t.Fatal("Values' error holds the credential the secret stores once it has a type")
 			}
 			if !errors.Is(err, ErrGrantNotLive) || release.Values != nil || minted != 0 {
-				t.Fatalf("Values across a retag to a kind = %d values, %v after %d mints; want ErrGrantNotLive and none", len(release.Values), err, minted)
+				t.Fatalf("Values across a retag to a type = %d values, %v after %d mints; want ErrGrantNotLive and none", len(release.Values), err, minted)
 			}
 			if by, audits := endedForGood(t, machine, grantID); by != GrantEndedActor || audits != 1 {
 				t.Fatalf("grant revoked_by %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)

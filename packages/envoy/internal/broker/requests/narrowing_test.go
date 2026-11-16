@@ -85,7 +85,7 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 }
 
 // TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing: a release that asks to narrow a
-// GitHub App token from a grant that holds none (a stored secret, another kind) is refused and
+// GitHub App token from a grant that holds none (a stored secret, another type) is refused and
 // releases nothing, rather than every value whole as though no narrowing were asked for. In a grant
 // that holds one, the narrowing reaches its github-app minter, and every other value is released
 // as it is.

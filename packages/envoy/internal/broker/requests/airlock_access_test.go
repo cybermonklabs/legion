@@ -22,7 +22,7 @@ var accessSlot = SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString([]
 // grant, it carries the slot the exchange was encoded into, and it goes when the grant ends.
 //
 // The name here is the fixture's ordinary one: what this answers is about the grant's row and
-// the slot, and nothing of it reads the secret's kind.
+// the slot, and nothing of it reads the secret's type.
 func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")

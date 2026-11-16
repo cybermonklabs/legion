@@ -29,7 +29,7 @@ func refusedAs(t *testing.T, set *policy.Set, name, reason string) {
 	}
 }
 
-func TestKindSecretsAreServed(t *testing.T) {
+func TestTypeSecretsAreServed(t *testing.T) {
 	githubApp := typeSecret("GITHUB_APP_KEY", policy.TypeGitHubApp, "github-app-value")
 	googleLogin := typeSecret("GOOGLE_LOGIN_KEY", policy.TypeGoogleLogin, "google-login-value")
 	googleLogin.Tags[policy.TagMaxGrant] = "1h"
@@ -55,8 +55,8 @@ func TestKindSecretsAreServed(t *testing.T) {
 		if want := policy.TypeSource(secretType, store); secret.Source != want {
 			t.Errorf("%s Source = %q, want %q", name, secret.Source, want)
 		}
-		if gotKind, gotStore, minted, err := policy.ParseTypeSource(secret.Source); err != nil || !minted || gotKind != secretType || gotStore != store {
-			t.Errorf("ParseTypeSource(%q) = %q, %q, %t, %v; want %q, %q, true", secret.Source, gotKind, gotStore, minted, err, secretType, store)
+		if gotType, gotStore, minted, err := policy.ParseTypeSource(secret.Source); err != nil || !minted || gotType != secretType || gotStore != store {
+			t.Errorf("ParseTypeSource(%q) = %q, %q, %t, %v; want %q, %q, true", secret.Source, gotType, gotStore, minted, err, secretType, store)
 		}
 	}
 	if got := set.Secrets["GOOGLE_LOGIN_KEY"].MaxGrant; got != time.Hour {
@@ -123,17 +123,17 @@ func TestParseScopes(t *testing.T) {
 	}
 }
 
-func TestUnknownKindIsRefused(t *testing.T) {
-	store := secrets.NewLocal(typeSecret("UNKNOWN_KIND_KEY", "other", "value"))
+func TestUnknownTypeIsRefused(t *testing.T) {
+	store := secrets.NewLocal(typeSecret("UNKNOWN_TYPE_KEY", "other", "value"))
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := set.Secrets["UNKNOWN_KIND_KEY"]; ok {
+	if _, ok := set.Secrets["UNKNOWN_TYPE_KEY"]; ok {
 		t.Fatal("Load served a secret with an unknown type")
 	}
-	refusedAs(t, set, "UNKNOWN_KIND_KEY", policy.ReasonTypeUnknown)
+	refusedAs(t, set, "UNKNOWN_TYPE_KEY", policy.ReasonTypeUnknown)
 }
 
 // TestEveryTypeDecodesAValueThroughParseValue: secrets.ParseValue names the types again, since
@@ -142,7 +142,7 @@ func TestUnknownKindIsRefused(t *testing.T) {
 // the other fails here rather than leaving a type the broker serves that no decoder reads. The
 // values are policytest.TypeValue's, which panics for a type it holds no value of: add one there,
 // and its decoder to secrets.ParseValue.
-func TestEveryKindDecodesAValueThroughParseValue(t *testing.T) {
+func TestEveryTypeDecodesAValueThroughParseValue(t *testing.T) {
 	for _, secretType := range policy.Types {
 		if _, err := secrets.ParseValue(secretType, policytest.TypeValue(secretType)); err != nil {
 			t.Errorf("secrets.ParseValue(%s) of a value its minter mints from = %v; want it decoded", secretType, err)
@@ -160,17 +160,17 @@ func TestEveryKindDecodesAValueThroughParseValue(t *testing.T) {
 	}
 }
 
-func TestKindSecretWithoutValueIsRefused(t *testing.T) {
-	store := secrets.NewLocal(typeSecret("EMPTY_KIND_KEY", policy.TypeGitHubApp, ""))
+func TestTypeSecretWithoutValueIsRefused(t *testing.T) {
+	store := secrets.NewLocal(typeSecret("EMPTY_TYPE_KEY", policy.TypeGitHubApp, ""))
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := set.Secrets["EMPTY_KIND_KEY"]; ok {
+	if _, ok := set.Secrets["EMPTY_TYPE_KEY"]; ok {
 		t.Fatal("Load served a type secret without a current value")
 	}
-	refusedAs(t, set, "EMPTY_KIND_KEY", policy.ReasonNoCurrentValue)
+	refusedAs(t, set, "EMPTY_TYPE_KEY", policy.ReasonNoCurrentValue)
 }
 
 func TestMalformedMaxGrantIsRefused(t *testing.T) {
@@ -188,8 +188,8 @@ func TestMalformedMaxGrantIsRefused(t *testing.T) {
 	refusedAs(t, set, "BAD_MAX_GRANT", policy.ReasonMaxGrantMalformed)
 }
 
-func TestKindRetagChangesVersionAndSource(t *testing.T) {
-	first := typeSecret("MUTABLE_KIND_KEY", policy.TypeGitHubApp, "value")
+func TestTypeRetagChangesVersionAndSource(t *testing.T) {
+	first := typeSecret("MUTABLE_TYPE_KEY", policy.TypeGitHubApp, "value")
 	store := secrets.NewLocal(first)
 	loader := policytest.Loader(store)
 
@@ -212,7 +212,7 @@ func TestKindRetagChangesVersionAndSource(t *testing.T) {
 	if before.Version == after.Version {
 		t.Fatal("retagging a type left Version unchanged")
 	}
-	if before.Secrets["MUTABLE_KIND_KEY"].Source == after.Secrets["MUTABLE_KIND_KEY"].Source {
+	if before.Secrets["MUTABLE_TYPE_KEY"].Source == after.Secrets["MUTABLE_TYPE_KEY"].Source {
 		t.Fatal("retagging a type left Source unchanged")
 	}
 }
@@ -244,14 +244,14 @@ func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
 	refusedAs(t, set, "LEGACY_MINT_KEY", policy.ReasonNoCurrentValue)
 }
 
-func TestEmptyKindIsAPlainSecret(t *testing.T) {
-	secret := typeSecret("EMPTY_KIND", "", "value")
+func TestEmptyTypeIsAPlainSecret(t *testing.T) {
+	secret := typeSecret("EMPTY_TYPE", "", "value")
 	set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := set.Secrets["EMPTY_KIND"]; got.Source != secrets.LocalARN(policytest.ID("EMPTY_KIND")) {
-		t.Fatalf("EMPTY_KIND = %+v, want plain stored source", got)
+	if got := set.Secrets["EMPTY_TYPE"]; got.Source != secrets.LocalARN(policytest.ID("EMPTY_TYPE")) {
+		t.Fatalf("EMPTY_TYPE = %+v, want plain stored source", got)
 	}
 }
 

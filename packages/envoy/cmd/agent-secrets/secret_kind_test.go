@@ -27,7 +27,7 @@ import (
 // the value and decodes it as that type, so the value that type decodes is stored first, as a
 // writer other than this client stores it (a retag between two types cannot be preceded by a
 // set, which decodes the value under the type the secret holds).
-func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
+func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
@@ -99,7 +99,7 @@ func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 
 // TestSecretTypeAndMaxGrantOnGCP retags one secret through every type, each value stored before
 // the retag that decodes it, as TestSecretTypeAndMaxGrantOnAWS does.
-func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
+func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -174,7 +174,7 @@ func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
 	}
 }
 
-func TestSecretKindFlagsRejectInvalidValues(t *testing.T) {
+func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
@@ -835,7 +835,7 @@ func refusedTypeValues(t *testing.T) []refusedTypeValue {
 // words a client's refusal of the same value must carry.
 func mintRefusal(t *testing.T, secretType, value string) string {
 	t.Helper()
-	req := secrets.MintRequest{Name: "KIND_KEY", HumanTier: true, Value: value, GitHubOwners: []string{"acme-org"}}
+	req := secrets.MintRequest{Name: "TYPE_KEY", HumanTier: true, Value: value, GitHubOwners: []string{"acme-org"}}
 	var err error
 	switch secretType {
 	case policy.TypeGitHubApp:
@@ -1113,7 +1113,7 @@ func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets
 // secret holds, since it names none. The broker is asked to reread nothing, but for a create on
 // Secret Manager: that makes the secret before it reads the value and deletes it on the refusal,
 // then asks the broker to reread the name once, which the broker answers absent.
-func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
+func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		for _, row := range refusedTypeValues(t) {
 			t.Run(row.secretType+"/"+row.name, func(t *testing.T) {
@@ -1176,7 +1176,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 // is written; and access denied, and only that, lets the retag write its tags, with one line on
 // stderr saying the value was not checked, naming the permissions the read needs and saying the
 // broker reports such a secret unservable.
-func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKind(t *testing.T) {
+func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.TypeGitHubApp, noAppID)
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
@@ -1254,7 +1254,7 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKind(t *testing.T) {
 // TestSecretSetRefusesASecretWhoseTypeTagNamesNoType: the broker refuses a secret whose type tag
 // names no type it mints (type-unknown) and serves no value of it, so set refuses to store one,
 // exiting 2 and naming that reason, before it reads the value.
-func TestSecretSetRefusesASecretWhoseKindTagNamesNoKind(t *testing.T) {
+func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
 	local := secrets.NewLocal(policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)

@@ -361,7 +361,7 @@ type Config struct {
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
-	// a broker with no binding still boots and still serves every other kind. The policy loader
+	// a broker with no binding still boots and still serves every other type. The policy loader
 	// reads it as well (policy.Loader.ServiceAccounts), for one rule — a secret bound to a
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.

@@ -485,7 +485,7 @@ lists the calls each form makes.
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   KIND          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+NAME               OWNER            TIER   TYPE          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
 DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
 DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
 DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
@@ -703,7 +703,7 @@ that moment is both), and the **earliest** it can be purged:
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   KIND  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+NAME               OWNER            TIER   TYPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
 DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
 DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
 DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -

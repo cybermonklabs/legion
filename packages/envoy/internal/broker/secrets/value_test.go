@@ -109,7 +109,7 @@ func TestParseValueRefusesWhatEachMinterRefusesInItsWords(t *testing.T) {
 
 // TestParseValueDecodesEachTypesFields: a value each type's minter mints from decodes into that
 // type's fields, and only them.
-func TestParseValueDecodesEachKindsFields(t *testing.T) {
+func TestParseValueDecodesEachTypesFields(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestParseValueDecodesEachKindsFields(t *testing.T) {
 
 // TestParseValueRefusesATypeNoMinterReads: the decoder knows the four types and no other, so a
 // type tag naming any other, or none, is refused as a value no minter mints from.
-func TestParseValueRefusesAKindNoMinterReads(t *testing.T) {
+func TestParseValueRefusesATypeNoMinterReads(t *testing.T) {
 	for _, secretType := range []string{"", "other", "GitHub-App"} {
 		if _, err := secrets.ParseValue(secretType, azureLoginValue); !errors.Is(err, secrets.ErrMintStoredValue) || !strings.Contains(err.Error(), "is no type a minter reads") {
 			t.Fatalf("ParseValue(%q) = %v; want a refusal naming no type a minter reads", secretType, err)

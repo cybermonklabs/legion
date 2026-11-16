@@ -535,17 +535,17 @@ func TestGoldenDigest(t *testing.T) {
 // printf 'A_B\tada@example.com\thuman\t<arn>/a-b\nA0\t…\tagent\t<arn>/a0\n
 // DEEL_API_KEY\tshared\thuman\t<arn>/deel-api-key\n
 // GOLDEN_APP\tada@example.com\tagent\tmint:github-app:<arn>/golden-app\t0s\tacme ada\n
-// GOLDEN_KIND\tada@example.com\tagent\tmint:google-login:<arn>/golden-type\t1h0m0s\t\n' | sha256sum,
+// GOLDEN_TYPE\tada@example.com\tagent\tmint:google-login:<arn>/golden-type\t1h0m0s\t\n' | sha256sum,
 // with <arn> arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets.
-func TestGoldenDigestWithKindAndMaxGrant(t *testing.T) {
+func TestGoldenDigestWithTypeAndMaxGrant(t *testing.T) {
 	store := goldenFixture()
-	secretType := policytest.TypeSecret("GOLDEN_KIND", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "v1")
+	secretType := policytest.TypeSecret("GOLDEN_TYPE", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "v1")
 	secretType.Tags[policy.TagMaxGrant] = "1h"
 	store.Put(secretType)
 	app := policytest.TypeSecret("GOLDEN_APP", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, "v1")
 	app.Tags[policy.TagGitHubOwners] = "Ada  acme"
 	store.Put(app)
-	const want = "88c77e2ce85b8174fcfaa88ce25c7905ae902d12bc5584cf82cb3089aa7c364e"
+	const want = "2baba37d254f41d900fc8e07b45a97c870e2049d9ee96ecaef7c20fab84af71d"
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -810,7 +810,7 @@ func TestRequestersLoad(t *testing.T) {
 		edit(&s)
 		refusals[name] = refusal{s, reason}
 	}
-	refuseKind := func(name, reason string, edit func(*secrets.LocalSecret)) {
+	refuseType := func(name, reason string, edit func(*secrets.LocalSecret)) {
 		s := policytest.TypeSecret(name, sami, policy.TierAgent, policy.TypeGoogleServiceAccount,
 			`{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
 		edit(&s)
@@ -828,19 +828,19 @@ func TestRequestersLoad(t *testing.T) {
 	refuse("UNKNOWN_SERVICE", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagRequesters] = "dispatch"
 	})
-	refuseKind("ACCOUNT_NO_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *secrets.LocalSecret) {
+	refuseType("ACCOUNT_NO_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *secrets.LocalSecret) {
 		delete(s.Tags, policy.TagMaxGrant)
 	})
-	refuseKind("ACCOUNT_LONG_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *secrets.LocalSecret) {
+	refuseType("ACCOUNT_LONG_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagMaxGrant] = "2h"
 	})
-	refuseKind("ACCOUNT_NO_LIST", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
+	refuseType("ACCOUNT_NO_LIST", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
 		delete(s.Tags, policy.TagRequesters)
 	})
-	refuseKind("ACCOUNT_TWO_PEOPLE", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
+	refuseType("ACCOUNT_TWO_PEOPLE", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagRequesters] = sami + " " + jason
 	})
-	refuseKind("ACCOUNT_ANOTHER_PERSON", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
+	refuseType("ACCOUNT_ANOTHER_PERSON", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagRequesters] = jason
 	})
 

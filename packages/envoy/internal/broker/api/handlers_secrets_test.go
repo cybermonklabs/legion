@@ -183,7 +183,7 @@ func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
 // TestARereadNamesTheTypeItServes: a reread's answer names the type the broker serves the secret
 // as, and none for a stored secret, so a person who retags a secret to a type can tell a reread
 // that read the new tags from one that read them stale. It carries nothing else of the tags.
-func TestARereadNamesTheKindItServes(t *testing.T) {
+func TestARereadNamesTheTypeItServes(t *testing.T) {
 	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
 	_, body := ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)

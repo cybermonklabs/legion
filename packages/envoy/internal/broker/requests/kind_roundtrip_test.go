@@ -21,11 +21,11 @@ import (
 // TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas: a type retag reverted
 // before any release leaves the grant live, and its next release goes through the minter of its
 // original type, returning that minter's token and never the stored value.
-func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
+func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
 	for name, away := range map[string]string{"removed": "", "changed": policy.TypeGoogleLogin} {
 		t.Run(name, func(t *testing.T) {
 			machine, enrollmentID, key, _ := newFixture(t)
-			secret := requestTypeSecret("QUIET_KIND_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
+			secret := requestTypeSecret("QUIET_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 			retag(t, machine, secret)
 			var githubCalls, googleCalls int
 			var minted []string
@@ -40,11 +40,11 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 					return secrets.Minted{Value: "google-access-token"}, nil
 				},
 			}
-			grant, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "QUIET_KIND_KEY"), "", nil)
+			grant, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "QUIET_TYPE_KEY"), "", nil)
 			if err != nil || grant.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", grant, err)
 			}
-			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{}); err != nil || release.Values["QUIET_KIND_KEY"] != "github-installation-token" {
+			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{}); err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
 				t.Fatalf("Values before the retag = %v, %v; want the GitHub App minter's token", release.Values, err)
 			}
 			moved := secret
@@ -60,14 +60,14 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			retag(t, machine, moved)
 			retag(t, machine, secret)
 			release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{})
-			if err != nil || release.Values["QUIET_KIND_KEY"] != "github-installation-token" {
-				t.Fatalf("Values once the kind is back, with no release while it was away = %v, %v; want the GitHub App minter's token: the grant is as it was", release.Values, err)
+			if err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
+				t.Fatalf("Values once the type is back, with no release while it was away = %v, %v; want the GitHub App minter's token: the grant is as it was", release.Values, err)
 			}
-			if release.Values["QUIET_KIND_KEY"] == secret.Value {
+			if release.Values["QUIET_TYPE_KEY"] == secret.Value {
 				t.Fatal("the release returned the stored value")
 			}
 			if githubCalls != 2 || googleCalls != 0 {
-				t.Fatalf("minter calls: github-app %d, google-login %d; want 2 and 0: the grant mints its original kind", githubCalls, googleCalls)
+				t.Fatalf("minter calls: github-app %d, google-login %d; want 2 and 0: the grant mints its original type", githubCalls, googleCalls)
 			}
 			for _, value := range minted {
 				if value != secret.Value {

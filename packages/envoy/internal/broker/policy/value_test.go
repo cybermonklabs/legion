@@ -148,7 +148,7 @@ func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testi
 //
 // The named revert: decode on every load (ignore the decoded key); the second load's read=value
 // count then fails this test.
-func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
+func TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead(t *testing.T) {
 	login := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	store := &refusingReads{Local: secrets.NewLocal(login, policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "plain-v1"))}
 	cur, registry, logged := valueCurrent(t, store)
@@ -204,7 +204,7 @@ func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
 // the type each retag lists: a retag to github-app reads it once more and refuses the
 // google-login value as value-malformed, and the retag back reads it once more and serves it
 // again, each with one line, the value's version the same throughout.
-func TestARetagOfTheKindOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
+func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 	value := policytest.TypeValue(policy.TypeGoogleLogin)
 	login := typeSecret("RETAGGED_KEY", policy.TypeGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(login)}

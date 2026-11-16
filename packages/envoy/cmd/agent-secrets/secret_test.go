@@ -759,7 +759,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // already carries and checks the value as that type's minter reads it. A value that minter
 // refuses is refused in its words, and nothing is written; one it reads is stored, less its
 // trailing line ending.
-func TestSecretSetReadsTheSecretsOwnKind(t *testing.T) {
+func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
 	notALogin := appValue(t, map[string]string{"type": "service_account"})
 	says := mintRefusal(t, policy.TypeGoogleLogin, notALogin)
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {

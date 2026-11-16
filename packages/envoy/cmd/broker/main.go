@@ -1086,7 +1086,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
-		// The two kinds whose minter calls an endpoint of its own carry the local stack's
+		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
 		Minters: typeMinters(
@@ -1310,11 +1310,11 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	return oidc.NewKeys(discovery, issuer)
 }
 
-// typeMinters is the broker's minter for each kind. Its arguments are the production minters in
+// typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that kind. The google-service-account minter is a pointer: its method value would
+// no secret of that type. The google-service-account minter is a pointer: its method value would
 // otherwise copy the credentials it caches away from the minter every later mint reads. The other
 // two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
 // from its one budget.

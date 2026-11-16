@@ -51,7 +51,7 @@ const (
 )
 
 // The accounts the fixture's App can be installed on. Both are in the github-owners tag every
-// policytest kind secret carries (policytest.FixtureGitHubOwners), so a narrowing to either is
+// policytest type secret carries (policytest.FixtureGitHubOwners), so a narrowing to either is
 // one the policy allows and GitHub alone decides. standInOwner is the account every fixture
 // below installs the App on. otherOwner is the second account that tag lists, which each test
 // installs or leaves alone as it needs: the rows here leave it uninstalled, which is the

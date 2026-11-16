@@ -149,7 +149,7 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 // to be told which type the broker is still serving, because that is what says whether the retag
 // has to be run again or something else wrote the secret. A secret the broker serves with no
 // type at all is named "a stored secret" (typeName), the words the refusal uses for it.
-func TestARetagExitsOneWhileTheBrokerServesTheOldKind(t *testing.T) {
+func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 	for _, row := range []struct {
 		name, served string
 		args         []string

@@ -1,5 +1,5 @@
 // Package airlocktest is the airlock's stand-ins: the HTTPS services a call behind the airlock
-// reaches, the two minter endpoints the broker mints a kind's value at, the Microsoft token
+// reaches, the two minter endpoints the broker mints a type's value at, the Microsoft token
 // endpoint the azure kind exchanges at, and the AWS service that checks the signature the aws
 // kind signs a call again with. Each of them records every request it was sent, which is what a
 // row and a check script both read a result back from.
@@ -198,7 +198,7 @@ type ServiceOptions struct {
 	// by one file.
 	Authority *Authority
 	// Plain serves http rather than https. It is for the two minter endpoints alone: the broker
-	// mints a kind's value with an HTTP client of its own that trusts the host's roots and
+	// mints a type's value with an HTTP client of its own that trusts the host's roots and
 	// nothing else, so a minter stand-in behind TLS would need a root in the pod's trust store,
 	// while every stand-in a call reaches through the proxy is https, which the proxy's own
 	// extra roots cover (BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE).

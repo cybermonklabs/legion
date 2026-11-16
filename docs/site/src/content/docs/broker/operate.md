@@ -164,7 +164,7 @@ stored value naming any other account, release nothing: the session is answered
 `502 MINT_FAILED` and the broker logs `class=binding`, before any call reaches Google. Unset, no
 secret is bound and every `google-service-account` release is refused, which is where a
 deployment stands between this build and the apply that writes its bindings; the broker still
-boots and still serves every other kind. The policy loader reads the setting as well, for one
+boots and still serves every other type. The policy loader reads the setting as well, for one
 rule: a secret bound to a `dev-<name>` account is one person's own, so it may list no registered
 service among its `requesters`.
 
@@ -699,10 +699,10 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
   machine could register a session under it.
   `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store at once,
-  and answers whether it now serves it, as which kind (`kind`: `github-app` or `google-login`,
+  and answers whether it now serves it, as which type (`type`: `github-app` or `google-login`,
   absent for a stored secret) and, if not, why. Neither releases a value. What a reread
   does tell any caller who can reach the broker is whether a name under the namespace exists, the
-  kind it is served as, and, when the broker leaves it out, which of its reasons applies — `absent`,
+  type it is served as, and, when the broker leaves it out, which of its reasons applies — `absent`,
   or a refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`. That is more than
   `UNKNOWN_SECRET`, which says
   only that no agent secret has the name, says it only to an enrolled session, and never separates a
@@ -793,7 +793,7 @@ not write the agent secrets. Whoever holds a credential needs each form's permis
 namespace's secrets, and the tables below say what each request carries that a policy's
 conditions can match.
 
-One kind is not a person's to write. A `google-service-account` secret the deployment binds to an
+One type is not a person's to write. A `google-service-account` secret the deployment binds to an
 account (`BROKER_SERVICE_ACCOUNT_SECRETS`) releases a token that acts as that account, and the
 secret's own tags say who may ask for it and which scopes its token carries, so whoever may write
 those tags decides who can get a token as that account. A deployment that binds names adds one
@@ -802,7 +802,7 @@ people, rather than withholding the grant: on GCP a
 `!resource.name.startsWith("projects/<number>/secrets/<bound name>")` term for each, so the
 people's write stops at the namespace's bound names; on AWS a `Deny` on those secrets' ARNs for
 `CreateSecret`, `PutSecretValue`, `TagResource` and `UntagResource`. Name those secrets in the
-term, since the setting names them, rather than testing the `kind` tag.
+term, since the setting names them, rather than testing the `type` tag.
 
 The binding names a secret by its name alone, so a bound name with no secret behind it is open to
 whoever may create a secret in the namespace: they create it under that name, own it, list
@@ -856,7 +856,7 @@ other form on their own secret but not these refuses those two with `AccessDenie
 Unlike AWS's tags, a GCP IAM condition cannot test an annotation's value, so GCP has no per-secret
 counterpart to AWS's "a person may tag only their own secret" conditions above, and nothing stops
 a write from reaching another person's secret: whoever is granted `secretmanager.secrets.update`
-on the namespace can retag any secret under it to any owner, tier or kind, shared secrets included,
+on the namespace can retag any secret under it to any owner, tier or type, shared secrets included,
 and whoever is granted `secretmanager.versions.add` can replace any secret's value under it. A
 deployment may grant its people every write under the namespace (`secrets.create`, `.get`,
 `.update`, `.delete`, `versions.add`, `.get`, `.list`) with one condition,
@@ -1059,12 +1059,12 @@ id, so find it by that name and the time of the answer.
 ### The value read
 
 The broker reads the stored value of each `github-app`, `google-login`, `google-service-account`
-and `azure-login` secret once for each version and kind of it that a pod lists and has not
-checked, at the pod's first load too, and decodes the value as that kind's minter does. It drops
+and `azure-login` secret once for each version and type of it that a pod lists and has not
+checked, at the pod's first load too, and decodes the value as that type's minter does. It drops
 the value at once: no value is written, logged, counted or kept. It reads no value of a secret
-that has no kind this way. Each read counts as `read="value"` in
+that has no type this way. Each read counts as `read="value"` in
 `broker_policy_store_reads_total` ([Metrics](#metrics)). So a pod reads each such secret once
-after it starts, and once more for each new version or kind, and never at each reload.
+after it starts, and once more for each new version or type, and never at each reload.
 
 A value the decoder refuses makes the secret unservable as `value-malformed` from that load,
 before any mint: one `agent secret policy refused` line and one `broker_unservable_secrets`
@@ -1074,13 +1074,13 @@ Manager. That is a refusal of the value and no failed read, so it writes no
 `agent secret value read failed` line and is not read again at each load. A live grant of the
 secret releases nothing (`GRANT_NOT_LIVE`).
 
-The refusal holds while the store lists that version, until a read under a new kind
-decodes the value. A new version, or a retag of the kind, is read and decoded again,
+The refusal holds while the store lists that version, until a read under a new type
+decodes the value. A new version, or a retag of the type, is read and decoded again,
 so when `agent-secrets secret set` stores a value that decodes, the reread that follows the write
 serves the secret again and writes one `agent secret policy no longer refused` line. A mint whose
 minter cannot read the value refuses the secret in the same way, so a pod whose load could not
 read the value still refuses the secret at its first mint. That refusal is of the version and
-kind the release read the value under. When a load or a reread has listed another one since,
+type the release read the value under. When a load or a reread has listed another one since,
 a retag's among them, the mint refuses nothing, and the broker decodes the value under the new
 one.
 
@@ -1145,7 +1145,7 @@ own listing.
 | Metric | Type | Labels | What it holds |
 | --- | --- | --- | --- |
 | `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port and on the airlock's proxy port; the answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided) or `failed` (500 and above). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
-| `broker_mint_attempts_total` | counter | `kind`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `kind` is the secret's kind. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
+| `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
 

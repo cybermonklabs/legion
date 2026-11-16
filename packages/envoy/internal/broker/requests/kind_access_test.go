@@ -16,7 +16,7 @@ import (
 // TestATypeSecretIsNeverReleasedToAnotherOperator: an agent-tier type secret its owner's sessions
 // get at once is, for another operator's session, a request its owner must approve, which that
 // operator cannot approve; and that session cannot read the owner's live grant.
-func TestAKindSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
+func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("OWNERS_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
@@ -80,7 +80,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 
 // TestConcurrentReleasesOfOneTypeSecretAllMint: many releases of one grant at once each mint and
 // each succeeds, and none sees another's token.
-func TestConcurrentReleasesOfOneKindSecretAllMint(t *testing.T) {
+func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("BUSY_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
