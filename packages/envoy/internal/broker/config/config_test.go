@@ -890,10 +890,16 @@ func TestVMServicesRefuseInvalidDefaultOrDuplicateAccounts(t *testing.T) {
 // whitespace counts as none.
 func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	for _, audience := range []string{"", " \t"} {
-		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
+		for setting, value := range map[string]string{
+			"BROKER_VM_SERVICES":            "example-service=" + exampleVMServiceAccount,
+			"BROKER_VM_PROJECTS":            exampleVMServiceAccount + "=example-project",
+			"BROKER_VM_INSTANCES":           exampleVMServiceAccount + "=example-vm-*",
+			"BROKER_VM_EXCHANGE_ACCOUNTS":   exampleVMServiceAccount + "=EXAMPLE=ada@example.com",
+			"BROKER_SIGNIN_DEVICE_AUDIENCE": "not-a-secret-device-client",
+		} {
 			e := validEnv()
 			e["BROKER_GOOGLE_OIDC_AUDIENCE"] = audience
-			e[setting] = validVMEnv()[setting]
+			e[setting] = value
 			_, err := Load(env(e))
 			if want := setting + " needs BROKER_GOOGLE_OIDC_AUDIENCE"; err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Errorf("Load with only %s and audience %q = %v, want a refusal starting %q", setting, audience, err, want)
@@ -902,14 +908,80 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
-// TestAGoogleAudienceWithNoVMServicesIsRefused pins the other direction: an audience with no VM
-// service listed could accept no token, so it is refused naming both settings.
-func TestAGoogleAudienceWithNoVMServicesIsRefused(t *testing.T) {
-	e := validEnv()
-	e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "example-broker"
-	_, err := Load(env(e))
-	if want := "BROKER_GOOGLE_OIDC_AUDIENCE needs BROKER_VM_SERVICES"; err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Fatalf("Load with a Google audience and no VM service = %v, want a refusal starting %q", err, want)
+func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
+	for _, row := range []struct {
+		name                    string
+		api, audience, services bool
+		wantError               string
+	}{
+		{name: "neither caller"},
+		{name: "audience only", audience: true},
+		{name: "API caller without audience", api: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		{name: "VM caller without audience", services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		{name: "both callers without audience", api: true, services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		{name: "API caller only", api: true, audience: true},
+		{name: "VM caller only", audience: true, services: true},
+		{name: "both callers", api: true, audience: true, services: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := validEnv()
+			if row.api {
+				e["BROKER_API_ACCOUNTS"] = "listener=google:" + exampleListenerAccount
+			}
+			if row.audience {
+				e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "not-a-secret-broker"
+			}
+			if row.services {
+				e["BROKER_VM_SERVICES"] = "example-service=" + exampleVMServiceAccount
+			}
+			cfg, err := Load(env(e))
+			if row.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), row.wantError) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, row.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.api {
+				caller, _ := api.AccountFor("listener")
+				if want := map[string]api.Account{exampleListenerAccount: caller}; !maps.Equal(cfg.GoogleAPIAccounts, want) {
+					t.Fatalf("GoogleAPIAccounts = %v, want %v", cfg.GoogleAPIAccounts, want)
+				}
+			}
+			if !row.services && (cfg.VMServicesByAccount != nil || cfg.ExchangeGoogleAccounts != nil) {
+				t.Fatalf("VM services = %v, exchange entries = %v; want neither without BROKER_VM_SERVICES", cfg.VMServicesByAccount, cfg.ExchangeGoogleAccounts)
+			}
+			if row.services && len(cfg.ExchangeGoogleAccounts) != 1 {
+				t.Fatalf("exchange entries = %v, want the listed VM service", cfg.ExchangeGoogleAccounts)
+			}
+		})
+	}
+}
+
+func TestVMCallerSettingsNeedVMServices(t *testing.T) {
+	for setting, value := range map[string]string{
+		"BROKER_VM_PROJECTS":            exampleVMServiceAccount + "=example-project",
+		"BROKER_VM_INSTANCES":           exampleVMServiceAccount + "=example-vm-*",
+		"BROKER_VM_EXCHANGE_ACCOUNTS":   exampleVMServiceAccount + "=EXAMPLE=ada@example.com",
+		"BROKER_SIGNIN_DEVICE_AUDIENCE": "not-a-secret-device-client",
+	} {
+		for _, apiCaller := range []string{"", "listener=google:" + exampleListenerAccount} {
+			for _, services := range []string{"", " \t\n"} {
+				t.Run(setting+"/API="+strconv.FormatBool(apiCaller != "")+"/services="+strconv.Quote(services), func(t *testing.T) {
+					e := validEnv()
+					e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "not-a-secret-broker"
+					e["BROKER_API_ACCOUNTS"] = apiCaller
+					e["BROKER_VM_SERVICES"] = services
+					e[setting] = value
+					_, err := Load(env(e))
+					if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "BROKER_VM_SERVICES") {
+						t.Fatalf("Load with %s but no VM services = %v, want a refusal naming both settings", setting, err)
+					}
+				})
+			}
+		}
 	}
 }
 

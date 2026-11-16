@@ -151,12 +151,12 @@ type Config struct {
 	// since Google puts the client's id in an ID token's aud. Its issuer is
 	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise, and the person
 	// it names is held to BROKER_SIGNIN_DOMAIN through the hd claim, exactly as a person
-	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE, whose
-	// machines are the boxes a person may sign in on. Unset, the broker accepts no person's
-	// sign-in and registers neither token type, so a caller presenting either is refused by
-	// name. It is not one of the four SignInSettings, which are required together: those are
-	// what a person approves a secret request through and no broker serves without them, where
-	// this one is optional, as the whole Google exchange is.
+	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE and
+	// BROKER_VM_SERVICES: the listed machines are the boxes a person may sign in on. Unset, the
+	// broker accepts no person's sign-in and registers neither token type, so a caller presenting
+	// either is refused by name. It is not one of the four SignInSettings, which are required
+	// together: those are what a person approves a secret request through and no broker serves
+	// without them, where this one is optional, as the whole Google exchange is.
 	SignInDeviceAudience string
 	// BROKER_SECRETS_STORE: which secret store the agent secrets live in: aws-secrets-manager (the
 	// default when unset, AWS Secrets Manager with the agent-secrets key in AWS KMS) or
@@ -401,12 +401,13 @@ type Config struct {
 	// turns Google identity tokens on at all.
 	GoogleOIDCIssuer string
 	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
-	// at the RFC 8693 token exchange, where such a token is a
-	// subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
-	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs
-	// BROKER_VM_SERVICES, since an audience no VM service is listed for could accept no token.
-	// Unset, the broker accepts no Google identity token, and BROKER_VM_SERVICES,
-	// BROKER_VM_PROJECTS, BROKER_VM_INSTANCES and BROKER_VM_EXCHANGE_ACCOUNTS are refused.
+	// both for a caller listed in BROKER_API_ACCOUNTS and at the RFC 8693 token exchange, where
+	// it is a subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
+	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. API callers need
+	// no VM service. The exchange accepts only accounts listed in BROKER_VM_SERVICES, and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
+	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
+	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS and BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
 	GoogleOIDCAudience string
 	// BROKER_VM_SERVICES: the VM services, whitespace-separated name=<service account email>
 	// entries, such as example-service=example-fleet@example-project.iam.gserviceaccount.com. A name
@@ -1449,8 +1450,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if cfg.GoogleOIDCAudience != "" && len(vmServices) == 0 {
-		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs BROKER_VM_SERVICES: with no VM service listed, no VM identity token for that audience could ever be accepted")
+	if cfg.SignInDeviceAudience != "" && len(vmServices) == 0 {
+		return Config{}, fmt.Errorf("BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_VM_SERVICES: a person's device sign-in requires a listed machine's Google identity token as its actor")
 	}
 	for _, entry := range vmServices {
 		if cfg.VMServicesByAccount == nil {
