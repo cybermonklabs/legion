@@ -3171,6 +3171,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # internal/contracts, which oauthwire reads on main since #4119, mints an envelope's ids
+              # through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
