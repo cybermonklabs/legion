@@ -1,8 +1,9 @@
 // Package specform decides the form of the texts of The Spec (R49): the sentences and words of
 // each statement, check, component purpose and definition of a term, the hard findings of the
 // ASD-STE100 program, and the links, incidents, pull requests and people that no text may name.
-// It also decides the rules of the terms (R50): a definition has one sentence, and a term has one
-// definition. It works on plain texts and reads no store: ExtractDocument reads the texts of one
+// It also decides the rules of the terms (R50): a line under a heading Terms is a term line, a
+// definition has one sentence, and a term has one definition, by its name in one Unicode form
+// (TermKey). It works on plain texts and reads no store: ExtractDocument reads the texts of one
 // document's markdown, Check judges them, and Message and ChangesReason write the refusal.
 package specform
 
@@ -19,9 +20,12 @@ const (
 	KindName           Kind = "name"            // a component's or interface's name; reference rules only
 	KindPurpose        Kind = "purpose"
 	KindDefinition     Kind = "definition"
+	KindLine           Kind = "line" // a line under a heading Terms that is no term line; the rule term-line only
 )
 
-// kinds is every Kind, in the order a count of them is written.
+// kinds is every Kind that ExtractDocument counts in each document, in the order a count of them
+// is written. A line under Terms that is no term line (KindLine) is a break of the form, not a text
+// to read, so its count is written only for a document that holds one.
 var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, KindName, KindPurpose, KindDefinition}
 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".

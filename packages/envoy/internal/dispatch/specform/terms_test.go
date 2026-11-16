@@ -80,3 +80,41 @@ func TestTermNamesCompareLowercaseWithSpacesCollapsed(t *testing.T) {
 		t.Fatalf("Check of a plural = %#v, want no finding", got)
 	}
 }
+
+// One name in two Unicode forms is one term: "café" with U+00E9 (NFC) and "café" with e and
+// U+0301 (NFD) read as one word to a person. The control: the same name in the same form is a
+// second definition.
+func TestTermNamesCompareInOneUnicodeForm(t *testing.T) {
+	listed := Term{Name: "caf\u00e9", Definition: "The room where the agents rest.", Where: "spec.md version 1 of ACME-35"}
+	detail := "spec.md version 1 of ACME-35 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first"
+	again := Term{Name: "caf\u00e9", Definition: "The list of the menus of one day.", Where: where}
+	if got, want := Check(planted(), Input{Proposed: []Term{again}, List: []Term{listed}}), []Finding{finding(definition(again), "term-second-definition", detail)}; !sameFindings(got, want) {
+		t.Fatalf("control, the same form: Check = %#v, want %#v", got, want)
+	}
+	proposed := Term{Name: "cafe\u0301", Definition: "The list of the menus of one day.", Where: where}
+	if got, want := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}}), []Finding{finding(definition(proposed), "term-second-definition", detail)}; !sameFindings(got, want) {
+		t.Fatalf("Check of the NFD name against the NFC one = %#v, want %#v", got, want)
+	}
+}
+
+// Names compare in the compatibility form: a ligature and a full-width letter read as the letters
+// they stand for, in the list and in one document. The control: a plural is still another term.
+func TestTermNamesCompareInTheCompatibilityForm(t *testing.T) {
+	file := Term{Name: "file", Definition: "The bytes of one document that Dispatch stores.", Where: "terms.md version 3 of ACME-1"}
+	detail := "terms.md version 3 of ACME-1 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first"
+	for _, name := range []string{"\ufb01le", "\uff46\uff49\uff4c\uff45", "\uff26ile"} {
+		proposed := Term{Name: name, Definition: "One upload of a person.", Where: where}
+		if got, want := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{file}}), []Finding{finding(definition(proposed), "term-second-definition", detail)}; !sameFindings(got, want) {
+			t.Errorf("Check of %q against the list's file = %#v, want %#v", name, got, want)
+		}
+	}
+	ligature := Term{Name: "\ufb01le", Definition: "One upload of a person.", Where: where}
+	want := []Finding{finding(definition(ligature), "term-second-definition", "this document defines this term 2 times. Keep one definition")}
+	if got := Check(planted(), Input{Proposed: []Term{{Name: "file", Definition: "The bytes of one document.", Where: where}, ligature}}); !sameFindings(got, want) {
+		t.Errorf("Check of one document = %#v, want %#v", got, want)
+	}
+	plural := Term{Name: "\ufb01les", Definition: "The uploads of a person.", Where: where}
+	if got := Check(planted(), Input{Proposed: []Term{plural}, List: []Term{file}}); len(got) != 0 {
+		t.Fatalf("Check of a plural = %#v, want no finding", got)
+	}
+}

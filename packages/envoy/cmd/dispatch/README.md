@@ -4670,13 +4670,24 @@ With a request open, they are the documents that the open request names.
 These texts break the form: a statement of more than two sentences, a sentence of more than 25 words and a hard finding of ASD-STE100.
 A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 A definition of a term has one sentence, and a term has one definition.
+A term line is `- **<term>**: <definition>` under a heading `Terms`.
+Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
+Its finding names the line.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
+Dispatch compares the names of terms in the Unicode compatibility form (NFKC), in lower case and with each run of spaces as one space.
+The list holds one definition of each term.
+The root's `terms.md` comes first, then each other document in the order of its first approval.
+Two documents that one answer approved come in the order in which Dispatch created them.
+So a reparent into the root, or an approval from before the setting named the root, adds no second definition to the list.
+The read of the other document names the definition that the list holds as a finding.
 A definition of a term of the list also breaks the form.
 So does a second definition of a term in the documents that one request names.
 The finding names the term and the document that defines it.
 To change a definition, change the document that defines it, and request approval of that document.
+A person's approval takes the lock of the root's list before it reads the list.
+So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
 
 A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
 `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.

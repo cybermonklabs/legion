@@ -59,8 +59,10 @@ func (e *extraction) add(node string, kind Kind, body string) {
 // component or an interface (its name, and a purpose of the paragraph under it); each
 // "Purpose of <id>:" line; and each row of a table whose head starts Id, Kind, Name and Purpose
 // (a name and a purpose). A typed block with no id is named "<type> <ordinal>". The term lines
-// under a heading Terms are Terms, counted as Kind definition. Each text's Where is
-// "<document> version <n>".
+// under a heading Terms are Terms, counted as Kind definition. Each other line under that heading
+// that is not blank and not a heading is a text of Kind line, named by the line in quotes: a term
+// line has one form, "- **<term>**: <definition>", and a line in any other form is a break of the
+// form, not a term. Each text's Where is "<document> version <n>".
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
 		return Extracted{}, fmt.Errorf("%s version %d is not valid UTF-8", document, version)
@@ -144,10 +146,12 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 			index = e.componentTable(lines, index)
 			continue
 		}
-		if termsLevel > 0 {
+		if termsLevel > 0 && trimmed != "" {
 			if match := termLine.FindStringSubmatch(line); match != nil {
 				e.out.Terms = append(e.out.Terms, Term{Name: strings.TrimSpace(match[1]), Definition: strings.TrimSpace(match[2]), Where: e.where})
 				e.out.Counts[KindDefinition]++
+			} else {
+				e.add(fmt.Sprintf("%q", trimmed), KindLine, trimmed)
 			}
 		}
 	}
