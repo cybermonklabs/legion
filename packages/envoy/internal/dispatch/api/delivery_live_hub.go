@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,13 +31,16 @@ type deliveryLiveConn interface {
 }
 
 // deliverySubscription is a subscribe frame for a delivery view as the socket hands it to the hub,
-// its resume decoded as a delivery view's, with the reader the socket resolved at its upgrade
-// (liveSocket.reader), whose view it is.
+// its resume decoded as a delivery view's, with the reader whose view it is: Resolve, when set,
+// resolves that reader afresh (readerFor over the socket's caller), as the subscribe and again on
+// each event that can move what the caller sees (recheckReaders); Reader is read only when Resolve
+// is nil, for the subscription's whole life.
 type deliverySubscription struct {
-	Sub    string
-	View   DeliveryLiveView
-	Resume *DeliveryLiveResume
-	Reader model.Actor
+	Sub     string
+	View    DeliveryLiveView
+	Resume  *DeliveryLiveResume
+	Reader  model.Actor
+	Resolve func(ctx context.Context) (model.Actor, error)
 }
 
 // Subscribe answers one subscribe frame on conn, and reports whether conn's sub now follows the
@@ -66,7 +70,20 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		conn.Send(*refusal)
 		return false
 	}
-	spec.reader, spec.viewer = frame.Reader, deliveryReaderKey(frame.Reader)
+	h.mu.Lock()
+	checks := h.readerChecks
+	h.mu.Unlock()
+	reader := frame.Reader
+	if frame.Resolve != nil {
+		// Read before the hub's lock, which no database read is made under.
+		resolved, err := frame.Resolve(store.WithTransactionTracking(h.lifetime))
+		if err != nil {
+			conn.Send(liveRefusal(frame.Sub, codeInternal, "the subscription could not resolve what its caller sees"))
+			return false
+		}
+		reader = resolved
+	}
+	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
 	spec.key += "|" + spec.viewer
 	var held *DeliveryLiveRevs
 	if frame.Resume != nil {
@@ -106,17 +123,31 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		// conn keeps a sub, so the generation runs on.
 		g.leaveLocked(replaced)
 	}
+	h.joinLocked(g, conn, frame.Sub, spec, held, frame.Resolve, now)
+	if checks != h.readerChecks && frame.Resolve != nil {
+		// A re-check began after this subscribe resolved its reader, and walked the subs before
+		// this one was among them, so another re-check reads it again.
+		h.recheckReadersAfter(g)
+	}
+	return true
+}
+
+// joinLocked makes id conn's sub of the view spec names, creating the view if no sub holds it, and
+// answers it as a new subscription is answered: at once from a body the view holds, else by the
+// recompute under way or one it is marked for.
+func (h *deliveryHub) joinLocked(g *hubGeneration, conn deliveryLiveConn, id string, spec deliveryLiveSpec, held *DeliveryLiveRevs,
+	resolve func(context.Context) (model.Actor, error), now time.Time) {
 	view := g.views[spec.key]
 	if view == nil {
 		view = &deliveryView{spec: spec, subs: map[*deliverySub]struct{}{}}
 		g.views[spec.key] = view
 	}
-	sub := &deliverySub{id: frame.Sub, conn: conn, view: view, needsSnapshot: held == nil, needsVerdict: true}
+	sub := &deliverySub{id: id, conn: conn, view: view, needsSnapshot: held == nil, needsVerdict: true, resolve: resolve}
 	if held != nil {
 		sub.revs = *held
 	}
 	view.subs[sub] = struct{}{}
-	subs[frame.Sub] = sub
+	g.conns[conn][id] = sub
 	switch {
 	case view.body != nil && !view.dirty && !view.computing:
 		h.answerLocked(g, sub)
@@ -125,7 +156,56 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 	default:
 		h.markDirtyLocked(g, view, now, deliveryCauseSubscribe)
 	}
-	return true
+}
+
+// recheckReadersAfter runs a re-check of every sub's reader (recheckReaders) on a goroutine of its
+// own, after any running one: a re-check reads the database, which no hub lock is held across.
+func (h *deliveryHub) recheckReadersAfter(g *hubGeneration) {
+	h.readerChecks++
+	h.running.Add(1)
+	go func() {
+		defer h.running.Done()
+		h.recheckMu.Lock()
+		defer h.recheckMu.Unlock()
+		h.recheckReaders(g)
+	}()
+}
+
+// recheckReaders resolves the reader of each sub that resolves one (deliverySub.resolve) again,
+// and moves each sub whose reader now reads other rows (deliveryReaderKey) to the view of its new
+// reader, which answers it with a snapshot: the page drops the rows of a project its caller no
+// longer sees and reads one it now sees. A sub replaced or dropped meanwhile is left as it is; a
+// reader that does not resolve keeps its view until the next re-check.
+func (h *deliveryHub) recheckReaders(g *hubGeneration) {
+	h.mu.Lock()
+	var subs []*deliverySub
+	for _, held := range g.conns {
+		for _, sub := range held {
+			if sub.resolve != nil {
+				subs = append(subs, sub)
+			}
+		}
+	}
+	h.mu.Unlock()
+	for _, sub := range subs {
+		reader, err := sub.resolve(g.readContext())
+		if err != nil {
+			if g.ctx.Err() == nil {
+				slog.Warn("dispatch: delivery live hub could not resolve a subscriber's reader again; its view stays", "error", err)
+			}
+			continue
+		}
+		viewer := deliveryReaderKey(reader)
+		h.mu.Lock()
+		if h.generation == g && g.conns[sub.conn][sub.id] == sub && sub.view.spec.viewer != viewer {
+			spec := sub.view.spec
+			spec.key = strings.TrimSuffix(spec.key, "|"+spec.viewer) + "|" + viewer
+			spec.reader, spec.viewer = reader, viewer
+			g.leaveLocked(sub)
+			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, h.clock.Now())
+		}
+		h.mu.Unlock()
+	}
 }
 
 // Unsubscribe drops conn's sub; a view's last sub drops the view, and the hub's last its generation.
@@ -234,6 +314,10 @@ type deliveryHub struct {
 	closed bool
 	// generation is the running generation, nil while no conn holds a sub.
 	generation *hubGeneration
+	// readerChecks counts the re-checks of the subs' readers begun (recheckReadersAfter), under mu;
+	// recheckMu runs one re-check at a time, so the last to run reads the freshest readers.
+	readerChecks uint64
+	recheckMu    sync.Mutex
 }
 
 // hubGeneration is one run of the hub. ctx, stop and the channels are set once at its start; the
@@ -351,6 +435,8 @@ type deliverySub struct {
 	needsSnapshot bool
 	needsVerdict  bool
 	told          bool
+	// resolve resolves the sub's reader again (deliverySubscription.Resolve); nil keeps its view's.
+	resolve func(context.Context) (model.Actor, error)
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,

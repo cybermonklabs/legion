@@ -234,6 +234,10 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	h.applyEventLocked(g, event, now)
+	if movesSight(event.Type) {
+		// What a sub's caller sees may have moved, so each sub's reader is resolved again.
+		h.recheckReadersAfter(g)
+	}
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "event", eventID: event.ID})
 }

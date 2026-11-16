@@ -199,7 +199,8 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		if held != nil && held.streamed != nil {
 			s.endLive(socket, sub, held)
 		}
-		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume, Reader: socket.reader}) {
+		resolve := func(ctx context.Context) (model.Actor, error) { return s.readerFor(ctx, socket.caller()) }
+		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume, Resolve: resolve}) {
 			socket.subs[sub] = &liveSub{}
 		}
 		return

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -250,6 +251,54 @@ func TestEachReaderIsToldTheUnfetchableCountOfWhatItSees(t *testing.T) {
 		if got := fresh.Freshness.UnfetchableCount; got != reader.afterMarked {
 			t.Errorf("%s is told %d unfetchable pull requests, want %d", reader.name, got, reader.afterMarked)
 		}
+	}
+}
+
+// TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange: a delivery subscription is read for
+// its caller as resolved again on each event that can move what the caller sees. A reader who sees
+// HID counts its unfetchable pull request; once the caller no longer sees HID and an access change
+// commits, the page is sent a snapshot read for the new reader, which counts none, so the rows of a
+// project the caller lost leave the page.
+func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedHubSettings(t, rig.database)
+	createTestProject(t, rig.handler, "HID")
+	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
+		map[string]any{"project": "HID"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("map acme/hidden to HID: %d %s", response.Code, response.Body.String())
+	}
+	hidden := hubPR(2, rig.clock.Now().Add(-3*time.Hour))
+	hidden.Repo, hidden.URL = "acme/hidden", "https://github.com/acme/hidden/pull/2"
+	upsertPR(t, rig.database, hidden)
+	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/hidden", 2, "the pull request is gone"); err != nil {
+		t.Fatalf("mark acme/hidden#2 unfetchable: %v", err)
+	}
+	var lost atomic.Bool
+	resolve := func(context.Context) (model.Actor, error) {
+		if lost.Load() {
+			return model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{}}}, nil
+		}
+		return model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{"HID"}}}, nil
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, deliverySubscription{Sub: "p", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})
+	counted := func(snapshot DeliveryLiveSnapshot) int {
+		var body deliveryTimelineWithMeasures
+		if err := json.Unmarshal(snapshot.Body, &body); err != nil {
+			t.Fatalf("decode the snapshot: %v", err)
+		}
+		return body.Freshness.UnfetchableCount
+	}
+	if got := counted(conn.snapshot(t, 5*time.Second, "p")); got != 1 {
+		t.Fatalf("the reader who sees HID counts %d unfetchable pull requests, want 1", got)
+	}
+	rig.waitConnected(t)
+
+	lost.Store(true)
+	key := "HID"
+	appendHubEvent(t, rig, model.Event{ProjectKey: &key, Type: projectAccessChangedEvent, Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{}})
+	if got := counted(conn.snapshot(t, 5*time.Second, "p")); got != 0 {
+		t.Errorf("after the caller lost HID the page is sent a snapshot counting %d unfetchable pull requests, want 0", got)
 	}
 }
 
