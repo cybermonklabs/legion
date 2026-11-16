@@ -1594,11 +1594,10 @@ check "names the file that closure reads outside the filter, or the go env write
 # each of which imports mod/other, a package the filter leaves out; GO111MODULE=off lists in GOPATH
 # mode, which cannot find mod/dep, the package mod/lib/dep.go imports; GOWORK=off leaves go.work
 # out of the module files; GOEXPERIMENT names an experiment no go knows. CGO_ENABLED=0 and
-# GOTOOLCHAIN=local are set too with no file of their own: which files cgo puts in turns on
-# whether the machine has a C compiler, and this fixture's go line is below every go's. Both runs
-# start from a go binary, not a version manager's shim of it, which would put a GOROOT of its own
-# in place of the caller's. The clean answer is held to the green one first, so the two cannot
-# agree by both failing.
+# GOTOOLCHAIN=local are set too with no file of their own: the next case holds cgo, and this
+# fixture's go line is below every go's. Both runs start from a go binary, not a version
+# manager's shim of it, which would put a GOROOT of its own in place of the caller's. The clean
+# answer is held to the green one first, so the two cannot agree by both failing.
 echo "case: a caller's Go variables and a python3 shim's GOROOT and PATH change nothing it reports"
 root=$(fixture caller-go-setup)
 printf '//go:build polluted\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/polluted.go"
@@ -1636,6 +1635,40 @@ check "the polluted run's Python is the one the shim started" \
   "$(is "$(test -e "$shim/started" && echo started || echo missing)" started)"
 check "gives the clean answer under the caller's variables and the shim's GOROOT and PATH" \
   "$(is "$polluted_status:$(answer "$polluted")" "$clean_status:$(answer "$clean")")"
+
+# A machine whose go defaults to another platform than CI's runner - a darwin/arm64 laptop, or a
+# worker pod whose go.env turns cgo off - lists other files. Here mod/lib/lib_darwin.go,
+# mod/lib/lib_arm64.go and mod/lib/nocgo.go (//go:build !cgo) import mod/other, which the filter
+# leaves out, and only such a go compiles them. The stand-in toolchain is that machine's go: it
+# names its own root for `go env GOROOT`, so the check runs it for every listing, and it fills in
+# GOOS=darwin, GOARCH=arm64 and CGO_ENABLED=0 wherever its caller sets none before it runs the
+# real go. The check lists every go command for CI's platform (ci_filter_coverage.CI_PLATFORM),
+# so it must answer as it does on the real go of this machine.
+echo "case: a go whose defaults are another platform's, cgo off, gives CI's answer"
+root=$(fixture other-host)
+printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_darwin.go"
+printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_arm64.go"
+printf '//go:build !cgo\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/nocgo.go"
+host="$work/darwin-host-goroot"
+mkdir -p "$host/bin"
+# shellcheck disable=SC2016 # $#, $1, $2, $@ and the defaults are the stand-in's own, written unexpanded
+printf '#!/bin/sh\nif [ "$#" = 2 ] && [ "$1 $2" = "env GOROOT" ]; then echo "%s"; exit 0; fi\nif [ "$1" = list ]; then touch "%s/listed"; fi\nGOOS=${GOOS:-darwin} GOARCH=${GOARCH:-arm64} CGO_ENABLED=${CGO_ENABLED:-0} exec "%s" "$@"\n' \
+  "$host" "$host" "$go_bin/go" > "$host/bin/go"
+chmod +x "$host/bin/go"
+check "the stand-in's go defaults to darwin/arm64 with cgo off" \
+  "$(is "$(cd "$work" && env -u GOOS -u GOARCH -u CGO_ENABLED "$host/bin/go" env GOOS GOARCH CGO_ENABLED | tr '\n' ' ')" "darwin arm64 0 ")"
+set +e
+clean=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u GOARCH -u CGO_ENABLED \
+  -u GOEXPERIMENT -u GO111MODULE PATH="$go_bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+clean_status=$?
+other=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u GOARCH -u CGO_ENABLED \
+  -u GOEXPERIMENT -u GO111MODULE PATH="$host/bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+other_status=$?
+set -e
+check "passes on this machine's go" "$(is "$clean_status" 0)"
+check "the stand-in's go ran the listings" "$(is "$(test -e "$host/listed" && echo listed || echo missing)" listed)"
+check "gives the same answer on the stand-in's go" \
+  "$(is "$other_status:$(answer "$other")" "$clean_status:$(answer "$clean")")"
 
 # The check starts from the go its own PATH resolves. A PATH holding no go - the bash and dirname
 # the script needs before it looks, and nothing else - is refused at once, naming it, rather than

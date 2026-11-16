@@ -408,8 +408,23 @@
 # refused go.work: 1,451 reported problems, 94 of them `requires go >= 1.27.3`, from a shell
 # whose bare run reports none. The toolchain is now the one go.work or go.mod names, by
 # GOTOOLCHAIN's own rules, and a caller's GOFLAGS, GOOS, CGO_ENABLED, GOEXPERIMENT or
-# GO111MODULE changes no listing. So run it bare, from any shell, and read its output by grepping
-# for the problem rather than by its last line.
+# GO111MODULE changes no listing.
+#
+# Nor does the machine it runs on. Every go command is listed for linux/amd64 with cgo on
+# (ci_filter_coverage.CI_PLATFORM), unless the command sets its own GOOS, GOARCH or CGO_ENABLED:
+# the platform of the ubuntu-24.04 runner every job of ci.yaml that runs a go command runs on, as
+# setup-go's `go env` prints it there. A darwin or arm64 machine, or a worker pod whose go.env
+# turns cgo off, then answers as CI does; their own listing would hold other files, since
+# first-party files are built for linux or darwin alone (`_linux.go`, `_darwin.go`,
+# `//go:build linux || darwin`, `unix && !linux`). Two jobs run elsewhere, and judging them as
+# linux/amd64 is exact today: tool-fallback-arm runs on ubuntu-24.04-arm and runs no go command,
+# and the arm64 leg of release-envoy-listener.yaml's matrix is in a workflow ci.yaml does not
+# call. Were either to run one, linux/arm64 would select the same first-party files: every
+# build constraint that names an architecture names amd64 and arm64 together (`(amd64 ||
+# arm64)`), no first-party file name carries an architecture, and none is constrained by cgo or
+# imports "C" (a search of every tracked .go file for those names and constraints when this was
+# written). So run it bare, from any shell on any machine, and read its output by grepping for
+# the problem rather than by its last line.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
