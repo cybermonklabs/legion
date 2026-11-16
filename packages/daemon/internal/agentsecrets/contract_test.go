@@ -6,21 +6,25 @@
 // BROKER_TEST_DATABASE_URL (brokertest.NewRig's own skip), except on GitHub Actions, where the Tests
 // workflow's test job sets it and a skip would hide that it stopped (newBrokerRig).
 //
-// This is the only file in this module that imports anything under github.com/sjawhar/envoy/...:
-// that import is test-only, never leaking into the daemon's production build. It imports
-// packages/envoy/brokertest, a thin public facade over the internal rig, because Go's
-// internal-package rule refuses this module an import under github.com/sjawhar/envoy/internal/...
+// This is the only file in this package that imports anything under github.com/sjawhar/envoy/...:
+// those imports are test-only, never leaking into the agent-secrets client's build. It imports
+// packages/envoy/brokertest, a thin public facade over the internal rig, and
+// packages/envoy/brokerclient, the broker clients' own trade, because Go's internal-package rule
+// refuses this module an import under github.com/sjawhar/envoy/internal/...
 package agentsecrets
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 )
 
@@ -234,6 +238,73 @@ func TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken(t *testing.T) 
 		var api *APIError
 		if !errors.As(err, &api) || api.Status != c.status || api.Code != c.code {
 			t.Fatalf("%s: RegisterPodSession = %v, want %d %s", c.name, err, c.status, c.code)
+		}
+	}
+}
+
+// rolesSubject is one issue pod's exchange token as a role's broker client presents it: under the
+// broker's Kubernetes subject token type (oauthwire.SubjectTokenTypeKubernetes, which this module
+// cannot import).
+type rolesSubject struct{ token string }
+
+func (s rolesSubject) Token(context.Context) (string, string, error) {
+	return s.token, "urn:envoy:params:oauth:token-type:kubernetes-service-account", nil
+}
+
+func (rolesSubject) Describe() string { return "the issue pod's exchange token" }
+
+// TestContractASiblingRoleIsRefusedAnotherRolesSession: two roles of one issue pod read the same
+// exchange token, and the daemon registers each role's session for that pod bound to that role's
+// own key. Against the real broker (the exchange's registeredPodSession and the pod-session
+// route), a trade holding the pod's token is refused for role B's session when its DPoP proof is
+// role A's key — invalid_grant, naming the session — and admitted for B's session with B's key
+// and for A's with A's.
+func TestContractASiblingRoleIsRefusedAnotherRolesSession(t *testing.T) {
+	rig := newBrokerRig(t)
+	ctx := context.Background()
+	const (
+		pod      = "pod-uid-siblings"
+		sessionA = "ses-role-a"
+		sessionB = "ses-role-b"
+	)
+	keyA, keyB := mustTestKey(t), mustTestKey(t)
+	thumbprintOf := func(key *ecdsa.PrivateKey) string {
+		t.Helper()
+		tp, err := thumbprint(&key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tp
+	}
+	daemon := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, brokertest.DaemonAccount, time.Hour)}
+	podToken := rig.MintAccountPodToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour)
+	for session, key := range map[string]*ecdsa.PrivateKey{sessionA: keyA, sessionB: keyB} {
+		if _, err := daemon.RegisterPodSession(ctx, pod, podToken, session, thumbprintOf(key)); err != nil {
+			t.Fatalf("the daemon's registration of %s for %s: %v", session, pod, err)
+		}
+	}
+
+	exchangeToken := rig.MintSubjectToken(t, brokertest.ExchangeRolesAccount, pod)
+	trade := func(key *ecdsa.PrivateKey, session string) error {
+		t.Helper()
+		client, err := brokerclient.New(brokerclient.Config{BrokerURL: rig.URL, Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Token(ctx)
+		return err
+	}
+	err := trade(keyA, sessionB)
+	var refused *brokerclient.RefusedError
+	if !errors.As(err, &refused) || refused.Code != "invalid_grant" || !strings.Contains(refused.Description, sessionB) {
+		t.Fatalf("role A, holding the pod's exchange token and its own key, traded for role B's session %s: %v; want it refused invalid_grant naming %s", sessionB, err, sessionB)
+	}
+	for _, c := range []struct {
+		key     *ecdsa.PrivateKey
+		session string
+	}{{keyB, sessionB}, {keyA, sessionA}} {
+		if err := trade(c.key, c.session); err != nil {
+			t.Errorf("a trade for %s proved with that role's own key: %v, want it admitted", c.session, err)
 		}
 	}
 }
