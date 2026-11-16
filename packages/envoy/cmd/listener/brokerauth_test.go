@@ -121,6 +121,23 @@ func serviceAnswer(session, service, jkt string) brokertoken.Introspection {
 	}
 }
 
+// readOnlyAnswer is the broker's answer about a token a read entry minted for Dispatch's read
+// list: the one scope read, the project scope none, a service, and no person and no project
+// (internal/broker/oauth, TestAReadEntrysPodExchangesForATokenThatOnlyReads). The listener's
+// verifier is built without the switch that serves one (brokertoken.Options.ServesReadOnly), so
+// such a token is no session's credential here.
+func readOnlyAnswer(session, service, jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      session,
+		Service:      service,
+		ProjectScope: brokertoken.ProjectScopeNone,
+		Scope:        brokertoken.ScopeRead,
+		ClientID:     brokertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
 // brokerTokenRequest is the request a caller holding token sends to path, signed as its real
 // client signs one: the proof the caller's own DPoP transport produced, on a request carrying
 // this listener's JSON body.
@@ -182,6 +199,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 	const (
 		personToken   = "access-token-of-a-person"
 		serviceToken  = "access-token-of-a-service"
+		readOnlyToken = "access-token-that-only-reads"
 		revokedToken  = "access-token-that-was-revoked"
 		unknownToken  = "access-token-the-broker-never-issued"
 		strangerToken = "access-token-bound-to-another-key"
@@ -189,6 +207,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 	)
 	broker.Says(personToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	broker.Says(serviceToken, serviceAnswer("ses_service", "example-fleet", caller.JKT()))
+	broker.Says(readOnlyToken, readOnlyAnswer("ses_reader", "example-reader", caller.JKT()))
 	broker.Says(revokedToken, brokertoken.Introspection{Active: false})
 	broker.Says(strangerToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	// A machine login's own access token: live, bound to this key, and no session's credential.
@@ -262,6 +281,20 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			wantReason: "not_a_session",
 		},
 		{
+			// R4: the listener serves a read-only token on no route, and its code does not
+			// change for that: its verifier is built without the read-only switch, so the token
+			// is refused as a build before the switch refuses it. The row "admits a token naming
+			// a service and no person" sends the same request under a token of the same kind — a
+			// session and a service, no person — whose project scope is named, with a project
+			// and no scope read, and it is admitted, so the refusal is the scope's.
+			name:       "refuses a token that only reads",
+			configured: true,
+			started:    true,
+			token:      readOnlyToken,
+			wantStatus: http.StatusUnauthorized,
+			wantReason: "not_a_session",
+		},
+		{
 			// R9: with none of the broker variables set the listener takes no such credential,
 			// so the header is one it does not know and the open listener serves the request
 			// as it served every unauthenticated one before this credential existed. Refusing
@@ -301,8 +334,16 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			request := brokerTokenRequest(t, signer, http.MethodPost, "/v1/messages/publish", tc.token, `{}`)
 			recorder := httptest.NewRecorder()
 			var logged bytes.Buffer
+			// A presentation apiAuth answers itself never reaches the routes behind it, so the
+			// handler of a row that wants anything but 200 fails the test if it runs.
+			handler := next
+			if tc.wantStatus != http.StatusOK {
+				handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Errorf("the handler behind apiAuth ran for a presentation it should answer %d", tc.wantStatus)
+				})
+			}
 
-			apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &logged)}, next).ServeHTTP(recorder, request)
+			apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &logged)}, handler).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.wantStatus, recorder.Body.String())

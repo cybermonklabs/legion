@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,6 +51,13 @@ const (
 	registrarAccount = "system:serviceaccount:example-ns:example-daemon"
 	person           = "ada@example.com"
 	project          = "ACME"
+	// readerAccount is the account BROKER_EXCHANGE_READ_ACCOUNTS lists here: its pods are minted
+	// a token that only reads, naming readerService and the session readerSession the entry
+	// fixes, and readerPodUID is the pod of it this test drives.
+	readerAccount = "system:serviceaccount:example-ns:example-reader"
+	readerService = "example-reader"
+	readerSession = "example-reader-session"
+	readerPodUID  = "pod-uid-reader"
 	// enrolmentAudience is what a pod's enrolment token and a listed caller's own token carry;
 	// exchangeAudience is what a token presented to the exchange must carry, and workflowAudience
 	// what a GitHub workflow run's would. A token minted for one is not spendable at another.
@@ -163,10 +171,10 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			fields  map[string]any
 		}{
 			{"broker listening", map[string]any{"addr": addr}},
-			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1}},
 		} {
 			if len(recordsWith(boot, want.message, want.fields)) == 0 {
-				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers and the two listed accounts:\n%s", want.message, want.fields, boot)
+				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers, the two listed accounts and the one read entry:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})
@@ -429,6 +437,75 @@ func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
 	})
 }
 
+// TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads is the live proof of the read
+// entry, on the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_READ_ACCOUNTS
+// lists presents its projected token with a DPoP proof of its own key and no client credential,
+// naming no session and no scope, and is answered a token the listed API account reads back as
+// exactly the read entry's: the scope read, the project scope none, the entry's service and the
+// session it fixes, no person and no project, and this test's own key. Nothing was registered for
+// the pod, since the entry fixes the session. The same request naming the scope read is refused
+// invalid_scope, so the scope is the entry's to grant and never the request's.
+func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	form := exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), "")
+	var token string
+
+	t.Run("a read entry's pod token mints a token with no session and no scope named", func(t *testing.T) {
+		status, body := live.exchange(t, form)
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the read entry fixes the session, so the pod names none and is registered for nothing", readerAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the read entry's token and nothing more", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		// Read back through the one declaration both ends of the route share, so the answer is
+		// compared whole: a person, a project or a second scope would each be a field the
+		// literal does not carry.
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+	})
+
+	t.Run("the same request naming the scope read mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
+		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
+			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
+		}
+	})
+}
+
 // TestTheBinaryExchangesAMachinesGoogleIdentityToken is the live proof of the machine grant: the
 // real binary on a fresh schema, with an issuer of this test's own standing in for Google, a
 // machine presenting nothing but its Google identity token and a key of its own is answered a
@@ -482,7 +559,7 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 			message string
 			fields  map[string]any
 		}{
-			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "workflows": 0, "machines": 2}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1, "workflows": 0, "machines": 2}},
 			{"google machine identity", map[string]any{"issuer": google.URL(), "audience": machineAudience,
 				"services": pinnedFleetService + "," + poolFleetService, "fleets": 2}},
 		} {
@@ -989,9 +1066,10 @@ func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
 // exchangeEnv is what one broker run of this test needs beyond productionEnv: the fresh schema it
 // migrates and serves from, the cluster issuer with the audience a pod enrols with and the one it
 // exchanges with, the GitHub issuer, the two listed accounts with their projects and persons, the
-// two listed callers — dispatch, which reads a token back and ends one, and listener, which only
-// reads one back — the registrar that logs in as the deployment's daemon
-// and registers its pods' session names, and how long an access token it mints lasts.
+// read entry with its service and the session it fixes, the two listed callers — dispatch, which
+// reads a token back and ends one, and listener, which only reads one back — the registrar that
+// logs in as the deployment's daemon and registers its pods' session names, and how long an
+// access token it mints lasts.
 func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
@@ -1016,6 +1094,7 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience,
 		"BROKER_EXCHANGE_ACCOUNTS=" + podAccount + "=" + project + "=" + person + " " + listedAccount + "=OTHER=mallory@example.com",
+		"BROKER_EXCHANGE_READ_ACCOUNTS=" + readerAccount + "=" + readerService + "=" + readerSession,
 		"BROKER_EXCHANGE_GITHUB_ISSUER=" + github.URL(),
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=" + workflowAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount,

@@ -1775,6 +1775,77 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	}
 }
 
+// TestLoadReadsTheExchangeReadAccounts pins BROKER_EXCHANGE_READ_ACCOUNTS: whitespace-separated
+// <account>=<service>=<session> entries in order, none when unset, a session that may itself
+// carry "=", and refusals naming the setting and the entry for one with fewer than three fields
+// or a blank one, an account that is not a service account's subject, a namespace's default
+// account, a service that is not a service's name or is the shared owner, and an account listed
+// twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused naming both settings, and the
+// setting needs the cluster issuer and the exchange audience, whose tokens its pods present.
+func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExchangeReadAccounts != nil {
+		t.Fatalf("ExchangeReadAccounts = %v, want nil when BROKER_EXCHANGE_READ_ACCOUNTS is unset", cfg.ExchangeReadAccounts)
+	}
+	withExchange := func() map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+		return e
+	}
+	e := withExchange()
+	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session\n" +
+		" system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer=1 "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.ReadEntry{
+		{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session"},
+		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1"},
+	}
+	if !slices.Equal(cfg.ExchangeReadAccounts, want) {
+		t.Fatalf("ExchangeReadAccounts = %v, want %v", cfg.ExchangeReadAccounts, want)
+	}
+	for _, bad := range []string{
+		"system:serviceaccount:example-ns:example-reader",
+		"system:serviceaccount:example-ns:example-reader=example-reader",
+		"=example-reader=example-reader-session",
+		"system:serviceaccount:example-ns:example-reader==example-reader-session",
+		"system:serviceaccount:example-ns:example-reader=example-reader=",
+		"example-reader=example-reader=example-reader-session",
+		"system:serviceaccount:example-ns:default=example-reader=example-reader-session",
+		"system:serviceaccount:example-ns:example-reader=Example_Reader=example-reader-session",
+		"system:serviceaccount:example-ns:example-reader=shared=example-reader-session",
+	} {
+		e := withExchange()
+		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+	e = withExchange()
+	const again = "system:serviceaccount:x:y=example-other=other-session"
+	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:x:y=example-reader=example-reader-session " + again
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(again)) {
+		t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS naming one account twice: err = %v, want a refusal naming the setting and the entry", err)
+	}
+	e = withExchange()
+	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com"
+	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=example-reader=example-reader-session"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") ||
+		!strings.Contains(err.Error(), "BROKER_EXCHANGE_ACCOUNTS ") || !strings.Contains(err.Error(), "system:serviceaccount:example-ns:example-worker") {
+		t.Errorf("an account both exchange settings list: err = %v, want a refusal naming both settings and the account", err)
+	}
+	e = withK8sIssuer()
+	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_K8S_AUDIENCE") {
+		t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS with no exchange audience: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_K8S_AUDIENCE", err)
+	}
+}
+
 // TestLoadReadsTheExchangeWorkflows pins BROKER_EXCHANGE_WORKFLOWS:
 // <repository>=<workflow>=<ref>=<project>=<person>[=<session>] entries in order, none when unset,
 // and refusals naming the entry for one that is not of that form or lists a workflow twice. It

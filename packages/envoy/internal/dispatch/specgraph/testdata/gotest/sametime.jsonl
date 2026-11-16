@@ -1,0 +1,47 @@
+{"Time":"2026-11-16T16:49:07.934948289Z","Action":"start","Package":"example.com/finalaudit/sametime"}
+{"Time":"2026-11-16T16:49:07.95366953Z","Action":"run","Package":"example.com/finalaudit/sametime","Test":"TestSame"}
+{"Time":"2026-11-16T16:49:07.953711586Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"=== RUN   TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:07.953732559Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"=== PAUSE TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:07.953734576Z","Action":"pause","Package":"example.com/finalaudit/sametime","Test":"TestSame"}
+{"Time":"2026-11-16T16:49:07.9537399Z","Action":"run","Package":"example.com/finalaudit/sametime","Test":"TestSame"}
+{"Time":"2026-11-16T16:49:07.953741788Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"=== RUN   TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:07.953744166Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"=== PAUSE TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:07.953745512Z","Action":"pause","Package":"example.com/finalaudit/sametime","Test":"TestSame"}
+{"Time":"2026-11-16T16:49:07.953747453Z","Action":"cont","Package":"example.com/finalaudit/sametime","Test":"TestSame"}
+{"Time":"2026-11-16T16:49:07.953748883Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"=== CONT  TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:07.953750987Z","Action":"cont","Package":"example.com/finalaudit/sametime","Test":"TestSame"}
+{"Time":"2026-11-16T16:49:07.953753017Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"=== CONT  TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:07.953755246Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"    inside_test.go:8: internal run passes after external run starts\n"}
+{"Time":"2026-11-16T16:49:07.953764002Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"--- PASS: TestSame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:08.956165562Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:49:08.956238872Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\n"}
+{"Time":"2026-11-16T16:49:08.95624285Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"goroutine 353 [running]:\n"}
+{"Time":"2026-11-16T16:49:08.956246174Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-11-16T16:49:08.956247425Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2961 +0x34a\n"}
+{"Time":"2026-11-16T16:49:08.956248559Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"created by time.goFunc\n"}
+{"Time":"2026-11-16T16:49:08.95624974Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttime/sleep.go:182 +0x2d\n"}
+{"Time":"2026-11-16T16:49:08.956250863Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\n"}
+{"Time":"2026-11-16T16:49:08.956252144Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-11-16T16:49:08.956253662Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"testing.tRunner.func1()\n"}
+{"Time":"2026-11-16T16:49:08.95625491Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2144 +0x425\n"}
+{"Time":"2026-11-16T16:49:08.956256115Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"testing.tRunner(0x12177c158008, 0x12177b7eebc8)\n"}
+{"Time":"2026-11-16T16:49:08.956258531Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2201 +0x123\n"}
+{"Time":"2026-11-16T16:49:08.956265418Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"testing.runTests({0x559fa2, 0x16}, {0x55cb41, 0x1f}, 0x12177c1200a8, {0x6ef950, 0x2, 0x2}, {0xc2b6eae138d4dcaa, 0x3ba11fa9, ...})\n"}
+{"Time":"2026-11-16T16:49:08.956276382Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2742 +0x510\n"}
+{"Time":"2026-11-16T16:49:08.956279931Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"testing.(*M).Run(0x12177c10c140)\n"}
+{"Time":"2026-11-16T16:49:08.956283223Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2602 +0x6af\n"}
+{"Time":"2026-11-16T16:49:08.956284676Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"main.main()\n"}
+{"Time":"2026-11-16T16:49:08.956286058Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\t_testmain.go:50 +0x9b\n"}
+{"Time":"2026-11-16T16:49:08.956287307Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\n"}
+{"Time":"2026-11-16T16:49:08.956288675Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"goroutine 339 [sleep]:\n"}
+{"Time":"2026-11-16T16:49:08.95629315Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"time.Sleep(0x2540be400)\n"}
+{"Time":"2026-11-16T16:49:08.95629471Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\truntime/time.go:368 +0x165\n"}
+{"Time":"2026-11-16T16:49:08.956296229Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"example.com/finalaudit/sametime_test.TestSame(0x12177c158488?)\n"}
+{"Time":"2026-11-16T16:49:08.956300517Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\texample.com/finalaudit/sametime/outside_test.go:12 +0x2e\n"}
+{"Time":"2026-11-16T16:49:08.956304737Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"testing.tRunner(0x12177c158488, 0x6d4120)\n"}
+{"Time":"2026-11-16T16:49:08.956308474Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2195 +0xea\n"}
+{"Time":"2026-11-16T16:49:08.956310717Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-11-16T16:49:08.956312193Z","Action":"output","Package":"example.com/finalaudit/sametime","Test":"TestSame","Output":"\ttesting/testing.go:2260 +0x4d4\n"}
+{"Time":"2026-11-16T16:49:08.959347094Z","Action":"pass","Package":"example.com/finalaudit/sametime","Test":"TestSame","Elapsed":0}
+{"Time":"2026-11-16T16:49:08.959382384Z","Action":"output","Package":"example.com/finalaudit/sametime","Output":"FAIL\texample.com/finalaudit/sametime\t1.024s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:49:08.959396293Z","Action":"fail","Package":"example.com/finalaudit/sametime","Elapsed":1.024}
