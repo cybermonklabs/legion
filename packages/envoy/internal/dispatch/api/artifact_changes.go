@@ -472,7 +472,11 @@ type writtenIDs struct {
 // (writtenIDs). A `"` closes the value of the `id="` before it, and is itself the end of an `id="`
 // that opens the next value when `id=` stands before it: `id="aid="b"` holds both `id="aid="` and
 // `id="b"`. A text after a `#` that is empty holds no id, since every id written after a `#` has a
-// character, and is not kept.
+// character, and is not kept. Each step of the scan tells writtenIDReads what it reads: each
+// search for the next `#` or `"`, which reads up to and with the byte it finds, or to the text's
+// end where it finds none, each value it keeps, and the `id=` it looks for before each `"`. So the
+// counted total is the scan's own work, and a scan that read the text again for each id would
+// count each of those reads.
 func writtenIDsIn(stored string) *writtenIDs {
 	written := &writtenIDs{quoted: map[string]struct{}{}}
 	// hash is where the last `#` stands and value where the open `id="` value starts, -1 for none.
@@ -485,8 +489,10 @@ func writtenIDsIn(stored string) *writtenIDs {
 	for at := 0; at < len(stored); at++ {
 		next := strings.IndexAny(stored[at:], `#"`)
 		if next < 0 {
+			readOf(len(stored) - at)
 			break
 		}
+		readOf(next + 1)
 		at += next
 		if stored[at] == '#' {
 			shortcut(at)
@@ -494,15 +500,16 @@ func writtenIDsIn(stored string) *writtenIDs {
 			continue
 		}
 		if value >= 0 {
+			readOf(at - value)
 			written.quoted[stored[value:at]] = struct{}{}
 			value = -1
 		}
+		readOf(min(at, len("id=")))
 		if strings.HasSuffix(stored[:at], "id=") {
 			value = at + 1
 		}
 	}
 	shortcut(len(stored))
-	readOf(len(stored))
 	slices.SortFunc(written.shortcuts, compareWritten)
 	return written
 }
@@ -539,11 +546,11 @@ func compareWritten(a, b string) int {
 }
 
 // writtenIDReads, while a test sets it, is told how many bytes each step of a typed-block cut
-// reads at most: the scan of the stored text (writtenIDsIn), each comparison of two texts
-// (compareWritten), and each look up of a written id (writtenIDs.names). A test bounds that work by
-// the size of the text, as pmdoc's growsLinearly (pmdoc/linear_test.go) bounds a parse's and a
-// render's, but by counting what the cut does rather than timing it on a machine another process
-// may load. The server leaves it nil.
+// reads at most: each step of the scan of the stored text (writtenIDsIn), each comparison of two
+// texts (compareWritten), and each look up of a written id (writtenIDs.names). A test bounds that
+// work by the size of the text, as pmdoc's growsLinearly (pmdoc/linear_test.go) bounds a parse's
+// and a render's, but by counting what the cut does rather than timing it on a machine another
+// process may load. The server leaves it nil.
 var writtenIDReads func(bytes int)
 
 // readOf tells writtenIDReads, when a test has set it, of a read of bytes bytes.
