@@ -40,9 +40,10 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
  * `url` with no user and no password, for any text that names it: an error, a log line, a notice
  * or a link. A configured Dispatch or Envoy URL may carry both, since the config accepts such a
  * URL, and a user alone can be a token, so both go; requests still go to the URL as configured. A
- * URL that carries neither comes back as written, and one that carries them keeps the rest of its
- * form, a bare origin included, which the parser alone would end with `/`. A string the URL parser
- * refuses comes back as what follows its last `@`, since what precedes it may be a password.
+ * URL that carries neither comes back as written. One that carries them comes back as the URL
+ * parser writes it: its scheme and host lower-cased and a default port dropped, still naming the
+ * same server, and no `/` added after a bare origin. A string the URL parser refuses comes back as
+ * what follows its last `@`, since what precedes it may be a password.
  */
 export function withoutUserinfo(url: string): string {
   let parsed: URL;

@@ -876,6 +876,7 @@ describe("DispatchClient", () => {
         headers: { "Content-Type": "text/html" },
       }),
       jsonResponse([]),
+      jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
       jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
       jsonResponse(
         { code: "NOT_FOUND", error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews" },
@@ -912,6 +913,7 @@ describe("DispatchClient", () => {
     const messages = [
       await refusal(client.getIssue("DSP-1")),
       await refusal(client.listIssuePage({}, { limit: 2, offset: 0 })),
+      await refusal(client.listAllIssues({})),
       await refusal(client.message("DSP-1", { body: "Shipped.", actor })),
       await refusal(client.reviewArtifact("a-1", 2, { state: "approved" })),
       await refusal(unanswered.message("DSP-1", { body: "Shipped.", actor })),
@@ -920,6 +922,7 @@ describe("DispatchClient", () => {
     expect(requests.map((request) => request.url)).toEqual([
       `${configured}/api/v1/issues/DSP-1`,
       `${configured}/api/v1/issues?limit=2&offset=0`,
+      `${configured}/api/v1/issues`,
       `${configured}/api/v1/issues/DSP-1/messages`,
       `${configured}/api/v1/artifacts/a-1/versions/2/reviews`,
     ]);
@@ -929,15 +932,19 @@ describe("DispatchClient", () => {
     expect(messages[1]).toStartWith(
       "GET https://host.example/api/v1/issues?limit=2&offset=0 asked for a page"
     );
-    expect(messages[2]).toStartWith(
-      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
+    expect(messages[2]).toBe(
+      "GET https://host.example/api/v1/issues asked for the unpaged listing and got a page, so " +
+        "this Dispatch pages a request that carries no limit and no offset."
     );
     expect(messages[3]).toStartWith(
+      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
+    );
+    expect(messages[4]).toStartWith(
       "Dispatch at https://host.example answered no route for " +
         "POST /api/v1/artifacts/a-1/versions/2/reviews each time the review was sent"
     );
-    expect(messages[3]).toContain("GET https://host.example/healthz names the commit");
-    expect(messages[4]).toBe(
+    expect(messages[4]).toContain("GET https://host.example/healthz names the commit");
+    expect(messages[5]).toBe(
       "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
         "so it may or may not have taken effect: check whether it did before retrying it."
