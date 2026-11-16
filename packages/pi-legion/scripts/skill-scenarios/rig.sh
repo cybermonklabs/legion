@@ -302,9 +302,13 @@ load_label() {
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
-  # before they did is refused here.
-  local settings=$P/home/.omp/profiles/$profile/agent/config.yml
-  bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 1)' "$settings" 2>/dev/null ||
+  # before they did is refused here. A check that cannot answer (a settings file bun cannot read or
+  # parse, or a bun that does not start) leaves its own error on stderr and is refused as that, not
+  # read as a missing limit.
+  local settings=$P/home/.omp/profiles/$profile/agent/config.yml limit
+  limit=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; console.log(typeof v === "number" && v >= 120000 ? "set" : "unset")' "$settings") ||
+    fail "label $1's profile settings $settings could not be checked: bun failed with the error above"
+  [ "$limit" = set ] ||
     fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
 }
 
