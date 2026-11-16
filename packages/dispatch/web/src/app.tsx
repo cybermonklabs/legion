@@ -108,7 +108,7 @@ import {
 } from "./theme/classes";
 
 const IssuePage = lazy(() =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }))
+  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }))
 );
 
 const ProjectPage = lazy(() =>
