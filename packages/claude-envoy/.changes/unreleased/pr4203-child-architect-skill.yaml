@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The architect skill this plugin ships now says that the daemon starts an architect on every
+  child when it starts that child's first phase, and that this architect owns its child: it files
+  its own children under its own issue, releases, parks and reruns them, signs off its own issue,
+  and registers no design gate. Each parent reviews every version of a child's spec and
+  Verification document with a fresh reader and posts its verdict on the child. The worker skills
+  and the `legion` tool's description of `request_backward_move` now name the architect that owns
+  an issue where they named the tree's architect.
