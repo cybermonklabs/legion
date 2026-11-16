@@ -568,9 +568,10 @@ write identity errors with `identity.WriteError`.
   `{kind: "session", id: <the token's session>}` carrying either `owner`, the
   person it acts for, or `service`, the fleet of a machine nobody has signed
   in on or the service a read entry names — never both and never neither —
-  and `project`, the one project a named-scope token may write, each read
-  from the token and never from a body; a person-scoped token names no single
-  project and carries none. A caller
+  and `project`, the one project a named-scope token may write where its
+  entry names one, each read from the token and never from a body; a
+  person-scoped token names no single project and carries none, and neither
+  does the named token of an entry that names no project. A caller
   naming a service and no person reads everything its session may read, and
   `api.writeNeedsASignedInPerson` refuses its every write
   `403 SIGN_IN_REQUIRED` (`contracts.DispatchSignInRequired`) at one chokepoint

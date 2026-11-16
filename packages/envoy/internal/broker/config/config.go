@@ -1687,7 +1687,7 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
 		}
 		// One account mints one kind of token: listed in both settings, it would have two
-		// answers, a token that writes its project and one that only reads. exchange.NewSet
+		// answers, a token that writes as its person and one that only reads. exchange.NewSet
 		// refuses it too, but only this refusal can name both settings.
 		writers := make(map[string]bool, len(cfg.ExchangeAccounts))
 		for _, entry := range cfg.ExchangeAccounts {
@@ -1695,7 +1695,7 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		for _, entry := range cfg.ExchangeReadAccounts {
 			if writers[entry.Account] {
-				return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account %s; one account mints one kind of token, a read-only one or one that writes its project, so name it in one of them", entry.Account)
+				return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account %s; one account mints one kind of token, a read-only one or one that writes as its person, so name it in one of them", entry.Account)
 			}
 		}
 	}

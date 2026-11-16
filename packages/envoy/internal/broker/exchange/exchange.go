@@ -13,9 +13,10 @@
 // Five kinds of subject token reach it, and what decides each one's claims differs:
 //
 //   - a pod's Kubernetes service-account token, where an entry keyed on the account subject
-//     (system:serviceaccount:<namespace>:<name>) gives the project and the person, or a read
-//     entry keyed on it gives a service and the session its token reads as, and the token must
-//     carry the pod it is bound to;
+//     (system:serviceaccount:<namespace>:<name>) gives the person and the project, or no project
+//     for an entry that names none (<service account>==<person>), or a read entry keyed on it
+//     gives a service and the session its token reads as, and the token must carry the pod it is
+//     bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
 //     repository, the workflow's path and the ref it ran on gives the project and the person;
 //   - a machine's Google identity token, where an entry keyed on the account's email address

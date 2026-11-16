@@ -24,13 +24,16 @@ package api
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     three access tokens the broker issues, each of which reaches brokerTokenActor with no
+//     four access tokens the broker issues, each of which reaches brokerTokenActor with no
 //     Project. Two of them the broker scopes to a person rather than to one project, and both
 //     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
 //     of its own, and a machine's that names a service and no person, whose every write
-//     writeNeedsASignedInPerson refuses below. The third is a read-only token, which carries
-//     `project_scope` `none` and the scope `read` alone, names a service and no person, and
-//     never reaches this check: the read-only gate register puts outside it answers that token
+//     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
+//     entry that names no project (`<service account>==<person>`, the shared public-session
+//     account's), which names its person and writes wherever Dispatch's own rules let it
+//     (brokerTokenActor). The fourth is a read-only token, which carries `project_scope` `none`
+//     and the scope `read` alone, names a service and no person, and never reaches this check:
+//     the read-only gate register puts outside it answers that token
 //     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
 //     (refuseReadOnlyToken, readScopeRoutes). That is the rule and not a transitional measure:
 //     every caller that exists today writes exactly what it wrote before, which is what lets

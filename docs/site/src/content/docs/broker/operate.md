@@ -279,9 +279,10 @@ nothing refreshes it.
 
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
-tokens write one Dispatch project for one person. `BROKER_EXCHANGE_READ_ACCOUNTS` lists the
-accounts whose tokens only read, as whitespace-separated `<service account>=<service>=<session>`
-entries, for example
+tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
+no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+`BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
+`<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.
 The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
 that service and that session, and names no person and no project. Dispatch serves it on the routes
