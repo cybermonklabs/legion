@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
@@ -185,7 +187,9 @@ type DispatchArgs struct {
 	// and forwards it to the app is the deployment's, and the app's NetworkPolicy admits an
 	// in-cluster one only through allowedNamespaces. It needs the tailnet inputs: without them the
 	// component builds the sandbox, whose own origin is an in-cluster http:// address where browser
-	// sign-in is refused. Unset renders nothing.
+	// sign-in is refused. With the sign-in inputs set its host must also be one Google takes in an
+	// OAuth redirect URI: no raw IP address, and a top-level domain on the public suffix list
+	// (refuseDispatchOutsideOrigin). Unset renders nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
 	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
 	// signInDomain sign in as a restricted member while some project's owner or access list names
@@ -1041,9 +1045,14 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 // it may be set, and returns it with a trailing slash trimmed, as Dispatch trims one: "" when it
 // is unset. It must be a web origin as weborigin.Parse holds one to (written as a browser writes
 // it, with host labels weborigin.ReservedLabel takes), whose refusals it prefixes with
-// the input's name; the component adds only that the origin is https, as the front door's is, and
-// that its host is not the front door's, whose origin Dispatch already is.
-func refuseDispatchOutsideOrigin(args *DispatchArgs) (string, error) {
+// the input's name; the component adds that the origin is https, as the front door's is, that its
+// host is not the front door's, whose origin Dispatch already is, and, with the sign-in inputs
+// set, that its host is one Google takes in an OAuth redirect URI, since the Google client must
+// then list <outsideOrigin>/auth/callback: no raw IP address, and a top-level domain on the
+// public suffix list (https://developers.google.com/identity/protocols/oauth2/web-server,
+// "Redirect URI validation rules": "Hosts cannot be raw IP addresses" and "Hosts must use a TLD
+// in the public suffix list"). weborigin.Parse takes both for its other callers.
+func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
 		return "", nil
 	}
@@ -1056,6 +1065,19 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs) (string, error) {
 	}
 	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); origin.Hostname() == frontDoor {
 		return "", fmt.Errorf("outsideOrigin's host %s is the front door's: a second origin needs a host of its own", frontDoor)
+	}
+	if !signInOn {
+		return origin.String(), nil
+	}
+	host := origin.Hostname()
+	if net.ParseIP(host) != nil {
+		return "", fmt.Errorf("outsideOrigin's host %s is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name", host)
+	}
+	labels := strings.Split(host, ".")
+	if tld := labels[len(labels)-1]; len(labels) < 2 {
+		return "", fmt.Errorf("outsideOrigin's host %s is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host)
+	} else if suffix, icann := publicsuffix.PublicSuffix(tld); !icann || suffix != tld {
+		return "", fmt.Errorf("outsideOrigin's host %s ends in %s, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host, tld)
 	}
 	return origin.String(), nil
 }
@@ -1132,7 +1154,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 		var err error
-		if outsideOrigin, err = refuseDispatchOutsideOrigin(args); err != nil {
+		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, signInOn); err != nil {
 			return dispatchSettings{}, err
 		}
 	} else if err := refuseDispatchSandbox(args, signInGroup); err != nil {

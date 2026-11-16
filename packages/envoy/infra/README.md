@@ -746,7 +746,10 @@ in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, wh
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
 the Google client `signInClientId` names must list the rendered `DISPATCH_OUTSIDE_ORIGIN`
 followed by `/auth/callback` as an authorized redirect URI, beside
-`https://<hostname>.<tailnetDnsName>/auth/callback`.
+`https://<hostname>.<tailnetDnsName>/auth/callback`, so with them the component also refuses a
+host Google refuses there: a raw IP address, and one whose top-level domain is not on the public
+suffix list, a single label among them ([Redirect URI validation
+rules](https://developers.google.com/identity/protocols/oauth2/web-server)).
 `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
 which lets a verified Google account outside `signInDomain` sign in as a restricted member while
 some project's owner or access list names its email directly, never through a group; with it,
@@ -1170,8 +1173,9 @@ a browser writes it (with no path, user, query or fragment, no `:443` and a port
 with no leading zero), has a host label that is not a lowercase DNS label or that has `--` as its
 third and fourth characters without being an `xn--` label the IDNA lookup profile takes, has a host
 ending in a number that is no canonical IPv4 address,
-has the front door's host or comes without the tailnet inputs, a `signInOutside` without the
-sign-in inputs, an
+has the front door's host, comes without the tailnet inputs, or, with the sign-in inputs set, has
+an IP address or a top-level domain off the public suffix list as its host, a `signInOutside`
+without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside

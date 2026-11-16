@@ -113,10 +113,11 @@ func TestDispatchOutsideInputsEachRenderTheirOwnSetting(t *testing.T) {
 	}
 }
 
-// Every host whose labels are lowercase DNS labels without "--" as their third and fourth
-// characters is one the second origin may have: one character, a leading digit, 63 characters, a
-// "--" further in, and a name on the front door's own tailnet other than the front door's. The
-// refusals are in TestDispatchRefusesOutsideInputsItCannotServe.
+// These hosts, each with lowercase DNS labels whose "--" is not at their third and fourth
+// characters and a top-level domain on the public suffix list, are ones the second origin may
+// have with browser sign-in on: one character, a leading digit, 63 characters, a "--" further in,
+// and a name on the front door's own tailnet other than the front door's. The refusals are in
+// TestDispatchRefusesOutsideInputsItCannotServe.
 func TestDispatchOutsideOriginTakesEveryPlainHost(t *testing.T) {
 	for _, origin := range []string{
 		"https://a.example.com",
@@ -125,11 +126,23 @@ func TestDispatchOutsideOriginTakesEveryPlainHost(t *testing.T) {
 		"https://abc--d.example.com",
 		"https://xn--bcher-kva.example.com",
 		"https://example-outside.example-tailnet.ts.net",
-		"https://10.0.0.1",
 		"https://dispatch-outside.example.com:8443",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			args := dispatchArgs()
+			args.OutsideOrigin = origin
+			_, err := gcp.ResolveDispatch(args)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// Without browser sign-in no Google client lists the second origin's callback, so the component
+// takes a host Google would refuse there, an IP address or a single label, as weborigin.Parse does.
+func TestDispatchOutsideOriginTakesAnyHostWithoutBrowserSignIn(t *testing.T) {
+	for _, origin := range []string{"https://10.0.0.1", "https://dispatch", "https://dispatch-outside.example"} {
+		t.Run(origin, func(t *testing.T) {
+			args := dispatchTailnetWithoutSignInArgs()
 			args.OutsideOrigin = origin
 			_, err := gcp.ResolveDispatch(args)
 			require.NoError(t, err)
@@ -286,6 +299,7 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 		// than the browser's own form of the origin, or one no browser opens, is refused rather than
 		// rewritten (WHATWG URL's origin serialization, as Node's new URL(v).origin prints it).
 		{"outsideOrigin with :443", withOrigin("https://dispatch-outside.example.com:443"), notCanonical("https://dispatch-outside.example.com")},
+		{"outsideOrigin with :443 on another host", withOrigin("https://outside.test:443"), notCanonical("https://outside.test")},
 		{"outsideOrigin with an upper-case scheme", withOrigin("HTTPS://dispatch-outside.example.com"), notCanonical("https://dispatch-outside.example.com")},
 		{"outsideOrigin with an empty port", withOrigin("https://dispatch-outside.example.com:"), badPort("")},
 		{"outsideOrigin with a leading-zero port", withOrigin("https://dispatch-outside.example.com:0443"), badPort("0443")},
@@ -308,6 +322,25 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 			name: "outsideOrigin with the front door's host on another port",
 			args: withOrigin("https://example-dispatch.example-tailnet.ts.net:8443"),
 			want: "outsideOrigin's host example-dispatch.example-tailnet.ts.net is the front door's: a second origin needs a host of its own",
+		},
+		// With the sign-in inputs set the Google client lists <outsideOrigin>/auth/callback, so a
+		// host Google refuses in a redirect URI is refused: a raw IP address, and a host with no
+		// top-level domain on the public suffix list (TestDispatchOutsideOriginTakesAnyHostWithoutBrowserSignIn
+		// holds them taken without sign-in).
+		{
+			name: "outsideOrigin an IP address with browser sign-in",
+			args: withOrigin("https://10.0.0.1"),
+			want: "outsideOrigin's host 10.0.0.1 is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name",
+		},
+		{
+			name: "outsideOrigin a single label with browser sign-in",
+			args: withOrigin("https://dispatch"),
+			want: "outsideOrigin's host dispatch is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete",
+		},
+		{
+			name: "outsideOrigin under a top-level domain off the public suffix list with browser sign-in",
+			args: withOrigin("https://dispatch-outside.example"),
+			want: "outsideOrigin's host dispatch-outside.example ends in example, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

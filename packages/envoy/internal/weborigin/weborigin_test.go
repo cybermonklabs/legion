@@ -86,6 +86,7 @@ func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 		{"https://xn--.example.com", notLabel("xn--")},
 		// The review's table: each of these resolved and rendered as written at 5cbf7456a0.
 		{"https://dispatch-outside.example.com:443", notCanonical("https://dispatch-outside.example.com")},
+		{"https://outside.test:443", notCanonical("https://outside.test")},
 		{"http://dispatch-outside.example.com:80", notCanonical("http://dispatch-outside.example.com")},
 		{"HTTPS://dispatch-outside.example.com", notCanonical("https://dispatch-outside.example.com")},
 		{"https://dispatch-outside.example.com:", badPort("")},
