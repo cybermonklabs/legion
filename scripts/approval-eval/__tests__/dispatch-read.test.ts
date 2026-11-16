@@ -32,16 +32,17 @@ const REPLIES: CommentReply[] = [
 /** Each request the fake served: its path as sent and its authorization header. */
 const seen: { path: string; authorization: string | null }[] = [];
 
-/** Stops the fake Dispatch; set when it starts. */
-let stopServer: () => void = () => {};
-let directory: string;
+/** The fake Dispatch while it runs: what the teardown stops, unset when the setup failed first. */
+let server: { stop(closeActiveConnections?: boolean): void | Promise<void> } | undefined;
+let directory: string | undefined;
 const before = {
   url: process.env.DISPATCH_URL,
   tokenFile: process.env.DISPATCH_TOKEN_FILE,
 };
 
 beforeAll(async () => {
-  const server = Bun.serve({
+  const started = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
       const url = new URL(request.url);
@@ -55,33 +56,31 @@ beforeAll(async () => {
       if (url.pathname === `/api/v1/comments/${QUIET}`) {
         return Response.json({ comment: { id: QUIET, body: "no reply yet" }, replies: [] });
       }
-      return Response.json({ code: "COMMENT_NOT_FOUND" }, { status: 404 });
+      return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
     },
   });
+  server = started;
   directory = await mkdtemp(join(tmpdir(), "approval-eval-dispatch-read-"));
   const tokenFile = join(directory, "token");
   await writeFile(tokenFile, `${TOKEN}\n`);
-  stopServer = () => server.stop(true);
-  process.env.DISPATCH_URL = `http://127.0.0.1:${server.port}`;
+  process.env.DISPATCH_URL = `http://127.0.0.1:${started.port}`;
   process.env.DISPATCH_TOKEN_FILE = tokenFile;
 });
 
 afterAll(async () => {
-  stopServer();
+  await server?.stop(true);
   if (before.url === undefined) delete process.env.DISPATCH_URL;
   else process.env.DISPATCH_URL = before.url;
   if (before.tokenFile === undefined) delete process.env.DISPATCH_TOKEN_FILE;
   else process.env.DISPATCH_TOKEN_FILE = before.tokenFile;
-  await rm(directory, { recursive: true, force: true });
+  if (directory !== undefined) await rm(directory, { recursive: true, force: true });
 });
 
 describe("dispatchRepliesOf", () => {
   test("reads the comment's thread with the bearer and hands back its replies in order", async () => {
     seen.length = 0;
     expect(await dispatchRepliesOf(CLAIM)).toEqual(REPLIES);
-    expect(seen).toEqual([
-      { path: `/api/v1/comments/${CLAIM}`, authorization: `Bearer ${TOKEN}` },
-    ]);
+    expect(seen).toEqual([{ path: `/api/v1/comments/${CLAIM}`, authorization: `Bearer ${TOKEN}` }]);
   });
 
   test("a thread with no reply yet is an empty list", async () => {
