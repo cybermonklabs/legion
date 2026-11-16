@@ -21,7 +21,8 @@ name: CI caches
 # the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which
 # ci.yaml's dispatch-browser job calls: those three build the Dispatch server and the real
 # broker's commands, whose packages the go-envoy entry's build of the listener and natsd alone
-# does not hold) and go-envoy-infra (envoy-infra-go). One
+# does not hold) and go-envoy-infra (envoy-infra-go, and envoy-smoke, whose live tests and plugin
+# build are packages of the infra module this family builds). One
 # Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
 # go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
 # go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is first looked up
