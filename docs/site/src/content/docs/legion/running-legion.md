@@ -97,10 +97,16 @@ stand still. `legion state` names each such repository on a `webhook App missing
 `GITHUB_UNREADABLE`), or `this Dispatch does not answer the webhook App check` (a Dispatch older
 than the check). The check never leaves a repository out and never fails the boot; the boot's
 `repositories` stage line and each `legion workflow repositories changed` line log the same list
-as `withoutWebhookApp`. The check reads only the App's installation, so a repository whose events
-come through a repository webhook is listed too. Install the Envoy App on the repository: the
-daemon names it no more from its next read of the mapping, at a restart or the next change of the
-mapping in Dispatch.
+as `withoutWebhookApp`. A repository only a live issue record names, which the mapping does not, is
+served as well, and Dispatch is asked about it apart from the mapping's read: when an issue is
+first recorded on it, once the boot is done, and after each read of the mapping. `legion state`
+names it the same way and with the same reasons, but the boot's `repositories` line does not,
+since the boot asks about none of them; each one found without the App is logged on a line of its
+own, `legion workflow checked Dispatch's GitHub App on the repositories only a live record names`.
+The check reads only the App's installation, so a repository whose events come through a
+repository webhook is listed too. Install the Envoy App on the repository: the daemon names it no
+more from its next read of the mapping, at a restart or the next change of the mapping in
+Dispatch.
 
 ## The GitHub Apps
 

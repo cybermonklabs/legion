@@ -32,8 +32,8 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // whichever name GitHub sends it under on the day the repository moves, and an issue Dispatch
 // resolves to the name it moved to is served by the one the mapping holds, under that one name.
 // The boot says once that the pair names a repository this project does not serve. With no pair
-// configured none of it happens: nothing is heard under the second name, and an issue resolved to
-// it is not mapped to the project at all.
+// configured none of it happens: nothing is heard under the second name until an issue is
+// recorded on it, which is what puts a repository no mapping names into the intake's filters.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
 	const unserved = "a configured repository rename names a repository this project does not serve"
 	for _, tc := range []struct {

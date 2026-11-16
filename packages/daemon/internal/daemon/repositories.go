@@ -32,9 +32,11 @@ import (
 // issues, so it can name a repository that lacks one of Legion's Apps; leaving it out costs only its
 // issues' admission. unverified is each served repository a later read of the mapping could not
 // read the installation of: it stays served on its last answer, and is read again
-// (refreshOnMappingChange). withoutWebhookApp is each served repository Dispatch's GitHub App is
-// not known to be installed on (checkWebhookApp), for legion state alone: it is served all the
-// same. Readers take the read lock; the readers of the mapping swap it whole under the write lock.
+// (refreshOnMappingChange). withoutWebhookApp is each repository the mapping serves that
+// Dispatch's GitHub App is not known to be installed on (checkWebhookApp), and recordedWebhookGaps
+// the same of the repositories no mapping names, both for legion state alone (WithoutWebhookApp):
+// each is served all the same. Readers take the read lock; the readers of the mapping swap it
+// whole under the write lock.
 type repositories struct {
 	project string
 	// renames is the deployment's repository equivalence (`repository_renames`,
@@ -99,6 +101,18 @@ type repositories struct {
 	live              map[string]ghrepo.Repository
 	unverified        []string
 	withoutWebhookApp []webhookAppGap
+	// recordedWebhookGaps is why Dispatch's GitHub App is not known to be installed on a
+	// repository no mapping names, by its lowercased <owner>/<name>, as Dispatch last answered
+	// its webhook App check (checkWebhookApp) for it: at the preparation that read GitHub for it
+	// (prepareUnmapped), and of the repositories the live records name at the refresher's start
+	// and after every read of the mapping (checkRecordedWebhookApps). A repository Dispatch last
+	// answered installed has no entry. legion state lists an entry only while live names its
+	// repository and no mapping does (WithoutWebhookApp), which is exactly while served lists it
+	// as the records' own, so the answers are never pruned: the preparation of an issue keeps one
+	// before the record that names its repository commits, and a read of the records that ran
+	// between the two would otherwise drop it. A restart empties the set, and the refresher's
+	// first check fills it again from the records, as the boot's read fills live.
+	recordedWebhookGaps map[string]string
 }
 
 // mappedRepository is a repository Legion serves, as GitHub names it, and whether it is the
@@ -145,8 +159,9 @@ func (a appAnswers) view() *api.AppInstallationsView {
 	return &api.AppInstallationsView{Implement: a.implement, Review: a.review}
 }
 
-// webhookAppGap is a mapped repository, as Dispatch maps it, that Dispatch's GitHub App is not
-// known to be installed on, and why (checkWebhookApp).
+// webhookAppGap is a served repository that Dispatch's GitHub App is not known to be installed on,
+// and why (checkWebhookApp): a mapped one under the name its entry is served under, and one only a
+// live record names under the name the record keeps (WithoutWebhookApp).
 type webhookAppGap struct {
 	Repo   string
 	Reason string
@@ -154,7 +169,7 @@ type webhookAppGap struct {
 
 func newRepositories(project string, renames ghrepo.Renames) *repositories {
 	return &repositories{project: project, renames: renames, accepted: map[string]mappedRepository{}, refused: map[string]refusedRepository{},
-		recorded: map[string]ghbranch.Repository{}, live: map[string]ghrepo.Repository{}}
+		recorded: map[string]ghbranch.Repository{}, live: map[string]ghrepo.Repository{}, recordedWebhookGaps: map[string]string{}}
 }
 
 // set replaces the mapping with accepted and refused, and reports the repositories that became
@@ -460,7 +475,7 @@ func (r *repositories) kept(repo string) bool {
 	return slices.ContainsFunc(r.unverified, func(name string) bool { return r.renames.Same(name, repo) })
 }
 
-// setWithoutWebhookApp records the served repositories the last read of the mapping found
+// setWithoutWebhookApp records the repositories the last read of the mapping serves and found
 // Dispatch's GitHub App not known to be installed on.
 func (r *repositories) setWithoutWebhookApp(gaps []webhookAppGap) {
 	sorted := slices.Clone(gaps)
@@ -470,12 +485,64 @@ func (r *repositories) setWithoutWebhookApp(gaps []webhookAppGap) {
 	r.withoutWebhookApp = sorted
 }
 
+// keepWebhookAnswer keeps gap, Dispatch's answer of its webhook App check (checkWebhookApp) for
+// repo, a repository no mapping names, in place of the answer last kept for it
+// (recordedWebhookGaps): "", Dispatch answering that its App is installed, keeps none.
+func (r *repositories) keepWebhookAnswer(repo ghrepo.Repository, gap string) {
+	key := strings.ToLower(repo.String())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if gap == "" {
+		delete(r.recordedWebhookGaps, key)
+		return
+	}
+	r.recordedWebhookGaps[key] = gap
+}
+
 // WithoutWebhookApp is every served repository Dispatch's GitHub App is not known to be installed
-// on, with why, sorted by name.
+// on, with why, sorted by name: the mapping's (setWithoutWebhookApp), and each repository served
+// lists as the records' own whose last check Dispatch answered with a gap (recordedWebhookGaps),
+// under the name served lists it by. The latter are read against live and the mapping as they
+// stand now, as served reads them, so the state names such a gap for exactly as long as it lists
+// the repository, whichever of the two changed since Dispatch was asked, and never beside the
+// mapping's own entry for it.
 func (r *repositories) WithoutWebhookApp() []webhookAppGap {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return slices.Clone(r.withoutWebhookApp)
+	gaps := slices.Clone(r.withoutWebhookApp)
+	for key, reason := range r.recordedWebhookGaps {
+		if named, held := r.live[key]; held && r.unmapped(named) {
+			gaps = append(gaps, webhookAppGap{Repo: named.String(), Reason: reason})
+		}
+	}
+	// The mapping's gaps are held sorted, so only a list that gained one of the records' needs
+	// sorting again.
+	if len(gaps) > len(r.withoutWebhookApp) {
+		slices.SortFunc(gaps, func(a, b webhookAppGap) int { return strings.Compare(a.Repo, b.Repo) })
+	}
+	return gaps
+}
+
+// recordedOnly is every repository served lists as the records' own — one a live record names
+// and no mapping does — as live holds it: the repositories Dispatch is asked of its GitHub App
+// apart from the mapping's reads (checkRecordedWebhookApps).
+func (r *repositories) recordedOnly() []ghrepo.Repository {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var repos []ghrepo.Repository
+	for _, named := range r.live {
+		if r.unmapped(named) {
+			repos = append(repos, named)
+		}
+	}
+	return repos
+}
+
+// unmapped is whether no mapping names repo, in any spelling or under either name of a configured
+// rename (mappingAnswer): a repository a live record names is the records' own to report exactly
+// then, and the mapping's otherwise (served). Its caller holds the read lock.
+func (r *repositories) unmapped(repo ghrepo.Repository) bool {
+	return r.mappingAnswer(repo.String()).source == fromNeither
 }
 
 // awaitingRead is every repository a read GitHub did not answer left as it stands, by reason: each
@@ -521,7 +588,7 @@ func (r *repositories) served() []mappedRepository {
 	defer r.mu.RUnlock()
 	all := make(map[string]mappedRepository, len(r.live)+len(r.accepted))
 	for key, named := range r.live {
-		if r.mappingAnswer(named.String()).source == fromNeither {
+		if r.unmapped(named) {
 			all[key] = mappedRepository{Repo: named}
 		}
 	}
@@ -883,8 +950,67 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 	return ""
 }
 
-// servedGaps is each of gaps whose repository the mapping serves, once per repository: the served
-// repositories, the only ones legion state names without the webhook App.
+// checkRecordedWebhookApps asks Dispatch whether its GitHub App is installed on each repository
+// served lists as the records' own — one a live record of the project names and no mapping does
+// (recordedOnly) — and keeps each answer for legion state (keepWebhookAnswer, WithoutWebhookApp),
+// as checkMapping asks of each mapped repository. A missing App refuses nothing here either: the
+// repository is served whatever Dispatch answers, and a failed check is a gap with its failure,
+// never a reason to read again.
+//
+// It is the mapping's check made of the records' half of what the daemon serves, so it runs
+// where that half is read again: the refresher runs it as it starts, over the live set the boot
+// read from the records (heardAtBoot), so a restarted daemon names the gap of a repository only a
+// live tree works in from the records, as served lists the repository from them; and after every
+// read of the mapping that applies, over the live set that read took (refreshCacheRepositories),
+// so an App installed since is taken, and a repository the mapping stopped naming is checked as
+// the records' own, at the same pace as every mapped repository's check. A repository a record
+// first names between two reads was checked at the preparation that read GitHub for it
+// (prepareUnmapped).
+//
+// It is bounded as checkMapping bounds its own reads: each check by installReadAttempt and
+// mappingReads of them at once, and nothing bounds the whole, so a check of n repositories takes
+// at most ceil(n / mappingReads) of installReadAttempt. That is also why the boot does not run
+// it: the boot's read of the records runs inside its connect attempt, which bootTimeout bounds,
+// and Dispatch answers the check by reading GitHub, so a GitHub slow through Dispatch could use
+// that bound up on a few dozen such repositories and fail the boot's attempt over a check that
+// refuses nothing. Answers cut short by ctx's end are the stop's, not Dispatch's, and none is
+// kept.
+func (w *workflowRuntime) checkRecordedWebhookApps(ctx context.Context) {
+	repos := w.repositories.recordedOnly()
+	if len(repos) == 0 {
+		return
+	}
+	gaps := make([]string, len(repos))
+	var group errgroup.Group
+	group.SetLimit(mappingReads)
+	for index, repo := range repos {
+		group.Go(func() error {
+			read, cancel := context.WithTimeout(ctx, installReadAttempt)
+			defer cancel()
+			gaps[index] = checkWebhookApp(read, w.dispatch, repo)
+			return nil
+		})
+	}
+	_ = group.Wait() // every check keeps its own answer, a failure among them, so none fails the group
+	if ctx.Err() != nil {
+		return
+	}
+	var found []webhookAppGap
+	for index, repo := range repos {
+		w.repositories.keepWebhookAnswer(repo, gaps[index])
+		if gaps[index] != "" {
+			found = append(found, webhookAppGap{Repo: repo.String(), Reason: gaps[index]})
+		}
+	}
+	if len(found) != 0 {
+		w.log.Info("legion workflow checked Dispatch's GitHub App on the repositories only a live record names",
+			"withoutWebhookApp", webhookGapReasons(found))
+	}
+}
+
+// servedGaps is each of gaps whose repository the mapping serves, once per repository: the
+// mapping's half of what legion state names without the webhook App, the records' half being
+// checked apart (checkRecordedWebhookApps).
 //
 // A gap whose repository the mapping serves is never dropped. servedGaps runs after set, so the
 // accepted set is what the daemon serves from here on and is authoritative over any refusal: a
@@ -940,9 +1066,11 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // installReadAttempt bounds one installation read: as long as any one GitHub call the boot waits
 // for (appMintAttempt), so a GitHub that answers slowly is still answered for, while a read GitHub
 // has not answered by then is a failed read, and a repository GitHub hangs on is left out for now
-// rather than holding up the mapping. It bounds the webhook App check (checkWebhookApp) the same
-// way. Nothing bounds the check as a whole: mappingReads reads run at once, so a check of n
-// repositories, three reads each, takes at most ceil(3n / mappingReads) of these.
+// rather than holding up the mapping. It bounds every webhook App check (checkWebhookApp) the same
+// way: the mapping's, a preparation's (prepareUnmapped) and the refresher's of the repositories
+// only a live record names (checkRecordedWebhookApps). Nothing bounds a check as a whole:
+// mappingReads reads run at once, so a check of n mapped repositories, three reads each, takes at
+// most ceil(3n / mappingReads) of these.
 var installReadAttempt = 15 * time.Second
 
 // readFailures is the refusals of refused that a read GitHub did not answer made (readErr), its
@@ -1156,7 +1284,10 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 // mapping's to say (R4), so what the steps answer for is the served set alone: a repository no
 // mapping names is heard from the record that first names it (hearRecorded), not from this read.
 // The webhook App check's served repositories (servedGaps, kept ones included) replace the last
-// read's with the publication; a failed check keeps nothing out and asks for no read again.
+// read's with the publication; a failed check keeps nothing out and asks for no read again. The
+// repositories only a live record names are checked once the read has applied, by its caller
+// (refreshOnMappingChange, checkRecordedWebhookApps), outside mappingMu and over the live set
+// this read took.
 func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	w.mappingMu.Lock()
 	defer w.mappingMu.Unlock()
@@ -1430,11 +1561,18 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // up to a backoff later; such a cut wait does not move the backoff on. Once the bound has passed,
 // a run that did not tell the waits (its listing or its notice failed) waits the backoff as any
 // failed read does, so a failure past the bound never turns the refresher into a busy loop.
+//
+// It asks Dispatch of its GitHub App on each repository only a live record names
+// (checkRecordedWebhookApps) first, as it starts, and then after each read that applies, over the
+// live set that read took, once the read has marked its requests covered (mappingApplied) and its
+// recovery is done, so neither an admission held for the read nor the recovery waits on it. The
+// check holds no lock across its reads of Dispatch, so no recording waits on it either.
 func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 	after := w.recheckAfter
 	if after == nil {
 		after = time.After
 	}
+	w.checkRecordedWebhookApps(ctx)
 	recheckIn := installReadRetry.Initial
 	for {
 		var recheck <-chan time.Time
@@ -1470,6 +1608,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 			if err == nil {
 				w.mappingApplied.Store(covers)
 				w.recoverRepositories(ctx)
+				w.checkRecordedWebhookApps(ctx)
 				break
 			}
 			if ctx.Err() != nil {
@@ -3140,6 +3279,17 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // acknowledged, its apply says nothing and records nothing, and the refresher's recovery takes
 // the issue once a later read answers.
 //
+// Where GitHub named the repository, Dispatch is asked as well whether its GitHub App is installed
+// on it (checkWebhookApp), bounded by installReadAttempt as each of the mapping's checks is, and
+// under GitHub's name, which is the name the record keeps and legion state lists it under, and
+// the answer is kept for the state (repositories.keepWebhookAnswer, WithoutWebhookApp): the
+// repository is served from its first record, so its gap is named from that record on, and not
+// from a later read of the mapping, which nothing may ask for. The answer refuses nothing, as it
+// never does for a mapped repository: the issue is recorded whatever Dispatch says, and a check
+// that failed is the gap's reason. It is asked once for each read the recorded set keeps, as the
+// reads beside it are, and a restart's repositories are asked by the refresher from the live
+// records (checkRecordedWebhookApps).
+//
 // GitHub may answer the read under a name other than the one asked: a repository GitHub itself
 // renamed is answered with a 301 to the name it holds it under now, which the read follows,
 // while both role Apps answer installed on the old name, since an installation is the owner's.
@@ -3180,6 +3330,13 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 	if err != nil {
 		w.leaveUnread(repo, fmt.Sprintf("the name and default branch of %s could not be read: %v; Legion reads it again", repo, err))
 		return issue, nil
+	}
+	check, cancel := context.WithTimeout(ctx, installReadAttempt)
+	gap := checkWebhookApp(check, w.dispatch, read.Name)
+	cancel()
+	// A check ctx's end cut short answered for the stop, not for Dispatch, so it keeps nothing.
+	if ctx.Err() == nil {
+		w.repositories.keepWebhookAnswer(read.Name, gap)
 	}
 	// The read is kept before the marker is dropped: readAnswered starts the recovery of the
 	// issues the repository left, and each of those preparations is to find the read here rather

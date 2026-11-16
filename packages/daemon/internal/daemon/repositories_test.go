@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -127,7 +128,8 @@ func (i *installations) asks() []string {
 // issues' entry for a key it names, the embedded issue for any other, and whose webhook App check
 // answers not installed for each repository webhookMissing names, by its "<owner>/<name>" without
 // case, and installed for every other (the embedded Dispatch's answer). webhookAsked is each
-// repository it was asked the check for, which is the mapped name checkMapping reads it under.
+// repository it was asked the check for: the mapped name checkMapping reads it under, and GitHub's
+// name of a repository only a record names (prepareUnmapped, checkRecordedWebhookApps).
 type mappingDispatch struct {
 	outboxDispatch
 	mu             sync.Mutex
@@ -726,6 +728,127 @@ func TestAnOlderDispatchWithoutTheWebhookAppRouteIsNamed(t *testing.T) {
 	}
 }
 
+// unmappedWithoutWebhookApp is the state's gap for unmappedNamed while Dispatch's GitHub App is not
+// installed on it, named as a mapped repository's is (checkWebhookApp).
+var unmappedWithoutWebhookApp = []api.WebhookAppGapView{{Repo: unmappedNamed, Reason: "Dispatch's GitHub App is not installed on " + unmappedNamed +
+	": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}}
+
+// withoutWebhookAppFor is the rig option under which Dispatch answers that its GitHub App is not
+// installed on unmappedRepo, a repository no mapping names.
+func withoutWebhookAppFor(w *workflowRuntime) {
+	w.dispatch.(*mappingDispatch).webhookMissing = map[string]bool{unmappedRepo: true}
+}
+
+// A repository only a live record names is served as a mapped one is, so the state names it
+// without Dispatch's GitHub App, with why, exactly as it names a mapped one (INFRA-2543 R6): from
+// the preparation that read GitHub for it, so from the record that first names it, and again at
+// each read of the mapping, which takes an App installed since. Only the mapping's repositories
+// were ever asked of before, so a tree on such a repository stood still for want of GitHub's
+// events while the state said nothing of why. The repository is served throughout and the issue
+// recorded on it: a missing Dispatch App refuses no work.
+func TestARepositoryOnlyARecordNamesWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
+	const key = "LEGION-951"
+	w, client, _, _ := unmappedRig(t, &installations{}, withoutWebhookAppFor)
+	deliver(t, w, client, issue(key, unmappedRepo, "todo", true, "", 1))
+	if got := recordedIssue(t, w, key); got == nil || got.Repo != unmappedNamed {
+		t.Fatalf("%s = %+v, want it recorded on %s whatever Dispatch's GitHub App", key, got, unmappedNamed)
+	}
+	view := w.repositories.view(nil)
+	if listed := servedNames(w); !slices.Contains(listed, unmappedNamed) {
+		t.Fatalf("the state serves %v, want %s among them: a missing Dispatch App refuses nothing", listed, unmappedNamed)
+	}
+	if !reflect.DeepEqual(view.WithoutWebhookApp, unmappedWithoutWebhookApp) {
+		t.Fatalf("state's withoutWebhookApp = %#v, want %#v: a live record names %s and no mapping does", view.WithoutWebhookApp, unmappedWithoutWebhookApp, unmappedNamed)
+	}
+	if len(view.Refused) != 0 {
+		t.Fatalf("state's refused = %#v, want none: a missing Dispatch App leaves nothing out", view.Refused)
+	}
+
+	client.mu.Lock()
+	client.webhookMissing = nil
+	client.mu.Unlock()
+	w.requestMappingRead()
+	testwait.Eventually(t, "the state naming no repository without Dispatch's GitHub App once it is installed on "+unmappedNamed, func() bool {
+		return len(w.repositories.view(nil).WithoutWebhookApp) == 0
+	})
+	if listed := servedNames(w); !slices.Contains(listed, unmappedNamed) {
+		t.Fatalf("the state serves %v once Dispatch's GitHub App is installed, want %s among them", listed, unmappedNamed)
+	}
+}
+
+// A daemon that boots over a live tree on a repository no mapping names names it without Dispatch's
+// GitHub App from the records, as it lists the repository from them (served): no preparation of
+// the restarted process has read anything of it, so the gap stands on no read a restart forgets.
+func TestARepositoryOnlyALiveRecordNamesIsNamedWithoutTheWebhookAppAfterARestart(t *testing.T) {
+	ctx := context.Background()
+	w, _, installs, _ := unmappedRig(t, &installations{}, withoutWebhookAppFor, func(w *workflowRuntime) {
+		// The tree an earlier process recorded, which this one boots over.
+		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+			return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-952", Tree: "LEGION-952", Project: "LEGION", Title: "a tree on a repository no project maps",
+				Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: unmappedNamed, DefaultBranch: "trunk", GitHubRepo: unmappedNamed})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	testwait.Eventually(t, "the state naming "+unmappedNamed+" without Dispatch's GitHub App from the records", func() bool {
+		return reflect.DeepEqual(w.repositories.view(nil).WithoutWebhookApp, unmappedWithoutWebhookApp)
+	})
+	if listed := servedNames(w); !slices.Contains(listed, unmappedNamed) {
+		t.Fatalf("the state serves %v, want %s among them: a live record names it, and a missing Dispatch App refuses nothing", listed, unmappedNamed)
+	}
+	if reads := installs.reads("implement " + unmappedRepo); reads != 0 {
+		t.Fatalf("the restarted daemon made %d installation reads of %s, want none: the gap stands on the records, not on a preparation", reads, unmappedRepo)
+	}
+}
+
+// hangingWebhookDispatch is a Dispatch whose webhook App check answers only once its context
+// ends, as one whose own read of GitHub never returns, keeping each repository it was asked of
+// (mappingDispatch.webhookChecks).
+type hangingWebhookDispatch struct{ mappingDispatch }
+
+func (d *hangingWebhookDispatch) WebhookAppInstalled(ctx context.Context, repo string) (bool, error) {
+	d.mu.Lock()
+	d.webhookAsked = append(d.webhookAsked, repo)
+	d.mu.Unlock()
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// The refresher's check of the repositories only a live record names is bounded as checkMapping's
+// reads are: each check by installReadAttempt, mappingReads of them at once, and nothing bounds the
+// whole. A Dispatch that never answers costs each repository installReadAttempt, so more
+// repositories than one round of mappingReads are each named with the check's deadline, the
+// repository the mapping serves is asked nothing apart, and every one of them is still served.
+func TestTheCheckOfTheRepositoriesOnlyARecordNamesIsBoundedPerCheck(t *testing.T) {
+	read := installReadAttempt
+	t.Cleanup(func() { installReadAttempt = read })
+	installReadAttempt = 50 * time.Millisecond
+	client := &hangingWebhookDispatch{}
+	w := &workflowRuntime{dispatch: client, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
+	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+	live := map[string]ghrepo.Repository{"acme/widgets": ghrepo.MustParse("acme/widgets")}
+	var want []webhookAppGap
+	for i := range mappingReads + 2 {
+		repo := ghrepo.MustParse(fmt.Sprintf("stranger/repo-%02d", i))
+		live[repo.String()] = repo
+		want = append(want, webhookAppGap{Repo: repo.String(), Reason: "the webhook App check failed: " + context.DeadlineExceeded.Error()})
+	}
+	w.repositories.setLive(live)
+	running, stop := context.WithCancel(context.Background())
+	refreshed := make(chan struct{})
+	go func() { w.refreshOnMappingChange(running); close(refreshed) }()
+	t.Cleanup(func() { stop(); <-refreshed })
+	testwait.Eventually(t, "each repository only a record names named with the check's deadline", func() bool {
+		return slices.Equal(w.repositories.WithoutWebhookApp(), want)
+	})
+	if got := len(w.repositories.served()); got != len(live) {
+		t.Fatalf("served %d repositories, want all %d: a check that failed refuses nothing", got, len(live))
+	}
+	if asked := client.webhookChecks(); slices.Contains(asked, "acme/widgets") {
+		t.Fatalf("Dispatch was asked of %v, want acme/widgets among none of them: the mapping's own reads ask of it", asked)
+	}
+}
+
 // namedGitHub answers GET /repos/{owner}/{repo} for each repository it names, as
 // "<GitHub's spelling>@<default branch>", or as "301 <owner>/<name>" for one GitHub renamed, which
 // it answers as GitHub does: a 301 to the new name's path.
@@ -888,8 +1011,10 @@ func TestEveryReaderOfARepositoryTakesTheSetThatAnsweredFromOneLookup(t *testing
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "other/thing": "Other/Thing@main"})
 	installs := &installations{}
+	// The preparation of a todo issue on a repository neither set names asks Dispatch of its GitHub
+	// App once GitHub has named it (prepareUnmapped), so the runtime has a Dispatch to ask.
 	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))),
-		installs: installs, log: quietLogger(), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+		dispatch: &mappingDispatch{}, installs: installs, log: quietLogger(), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 	unanswered := "the implement App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
 	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}},
 		[]refusedRepository{{Repo: "acme/gadgets", Reason: unanswered, readErr: errors.New("GitHub answered 502")}})

@@ -16,15 +16,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// ErrOwnerOutsideProject is ControllerCredential's refusal of a controller asked for a default
-// owner whose directory the review App's bundle does not hold: an owner that App is installed
-// on none of, and that no configured rename moved a repository away from. Its name is older
-// than what it means: before INFRA-2543 a bundle's directories were the owners of the project's
-// mapped repositories, and they are now the owners the App is installed on, so the refusal says
-// "not installed" and nothing about the project. The API still answers it as
-// DEFAULT_OWNER_OUTSIDE_PROJECT (internal/api's controllerGitHubCredential), the code a client
-// already reads.
-var ErrOwnerOutsideProject = errors.New("is no owner the controller's App is installed on")
+// ErrDefaultOwnerNotInstalled is ControllerCredential's refusal of a controller asked for a
+// default owner whose directory the review App's bundle does not hold: an owner that App is
+// installed on none of, and that no configured rename moved a repository away from. A bundle's
+// directories are the owners the App is installed on (bundleDirs), so the refusal says "not
+// installed" and the project's repository mapping has no part in it. The API answers it as
+// DEFAULT_OWNER_NOT_INSTALLED (internal/api's controllerGitHubCredential).
+var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App is installed on")
 
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over source: a bundle whose directories (GitHubDirs, built from the same description) each hold
@@ -182,10 +180,10 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 // one its launch recorded, which its GH_CONFIG_DIR names, and which over a configured rename may
 // be an alias owner — or the first owner the mint answered for, sorted, when it is asked for none.
 //
-// An owner the bundle holds no directory for is refused (ErrOwnerOutsideProject) before anything
-// is minted: the controller asks for its default over the API, and a default is no authority to
-// read an owner the review App is not installed on. That refusal is what bounds the owner this
-// route may be asked for, as the directories of a role's bundle bound `legion gh`. An App
+// An owner the bundle holds no directory for is refused (ErrDefaultOwnerNotInstalled) before
+// anything is minted: the controller asks for its default over the API, and a default is no
+// authority to read an owner the review App is not installed on. That refusal is what bounds the
+// owner this route may be asked for, as the directories of a role's bundle bound `legion gh`. An App
 // installed nowhere at all is runtime.ErrNoGitHubOwner, which the route answers as a daemon with
 // nothing to act as. An owner whose lease cannot be minted is left out of the bundle, as it is of
 // a role's, and recorded in left (mintBundle, LeftOut); the one it is asked for cannot be left
@@ -203,7 +201,7 @@ func ControllerCredential(source Source, repos func() []ghrepo.Repository, renam
 		}
 		owner := strings.ToLower(defaultOwner)
 		if owner != "" && !layout.owners[owner] {
-			return ghconfig.Bundle{}, fmt.Errorf("the controller's default owner %q %w", owner, ErrOwnerOutsideProject)
+			return ghconfig.Bundle{}, fmt.Errorf("the controller's default owner %q %w", owner, ErrDefaultOwnerNotInstalled)
 		}
 		if owner != "" && slices.Contains(layout.refused, owner) {
 			return ghconfig.Bundle{}, noDirectoryName(owner)

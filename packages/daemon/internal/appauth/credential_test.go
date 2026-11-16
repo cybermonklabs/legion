@@ -401,8 +401,8 @@ func TestABundleFailsOnADefaultOwnerThatIsNoDirectoryName(t *testing.T) {
 	}
 
 	_, err = ControllerCredential(apps, repos, ghrepo.Renames{}, nil, nil, log)(context.Background(), "Own_Labs")
-	if err == nil || !strings.Contains(err.Error(), `"own_labs"`) || errors.Is(err, ErrOwnerOutsideProject) {
-		t.Errorf("the controller asking for an owner that is no directory name = %v; want a refusal naming it, and not ErrOwnerOutsideProject", err)
+	if err == nil || !strings.Contains(err.Error(), `"own_labs"`) || errors.Is(err, ErrDefaultOwnerNotInstalled) {
+		t.Errorf("the controller asking for an owner that is no directory name = %v; want a refusal naming it, and not ErrDefaultOwnerNotInstalled", err)
 	}
 	if len(minted) != 0 || said.Len() != 0 {
 		t.Errorf("minted %q and said %q, want neither: a bundle that failed mints nothing and leaves nothing out", minted, said.String())
@@ -806,10 +806,10 @@ func TestControllerCredentialIsReadOnlyForEveryOwner(t *testing.T) {
 	}
 
 	var minted []string
-	outside := ControllerCredential(sourceOf(countingTokens{minted: &minted}, installs), repos, renames, nil, nil, quietBundleLog())
-	if _, err := outside(context.Background(), "Outside-Project"); !errors.Is(err, ErrOwnerOutsideProject) ||
-		!strings.Contains(err.Error(), `"outside-project"`) || len(minted) != 0 {
-		t.Errorf("the controller asking for an owner the App is not installed on = %v, minted %q; want ErrOwnerOutsideProject naming it and no mint", err, minted)
+	notInstalled := ControllerCredential(sourceOf(countingTokens{minted: &minted}, installs), repos, renames, nil, nil, quietBundleLog())
+	if _, err := notInstalled(context.Background(), "Not-Installed"); !errors.Is(err, ErrDefaultOwnerNotInstalled) ||
+		!strings.Contains(err.Error(), `"not-installed"`) || len(minted) != 0 {
+		t.Errorf("the controller asking for an owner the App is not installed on = %v, minted %q; want ErrDefaultOwnerNotInstalled naming it and no mint", err, minted)
 	}
 	none := ControllerCredential(sourceOf(ownerTokens{}, installedOnOwners()), projectRepos(), ghrepo.Renames{}, nil, nil, quietBundleLog())
 	if _, err := none(context.Background(), ""); !errors.Is(err, runtime.ErrNoGitHubOwner) {

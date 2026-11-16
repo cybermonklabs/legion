@@ -931,8 +931,9 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // The controller's bundle is asked for by owner (Options.ControllerCredential), the one function
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes
 // (refreshGitHubCredential). The launch asks for no owner, which takes the first owner the
-// project serves that the mint answered for, sorted, and records it as the pod's default; a
-// controller works no repository, so its every directory is read-only.
+// review App is installed on that the mint answered for, sorted (appauth's bundleDefault), and
+// records it as the pod's default; a controller works no repository, so its every directory is
+// read-only.
 //
 // The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
 // nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):

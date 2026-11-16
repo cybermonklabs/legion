@@ -482,11 +482,11 @@ func TestCredentialAndWorkflowRoutesRefuseAMissingFieldWithACode(t *testing.T) {
 }
 
 // legion controller start's refresh call answers the review App's read-only token for every owner
-// of the project, each rendered as the two files gh reads, with the first owner, sorted, the
-// default, or the owner the request names (the one the controller's GH_CONFIG_DIR already names),
-// and the owner accounts the App is installed on, for the current controller capability alone: a
-// wrong secret, or one a later legion controller start superseded, is refused the same way, and
-// a default that is no GitHub login is refused.
+// that App is installed on, each rendered as the two files gh reads, with the first owner, sorted,
+// the default, or the owner the request names (the one the controller's GH_CONFIG_DIR already
+// names), and the owner accounts the App is installed on, for the current controller capability
+// alone: a wrong secret, or one a later legion controller start superseded, is refused the same
+// way, and a default that is no GitHub login, or one the App is not installed on, is refused.
 func TestControllerGitHubCredential(t *testing.T) {
 	h := newControllerCredentialHarness(t, handoffTokens{}, false)
 	secret := h.mintedSecret()
@@ -514,11 +514,11 @@ func TestControllerGitHubCredential(t *testing.T) {
 	}
 	wantFailure(t, h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "../x"}, nil),
 		http.StatusBadRequest, "INVALID_DEFAULT_OWNER")
-	outside := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "outside-project"}, nil)
-	if body := outside.Body.String(); !strings.Contains(body, `\"outside-project\"`) || strings.Contains(body, "token-for") {
-		t.Errorf("a default outside the project answered %s, want a refusal naming it and no token", body)
+	notInstalled := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "not-installed"}, nil)
+	if body := notInstalled.Body.String(); !strings.Contains(body, `\"not-installed\"`) || strings.Contains(body, "token-for") {
+		t.Errorf("a default the review App is not installed on answered %s, want a refusal naming it and no token", body)
 	}
-	wantFailure(t, outside, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT")
+	wantFailure(t, notInstalled, http.StatusBadRequest, "DEFAULT_OWNER_NOT_INSTALLED")
 
 	wantFailure(t, h.controllerGitHubCredential("not-the-capability"), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
 

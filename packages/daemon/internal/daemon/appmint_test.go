@@ -349,19 +349,31 @@ func mappedWorkflowConfig(t *testing.T, natsURL string, mapped ...string) config
 // repositories belong to two accounts, one of them spelled in the mapping as the account is not,
 // and each App is minted twice, on the two accounts lowercased and in their sorted order, so one
 // boot's log reads like the next's.
+//
+// Both Apps are installed on a third account, initech, that no mapped repository belongs to, and
+// neither is minted on it: an owner the Apps are installed on that the mapping does not reach is
+// not proved at boot, since the boot would then depend on installations no work of this project
+// needs. Without initech the row would pass as well on a boot that minted every owner the Apps'
+// installations name, because those would be the mapped owners exactly.
 func TestABootMintsEachAppOnceForEachOwnerOfTheMapping(t *testing.T) {
 	quickAppMints(t)
 	manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) {
-		fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}},{"id":88,"account":{"login":"globex"}}]`)
+		fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}},{"id":88,"account":{"login":"globex"}},{"id":99,"account":{"login":"initech"}}]`)
 	})
 	mints := &bootMints{Manager: manager}
 	cfg := mappedWorkflowConfig(t, workflowNATS(t), "acme/widgets", "Acme/Gadgets", "globex/tools")
 	if err := bootsOrExitsLogging(t, cfg, mints, 60*time.Second, mintGateLog(mints)); err != nil {
 		t.Fatalf("boot = %v, want the daemon serving three repositories of two owner accounts", err)
 	}
+	minted := mints.Minted()
+	for _, mint := range minted {
+		if strings.HasSuffix(mint, " initech") {
+			t.Errorf("the boot's App gate asked for %q, want no mint on initech: both Apps are installed there, and no repository the mapping serves belongs to it", mint)
+		}
+	}
 	want := []string{"implement acme", "review acme", "implement globex", "review globex"}
-	if got := mints.Minted(); !slices.Equal(got, want) {
-		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one of each App on each owner account, and none for a second repository of an account", got, want)
+	if !slices.Equal(minted, want) {
+		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one of each App on each owner account of the mapping, and none for a second repository of an account", minted, want)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
 		t.Errorf("installation discoveries by App = %v, want one each: one discovery names every installation an App has", got)
