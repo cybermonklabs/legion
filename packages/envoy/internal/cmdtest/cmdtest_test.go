@@ -96,7 +96,7 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("another listener's bind of %s before the child served: %v; want address already in use", held.Addr, err)
 	}
-	if !listensAs(t, inode) {
+	if !SocketListens(t, inode) {
 		t.Fatalf("/proc/net/tcp lists no listening socket of inode %s while the child holds it, so it cannot say when nothing does", inode)
 	}
 
@@ -128,25 +128,9 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 
 	// The test's cleanup has not run yet, so no listening socket of the inode now shows Start closed
 	// the test's copy, and the child released its own on exit.
-	if listensAs(t, inode) {
+	if SocketListens(t, inode) {
 		t.Fatalf("a socket of inode %s still listens after the child exited: the test's copy or the child's was left open", inode)
 	}
-}
-
-// listensAs reports whether /proc/net/tcp lists a listening socket of inode, on any address. A
-// line's fourth field is its state, 0A for LISTEN, and its tenth the socket's inode.
-func listensAs(t *testing.T, inode string) bool {
-	t.Helper()
-	table, err := os.ReadFile("/proc/net/tcp")
-	if err != nil {
-		t.Fatalf("read the listening sockets: %v", err)
-	}
-	for line := range strings.SplitSeq(string(table), "\n") {
-		if fields := strings.Fields(line); len(fields) > 9 && fields[3] == "0A" && fields[9] == inode {
-			return true
-		}
-	}
-	return false
 }
 
 // StartThen runs afterExit once the process has exited and before it closes Exited, so a test
