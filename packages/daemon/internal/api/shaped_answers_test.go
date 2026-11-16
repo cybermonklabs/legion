@@ -265,6 +265,68 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
 }
 
+// A stand-in follows the pod's lowest contract where a band follows its highest: a key a
+// contract removed is written back because the pod's oldest process requires it, and a key a
+// contract added is left out only where no process of the pod reads it (contractsFor says why
+// the two halves differ). A pod recording 111 and 133 spans podUpdateGraceContract, which took
+// `pod_update_retask_hours` and `pod_update_notice_hours` out of the settings block and put
+// `pod_update_grace_minutes` in. The pod's 111 process requires the block its own contract
+// describes, so the pod is served the two old keys as the stand-ins 1 and 4
+// (withPodUpdateHours). Its 133 process reads the new key, so the pod is served that too, as the
+// source holds it: the band of podUpdateGraceContract (withoutPodUpdateGrace) follows the pod's
+// highest contract and does not reach it. A pod at 133 alone is served neither old key, so the
+// mixed pod's stand-ins are its older process's. What the 111 process requires of these two keys
+// is the record of its own contract, which carries both: no plugin code reads either
+// (version.go's 145), and the stand-ins keep the body served to such a process that record's
+// shape.
+//
+// It is a test of its own rather than a second pod of the {46, 73} case above. That pod's two
+// contracts are both below podUpdateGraceContract, so it holds these stand-ins to nothing, and
+// the stand-ins of fixAttemptsContract it does hold need a pod below 59, which a pod spanning 123
+// is not on either side.
+func TestAMixedPodIsServedTheLowestsPodUpdateStandInsAndTheHighestsGrace(t *testing.T) {
+	settingsOf := func(body []byte) map[string]json.RawMessage {
+		t.Helper()
+		var served struct {
+			Settings map[string]json.RawMessage `json:"settings"`
+		}
+		if err := json.Unmarshal(body, &served); err != nil {
+			t.Fatalf("decode the state %s: %v", body, err)
+		}
+		return served.Settings
+	}
+	logs := &bytes.Buffer{}
+	state := populatedState(t)
+	handler := shapedServer(t, state, mixedPodClaims(quietTimeContract, mergeWaitContract), logs, true)
+	whole := settingsOf(stateStating(t, handler, "192.0.2.1:41000", 0))
+	grace, carried := whole["pod_update_grace_minutes"]
+	if !carried {
+		t.Fatalf("the settings this contract writes carry no pod_update_grace_minutes; this proves nothing: %v", whole)
+	}
+	alone := settingsOf(stateStating(t, shapedServer(t, state, podClaims(mergeWaitContract), logs, true), statePodAddr+":41000", 0))
+	for _, key := range []string{"pod_update_retask_hours", "pod_update_notice_hours"} {
+		if value, carried := alone[key]; carried {
+			t.Errorf("a pod at %d is served settings.%s %s, want none: its contract reads the block 123 writes", mergeWaitContract, key, value)
+		}
+	}
+
+	mixed := settingsOf(stateStating(t, handler, statePodAddr+":41000", 0))
+
+	for key, want := range map[string]string{"pod_update_retask_hours": "1", "pod_update_notice_hours": "4"} {
+		if got := string(mixed[key]); got != want {
+			t.Errorf("the {%d, %d} pod is served settings.%s %q, want the stand-in %s: a stand-in follows the pod's lowest contract, and its %d process requires the key",
+				quietTimeContract, mergeWaitContract, key, got, want, quietTimeContract)
+		}
+	}
+	if got, carried := mixed["pod_update_grace_minutes"]; !carried || string(got) != string(grace) {
+		t.Errorf("the {%d, %d} pod is served settings.pod_update_grace_minutes %s (carried %v), want %s: the band follows the pod's highest contract, and its %d process reads the key",
+			quietTimeContract, mergeWaitContract, got, carried, grace, mergeWaitContract)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("the pods logged %s, want no line: every contract they record is one this daemon describes", logs)
+	}
+}
+
 // undeclaredValue is a word no list of the declared table names (answers.go's EnumeratedFields).
 // It is made up for the bodies the fallback of fieldArrivals.heldBack is read on, and
 // TestEveryValueStripHoldsBackAValueNoRowDeclares holds the table to not naming it.

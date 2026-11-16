@@ -18,7 +18,6 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -1239,10 +1238,6 @@ func withoutUnadmittedWaitAnswer(issue Issue, restore int) (Issue, bool) {
 	issue.WaitingOn = &wait
 	return issue, true
 }
-
-// waitingOnIssueKind is the word record.LineWaitingOnIssue writes on the wire, named once for
-// the tests that stand a member of that kind.
-var waitingOnIssueKind = record.LineWaitingOnIssue.String()
 
 // withoutUnadmittedLineKind is the issue whose waiting line member carries no `kind` where that
 // word is one restore's reader does not admit. It follows the declared table (answers.go's
