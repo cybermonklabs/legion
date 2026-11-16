@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Two processes editing one document settle it as one process does (plan D3.7): a content change
@@ -211,7 +212,7 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		Persistence: gated,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {

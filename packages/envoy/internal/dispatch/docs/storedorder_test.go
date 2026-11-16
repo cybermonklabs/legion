@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // storedOrderRounds is how many rounds TestStoredOrderSoak runs. The default fits the package in
@@ -413,7 +414,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 		Persistence: held,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
 	release = func() {
@@ -832,7 +833,7 @@ func TestStoredOrderSoak(t *testing.T) {
 		Persistence: watched,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      30 * time.Millisecond,
 	})
 	watched.service.Store(service)

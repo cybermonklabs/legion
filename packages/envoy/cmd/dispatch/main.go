@@ -55,6 +55,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -496,11 +497,10 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
-		Store:     database,
-		Events:    broker,
-		Identity:  requestIdentity,
-		ServerURL: serverURL,
+	documentService := newDocumentService(boot, serverURL, docs.Deps{
+		Store:    database,
+		Events:   broker,
+		Identity: requestIdentity,
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
@@ -1709,15 +1709,16 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot and serverURL filled in (documentDeps).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) *docs.Service {
+	return docs.New(documentDeps(boot, serverURL, built))
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin, then boot's outside origin. The settings tests
+// read its answer, as they build the router through appContextOptions, so dropping a hand-off
+// here fails a case (TestDocumentDepsCarryEveryBootSetting).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -1725,7 +1726,7 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
-	built.OutsideOrigin = boot.OutsideOrigin
+	built.Origins = text.NewOrigins(serverURL, boot.OutsideOrigin)
 	return built
 }
 

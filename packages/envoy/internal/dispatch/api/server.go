@@ -306,13 +306,15 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
+	// The `/` trimmed here is not redundant with parseServer, which trims one from each base path:
+	// together they read a server URL ending in `//` as the one ending in `/`.
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
 	if input.Docs == nil {
 		input.Docs = docs.New(docs.Deps{
-			Store:         input.Store,
-			Events:        input.Events,
-			Identity:      input.Identity,
-			ServerURL:     input.ServerURL,
-			OutsideOrigin: input.OutsideOrigin,
+			Store:    input.Store,
+			Events:   input.Events,
+			Identity: input.Identity,
+			Origins:  origins,
 		})
 	}
 	var envoyClient *envoy.Client
@@ -348,7 +350,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		Origins:                text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin),
+		Origins:                origins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,

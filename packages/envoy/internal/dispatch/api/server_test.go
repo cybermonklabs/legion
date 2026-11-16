@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -232,7 +233,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, Origins: text.NewOrigins(testServerURL), Settle: settle})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Writes through a room and joined writes leave, once the queue has checked their document, the
@@ -93,7 +94,7 @@ func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T
 // rows as stored, and is checked again when it will be.
 func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) {
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	loads := map[string]func(t *testing.T, artifactID string){

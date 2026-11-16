@@ -2224,7 +2224,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		MaxDocConnections: 16,
 		TestHooksEnabled:  true,
 	}
-	got := documentDeps(boot, docs.Deps{})
+	got := documentDeps(boot, "", docs.Deps{})
 	for _, field := range []struct {
 		name      string
 		got, want any
@@ -2251,7 +2251,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, docs.Deps{}).RoomCapsForTest()); got != want {
+		if got := capOf(newDocumentService(boot, "", docs.Deps{}).RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}
