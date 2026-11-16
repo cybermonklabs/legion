@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The reviewer's role prompt takes the forward-merge fingerprint at the head its last submitted
+  review's Legion footer names, never at that review's `commit_id`, which GitHub can move onto a
+  later head; it said "the commit of your last submitted review" before. Where the footer names no
+  head, the head of that review's own review handoff stands for it, the newest written at or before
+  the review was submitted, or else the one head the review's body says it reviewed or approved,
+  and with neither, or with a body naming more than one without saying which, the forward merge is
+  a new round.

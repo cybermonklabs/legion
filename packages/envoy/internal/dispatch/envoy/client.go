@@ -114,10 +114,13 @@ type Interest struct {
 // listener's live window and inside its gone horizon: it is stalled, not dead, so it keeps its
 // role and issue claims, a message sent to it is stored for it, and nothing starts a
 // replacement for it (dispatch://INFRA-392).
+//
+// StateStopped is a fourth answer, which only SessionIncludingStopped gives.
 const (
 	StateLive         = "live"
 	StateUnresponsive = "unresponsive"
 	StateGone         = "gone"
+	StateStopped      = "stopped"
 )
 
 // includeUnresponsive is the selector every session read sends: without it the listener answers
@@ -127,7 +130,23 @@ const (
 // selector and the state it asks for cannot drift apart.
 const includeUnresponsive = "?include=" + StateUnresponsive
 
-// Session is the public subset of an Envoy listener session, live or unresponsive.
+// includeUnresponsiveAndStopped is the delivery's selector (SessionIncludingStopped): the same
+// list with StateStopped added, under which the registry route answers a session it knows only by
+// its record 200 with that state rather than 404.
+const includeUnresponsiveAndStopped = includeUnresponsive + "," + StateStopped
+
+// SendStateConnected and SendStateStopped are the two values a send's answer puts in `state`
+// (cmd/listener, sendHandler), beside the recipient_state the registry's age gives. Connected
+// means the session's relay subscriber answered the listener's probe or kept silent; stopped
+// means no subscriber holds the session, or the listener knows it only by its record, so the
+// message is stored for the session's own consumer and reaches it when it runs again.
+const (
+	SendStateConnected = "connected"
+	SendStateStopped   = "stopped"
+)
+
+// Session is the public subset of an Envoy listener session, live, unresponsive or, on
+// SessionIncludingStopped's answer alone, stopped.
 type Session struct {
 	SessionID string `json:"session_id"`
 	Title     string `json:"title"`
@@ -147,9 +166,10 @@ type Session struct {
 	Capabilities []string   `json:"capabilities"`
 	LastSeen     int64      `json:"last_seen"`
 	// State is StateLive, StateUnresponsive or StateGone, as the listener judged this record
-	// when it answered. A listener that predates the field names none, and normalize reads that
-	// as StateLive: every session such a listener answers with is one it holds live, so reading
-	// it as anything else would retire working sessions during a rollout.
+	// when it answered, or StateStopped, which only SessionIncludingStopped reads. A listener
+	// that predates the field names none, and normalize reads that as StateLive: every session
+	// such a listener answers with is one it holds live, so reading it as anything else would
+	// retire working sessions during a rollout.
 	State string `json:"state"`
 }
 
@@ -201,6 +221,13 @@ type SendInput struct {
 	// ExpectsReply is what the delivery wants back. It reaches the listener's HTTP body as the
 	// JSON literal false, "optional" or "required", which is what contracts.ExpectsReply writes.
 	ExpectsReply contracts.ExpectsReply
+	// ConnectedOnly asks the listener to refuse a stopped target rather than store the message
+	// for it: a 409 with the reason "the session is stopped", and nothing stored. Dispatch sets it
+	// on every send of a model or thinking switch the session runs as its own turn
+	// (api.isSessionSwitch), whose line would otherwise apply at an unknown later time, and on
+	// every send of a message whose agents-route request asked for it. Unset, the field is left
+	// out of the body.
+	ConnectedOnly bool
 }
 
 // SendResult identifies the listener envelope emitted for a successful delivery. Duplicate
@@ -208,10 +235,15 @@ type SendInput struct {
 // reached the agent's subject. What recognises that repeat, and for how long, is stated on
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
 // envelope id then names an envelope JetStream discarded.
+//
+// State is what the target was when the listener stored the message, SendStateConnected or
+// SendStateStopped. A listener that predates the field answers none, which reads as a connected
+// target.
 type SendResult struct {
 	EnvelopeID string
 	Recipient  string
 	Duplicate  bool
+	State      string
 }
 
 // Client reads live session metadata from the Envoy listener.
@@ -283,6 +315,10 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	if sessions == nil {
 		sessions = []Session{}
 	}
+	// The live list carries each session's topics, which this struct does not hold, so the decode
+	// drops them: Dispatch keeps every row of this answer in its route roster row
+	// (api/issue_route_status.go) and serves it from GET /api/v1/agents, and neither holds a
+	// session's subscriptions, which it reads through ListInterests instead.
 	for index := range sessions {
 		sessions[index].normalize(sessions[index].SessionID)
 	}
@@ -477,14 +513,42 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 // that session has ended. A caller asks here rather than scanning Sessions, because that list
 // is answered from the listener's in-memory cache alone: a session whose cache entry is still
 // being refilled is absent from the list while its record is there to be read, and a missing
-// row cannot tell the two apart. Every other status, a body that does not decode and a
-// transport failure alike are ErrUnavailable carrying the listener's own reason, so a read the
-// message bus did not answer reads as "ask again", never as "that session is gone"; only a
-// transport failure and a 502, 503 or 504 are also ErrUnreachable, because a status the listener
-// chose - a 401 for a token it refuses, say - is its answer and asking again repeats it.
+// row cannot tell the two apart. A session the listener knows only by its known-session record,
+// one that is not running, is ErrNotFound here (SessionIncludingStopped reads it). Every other
+// status, a body that does not decode and a transport failure alike are ErrUnavailable carrying
+// the listener's own reason, so a read the message bus did not answer reads as "ask again", never
+// as "that session is gone"; only a transport failure and a 502, 503 or 504 are also
+// ErrUnreachable, because a status the listener chose - a 401 for a token it refuses, say - is
+// its answer and asking again repeats it.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
+	return c.readSession(ctx, sessionID, includeUnresponsive)
+}
+
+// SessionIncludingStopped is Session widened by one answer: a session the listener's registry
+// holds no entry for, or one past its gone horizon, whose known-session record it still holds
+// comes back as that record, with State StateStopped and the Title, Capabilities and LastSeen
+// it holds, rather than as ErrNotFound. It carries no Dir, MachineID, Host, TmuxPlace or Roles:
+// the record holds none, and a session that is not running has no address to be reached at, so
+// a caller that needs one of those needs a running session.
+//
+// A delivery reads this one, and nothing else does. The listener takes a message for a stopped
+// session it knows, stores it for the session's own consumer and hands it over when that session
+// runs again, so refusing such a session here would throw a person's message away for a session
+// that is only suspended. StateStopped is never a registry state: Session, Sessions and Role
+// never answer it, so an issue claim's holder liveness (issue_claim.go), the route roster and
+// role resolution (lapsedRoleHolder) never read a stopped session as one that holds anything. A
+// session the listener holds neither an entry nor a record of is still ErrNotFound, which is
+// what "no live session <id>" is recorded for. Every other answer, and every failure, is exactly
+// Session's.
+func (c *Client) SessionIncludingStopped(ctx context.Context, sessionID string) (Session, error) {
+	return c.readSession(ctx, sessionID, includeUnresponsiveAndStopped)
+}
+
+// readSession is the one GET /v1/registry/<session_id> both reads make, under the include
+// selector each asks with.
+func (c *Client) readSession(ctx context.Context, sessionID, include string) (Session, error) {
 	route := "/v1/registry/" + url.PathEscape(sessionID)
-	response, err := c.get(ctx, route, includeUnresponsive)
+	response, err := c.get(ctx, route, include)
 	if err != nil {
 		return Session{}, err
 	}
@@ -623,7 +687,11 @@ func unavailableGetStatus(response *http.Response, route string) error {
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
-// Send delivers a Dispatch frame to an already-resolved live session.
+// Send delivers a Dispatch frame to an already-resolved session. The answer says what that
+// session was when the listener stored the message: connected, or stopped and stored for its own
+// consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
+// instead, 409 with the listener's reason "the session is stopped", which arrives here as that
+// reason alone (listenerResponseError).
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
 	body, err := json.Marshal(struct {
 		TargetSession  string                 `json:"target_session"`
@@ -633,6 +701,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		IdempotencyKey string                 `json:"idempotency_key"`
 		Urgency        string                 `json:"urgency,omitempty"`
 		ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
+		ConnectedOnly  bool                   `json:"connected_only,omitempty"`
 	}{
 		TargetSession:  input.TargetSession,
 		Source:         "dispatch",
@@ -641,6 +710,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		IdempotencyKey: input.IdempotencyKey,
 		Urgency:        input.Urgency,
 		ExpectsReply:   input.ExpectsReply,
+		ConnectedOnly:  input.ConnectedOnly,
 	})
 	if err != nil {
 		return SendResult{}, fmt.Errorf("encode POST /v1/messages/send body: %w", err)
@@ -672,12 +742,14 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		EnvelopeID string `json:"event_id"`
 		Recipient  string `json:"recipient"`
 		Duplicate  bool   `json:"duplicate"`
+		State      string `json:"state"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
 	}
 	return SendResult{
 		EnvelopeID: result.EnvelopeID, Recipient: result.Recipient, Duplicate: result.Duplicate,
+		State: result.State,
 	}, nil
 }
 

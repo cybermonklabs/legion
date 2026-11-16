@@ -1,16 +1,35 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
+)
+
+// requestAnswer is how a narrowBroker answers POST /v1/requests, which is what tells apart the
+// three brokers a narrowed run can meet: one that takes the github_app field, one from before
+// it, and one that read the narrowing and will not serve it.
+type requestAnswer string
+
+const (
+	// requestTakesNarrowing grants every request, the github_app field among the ones it reads.
+	requestTakesNarrowing requestAnswer = "takes"
+	// requestRefusesUnknownField is a broker from before that field: its readJSON decodes with
+	// DisallowUnknownFields, so a body carrying github_app is refused 400 INVALID_REQUEST before
+	// the request machine runs, leaving the signed request object unread and its jti unspent.
+	requestRefusesUnknownField requestAnswer = "unknown-field"
+	// requestRefusesNarrowing is a broker that read the narrowing and will not serve it: 422
+	// NARROWING_REFUSED, the answer its release route gives such a narrowing.
+	requestRefusesNarrowing requestAnswer = "narrowing-refused"
 )
 
 // narrowBroker is a fake broker for the exec form's --github-* flags: every request is granted
@@ -28,24 +47,67 @@ type narrowBroker struct {
 	values map[string]string
 
 	mu       sync.Mutex
-	requests int                 // each POST /v1/requests
+	answer   requestAnswer       // how POST /v1/requests answers
+	requests []string            // each POST /v1/requests body, as it was sent
 	bodies   []string            // each release's body, "" for none
 	grants   map[string][]string // grant id -> the names that grant holds
 }
 
+// requestBody is POST /v1/requests's body as a broker that takes the narrowing reads it: the
+// signed request object, the wake-only session id, and the narrowing the release will ask for.
+type requestBody struct {
+	Request   string          `json:"request"`
+	SessionID *string         `json:"session_id"`
+	GitHubApp json.RawMessage `json:"github_app"`
+}
+
+// readRequestBody decodes raw as the broker this answer stands for reads it. A broker from
+// before the narrowing declares no github_app field, and the broker's readJSON
+// (internal/broker/api) decodes with DisallowUnknownFields, so a body carrying one is an error
+// here as it is there.
+func readRequestBody(raw []byte, answer requestAnswer) (requestBody, error) {
+	var body requestBody
+	if answer != requestRefusesUnknownField {
+		return body, json.Unmarshal(raw, &body)
+	}
+	var older struct {
+		Request   string  `json:"request"`
+		SessionID *string `json:"session_id"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&older); err != nil {
+		return requestBody{}, err
+	}
+	return requestBody{Request: older.Request, SessionID: older.SessionID}, nil
+}
+
+// writeRefusal is the broker's error envelope under its status, {"code":...,"error":...}, which
+// is where the client reads the code of a refusal (its apiError).
+func writeRefusal(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": message})
+}
+
 func newNarrowBroker(t *testing.T, values map[string]string) *narrowBroker {
 	t.Helper()
-	b := &narrowBroker{values: values, grants: map[string][]string{}}
+	b := &narrowBroker{values: values, answer: requestTakesNarrowing, grants: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
 		b.mu.Lock()
-		b.requests++
+		b.requests = append(b.requests, string(raw))
+		answer := b.answer
 		b.mu.Unlock()
-		var body struct {
-			Request string `json:"request"`
+		body, err := readRequestBody(raw, answer)
+		if err != nil {
+			writeRefusal(w, http.StatusBadRequest, "INVALID_REQUEST", "body must be one valid JSON object: "+err.Error())
+			return
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+		if answer == requestRefusesNarrowing && body.GitHubApp != nil {
+			writeRefusal(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED",
+				"github app: the narrowing names a repository the installation does not reach")
 			return
 		}
 		obj, err := record.VerifyRequestObject(body.Request, b.srv.URL, time.Minute, time.Now())
@@ -129,14 +191,30 @@ func (b *narrowBroker) take() []string {
 	return bodies
 }
 
-// takeRequests returns how many requests the broker received since the last call, and forgets
-// them.
-func (b *narrowBroker) takeRequests() int {
+// takeRequests returns each POST /v1/requests body the broker received since the last call, as
+// the JSON object it was sent as, and forgets them.
+func (b *narrowBroker) takeRequests(t *testing.T) []map[string]any {
+	t.Helper()
+	b.mu.Lock()
+	sent := b.requests
+	b.requests = nil
+	b.mu.Unlock()
+	bodies := make([]map[string]any, 0, len(sent))
+	for _, raw := range sent {
+		var body map[string]any
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			t.Fatalf("POST /v1/requests body %q: %v", raw, err)
+		}
+		bodies = append(bodies, body)
+	}
+	return bodies
+}
+
+// answersRequests makes POST /v1/requests answer as answer says from here on.
+func (b *narrowBroker) answersRequests(answer requestAnswer) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	requests := b.requests
-	b.requests = 0
-	return requests
+	b.answer = answer
 }
 
 // TestTheGitHubFlagsNarrowTheRelease: the exec form's --github-owner, --github-repo and
@@ -238,8 +316,100 @@ func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 		if exit != 2 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, tc.names) {
 			t.Fatalf("%v: exit %d, stdout %q, stderr %q; want exit 2 naming %s", tc.flags, exit, stdout, stderr, tc.names)
 		}
-		if requests, bodies := b.takeRequests(), b.take(); requests != 0 || len(bodies) != 0 {
-			t.Fatalf("%v: the broker was asked %d requests and %d releases, want none", tc.flags, requests, len(bodies))
+		if requests, bodies := b.takeRequests(t), b.take(); len(requests) != 0 || len(bodies) != 0 {
+			t.Fatalf("%v: the broker was asked %d requests and %d releases, want none", tc.flags, len(requests), len(bodies))
 		}
+	}
+}
+
+// TestARequestCarriesTheNarrowingAndIsSentAgainForOneRefusalAlone: POST /v1/requests carries the
+// narrowing the release will ask for as github_app, so a broker that cannot serve it refuses it
+// before anybody is asked to approve the request, and a run that asks for no narrowing sends the
+// body it always sent. A broker from before that field refuses the whole body 400
+// INVALID_REQUEST without reading the request object, so the client sends that same signed
+// object once more carrying no such field and the run gets its secret and runs its child. That
+// second call is for that one refusal: a broker that answers 422 NARROWING_REFUSED is asked
+// once, and its refusal reaches the caller, who runs nothing.
+func TestARequestCarriesTheNarrowingAndIsSentAgainForOneRefusalAlone(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	narrowed := map[string]any{"owner": "ada", "read_only": true}
+	for _, tc := range []struct {
+		name   string
+		answer requestAnswer
+		flags  []string
+		// sent is the github_app each POST /v1/requests carried, in order, nil for a body that
+		// carried no such field at all.
+		sent   []map[string]any
+		stdout string
+		exit   int
+		names  string // what the refusal must name, "" for a run nothing refused
+	}{
+		{
+			name:   "a broker that takes the field is asked once",
+			answer: requestTakesNarrowing,
+			flags:  []string{"--github-owner", "ada", "--github-read-only"},
+			sent:   []map[string]any{narrowed},
+			stdout: "ran narrowed\n",
+		},
+		{
+			name:   "a run with no narrowing sends the body it always sent",
+			answer: requestTakesNarrowing,
+			sent:   []map[string]any{nil},
+			stdout: "ran owner-wide\n",
+		},
+		{
+			name:   "a broker from before the field is sent the same object again without it",
+			answer: requestRefusesUnknownField,
+			flags:  []string{"--github-owner", "ada", "--github-read-only"},
+			sent:   []map[string]any{narrowed, nil},
+			stdout: "ran narrowed\n",
+		},
+		{
+			name:   "a narrowing the broker refuses reaches the caller and is not sent again",
+			answer: requestRefusesNarrowing,
+			flags:  []string{"--github-owner", "ada", "--github-read-only"},
+			sent:   []map[string]any{narrowed},
+			exit:   1,
+			names:  "NARROWING_REFUSED",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newNarrowBroker(t, nil)
+			b.answersRequests(tc.answer)
+			args := append(append([]string{"APP"}, tc.flags...), "--", "sh", "-c", `echo "ran $APP"`)
+			// Every variable the client would forward as session_id is cleared, so each body
+			// below is the one a session outside omp sends (TestRequestSignsARequestObject).
+			stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir,
+				[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="}, args...)
+			if exit != tc.exit || stdout != tc.stdout {
+				t.Fatalf("exit %d, stdout %q, stderr %q; want exit %d with stdout %q", exit, stdout, stderr, tc.exit, tc.stdout)
+			}
+			if tc.names != "" && !strings.Contains(stderr, tc.names) {
+				t.Fatalf("stderr = %q, want the refusal to name %s", stderr, tc.names)
+			}
+			sent := b.takeRequests(t)
+			if len(sent) != len(tc.sent) {
+				t.Fatalf("the broker was asked %d POST /v1/requests calls, want %d", len(sent), len(tc.sent))
+			}
+			for i, body := range sent {
+				want := map[string]bool{"request": true, "session_id": true}
+				if tc.sent[i] != nil {
+					want["github_app"] = true
+				}
+				if got := keySet(body); !mapsEqual(got, want) {
+					t.Fatalf("request %d carried the fields %v, want %v", i+1, got, want)
+				}
+				if body["session_id"] != nil {
+					t.Fatalf("request %d session_id = %v, want a null", i+1, body["session_id"])
+				}
+				if tc.sent[i] != nil && !reflect.DeepEqual(body["github_app"], any(tc.sent[i])) {
+					t.Fatalf("request %d github_app = %v, want %v", i+1, body["github_app"], tc.sent[i])
+				}
+				if body["request"] != sent[0]["request"] {
+					t.Fatalf("request %d carried another signed object than the first, want the one object sent again", i+1)
+				}
+			}
+		})
 	}
 }

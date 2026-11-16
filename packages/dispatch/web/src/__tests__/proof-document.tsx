@@ -38,21 +38,6 @@ export const artifact: Artifact = {
   versions: [],
 };
 
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: 1,
-};
-
 export function createQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -210,7 +195,6 @@ export function renderProofDocument({
         }
       | undefined,
   };
-  queryClient.setQueryData(["block-schema"], blockSchema);
   const toolbar: { current: DocumentToolbar | undefined } = { current: undefined };
   /** Every value the document reported upward, so a suite can assert it reported none at all. */
   const toolbarChanges: (DocumentToolbar | undefined)[] = [];

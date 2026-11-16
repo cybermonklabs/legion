@@ -30,7 +30,7 @@ func valueDigest(value string) string {
 func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, secret secrets.LocalSecret, name string) string {
 	t.Helper()
 	retag(t, m, secret)
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "")
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = state %q, grant %v, %v; want an automatic grant", name, request.State, request.GrantID, err)
 	}
@@ -139,7 +139,11 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 	}
 
 	t.Run("a-minted-kinds-input", func(t *testing.T) {
-		const secret, stored, input, token = "MINTED_INPUT_KEY", "app-key\n", "app-key", "minted-token\n"
+		// The input is a value the github-app decoder reads, which the policy serves; the stored
+		// value is that with a line ending, which the rule removes before the minter sees it.
+		const secret, token = "MINTED_INPUT_KEY", "minted-token\n"
+		input := policytest.KindValue(policy.KindGitHubApp)
+		stored := input + "\n"
 		given := ""
 		m.Minters = map[string]Minter{
 			policy.KindGitHubApp: func(_ context.Context, request secrets.MintRequest) (secrets.Minted, error) {

@@ -869,12 +869,12 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 		}
 	}
 	if shape.Opaque != "" {
-		if shape.OpaqueContentType == "" {
+		if len(shape.OpaqueContentTypes) == 0 {
 			return nil, fmt.Errorf("%s %s answers bytes Dispatch does not model and names no "+
-				"content type for them (routeShape.OpaqueContentType)", route.Method, route.Pattern)
+				"content type for them (routeShape.OpaqueContentTypes)", route.Method, route.Pattern)
 		}
 		success.description = shape.Opaque
-		success.opaque = append(success.opaque, shape.OpaqueContentType)
+		success.opaque = append(success.opaque, shape.OpaqueContentTypes...)
 	}
 	for _, also := range shape.Also {
 		if err := add(also.Status, also.Body); err != nil {

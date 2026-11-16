@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  A send answers `state`, `connected` or `stopped`, beside `recipient_state`. The listener asks the
+  target's relay subject whether anything still holds it, with one core request that carries only
+  the header `Envoy-Probe: 1` and waits one second: a reply or silence is `connected`, and NATS
+  no-responders is `stopped`. A session with no registration now that registered in the last 30
+  days is `stopped` too, from its record in the new `envoy_known_sessions` bucket. A send with
+  `connected_only: true` to a stopped session is refused
+  `409 {"error":"the session is stopped"}` and nothing is stored. A publish to a topic the stream
+  captures answers `recipients` and `recipients_connected`, each left out while a cache it is
+  counted from cannot be served (its first read not complete, or past its stale bound), and
+  `GET /v1/registry/<id>` takes `stopped` in its `include=` list. The bucket is in
+  `bus.ListenerBuckets()`, so envoy-infra grants it to the listener, host and Dispatch users; a
+  listener whose NATS user may not open it logs the bucket once, answers no counts and no
+  record-based stopped session, and opens it in the background once the grant arrives, with no
+  restart. Such a listener still judges a session whose registration stands by its probe, and
+  answers `stopped` when the probe meets no-responders. Dispatch holds a model or thinking switch
+  a person sends a session (a person's own Send or Aside on no issue, no broadcast's copy, not one
+  an agent wrote for them, whose whole body is one `/model` or `/effort` line) to a running
+  session at every send, judged by that shape whether or not the request set `connected_only`,
+  so a stopped session refuses the switch and Dispatch records it failed.
+time: 2026-11-02T08:27:50.533771962Z
+custom:
+    Issue: pr2643

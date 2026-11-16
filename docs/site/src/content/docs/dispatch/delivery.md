@@ -203,10 +203,36 @@ bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
 
 It subscribes under the token in the file, writes one JSON line per frame (`at`, `type`, `bytes`,
 and the pull requests, runs, map keys, counts and `set` fields the frame carries), applies each
-frame as the page does, and reconnects and resumes as the page does. When the time is up,
+frame as the page does, and reconnects and resumes as the page does. It writes an `open` line each
+time a connection it holds opens and a `close` line each time one it holds closes, whether
+Dispatch closed it or the probe replaced it as silent; the one it holds when the watch ends, open
+or not, is let go and closed with no close line. A close line carries `wait_ms`: the wait in
+milliseconds the probe computed before it would open again, or `null` where it answers that close
+with no timer, which is the rotation close it answers at once, the silent socket it replaces at
+once, and a first connection Dispatch refused. When the time is up,
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.
+`--reconnect-spread-ms <n>` sets the window the probe's first reconnect attempt's wait is drawn
+from, uniformly in [0, n), in place of the page's own `RECONNECT_SPREAD_MS` of two seconds; a
+later attempt keeps the page's backoff whatever it is set to.
+A value above a timer's longest wait, 2147483647 ms, is refused, because the runtime clamps such
+a delay to 1 ms and the probe would reopen at once: the opposite of what the option says. That
+reason rests on a measurement of the runtime rather than on a row or a code reading: on Bun
+1.4.4, `setTimeout` at 2147483648 ms warned `Timeout duration was set to 1` and fired after
+118 ms, measured by the tester of dispatch://INFRA-1571 under six busy loops on two CPUs. That
+delay is the scheduler's, not the clamp's: the same call fired after 71-110 ms in five more runs
+under that load and after 28-42 ms in three idle runs, against the 24.9 days the delay asked for.
+A negative value is refused, and so is one that is not a number, and a blank or whitespace one,
+which `Number` would otherwise read as a spread of zero. Each of these is a usage error: the
+probe writes `--reconnect-spread-ms is a number of milliseconds from 0 to 2147483647, not`
+followed by the value it was given, then the usage line, and exits 2 without connecting to
+Dispatch. Of what this section says, these rest on a reading of the probe's code alone, because no
+row of its test drives or reads them: that a frame's line carries `at`; what it says of the silent
+socket; that an `open` line comes only for a connection the probe still holds; that the connection
+held when the watch ends writes no close line when it had not yet opened; that a negative value
+and one that is not a number are refused; and the usage error's text after
+`--reconnect-spread-ms`.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside
