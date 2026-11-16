@@ -113,13 +113,10 @@ func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
 	c := m.stored()
-	err := m.deps.Store.PutClaimAndDelivery(ctx, c, *p)
-	if err == nil {
-		m.landed(c)
-	}
-	if err := m.saved(err); err != nil {
+	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, c, *p)); err != nil {
 		return err
 	}
+	m.landed(c)
 	after := promptRetryDelay(p.ProviderErrorRetries)
 	m.arm(TimerPromptRetry, after, p.ID)
 	m.log.Info("supervise: this provider error can clear; the task goes to the same session again after a wait",

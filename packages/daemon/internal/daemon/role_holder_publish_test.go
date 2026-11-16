@@ -126,7 +126,8 @@ func (r *roleHoldersRig) published() []roleHoldersPublished {
 	return r.client.taken()
 }
 
-// queued is the issues with a role_holders_publish row, and how many such rows there are.
+// queuedRoleHolders is the issues with a role_holders_publish row, and how many such rows there
+// are.
 func queuedRoleHolders(t *testing.T, pool *store.Pool) ([]string, int) {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select issue from outbox where kind = $1 order by issue`, string(record.OutboxKindRoleHoldersPublish))
