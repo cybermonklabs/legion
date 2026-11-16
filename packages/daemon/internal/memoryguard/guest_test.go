@@ -1095,6 +1095,92 @@ func TestGuestCountsAProcessFirstReadWithSIGKILLPendingAtEachLaterRiseUntilItLea
 	}
 }
 
+// A process a pass set aside counts against the kills pending of its own burst alone, so one that
+// stays in /proc, a zombie its parent never reaps, leaves no later burst's kill unnamed (the
+// architect's rule of 2026-11-16T16:14Z). The tester's cc1 and ld both show SIGKILL at a rise of
+// one, and the pass sets both aside. cc1's parent reaps it; ld's never does, and ld stays a zombie.
+// That wait ends on its unnamed line. In a later wait the kernel kills the tester's python3, which
+// shows the kill: it is named, alone, though ld is still in /proc.
+func TestGuestNamesALaterBurstsVictimBesideAZombieAnEarlierPassSetAside(t *testing.T) {
+	const cc1, ld, python = 958, 959, 960
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	ldProcess := command(ld, 9590, "ld", 1200, 900*mib)
+	pod.addGuest(command(cc1, 9580, "cc1", 1300, 300*mib), ldProcess, command(python, 9600, "python3", 1100, 800*mib))
+	classes[cc1], classes[ld], classes[python] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	reaped(pod, cc1, 9580, "cc1")
+	reaped(pod, ld, 9590, "ld")
+	cgroup.setKills(1)
+	h.tick()
+	// cc1's parent reaps it; ld's never does.
+	pod.remove(cc1)
+	ldProcess.zombie, ldProcess.resident = true, 0
+	pod.add(ldProcess.fakeProcess)
+	showKill(pod, ld, "ld", true)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v in the first wait, want neither: cc1 and ld showed one kill; the log:\n%s", ended, kills, h.logged())
+	}
+
+	// A later wait: the kernel kills python3, which shows the kill.
+	reaped(pod, python, 9600, "python3")
+	cgroup.setKills(2)
+	h.tick()
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != python || kills[0].Role != "tester" || kills[0].SizeBytes != 800*mib {
+		t.Fatalf("the sink took %+v, want python3 (%d) alone, the tester's, at %d bytes: ld (%d), set aside in an earlier wait, counts for none of this one; the log:\n%s",
+			kills, python, 800*mib, ld, h.logged())
+	}
+}
+
+// The same for a process a scan first read with SIGKILL pending: it counts against the kills
+// pending of the burst it was first read in, and is never named, but it counts at no later burst
+// (the architect's rule of 2026-11-16T16:14Z). The tester's cc1 starts after a scan, and before
+// the next scan the kernel kills it, so that scan first reads it with SIGKILL pending; that wait
+// ends on its unnamed line. cc1 exits, a zombie its parent never reaps. In a later wait the kernel
+// kills the tester's python3, which shows the kill: it is named, alone, though cc1 is still in /proc.
+func TestGuestNamesALaterBurstsVictimBesideAZombieFirstReadWithSIGKILLPending(t *testing.T) {
+	const cc1, python = 961, 962
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9620, "python3", 1100, 800*mib))
+	classes[cc1], classes[python] = Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// cc1 starts after that scan, and the kernel kills it before the next one.
+	cc1Process := command(cc1, 9610, "cc1", 0, 300*mib)
+	pod.addGuest(cc1Process)
+	showKill(pod, cc1, "cc1", false)
+	cgroup.setKills(1)
+	h.tick()
+	// cc1 exits, a zombie its parent never reaps.
+	cc1Process.zombie, cc1Process.resident = true, 0
+	pod.add(cc1Process.fakeProcess)
+	showKill(pod, cc1, "cc1", true)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v in the first wait, want neither: cc1 was first read with SIGKILL pending; the log:\n%s", ended, kills, h.logged())
+	}
+
+	// A later wait: the kernel kills python3, which shows the kill.
+	reaped(pod, python, 9620, "python3")
+	cgroup.setKills(2)
+	h.tick()
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != python || kills[0].Role != "tester" || kills[0].SizeBytes != 800*mib {
+		t.Fatalf("the sink took %+v, want python3 (%d) alone, the tester's, at %d bytes: cc1 (%d), first read with SIGKILL pending in an earlier wait, counts for none of this one; the log:\n%s",
+			kills, python, 800*mib, cc1, h.logged())
+	}
+}
+
 // A command that starts during the wait and exits by itself is no kill. The kernel kills the
 // tester's node, and the scan that sees the rise finds no process showing the kill yet, since the
 // kernel raises the counter just before it sends SIGKILL. The reviewer's rg starts, is raised and
