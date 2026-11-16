@@ -6206,20 +6206,30 @@ each issue's pod (every role of it alike) and the image probe's.
   Unset, no pod carries the token, no role is told either variable, and the name, the path and both variables stay the operator's (the variables a launch spec's too), so a deployment that never sets it runs exactly as before the key existed.
   The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
   Turning the key off replaces no pod: the next generation of each role is told no identity, though its pod still mounts the token until it is replaced.
-  With the key set, the daemon also registers each role's session for the pod it runs in, which the broker's exchange requires of a pod whose account's exchange entry fixes no session: it posts the pod's own token for the broker's audience (the one the shim's hello carries, or the one the shim reads again), the session name and the thumbprint of the role's own key (the one its shim's hello names) to the broker's `POST /v1/oauth/exchange/pod-sessions`, under its own ServiceAccount token as the bearer, the credential that route's class checks.
-  Every registration is made at or after the role's shim hello, with that hello's thumbprint, and never before it: none is sent for a role whose hello has not arrived or names no thumbprint.
-  The registration needs a broker that binds it to the key: a broker before this release refuses the `thumbprint` field as `400 INVALID_REQUEST`, which the daemon logs and does not write again, so set the key only with this release's broker.
-  An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
-  a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
-  and a role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
-  The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
-  When a role's process ends, the daemon waits for that registration's write in flight to be answered, up to the RPC timeout, before its next process writes its own, so the session ends bound to the new process's key.
-  A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
-  that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
-  Any other refusal is logged and not written again for that process.
-  So is an answer that registered another pod or another key than the daemon named: the broker answers the pod uid it read from the token (`pod_uid`) and the key the registration is bound to (`thumbprint`), and the daemon logs the pod, the session and both values and stops writing that registration.
-  Unset, the daemon makes no registration call.
-  The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, but each bound to that role's own key, so the broker refuses a sibling role a trade for another role's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
+
+  - With the key set, the daemon also registers each role's session for the pod it runs in, which the broker's exchange requires of a pod whose account's exchange entry fixes no session: it posts the pod's own token for the broker's audience (the one the shim's hello carries, or the one the shim reads again), the session name and the thumbprint of the role's own key (the one its shim's hello names) to the broker's `POST /v1/oauth/exchange/pod-sessions`, under its own ServiceAccount token as the bearer, the credential that route's class checks.
+
+  - Every registration is made at or after the role's shim hello, with that hello's thumbprint, and never before it: none is sent for a role whose hello has not arrived or names no thumbprint.
+
+  - The registration needs a broker that binds it to the key: a broker before this release refuses the `thumbprint` field as `400 INVALID_REQUEST`, which the daemon logs and does not write again, so set the key only with this release's broker.
+
+  - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
+    a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
+    and a role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
+
+  - The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
+
+  - When a role's process ends, the daemon waits for that registration's write in flight to be answered, up to the RPC timeout, before its next process writes its own, so the session ends bound to the new process's key.
+
+  - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
+    that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
+
+  - Any other refusal is logged and not written again for that process.
+    So is an answer that registered another pod or another key than the daemon named: the broker answers the pod uid it read from the token (`pod_uid`) and the key the registration is bound to (`thumbprint`), and the daemon logs the pod, the session and both values and stops writing that registration.
+
+  - Unset, the daemon makes no registration call.
+
+  - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, but each bound to that role's own key, so the broker refuses a sibling role a trade for another role's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
