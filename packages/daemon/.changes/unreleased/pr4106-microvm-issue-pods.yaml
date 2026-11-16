@@ -15,7 +15,7 @@ body: |-
   role runs to `oom_score_adj` 1000, so in a `Guaranteed` issue pod (each request of
   `runtime.kubernetes.resources.issue` equal to its limit) the pod's own kernel stops a command and
   not Oh My Pi; in a `Burstable` pod it can stop an agent that is larger than the command by more
-  than the request's share of the node's memory. The launcher names a process the kernel killed in
+  than `memory request / node memory` of the pod's limit. The launcher names a process the kernel killed in
   the guard's `ended` line only while that process shows SIGKILL pending, which it reads at each
   file-modified event of the cgroup's `memory.events` and at a scan every 100 ms, and the role is
   told; a note of its own says when the process was one that runs the role's session. A kill no
