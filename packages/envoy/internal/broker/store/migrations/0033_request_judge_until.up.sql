@@ -1,0 +1,15 @@
+-- packages/envoy/internal/broker/store/migrations/0033_request_judge_until.up.sql
+-- Who decides a pending request is a setting of its keys, read when the request is written: the
+-- model judge, for a request whose every key needing a decision has a judge entry in the airlock
+-- rules and no administrator's tag, on a broker that runs a judge; a person for every other one.
+-- judge_until is that answer as the row keeps it: the moment until which the judge holds the
+-- request, two minutes after it was written (requests.JudgeHold), and null for a request a person
+-- decides. While it lies ahead the request is on no person's list (requests.PendingForApprover),
+-- no person may decide it, and the judge alone may write its verdict; a run that cannot decide
+-- clears it in the transaction that writes its row, and a run the broker lost lets it pass. Either
+-- way the request is then its person's, once.
+--
+-- Additive and nullable: a broker from before this column writes none, and every row it wrote is
+-- a person's to decide, as every request was before the column existed. The new broker rolls out
+-- first; a broker from before it reads no column it does not know.
+alter table requests add column if not exists judge_until timestamptz;

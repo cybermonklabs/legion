@@ -144,7 +144,7 @@ func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 func (m *Machine) readRelease(ctx context.Context, grantID string, checked grantRelease, want releaseRead) ([]releasedName, error) {
 	read := make([]releasedName, 0, len(checked.granted))
 	for _, g := range checked.granted {
-		entry := m.Airlock.Lookup(g.name)
+		entry := m.Airlock.Bound(g.name)
 		if entry == nil && want.airlockOnly {
 			continue
 		}

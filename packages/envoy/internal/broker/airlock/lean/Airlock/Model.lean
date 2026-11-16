@@ -235,11 +235,12 @@ def judgeOK : Option Nat → Bool
 def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure"
 
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
-the names are distinct, **every** entry binds at least one host (not only a judged one),
-a judge lifetime is at most 900 s, and a kind is `""`, `"aws"` or `"azure"`. -/
+the names are distinct, a judge lifetime is at most 900 s, and a kind is `""`, `"aws"` or
+`"azure"`. An entry may bind no host: it then says who decides a request for its key and binds
+the value nowhere, and `check` refuses every request for it ("secret not behind airlock"). -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
-  rules.secrets.all fun s => !s.hosts.isEmpty && judgeOK s.judge && kindOK s.kind
+  rules.secrets.all fun s => judgeOK s.judge && kindOK s.kind
 
 /-! ## Decision and rewrite -/
 

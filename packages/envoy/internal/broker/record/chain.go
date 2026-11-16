@@ -84,6 +84,16 @@ type ChainVerifier struct {
 	// refuses with no bound available — which is what enroll.NewChainVerifier does, a launcher
 	// credential being no record the judge ever decides.
 	JudgeSeconds func(secret string) (uint32, bool)
+
+	// Decided answers, for a record the judge approved, which of its request's keys needed a
+	// decision when the request was written — the keys the judge decided, which MayJudge holds
+	// to the rules' bound — where every other key is one the session got at once beside them.
+	// requests.NewChainVerifier reads it off the request's own rows; a nil Decided is every key
+	// decided, as for a verifier that holds no such rows. That a key was got at once is no
+	// licence of its own: every release asks the live policy again whether it still needs no
+	// decision (requests' stillAllowed), so a row that claims it of a key that needs one
+	// releases nothing.
+	Decided func(ctx context.Context, recordID string) (func(secret string) bool, error)
 }
 
 // Verify re-derives recordID's full issuance chain and returns its parsed Body once every link
@@ -125,7 +135,13 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 		return Body{}, fmt.Errorf("%w: no approved event (decided %s)", ErrChainBroken, decisions[0].Event)
 	}
 	if modelID, judged := JudgeLogin(decisions[0].Actor); judged {
-		if err := MayJudge(body, obj, c.JudgeSeconds); err != nil {
+		var decided func(string) bool
+		if c.Decided != nil {
+			if decided, err = c.Decided(ctx, recordID); err != nil {
+				return Body{}, err
+			}
+		}
+		if err := MayJudge(body, obj, c.JudgeSeconds, decided); err != nil {
 			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which the rules do not admit: %s", ErrChainBroken, modelID, err)
 		}
 	} else if !MayDecide(c.Kind, body.Approver, obj.Service(), decisions[0].Login) {
