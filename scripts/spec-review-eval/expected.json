@@ -155,10 +155,10 @@
       "spec": "12-common-nouns.md",
       "planted": [],
       "mustNotName": [
-        { "node": "inbox-page-size" },
+        { "node": "inbox-wait-hours" },
         { "node": "ask-wait-minutes" },
-        { "node": "summary-file" },
-        { "node": "answer-message" }
+        { "node": "summary-days" },
+        { "node": "answer-seconds" }
       ]
     },
     {

@@ -1,17 +1,17 @@
-# The pages of the inbox
+# Asks that wait
 
-:::requirement{#inbox-page-size}
-The inbox shows at most 50 asks on one page, and the oldest ask comes first.
+:::requirement{#inbox-wait-hours}
+The inbox shows first each ask that waited more than 24 hours.
 :::
 
 :::requirement{#ask-wait-minutes}
-When an ask waits more than 10 minutes, the inbox shows it first in its list.
+When an ask waits more than 10 minutes, the inbox shows it before each newer ask.
 :::
 
-:::requirement{#summary-file}
-Dispatch writes the summary of each approval request to one file in its database.
+:::requirement{#summary-days}
+Dispatch keeps the summary of each approval request for 90 days.
 :::
 
-:::requirement{#answer-message}
-When the person answers an ask, Dispatch sends one message to the agent that asked it.
+:::requirement{#answer-seconds}
+When the person answers an ask, Dispatch closes the ask within 2 seconds.
 :::

@@ -33,7 +33,7 @@ Only the door controller opens or closes a door.
 :::
 
 :::check{#v-kiosk-memory serves="dispatch://@ISSUE@/spec#b-kiosk-memory" surface="api" run="A program types 100 pickup codes at the kiosk and reads the database 60 seconds later. It must find the 100 pickup codes there." when="before_merge" negative_control="A build that writes the pickup codes only once each hour fails."}
-The kiosk writes the pickup codes that tenants typed to the database within 60 seconds.
+The kiosk writes the last 100 pickup codes that tenants typed to the database within 60 seconds.
 
 Test: the runner `go test` and the selector `./internal/kiosk -run TestKioskWritesCodesEachMinute`. Job: `locker-unit`.
 :::

@@ -11,7 +11,7 @@ The locker sends no notice to a tenant in the quiet hours, and it sends each suc
 :::
 
 :::requirement{#voucher-print}
-The kiosk prints one voucher for each parcel that the locker returns to its courier.
+The locker prints one voucher for each parcel that it returns to its courier.
 :::
 
 :::requirement{#door-close-sixty}
