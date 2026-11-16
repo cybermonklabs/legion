@@ -1878,13 +1878,15 @@ jobs:
             # and the axiom print read the model's own project, and the two fuzz runs compile the
             # airlock package and compare it against the model's program, so a change to either
             # side runs the job. Both sides live under internal/broker/airlock, which one glob
-            # names; the axiom check is a script of its own, which check k15 runs too; the Lean
+            # names, and the Go side also compiles internal/fold, the case fold it compares names
+            # in; the axiom check is a script of its own, which check k15 runs too; the Lean
             # toolchain comes from the elan the job's action installs, and that action reads the
             # `elan` row of the tool manifest through the fetch helper every install goes through.
             airlock_lean:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - 'packages/envoy/internal/broker/airlock/**'
+              - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/scripts/airlock-lean-axioms.sh'
               - '.github/actions/install-elan/**'
               - '.github/ci-tools.yaml'
@@ -5961,8 +5963,9 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # No Go cache family: the airlock package imports the standard library alone, so this job
-      # downloads no module and compiles no third-party code, as envoy-go-race-api does.
+      # No Go cache family: the airlock package imports the standard library and internal/fold,
+      # which imports nothing, so this job downloads no module and compiles no third-party code,
+      # as envoy-go-race-api does.
       #
       # elan and the Lean toolchain it installs, under the ELAN_HOME
       # .github/actions/install-elan sets ($RUNNER_TEMP/elan, under the runner's work directory),

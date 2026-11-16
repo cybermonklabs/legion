@@ -1125,8 +1125,7 @@ func main() {
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}
-	// Serve /v1/* on the listener port for local plugin registration. Every request apiAuth admits
-	// is counted under the credential that admitted it and the route the gate serves it on.
+	// Serve /v1/* on the listener port for local plugin registration.
 	apiAuthConfig.requests = newListenerRequests(met)
 	apiAuthConfig.route = v1Gate.route
 	v1Handler := apiAuth(apiAuthConfig, v1Gate)

@@ -170,7 +170,7 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 // everything else. It reads unverified text, so it picks a verifier and decides nothing about a
 // caller: no claim anyone is admitted on comes from it.
 func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeClaims(raw)
+	claims, err := decodeUnverifiedClaims(raw)
 	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
@@ -275,7 +275,7 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	if errors.As(err, &expired) {
 		return fmt.Errorf("%w at %s", ErrExpired, expired.Expiry.UTC().Format(time.RFC3339))
 	}
-	claims, decodeErr := decodeClaims(raw)
+	claims, decodeErr := decodeUnverifiedClaims(raw)
 	switch {
 	case decodeErr != nil:
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
@@ -335,10 +335,7 @@ func (a *audience) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// decodeClaims reads raw's claims without verifying anything. It decides nothing about a caller:
-// its readers are Issues, which picks the verifier a token goes to, and classify, which names the
-// class of a token already refused. It reads raw as it always did, so both answer as before.
-func decodeClaims(raw string) (tokenClaims, error) {
+func decodeUnverifiedClaims(raw string) (tokenClaims, error) {
 	var claims tokenClaims
 	payload, err := tokenPayload(raw)
 	if err != nil {

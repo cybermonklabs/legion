@@ -436,7 +436,7 @@ func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]s
 	if value == "" {
 		return nil, nil
 	}
-	if len(strings.FieldsFunc(value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })) == 0 {
+	if strings.TrimFunc(value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) == "" {
 		return nil, errors.New("ENVOY_OIDC_ACCOUNTS is set but names no account; list the system:serviceaccount:<namespace>:<name> subjects to admit, or leave it unset to admit every subject the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair verifies")
 	}
 	accounts, err := splitAccountList("ENVOY_OIDC_ACCOUNTS", value)
