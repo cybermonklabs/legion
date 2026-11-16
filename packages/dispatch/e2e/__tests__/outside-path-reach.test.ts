@@ -585,6 +585,37 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A device's shell may export TMOUT, which bash's `read` takes as its timeout: with TMOUT=1 the
+  // read of a piped list stopped after the line that came first, and the run passed on it alone.
+  row(withoutTools)(
+    "reads a target list on a pipe whole, whatever TMOUT the device's shell sets",
+    async () => {
+      const origin = fakeDispatch();
+      const listening = closingTarget();
+      try {
+        const closed = await closedPort();
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: "/dev/stdin",
+            TMOUT: "1",
+          },
+          {
+            stdin: `closed 127.0.0.1 ${closed}\n`,
+            stdinLater: `hub 127.0.0.1 ${listening.port}\n`,
+          }
+        );
+        expect(run.stdout).toContain("outside-path-reach: targets /dev/stdin (2)\n");
+        expect(lineFor(run, "hub")).toContain(" REACHED; ");
+        expect(verdict(run)).toBe("FAIL: reached hub");
+        expect(run.code).toBe(1);
+      } finally {
+        origin.stop(true);
+        listening.stop(true);
+      }
+    }
+  );
+
   row(withoutTools)(
     "fails naming every reached target, whatever else the run could not see",
     async () => {

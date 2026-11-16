@@ -196,11 +196,18 @@ export function reachFixtures() {
 
   /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
    *  given, PATH the host's unless given, run by bash unless `shell` names another program, and
-   *  `stdin`, when given, on its standard input through a pipe. Bun hands a child's stdin over as
-   *  a memfd or a socket, neither of which reads as a pipe does, so a bash pipeline makes the pipe. */
+   *  `stdin`, when given, on its standard input through a pipe, with `stdinLater` written to the
+   *  pipe 2 s after it. Bun hands a child's stdin over as a memfd or a socket, neither of which
+   *  reads as a pipe does, so a bash pipeline makes the pipe. */
   async function drive(
     env: Record<string, string>,
-    options: { path?: string; curlrc?: string; shell?: string; stdin?: string } = {}
+    options: {
+      path?: string;
+      curlrc?: string;
+      shell?: string;
+      stdin?: string;
+      stdinLater?: string;
+    } = {}
   ): Promise<Run> {
     const home = join(scratch, `home-${randomUUID()}`);
     if (options.curlrc !== undefined) {
@@ -214,9 +221,10 @@ export function reachFixtures() {
         : [
             bash,
             "-c",
-            'printf "%s" "$1" | "$2" "$3"',
+            '{ printf "%s" "$1"; [ -z "$2" ] || { sleep 2; printf "%s" "$2"; }; } | "$3" "$4"',
             "drive",
             options.stdin,
+            options.stdinLater ?? "",
             options.shell ?? bash,
             script,
           ];

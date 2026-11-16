@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import {
+  bash,
   byteRefusal,
   closedPort,
   fakeDispatch,
@@ -151,6 +152,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["https://[1-1:1]", "1"],
         ["https://[fd00::g]", "1"],
         ["https://[1.2.3.4]", "1"],
+        ["https://[.::1]", "1"],
         ["ftp://dispatch-outside.example", "1"],
       ] as const) {
         const run = await drive({
@@ -262,6 +264,45 @@ describe.concurrent("outside-path-reach.sh", () => {
       holding.stop(true);
     }
   });
+
+  // A read that stops before the end of the list, here by a TMOUT=1 the device's shell makes
+  // readonly (through BASH_ENV, which bash reads at its start), so the script cannot unset it.
+  // bash 5 says so with read's status 142; bash 3.2 gives 1 and keeps nothing it read, as at the
+  // end of an empty list. Either way the run refuses before it goes on the network.
+  row(withoutTools)(
+    "refuses a target list whose read stopped before the end of the list",
+    async () => {
+      const origin = fakeDispatch();
+      const holding = holdingTarget();
+      const major = Number(
+        Bun.spawnSync([bash, "-c", `printf %s "\${BASH_VERSINFO[0]}"`]).stdout.toString()
+      );
+      try {
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: "/dev/stdin",
+            BASH_ENV: written("readonly TMOUT=1\n"),
+          },
+          {
+            stdin: `closed 127.0.0.1 ${await closedPort()}\n`,
+            stdinLater: `hub 127.0.0.1 ${holding.port}\n`,
+          }
+        );
+        expect(verdict(run)).toBe(
+          major >= 4
+            ? "UNKNOWN: OUTSIDE_PATH_TARGETS names /dev/stdin, which this device could not read " +
+                "whole: the read stopped with status 142 before the end of the list"
+            : "UNKNOWN: /dev/stdin lists no target: nothing was tried, so nothing is proved"
+        );
+        expect(run.code).toBe(2);
+        expect(origin.seen).toEqual([]);
+      } finally {
+        origin.stop(true);
+        holding.stop(true);
+      }
+    }
+  );
 
   row(withoutTools)("is unknown when curl is missing", async () => {
     const origin = fakeDispatch();
@@ -390,8 +431,18 @@ describe.concurrent("outside-path-reach.sh", () => {
           ],
           [await list("hub ::ffff:127.0.0.1 4222"), "target hub: ::ffff:127.0.0.1 is an IPv6 form"],
           [await list("hub ::FFFF:7f00:1 4222"), "target hub: ::FFFF:7f00:1 is an IPv6 form"],
-          [scratch, "which this device could not read whole"],
-          [join(scratch, "no-such-list.txt"), "which this device could not read whole"],
+          // A dot before a colon is no part of any address, and the likeliest typo writes the port
+          // into the host.
+          [await list("hub .::1 4222"), "target hub: .::1 is neither a host name nor an address"],
+          [
+            await list("hub a.b::1 4222"),
+            "target hub: a.b::1 is neither a host name nor an address",
+          ],
+          [await list("hub 1.2:3 4222"), "target hub: 1.2:3 is neither a host name nor an address"],
+          [
+            await list("hub 10.0.0.1:4222 4222"),
+            "target hub: 10.0.0.1:4222 is neither a host name nor an address",
+          ],
         ] as const) {
           const run = await drive({
             OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -402,6 +453,24 @@ describe.concurrent("outside-path-reach.sh", () => {
           );
           expect(verdict(run)).toContain(reason);
         }
+        expect(origin.seen).toEqual([]);
+        // A list it cannot open, or a read error, refuses with bash's own words at the end.
+        const [directory, missing] = await Promise.all(
+          [scratch, join(scratch, "no-such-list.txt")].map((where) =>
+            drive({
+              OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+              OUTSIDE_PATH_TARGETS: where,
+            })
+          )
+        );
+        expect(verdict(directory)).toMatch(
+          /^UNKNOWN: OUTSIDE_PATH_TARGETS names \S+, which this device could not read whole: .*read error: 0: Is a directory$/
+        );
+        expect(directory.code).toBe(2);
+        expect(verdict(missing)).toEndWith(
+          "which this device could not read whole: could not open it"
+        );
+        expect(missing.code).toBe(2);
         expect(origin.seen).toEqual([]);
       } finally {
         origin.stop(true);

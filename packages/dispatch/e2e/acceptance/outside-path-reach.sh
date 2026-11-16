@@ -150,7 +150,8 @@ v4_in_v6() {
 # check_host WHO HOST: refuses HOST, the origin's host or a target's, unless it is a name, an IPv6
 # address of hexadecimal digits and colons alone, or an IPv4 address in its canonical form; WHO
 # begins each message (`target hub:`, `OUTSIDE_ORIGIN host`). curl reads no such host as a URL
-# pattern, and a dot in an IPv6 address is a dotted IPv4 part, which `v4_in_v6` refuses.
+# pattern. A dot in an IPv6 address is a dotted IPv4 part, which `v4_in_v6` refuses first; any dot
+# left in a coloned host (`.::1`, `a.b::1`, `10.0.0.1:4222`) is no part of an address at all.
 check_host() {
   case $2 in
     *:*)
@@ -160,6 +161,7 @@ check_host() {
   esac
   ! v4_in_v6 "$2" ||
     unknown "$1 $2 is an IPv6 form of an IPv4 address; write the IPv4 address itself"
+  case $2 in *:*.* | *.*:*) unknown "$1 $2 is neither a host name nor an address" ;; esac
   host_ok "$2" ||
     unknown "$1 $2 is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
 }
@@ -369,13 +371,16 @@ esac
 
 # The target list, read whole and once before anything goes on the network (a pipe can be read
 # only once): a list it cannot read whole is a refusal, never a target left out. One `read -d ''`
-# reads it all: it stops at a NUL byte and succeeds only when it found one, fails at the end of the
-# list, and says so on stderr only for a read error, which ends it as the end of the list would
-# (`$(<file)` and curl's file:// pass one over in silence). So `listed` holds the read's stderr,
-# then an LF, the read's status, an LF and the text: anything before that first LF is bash's own
-# words, and refuses the run. Row 0 is the origin itself, the positive control.
+# reads it all: it stops at a NUL byte and succeeds only when it found one, fails with status 1 at
+# the end of the list, and says so on stderr only for a read error, which ends it as the end of the
+# list would (`$(<file)` and curl's file:// pass one over in silence). Any other status is a read
+# that stopped before the end: a timeout TMOUT sets (an inherited TMOUT=1 cut a piped list short
+# and the run passed, so the read unsets it) or a signal. So `listed` holds the read's stderr, then
+# an LF, the read's status, an LF and the text: anything before that first LF is bash's own words,
+# and refuses the run. Row 0 is the origin itself, the positive control.
 targets=$OUTSIDE_PATH_TARGETS
 listed=$({
+  unset TMOUT 2>/dev/null
   text=''
   IFS= read -r -d '' text 2>&1
   printf '\n%s\n%s.' "$?" "$text"
@@ -408,12 +413,19 @@ refuse_byte() {
   unknown "line $1 of $targets holds byte 0x$3 at offset $2, which is not printable ASCII, a tab or LF: write the list in ASCII, one target per line, with LF or CRLF line endings"
 }
 
-# The read succeeded only at a NUL byte, and `text` holds what came before it.
+# The read's status: 0 at a NUL byte, with `text` what came before it; 1 at the end of the list,
+# with `text` all of it; anything else before the end.
 text=${listed#*"$newline"}
-if [ "${listed%%"$newline"*}" = 0 ]; then
-  lfs=${text//[!$newline]/}
-  refuse_byte $((${#lfs} + 1)) "${#text}" 00
-fi
+case ${listed%%"$newline"*} in
+  0)
+    lfs=${text//[!$newline]/}
+    refuse_byte $((${#lfs} + 1)) "${#text}" 00
+    ;;
+  1) ;;
+  *)
+    unknown "OUTSIDE_PATH_TARGETS names $targets, which this device could not read whole: the read stopped with status ${listed%%"$newline"*} before the end of the list"
+    ;;
+esac
 rest=$text
 hosts[0]=$origin_host
 ports[0]=$origin_port
