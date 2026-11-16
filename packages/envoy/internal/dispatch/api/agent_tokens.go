@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -376,16 +378,36 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// codeTokenOwnerNotAdmitted refuses a personal token whose owner is a restricted member this
+// deployment would not sign in now (restrictedOwnerAdmitted).
+const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
+
+// personalTokenActor resolves a personal token (dsp_) to the credential its row says it is: its
+// owner, its scopes and its list of projects. A plaintext no row holds is no actor, and a revoked
+// token is 401 TOKEN_REVOKED. A token carries its owner's sign-in to an agent, so it acts only
+// while its owner may still sign in: a restricted member's token is checked at every use
+// (restrictedOwnerAdmitted), so it stops the moment outside sign-in is turned off or no project
+// names its owner any more, and works again if either is undone, while the owner's cookie stops
+// at its next hourly confirmation. optionalActor is the one place a bearer is resolved, for every
+// route and both sockets' heartbeats (whileCallerResolves), so the check holds on all of them.
+//
+// The owner's member kind is read in the token's own statement, a left join on people by the
+// canonical login actingPerson wrote at the mint, the form people.email holds. So the token of a
+// full member, or of an owner no people row holds, costs no read beyond the one it always cost and
+// answers as it always did; only a restricted owner's token reads the lists.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
 	var scopes, projects []string
 	var revokedAt *time.Time
+	var memberKind *string
 	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, name, owner, scopes, projects, revoked_at
+		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
+			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind
 		from agent_tokens
-		where token_hash = $1
-	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt)
+		left join people on people.email = agent_tokens.owner
+		where agent_tokens.token_hash = $1
+	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -394,6 +416,11 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	}
 	if revokedAt != nil {
 		return model.Actor{}, errorf(http.StatusUnauthorized, "TOKEN_REVOKED", "agent token has been revoked")
+	}
+	if memberKind != nil && model.MemberKind(*memberKind) == model.MemberRestricted {
+		if err := s.restrictedOwnerAdmitted(ctx, owner); err != nil {
+			return model.Actor{}, err
+		}
 	}
 	if _, err := s.deps.Store.Pool.Exec(ctx, `
 		update agent_tokens
@@ -411,6 +438,30 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		Owner:      &owner,
 		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
 	}, nil
+}
+
+// restrictedOwnerAdmitted answers nil while a restricted member's personal token may act: while
+// this deployment signs in people from outside its domain (Deps.SignInOutside) and some project
+// names owner directly, as its owner or on its access list (access.Listed, the read the sign-in
+// rule admits such a person by). Otherwise it is 401 TOKEN_OWNER_NOT_ADMITTED saying which. Lists
+// that cannot be read are 503 IDENTITY_UNAVAILABLE, never an accept. The answer names no owner:
+// whoever holds the token is told why it stopped, not whose it is.
+func (s *server) restrictedOwnerAdmitted(ctx context.Context, owner string) error {
+	if !s.deps.SignInOutside {
+		return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+			"this token's owner is a restricted member from outside the sign-in domain, and outside sign-in is off on this deployment (DISPATCH_SIGNIN_OUTSIDE is unset), so the token acts for nobody")
+	}
+	listed, err := access.Listed(ctx, s.deps.Store.Pool, owner)
+	if err != nil {
+		slog.Warn("dispatch: a restricted member's personal token was refused: the access lists could not be read", "error", err)
+		return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"whether a project still names this token's owner could not be read; try again in a minute")
+	}
+	if !listed {
+		return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+			"this token's owner is a restricted member from outside the sign-in domain, and no project names them any more, as its owner or on its access list, so the token acts for nobody")
+	}
+	return nil
 }
 
 func newAgentToken() (string, [sha256.Size]byte, error) {

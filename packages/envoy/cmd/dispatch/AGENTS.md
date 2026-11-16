@@ -560,7 +560,16 @@ write identity errors with `identity.WriteError`.
   `X-Forwarded-For` address and User-Agent every 10 minutes
   (`cmd/dispatch/README.md` names the line's fields). Bearer callers cannot act
   as users. The document websocket (`/ws/doc/{room}`) takes no bearer at all: it
-  is a person's cookie connection only (INFRA-264).
+  is a person's cookie connection only (INFRA-264). A restricted member's `dsp_`
+  token acts only while the outside sign-in rule would admit its owner now:
+  `appContextOptions` hands the router boot's `SignInOutside`
+  (`api.Deps.SignInOutside`), and `api.personalTokenActor` reads the owner's
+  member kind in the token's own lookup (a left join on `people`), so for a
+  restricted owner alone it also requires the setting and `access.Listed` at
+  every use, answering `401 TOKEN_OWNER_NOT_ADMITTED` (the words say which
+  failed) or, when the lists cannot be read, `503 IDENTITY_UNAVAILABLE`. A full
+  member's token reads nothing more. The settings test of
+  `DISPATCH_SIGNIN_OUTSIDE` uses such a token, so dropping the hand-off fails it.
 - `DISPATCH_OIDC_ISSUER` + `DISPATCH_OIDC_AUDIENCE` (both or neither; half the
   pair refuses to boot naming the missing one) make a Kubernetes pod's projected
   service-account token a third bearer credential. `resolveBootConfig` only

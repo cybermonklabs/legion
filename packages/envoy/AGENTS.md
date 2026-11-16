@@ -3874,6 +3874,9 @@ the request is answered `503 SIGNIN_UNAVAILABLE` and the sign-in is kept for the
 A sign-in it ended for a person from outside the domain says why at that request and every one after it:
 the 401 `NO_IDENTITY` carries `reason` (`NOT_LISTED` once no access list names them, `OUTSIDE_SIGNIN_OFF` for a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off) and `login`, read afresh from the person's row and the lists (`identity.SignInRule.SignedOutReason`) rather than kept from the request that ended it, and the sign-in page says it in words;
 a sign-out, an expired cookie and a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` give none.
+A restricted member's personal `dsp_` token is held to the same rule at every use rather than hourly (`api.personalTokenActor`, which reads the owner's member kind in the token's own lookup):
+it acts only while `DISPATCH_SIGNIN_OUTSIDE=1` and a project names its owner directly (`access.Listed`), and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED` saying which, or `503 IDENTITY_UNAVAILABLE` when the lists cannot be read;
+nothing revokes it, so it acts again once both hold, and a full member's token reads nothing more.
 A person is their email, so under a domain `people.sub` records the Google account that last signed in to each address, and a sign-in or confirmation under another account ends every session of the address;
 under a group nothing does, so the old holder of a reassigned address keeps the cookies they hold until those expire.
 Browser sessions carry a server-side generation that logout advances, and unsafe cookie-authenticated requests must prove the configured same origin; bearer automation remains separate.

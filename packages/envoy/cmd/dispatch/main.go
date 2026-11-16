@@ -1877,6 +1877,7 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.AppContextOptions) routes.AppContextOptions {
 	built.SignInRule = rule
 	built.OutsideOrigin = boot.OutsideOrigin
+	built.SignInOutside = boot.SignInOutside
 	built.AgentTokens = boot.AgentTokens
 	built.DefaultProject = boot.DefaultProject
 	built.OIDCAccounts = boot.OIDCAccounts

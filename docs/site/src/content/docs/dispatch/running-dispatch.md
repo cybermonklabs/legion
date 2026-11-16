@@ -177,6 +177,12 @@ API's `401 NO_IDENTITY` says the same, as a `reason` of `NOT_LISTED` or `OUTSIDE
 their address as `login`. A person who signs out, or whose sign-in simply expires, is told
 nothing more, and a deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` answers as it always did.
 
+The agent tokens such a person makes in **Settings → Agent tokens** follow the same rule, checked
+at every request rather than hourly: a token stops at once when the setting is off or no project
+names its owner any more, and the answer is `401 TOKEN_OWNER_NOT_ADMITTED`, saying which. Nothing
+revokes the token, so it works again once both hold again. Your own people's tokens are not
+affected.
+
 For this the Google client's consent screen's audience is **External**. Dispatch asks for
 `openid`, `email` and `profile` alone, so the app can stay in Testing status with no list of test
 users, and its sign-ins do not lapse after seven days. Dispatch then names no domain to Google's

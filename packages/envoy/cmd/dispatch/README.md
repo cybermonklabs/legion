@@ -578,6 +578,13 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   The authorization request then names no `hd` on any origin, since `hd` narrows Google's account chooser to the domain and would hide an outside account; it never decides who signs in.
   The Google client's OAuth consent screen's audience must be External, which with the scopes Dispatch asks for (`openid`, `email`, `profile`) needs no test-user list and keeps refresh tokens past seven days in Testing status; the client lists `<DISPATCH_SERVER_URL>/auth/callback` and, with an outside origin, `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`.
 
+- A restricted member's personal `dsp_` token is held to the same rule at every use, not hourly (`api.personalTokenActor`):
+  it acts only while `DISPATCH_SIGNIN_OUTSIDE=1` and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which of the two failed;
+  lists that cannot be read are `503 IDENTITY_UNAVAILABLE`, never an accept.
+  So turning the setting off, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation.
+  Nothing revokes the token, so it acts again once both hold again.
+  The owner's member kind is read in the token's own lookup, so a full member's token, and one whose owner has no `people` row, reads nothing more and answers as before.
+
 - With either issuer, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.

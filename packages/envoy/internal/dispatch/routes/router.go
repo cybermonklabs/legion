@@ -152,6 +152,9 @@ type AppContextOptions struct {
 	// See api.DepsInput.
 	OIDCAccounts   []string
 	AccessAccounts []string
+	// SignInOutside is DISPATCH_SIGNIN_OUTSIDE=1 (cmd/dispatch: boot's SignInOutside), which a
+	// restricted member's personal token needs to act. See api.DepsInput.
+	SignInOutside bool
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
@@ -252,6 +255,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
+		SignInOutside:          opts.SignInOutside,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,

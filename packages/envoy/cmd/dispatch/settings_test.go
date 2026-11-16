@@ -648,8 +648,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if err != nil || location.Query().Has("hd") || location.Query().Get("access_type") != "offline" {
 				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /auth/start redirected to %v (%v), want offline access and no hd", location, err)
 			}
-			if response := s.signInAs(t, s.handler, outsiderEmail); response.Code != http.StatusFound || !sessionCookieSet(response) {
-				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: %s, whom PRIV lists, was answered %d, want a signed-in redirect", outsiderEmail, response.Code)
+			signIn := s.signInAs(t, s.handler, outsiderEmail)
+			if signIn.Code != http.StatusFound || !sessionCookieSet(signIn) {
+				t.Fatalf("DISPATCH_SIGNIN_OUTSIDE=1: %s, whom PRIV lists, was answered %d, want a signed-in redirect", outsiderEmail, signIn.Code)
+			}
+			// The API reads it too: a restricted member's own token acts only while it is on
+			// (TestOutsideSignInTokenStopsWhenTheSettingIsOff holds the token refused once it is off).
+			if response := bearerRequest(s.handler, http.MethodGet, "/api/v1/whoami", "", mintTokenOn(t, s.handler, signIn)); response.Code != http.StatusOK {
+				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /api/v1/whoami with %s's own token answered %d %s, want 200", outsiderEmail, response.Code, response.Body.String())
 			}
 		},
 		"DISPATCH_OUTSIDE_ORIGIN": outsideOriginReachesItsReaders,

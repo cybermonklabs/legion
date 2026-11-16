@@ -81,6 +81,10 @@ type testServerOptions struct {
 	// Nil is the deployment that names none.
 	oidcAccounts   []string
 	accessAccounts []string
+	// signInOutside is Deps.SignInOutside: a deployment that signs in people from outside its
+	// domain (DISPATCH_SIGNIN_OUTSIDE=1), which a restricted member's personal token needs.
+	// False is the deployment that does not.
+	signInOutside bool
 	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
 	// the deployment has provisioned as private, and the private-projects record's writer. Nil
 	// and nil are the deployment that names no private project.
@@ -270,6 +274,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDC:                   options.oidc,
 		OIDCAccounts:           options.oidcAccounts,
 		AccessAccounts:         options.accessAccounts,
+		SignInOutside:          options.signInOutside,
 		PrivateProjects:        options.privateProjects,
 		BusProjects:            options.busProjects,
 		BrokerTokens:           brokerTokens,

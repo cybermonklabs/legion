@@ -134,6 +134,12 @@ type Deps struct {
 	// /api/v1/access/projects/{key} and GET /api/v1/access/person; cmd/dispatch:
 	// DISPATCH_ACCESS_ACCOUNTS). Every other caller is 403 ACCESS_ACCOUNT_REQUIRED there.
 	AccessAccounts []string
+	// SignInOutside is whether this deployment signs in people from outside its domain
+	// (cmd/dispatch: DISPATCH_SIGNIN_OUTSIDE=1). A restricted member's personal token acts only
+	// while it is true and a project still names the owner (personalTokenActor); false refuses
+	// such a token 401 TOKEN_OWNER_NOT_ADMITTED at its next use. A full member's token never reads
+	// it.
+	SignInOutside bool
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
 	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made
 	// private (privateProjectProvisioned). Empty refuses every switch to private 409
@@ -258,6 +264,9 @@ type DepsInput struct {
 	// has checked each subject's form and that every access account is also admitted.
 	OIDCAccounts   []string
 	AccessAccounts []string
+	// SignInOutside is Deps.SignInOutside: DISPATCH_SIGNIN_OUTSIDE=1, which a restricted member's
+	// personal token needs to act.
+	SignInOutside bool
 	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
 	PrivateProjects []string
 	BusProjects     BusProjects
@@ -374,6 +383,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDC:                   input.OIDC,
 		OIDCAccounts:           input.OIDCAccounts,
 		AccessAccounts:         input.AccessAccounts,
+		SignInOutside:          input.SignInOutside,
 		PrivateProjects:        input.PrivateProjects,
 		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,

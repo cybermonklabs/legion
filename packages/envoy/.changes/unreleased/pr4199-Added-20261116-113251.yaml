@@ -6,6 +6,9 @@ body: |-
   project's access list names it directly; a group on an access list never admits such an
   account. The hourly confirmation runs the same rule, so an account no list names any more, or
   any outside account once the setting is off, is signed out at its next request past the hour.
+  Such a person's personal agent tokens follow the same rule at every use: a token is refused
+  `401 TOKEN_OWNER_NOT_ADMITTED` once the setting is off or no project names its owner, with no
+  hour to wait, and acts again once both hold; a full member's token is unchanged.
   `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, chosen by the request's
   host: its sign-in comes back to `<origin>/auth/callback`, which the Google client must list, a
   browser write from it must carry that Origin, `GET /auth/whoami` names both origins as
