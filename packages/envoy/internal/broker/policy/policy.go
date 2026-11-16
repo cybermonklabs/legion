@@ -100,21 +100,6 @@ const (
 	// loader refuses every other value (ReasonAdminMalformed), and `agent-secrets` holds --admin
 	// to it before it writes, so the two cannot drift on what the tag says.
 	AdminTrue = "true"
-	// TagShape says what the stored value is, so the broker knows what it may do to it before it
-	// spends it: ShapeToken a one-line credential, whose trailing run of carriage returns and
-	// line feeds the broker always removes, and ShapeDocument a value the broker releases byte
-	// for byte. A secret with no tag, or with an empty one (as TagKind reads an empty tag), is
-	// decided by TrimForShape's own reading of the value, which removes a trailing line ending
-	// only where the value holds none inside it. A tag set to neither word is refused
-	// (ReasonShapeMalformed) rather than read as one of them.
-	TagShape = "shape"
-	// ShapeToken is a stored value that is one line: an API key, a password, a bearer token. Its
-	// trailing line endings are what an editor or a shell left behind, never part of the
-	// credential, and an HTTP header cannot hold them at all.
-	ShapeToken = "token"
-	// ShapeDocument is a stored value whose every byte is part of it — a PEM key, a JSON service
-	// account file — which the broker releases unchanged.
-	ShapeDocument = "document"
 	// kindSourcePrefix opens the Source of a kind secret (KindSource). The kind and store source
 	// are frozen into a request, so changing or clearing the kind ends every live grant.
 	kindSourcePrefix = "mint:"
@@ -155,56 +140,34 @@ func ValidKind(kind string) bool {
 	return slices.Contains(Kinds, kind)
 }
 
-// Shapes is every value a secret's shape tag may name (TagShape). A tag holding another word is
-// refused (ReasonShapeMalformed), since the broker cannot say what it would release.
-var Shapes = []string{ShapeToken, ShapeDocument}
-
-// ValidShape reports whether shape is one of Shapes.
-func ValidShape(shape string) bool {
-	return slices.Contains(Shapes, shape)
-}
-
-// TrimForShape answers the value to spend for a stored value under its secret's shape tag, and
-// whether it changed it. Let rest be value with its whole trailing run of carriage returns and
-// line feeds removed (strings.TrimRight of "\r\n"):
-//
-//   - ShapeDocument: value, unchanged, since every byte of a document is part of it.
-//   - ShapeToken: rest, where rest is neither empty nor value itself. A value that is only line
-//     endings keeps them, because releasing the empty string for a stored value that is not
-//     empty reads to a caller as a credential that is not set.
-//   - every other shape, the absent tag among them: rest, where it is not empty, holds no
-//     carriage return and no line feed, and differs from value. A value with a line ending
-//     inside it, a PEM document for one, is left as it is, since nothing says its last line
-//     ending is not part of it.
+// TrimLineEnding answers the value to spend for a stored value, and whether it changed it. Let
+// rest be value with its whole trailing run of carriage returns and line feeds removed
+// (strings.TrimRight of "\r\n"): the answer is rest, where it is not empty, holds no carriage
+// return and no line feed, and differs from value, and value itself otherwise. A value with a
+// line ending inside it, a PEM document for one, is left as it is, since nothing says its last
+// line ending is not part of it, and a value that is only line endings keeps them, because
+// releasing the empty string for a stored value that is not empty reads to a caller as a
+// credential that is not set.
 //
 // This is the one statement of the rule, applied by the broker's release and by
 // `agent-secrets`' value reader: two copies of it would drift, and a caller would be handed a
-// value one of them had trimmed and the other had not.
-func TrimForShape(value, shape string) (string, bool) {
+// value one of them had trimmed and the other had not. The value itself decides, and no tag
+// does: a secret a writer left a `shape` tag on is read exactly as one without it.
+func TrimLineEnding(value string) (string, bool) {
 	rest := strings.TrimRight(value, "\r\n")
-	switch shape {
-	case ShapeDocument:
+	if rest == "" || rest == value || strings.ContainsAny(rest, "\r\n") {
 		return value, false
-	case ShapeToken:
-		if rest == "" || rest == value {
-			return value, false
-		}
-		return rest, true
-	default:
-		if rest == "" || rest == value || strings.ContainsAny(rest, "\r\n") {
-			return value, false
-		}
-		return rest, true
 	}
+	return rest, true
 }
 
-// DecodeValue refuses value, which a secret of kind holds under shape, its shape tag, when that
-// kind's minter would refuse it: it decodes the value a release hands the minter (TrimForShape)
-// with secrets.ParseValue, the decoder every minter calls, so the error names what is wrong in the
-// minter's own words and never quotes the value. It is the one statement of trim-then-decode,
-// which Current's value reads and `agent-secrets`' writes both call.
-func DecodeValue(kind, shape, value string) error {
-	spend, _ := TrimForShape(value, shape)
+// DecodeValue refuses value, which a secret of kind holds, when that kind's minter would refuse
+// it: it decodes the value a release hands the minter (TrimLineEnding) with secrets.ParseValue,
+// the decoder every minter calls, so the error names what is wrong in the minter's own words and
+// never quotes the value. It is the one statement of trim-then-decode, which Current's value
+// reads and `agent-secrets`' writes both call.
+func DecodeValue(kind, value string) error {
+	spend, _ := TrimLineEnding(value)
 	_, err := secrets.ParseValue(kind, spend)
 	return err
 }
@@ -459,9 +422,6 @@ type TagSet struct {
 	// "" for a secret that lists nobody; Scopes its scopes tag as ParseScopes answered it, "" for
 	// a secret that names none.
 	Kind, Owner, Tier, Requesters, Scopes string
-	// Shape is the secret's shape tag as the store holds it, "" for a secret carrying none
-	// (TagShape).
-	Shape string
 	// BoundAccount is the account email the deployment's BROKER_SERVICE_ACCOUNT_SECRETS binds to
 	// this secret, and "" when it binds none. It is "" as well for a caller that does not hold
 	// the setting — `agent-secrets`, which never sees it, exactly as it never sees BROKER_SERVICES
@@ -544,15 +504,11 @@ func RequesterRule(t TagSet) RequesterFault {
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
-// positional list because the rules weigh nine values — the kind, owner, tier, requesters,
-// scopes, shape, admin and max-grant tags, and the deployment's binding of the secret to an
+// positional list because the rules weigh eight values — the kind, owner, tier, requesters,
+// scopes, admin and max-grant tags, and the deployment's binding of the secret to an
 // account — which no caller could pass in order without mistaking one for another. It answers
 // "" for a secret the rules allow, and otherwise the load reason that refuses it:
 //
-//   - ReasonShapeMalformed: the shape tag is set to a value that is neither token nor document.
-//     A value that is no word of the tag is the most fundamental fault: until the broker knows
-//     what the stored value is, it does not know what it would release, so no other rule about
-//     who may have it is worth weighing.
 //   - ReasonScopesKind: a secret that is not a google-service-account one carries a scopes tag.
 //     No other minter reads it, so the tag would narrow nothing and say that it had.
 //   - ReasonAdminTier: an admin secret is not human tier. An administrator's credential is
@@ -573,9 +529,6 @@ func RequesterRule(t TagSet) RequesterFault {
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
 func TagRules(t TagSet) string {
-	if t.Shape != "" && !ValidShape(t.Shape) {
-		return ReasonShapeMalformed
-	}
 	if t.Scopes != "" && t.Kind != KindGoogleServiceAccount {
 		return ReasonScopesKind
 	}
@@ -736,9 +689,6 @@ type Secret struct {
 	// a secret that carries none, whose token the minter asks for with the cloud-platform scope
 	// alone (TagScopes, Secret.ScopeURLs). A string, not a slice, for the same reason as MaxGrant.
 	Scopes string
-	// Shape is the secret's shape tag (TagShape), and "" for a secret carrying none, whose value
-	// TrimForShape reads for itself. A string, not a pointer, for the same reason as MaxGrant.
-	Shape string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
@@ -831,14 +781,9 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes, admin and shape, and of the fingerprint of each one's
+	// github-owners, requesters, scopes and admin, and of the fingerprint of each one's
 	// airlock entry: equal versions are equal policies. A request records the version it was
-	// decided under, so a live grant is re-evaluated only once the policy changed. The shape tag
-	// is in it because the airlock proxy holds a grant's released values per pod and reads them
-	// again only when one of the grant's names is reread or this version moves
-	// (internal/broker/airlockproxy/bound.go): a shape retag a console or an infra-applier made
-	// reaches a pod that already holds values by no other road, and that pod would go on
-	// spending the untrimmed value.
+	// decided under, so a live grant is re-evaluated only once the policy changed.
 	Version string
 	Secrets map[string]Secret
 	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
@@ -894,13 +839,11 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[st
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes, no admin and no shape tag writes the pre-kind digest bytes,
+// scopes and no admin tag writes the pre-kind digest bytes,
 // "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a kind secret's kind is in its Source); one with any of
 // them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
-// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
-// "\tadmin=true" and "\tshape=<word>", in that order, for each of those four it carries. The
-// shape tag is written only by a secret that carries one, so the secrets of a deployment that
-// tags none write the bytes they wrote before the tag existed and no deployed version shifts. A
+// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>" and
+// "\tadmin=true", in that order, for each of those three it carries. A
 // secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
 // field of the line above it, so every line a deployment with no rules file writes is
 // byte-identical to the one it writes
@@ -932,17 +875,13 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.Admin {
 			admin = "\tadmin=true"
 		}
-		shape := ""
-		if s.secret.Shape != "" {
-			shape = "\tshape=" + s.secret.Shape
-		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && s.secret.Shape == "":
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin:
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
 		}
 		if s.secret.AirlockDigest != "" {
 			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)

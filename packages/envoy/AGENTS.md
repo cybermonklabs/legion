@@ -6426,8 +6426,8 @@ After either `begin`'s recovery or `discard` deletes the empty secret, the form 
 A `retag` is one write: it either sets tags or removes them, never both, and refuses `none` beside another change before any read or write, so a refused call never leaves it half applied.
 Either reads the secret's tags once (`currentTags`, a `heldTags` with GCP's etag) and builds from them the tags the secret will hold once the write lands (`after`), and applies the github-owners rule to those once (`checkGitHubOwnersFor`), as create applies it to its flags, so neither writes a `github-app` secret without owners.
 Each writes against that read: GCP sends the held annotations, changed, with the held etag, so a concurrent writer's change refuses the write (`errTagsChanged`);
-AWS's tag calls take no condition, so its `setTags` and `removeTags` read the tags back (`awsBackend.raceCheck`) and, when another writer left a kind/owners pair the broker refuses, restore the tags read and answer `errTagsChanged` too, and the retag exits 1 naming the race.
-A retag on AWS is safe only with one writer at a time.
+AWS's tag calls take no condition, so its `setTags` and `removeTags` read the tags back (`awsBackend.raceCheck`) and, when another writer left a kind/owners pair the broker refuses, answer `errTagsChanged` wrapping `errTagsRaced`, naming the tags read, the tags found and the retag that sets the secret right, and the retag exits 1 and asks the broker to reread the name.
+That read-back writes nothing: the tags it read are no more current than the other writer's, and more than one writer is the normal case, so putting them back would take the other writer's retag away.
 The retag form lives in `secret_retag.go`.
 A retag that changes the kind tag, or the shape tag of a secret that keeps a kind, reads the value (`readValue`: `GetSecretValue`, or `AccessSecretVersion` on `versions/latest`) and decodes it under the tags it is about to write (`checkRetagValue`), never printing it:
 a value the decoder refuses refuses the retag, which writes nothing;

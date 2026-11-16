@@ -534,7 +534,7 @@ tag on any other kind (`scopes-kind`), a malformed
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
 one, so none of its versions carries the `AWSCURRENT` label), or a kind secret whose stored value
 its kind's minter could not mint from (`value-malformed`), which the broker finds by reading the
-value once for each new version, kind or shape of the secret
+value once for each new version or kind of the secret
 ([the value read](/legion/broker/operate/#the-value-read)). A request for a secret left out is
 refused `UNKNOWN_SECRET` before anyone is asked to approve it, and a live grant of it releases
 nothing until the broker serves the secret again.
@@ -635,7 +635,7 @@ The broker evaluates every name
   grants of an hour at most. The broker reads the stored value for each release,
   as it reads any secret, and mints from
   it. It never returns the stored App key or refresh token. It also reads each kind secret's value
-  once for each new version, kind or shape, and checks it as the minter reads it, so a value the
+  once for each new version or kind, and checks it as the minter reads it, so a value the
   minter could not mint from leaves the secret out (`value-malformed`) before anyone asks for it.
   `agent-secrets secret` checks a value the same way before it writes one. A token lasts about an
   hour, so a client

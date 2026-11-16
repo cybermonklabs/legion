@@ -668,10 +668,10 @@ serves the secret as stored.
 
 A retag checks the tags it read. On GCP it writes against that read, so a retag another person
 wrote in between refuses it, with `another write changed the secret after this retag read it`,
-and nothing is written. AWS has no such check, so retag secrets there one writer at a time: a retag
+and nothing is written. AWS has no such check: a retag there
 reads the tags back after its write, and when another writer's change left a kind without the
-GitHub owners it needs, it puts back the tags it read, which undoes that writer's change too, and
-exits 1 naming the race.
+GitHub owners it needs, it says so and puts nothing back, naming the tags it read, the tags it
+found and the retag that sets the secret right, and exits 1. Both writes stand.
 
 You can retag your own secret, to `--owner shared` too. Once a secret is shared, its owner and
 tier are an administrator's to change: on AWS, by the IAM condition above; on GCP, because a

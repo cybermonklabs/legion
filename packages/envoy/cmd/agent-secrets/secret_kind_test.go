@@ -726,48 +726,6 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 	})
 }
 
-// TestSecretRetagWritesAndRemovesTheShape: retag --shape writes each of the two words the broker
-// reads, keeping the secret's other tags, and --shape none removes the tag as every other none
-// removes its own. A word that is neither is a usage error naming --shape and the reason the
-// broker would refuse the secret for, refused before the store is called at all, so no secret is
-// left carrying a shape tag the broker will not serve it under.
-func TestSecretRetagWritesAndRemovesTheShape(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	writes := &countingTagWrites{Local: local}
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, writes, testAccount, adaSignIn)
-
-	for _, shape := range []string{policy.ShapeToken, policy.ShapeDocument} {
-		if _, stderr, code := runSecret("retag", "API_KEY", "--shape", shape); code != 0 {
-			t.Fatalf("retag --shape %s: exit %d, stderr %q", shape, code, stderr)
-		}
-		tags := secrets.TagMap(describe(t, local, "API_KEY").Tags)
-		if tags[policy.TagShape] != shape || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent {
-			t.Fatalf("tags after --shape %s = %v, want the shape beside the kept owner and tier", shape, tags)
-		}
-	}
-
-	if _, stderr, code := runSecret("retag", "API_KEY", "--shape", "none"); code != 0 {
-		t.Fatalf("retag --shape none: exit %d, stderr %q", code, stderr)
-	}
-	tags := secrets.TagMap(describe(t, local, "API_KEY").Tags)
-	if _, ok := tags[policy.TagShape]; ok {
-		t.Fatalf("tags after --shape none = %v, want no shape", tags)
-	}
-	if tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent {
-		t.Fatalf("tags after --shape none = %v, want owner and tier unchanged", tags)
-	}
-
-	calls := [3]int{writes.describes, writes.tags, writes.untags}
-	_, stderr, code := runSecret("retag", "API_KEY", "--shape", "bogus")
-	if code != exitUsageError || !strings.Contains(stderr, "--shape") || !strings.Contains(stderr, policy.ReasonShapeMalformed) {
-		t.Fatalf("retag --shape bogus: exit %d stderr %q; want %d naming --shape and %s", code, stderr, exitUsageError, policy.ReasonShapeMalformed)
-	}
-	if got := [3]int{writes.describes, writes.tags, writes.untags}; got != calls {
-		t.Fatalf("a refused --shape made store calls: describes, tags, untags went from %v to %v", calls, got)
-	}
-}
-
 // TestTagRefusalRefusesAReasonNoArmNames pins the client's answer on both ways into tagRefusal's
 // one fallback: a usage error quoting the reason that refused the secret, never nil. Every other
 // arm turns one of policy.TagRules' reasons, or one of policy.RequesterRule's faults, into the
@@ -928,6 +886,12 @@ type kindStore interface {
 	readPermissions() []string
 	// calls is how many calls the client has made of the store so far, refused ones included.
 	calls() int
+	// refuseTagReads refuses every read of a secret's tags from now on, as access denied: IAM
+	// grants the writes and not the read. Its refusal never writes the permission the client
+	// must name, so a client that names none fails tagReadPermission's test.
+	refuseTagReads()
+	// tagReadPermission is the permission the client names for this store's tag read.
+	tagReadPermission() string
 }
 
 // onEachStore runs test on each store the secret forms write, signed in as ada@example.com, with
@@ -951,12 +915,14 @@ func onEachStore(t *testing.T, test func(t *testing.T, store kindStore, broker *
 
 // valueReads is a secrets.Local that counts every call made of it and, of them, the
 // GetSecretValue calls, and answers each of those with refuse when it is set, as IAM refuses the
-// call or KMS the decryption.
+// call or KMS the decryption, and answers DescribeSecret with refuseDescribe when that is set, as
+// IAM refuses the tag read.
 type valueReads struct {
 	*secrets.Local
-	reads  int
-	refuse error
-	all    atomic.Int32
+	reads          int
+	refuse         error
+	refuseDescribe error
+	all            atomic.Int32
 }
 
 func (v *valueReads) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
@@ -975,6 +941,9 @@ func (v *valueReads) ListSecrets(ctx context.Context, in *secretsmanager.ListSec
 
 func (v *valueReads) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	v.all.Add(1)
+	if v.refuseDescribe != nil {
+		return nil, v.refuseDescribe
+	}
 	return v.Local.DescribeSecret(ctx, in, o...)
 }
 
@@ -1041,6 +1010,14 @@ func (s awsKindStore) readPermissions() []string {
 }
 
 func (s awsKindStore) calls() int { return int(s.sm.all.Load()) }
+
+func (s awsKindStore) refuseTagReads() {
+	// The refusal says only that the call was refused: the permission the client must name is
+	// the client's to write, so a client that names none has nothing to copy it from.
+	s.sm.refuseDescribe = &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform this call"}
+}
+
+func (s awsKindStore) tagReadPermission() string { return "secretsmanager:DescribeSecret" }
 
 // gcpKindStore is Secret Manager as kindStore: a fakeSecretManager.
 type gcpKindStore struct{ fake *fakeSecretManager }
@@ -1119,6 +1096,14 @@ func (s gcpKindStore) calls() int {
 
 func (s gcpKindStore) readPermissions() []string { return []string{"secretmanager.versions.access"} }
 
+func (s gcpKindStore) refuseTagReads() {
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	s.fake.refuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
+}
+
+func (s gcpKindStore) tagReadPermission() string { return "secretmanager.secrets.get" }
+
 // TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses: on both stores, for each of
 // the four kinds, create, set and retag refuse each value that kind's minter refuses, and leave
 // the store as they found it: create holds no secret, set no new version, retag no new tag. Each
@@ -1183,15 +1168,15 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 	})
 }
 
-// TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape: on both stores, a retag reads the
-// secret's value only when the tags it writes change the kind, or the shape of a secret that
-// keeps a kind, since people commonly may retag a secret and not read it; any other retag reads
-// none, and writes over a value the decoder refuses. The read has three outcomes, each its own:
-// a value the decoder refuses is refused, naming why, and nothing is written; any read error but
-// access denied is refused, and nothing is written; and access denied, and only that, lets the
-// retag write its tags, with one line on stderr saying the value was not checked, naming the
-// permissions the read needs and saying the broker reports such a secret unservable.
-func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
+// TestSecretRetagReadsTheValueOnlyWhenItChangesTheKind: on both stores, a retag reads the
+// secret's value only when the tags it writes change the kind, since people commonly may retag a
+// secret and not read it; any other retag reads none, and writes over a value the decoder
+// refuses. The read has three outcomes, each its own: a value the decoder refuses is refused,
+// naming why, and nothing is written; any read error but access denied is refused, and nothing
+// is written; and access denied, and only that, lets the retag write its tags, with one line on
+// stderr saying the value was not checked, naming the permissions the read needs and saying the
+// broker reports such a secret unservable.
+func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKind(t *testing.T) {
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.KindGitHubApp, noAppID)
 	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
@@ -1208,36 +1193,33 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 			{"retag", "APP_KEY", "--max-grant", "2h"},
 			{"retag", "APP_KEY", "--github-owners", "acme-org"},
 			{"retag", "APP_KEY", "--kind", policy.KindGitHubApp},
-			{"retag", "PLAIN_KEY", "--shape", policy.ShapeToken},
-			{"retag", "PLAIN_KEY", "--shape", "none"},
+			{"retag", "PLAIN_KEY", "--tier", policy.TierHuman},
 		} {
 			if _, stderr, code := runSecret(args...); code != 0 {
 				t.Fatalf("%v: exit %d stderr %q; want 0", args, code, stderr)
 			}
 		}
 		if n := store.valueReads(); n != 0 {
-			t.Fatalf("retags that change neither the kind nor a kind secret's shape read %d values; want none", n)
+			t.Fatalf("retags that change no kind read %d values; want none", n)
 		}
 
 		// The value reads, and the decoder refuses it.
-		for _, args := range [][]string{toApp, {"retag", "APP_KEY", "--shape", policy.ShapeDocument}} {
-			before, asked := store.tags(t, args[1]), rereads()
-			_, stderr, code := runSecret(args...)
-			if code != exitUsageError || !strings.Contains(stderr, says) {
-				t.Fatalf("%v over a value with no app_id: exit %d stderr %q; want %d naming %q", args, code, stderr, exitUsageError, says)
-			}
-			if got := store.tags(t, args[1]); !maps.Equal(got, before) || rereads() != asked {
-				t.Fatalf("%v refused, but left tags %v (were %v) and asked for %d rereads", args, got, before, rereads()-asked)
-			}
+		before, asked := store.tags(t, "PLAIN_KEY"), rereads()
+		_, stderr, code := runSecret(toApp...)
+		if code != exitUsageError || !strings.Contains(stderr, says) {
+			t.Fatalf("a retag to github-app over a value with no app_id: exit %d stderr %q; want %d naming %q", code, stderr, exitUsageError, says)
 		}
-		if n := store.valueReads(); n != 2 {
-			t.Fatalf("the two retags that change the kind or shape read %d values; want 2", n)
+		if got := store.tags(t, "PLAIN_KEY"); !maps.Equal(got, before) || rereads() != asked {
+			t.Fatalf("the refused retag left tags %v (were %v) and asked for %d rereads", got, before, rereads()-asked)
+		}
+		if n := store.valueReads(); n != 1 {
+			t.Fatalf("the retag that changes the kind read %d values; want 1", n)
 		}
 
 		// Any other read error.
 		store.refuseValueReads(false)
-		before, asked := store.tags(t, "PLAIN_KEY"), rereads()
-		_, stderr, code := runSecret(toApp...)
+		before, asked = store.tags(t, "PLAIN_KEY"), rereads()
+		_, stderr, code = runSecret(toApp...)
 		if code != 1 || !strings.Contains(stderr, "read PLAIN_KEY's value to check it as a github-app secret's, so nothing is written") || strings.Contains(stderr, "not checked") {
 			t.Fatalf("a retag whose value read fails: exit %d stderr %q; want 1 refusing it", code, stderr)
 		}
@@ -1263,8 +1245,8 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 				t.Fatalf("stderr %q does not name %s, which the value read needs", stderr, permission)
 			}
 		}
-		if n := store.valueReads(); n != 4 {
-			t.Fatalf("value reads = %d; want 4, one for each retag that changed the kind or shape", n)
+		if n := store.valueReads(); n != 3 {
+			t.Fatalf("value reads = %d; want 3, one for each retag that changed the kind", n)
 		}
 	})
 }

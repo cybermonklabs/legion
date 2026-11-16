@@ -48,19 +48,21 @@ func loginWithOwnersLeft(name string) map[string]string {
 	return tags
 }
 
-// TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners: `--github-owners none` on a
-// google-login secret is checked against that kind, which reads no owners. When another writer
-// retags the secret github-app, keeping its owners, between that check and the write, the removal
-// would leave a github-app secret with no owners, which the broker refuses. On GCP the write is
-// made against the read it was checked on (its etag), so the store refuses it, naming the change,
-// and the other writer's tags stand. AWS has no conditional tag write, so the retag reads the tags
-// back, finds the pair the broker refuses, restores the tags it read and exits 1 naming the race.
-func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) {
+// TestAConcurrentRetagIsReportedAndOverwritesNothing: `--github-owners none` on a google-login
+// secret is checked against that kind, which reads no owners. When another writer retags the
+// secret github-app, keeping its owners, between that check and the write, the removal leaves a
+// github-app secret with no owners, which the broker refuses. On GCP the write is made against
+// the read it was checked on (its etag), so the store refuses it, naming the change, and the
+// other writer's tags stand. AWS has no conditional tag write, so the retag reads the tags back,
+// finds the pair the broker refuses, and reports it: it names the tags it read and the tags it
+// found, and the command that sets the secret right, and it writes nothing, so the other
+// writer's retag stands rather than being taken back.
+func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
 		secret := policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 		secret.Tags = loginWithOwnersLeft("APP_KEY")
 		local := secrets.NewLocal(secret)
-		startSecretBroker(t, servedBy(local))
+		broker := startSecretBroker(t, servedBy(local))
 		writes := &racingTagWrites{Local: local}
 		writes.race = func() {
 			if _, err := local.TagResource(context.Background(), &secretsmanager.TagResourceInput{
@@ -71,15 +73,30 @@ func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) 
 		}
 		useAWS(t, writes, testAccount, adaSignIn)
 		_, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "none")
-		if code != 1 || !strings.Contains(stderr, "another write changed the secret after this retag read it") || !strings.Contains(stderr, "one writer at a time") || !strings.Contains(stderr, "restored") {
-			t.Fatalf("racing retag: exit %d stderr %q; want 1 naming the race and the restore", code, stderr)
+		for _, said := range []string{
+			"another write changed the secret after this retag read it",
+			"nothing was restored",
+			"kind=" + policy.KindGoogleLogin,
+			policy.TagGitHubOwners + "=ada",
+			"kind=" + policy.KindGitHubApp,
+			"agent-secrets secret retag APP_KEY --kind " + policy.KindGitHubApp,
+			"agent-secrets secret retag APP_KEY --kind " + policy.TagRemoved,
+		} {
+			if !strings.Contains(stderr, said) {
+				t.Fatalf("racing retag: stderr %q does not say %q", stderr, said)
+			}
 		}
-		tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags)
-		if !maps.Equal(tags, secret.Tags) {
-			t.Fatalf("tags after the race = %v; want the tags the retag read, %v", tags, secret.Tags)
+		if code != 1 {
+			t.Fatalf("racing retag: exit %d; want 1", code)
 		}
-		if _, err := policy.GitHubOwnersFor(tags[policy.TagKind], tags[policy.TagGitHubOwners]); err != nil {
-			t.Fatalf("tags after the race are a pair the broker refuses: %v", err)
+		want := maps.Clone(secret.Tags)
+		want[policy.TagKind] = policy.KindGitHubApp
+		delete(want, policy.TagGitHubOwners)
+		if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); !maps.Equal(tags, want) {
+			t.Fatalf("tags after the race = %v; want the other writer's kind with this retag's removal, %v, and nothing restored", tags, want)
+		}
+		if rereads, _ := broker.recorded(); len(rereads) != 1 || rereads[0] != "APP_KEY" {
+			t.Fatalf("rereads = %v; want one of APP_KEY: the tags changed twice, so the broker is asked to read them as they now stand", rereads)
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {

@@ -48,15 +48,15 @@ func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
 		{command{"secret list", "agent-secrets secret list [--json]",
-			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, max grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
+			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nmax grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json]",
-			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session]",
+			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--max-grant DURATION] [--default-grant session]",
 			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none]",
-			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, max grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a shape, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--max-grant DURATION|none] [--default-grant session|none]",
+			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nmax grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME",
@@ -173,7 +173,7 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "max-grant": true, "default-grant": true}
 
 // secretFlags is form's flag set. The store credential comes from the environment, never a flag
 // (cmdSecret refuses --profile), so no form registers one for it.
@@ -383,8 +383,7 @@ func pipeCommand(prefix string, words ...string) string {
 	return prefix + "agent-secrets " + strings.Join(quoted, " ")
 }
 
-// readSecretValue reads the value of the secret name for a form, to be stored under shape, the
-// secret's shape tag (policy.TagShape), which is "" for a secret carrying none, giving up with
+// readSecretValue reads the value of the secret name for a form, giving up with
 // errValueTimedOut at deadline, or never where deadline is the zero time; a value read whole only
 // after deadline is refused the same way. At a terminal it prompts on stderr, once it holds the
 // terminal with echo off, naming deadline where there is one, and reads one line (readHidden),
@@ -393,15 +392,15 @@ func pipeCommand(prefix string, words ...string) string {
 // in. Otherwise it reads all of secretStdin.
 //
 // Both arms then meet one tail: it refuses a value that is not valid UTF-8, whichever arm read
-// it, and then reads the value once, by policy.TrimForShape, the broker's own rule, so a value
+// it, and then reads the value once, by policy.TrimLineEnding, the broker's own rule, so a value
 // stored through this client and a value stored by any other writer are spent alike — the broker
 // reads what it releases by that same rule, and a reader of its own here would drift from it.
-// Where the rule changed nothing — a document, whose every byte is part of it, and a
-// value the rule leaves alone, a PEM one among them — one final line feed goes, which is what
+// Where the rule changed nothing — a value the rule leaves alone, a PEM one among them — one
+// final line feed goes, which is what
 // this reader has always removed, so `echo` and a file ending in a newline give the value without
 // one. A line typed at the prompt carries no ending at all, so the terminal arm meets the
 // fallback and nothing else. An empty value is a usage error either way, in its own arm's words.
-func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.Writer) (string, error) {
+func readSecretValue(name, pipeTo string, deadline time.Time, stderr io.Writer) (string, error) {
 	if err := disableCoreDumps(); err != nil {
 		return "", err
 	}
@@ -469,7 +468,7 @@ func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.W
 	if !utf8.ValidString(value) {
 		return "", usageErr{errors.New("the value must be valid UTF-8")}
 	}
-	stored, changed := policy.TrimForShape(value, shape)
+	stored, changed := policy.TrimLineEnding(value)
 	if !changed {
 		stored = strings.TrimSuffix(stored, "\n")
 	}
@@ -543,14 +542,14 @@ func noteEdgeSpaces(stderr io.Writer, form, name, value string) {
 }
 
 // checkValueFor refuses value, which a secret of kind (a policy.Kinds entry) holds or is about to
-// hold under shape, its shape tag, when the broker's minter for kind would refuse it: it decodes
+// hold, when the broker's minter for kind would refuse it: it decodes
 // the value by the broker's own rule (policy.DecodeValue: the value its release hands that
 // minter, decoded with secrets.ParseValue, the decoder every minter calls), so the refusal names
 // what is wrong in the minter's own words and never quotes the value. Create and set call it
 // before they write, and retag on the value it read (checkRetagValue); a refusal is a usage
 // error, as readSecretValue's refusals of a value are.
-func checkValueFor(kind, shape, value string) error {
-	if err := policy.DecodeValue(kind, shape, value); err != nil {
+func checkValueFor(kind, value string) error {
+	if err := policy.DecodeValue(kind, value); err != nil {
 		return usageErr{fmt.Errorf("the broker refuses this value as %s secret's, so nothing is written: %w", withArticle(kind), err)}
 	}
 	return nil
@@ -649,9 +648,12 @@ type secretBackend interface {
 	// annotations with that read's etag), from which retag builds the tags the secret will hold once
 	// its write lands, and against which it makes that write.
 	currentTags(ctx context.Context, slug string) (heldTags, error)
+	// tagReadPermission names the store permission currentTags needs, for the refusal a set
+	// prints when the store refuses that read (secretSession.tagReadRefusal).
+	tagReadPermission() string
 	// readValue answers the secret's current value, as the broker's own store reads it: a
 	// non-empty string, and on Secret Manager valid UTF-8. Only retag reads it, to decode it under
-	// the kind and shape it is about to write (checkRetagValue), and nothing prints it.
+	// the kind it is about to write (checkRetagValue), and nothing prints it.
 	readValue(ctx context.Context, slug string) (string, error)
 	// valueReadPermission names the store permissions readValue needs, for the line retag prints
 	// when the store refuses that read (checkRetagValue).
@@ -726,6 +728,18 @@ func (s *secretSession) refusedAs(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w; the store refused %s; %s", err, s.backend.identity(), s.backend.chooseAnother())
+}
+
+// tagReadRefusal is err, the failure of a form's read of the secret name's tags, said as the
+// form must say it: a store that refused the read names the permission that read needs
+// (backend.tagReadPermission), since whoever may store a value may read that secret's tags, and
+// a person whose grant predates that rule is refused here with nothing written. Any other
+// failure is said as it is.
+func (s *secretSession) tagReadRefusal(name string, err error) error {
+	if !s.backend.isAccessDenied(err) {
+		return fmt.Errorf("read %s's tags for its kind: %w", name, err)
+	}
+	return fmt.Errorf("read %s's tags for its kind, which needs %s: %w", name, s.backend.tagReadPermission(), err)
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
@@ -895,14 +909,7 @@ type secretView struct {
 	// value rather than a bool so that show prints a tag written by hand as anything else, which
 	// the broker refuses the secret for (policy.ReasonAdminMalformed), instead of hiding it as
 	// not-admin.
-	Admin string `json:"admin"`
-	// Shape is the shape tag as the store holds it: token for a one-line credential, whose
-	// trailing line endings the broker removes before it spends the value, document for a value
-	// it releases byte for byte, and "" for a secret carrying neither, whose value the broker
-	// reads for itself (policy.TagShape). It is the raw value rather than one of those two
-	// words so that show prints a tag written by hand as another word, which the broker refuses
-	// the secret for (policy.ReasonShapeMalformed), instead of hiding it as untagged.
-	Shape        string `json:"shape"`
+	Admin        string `json:"admin"`
 	MaxGrant     string `json:"max_grant"`
 	DefaultGrant string `json:"default_grant"`
 	// HasValue is whether it holds a current, servable version (AWS: a version carries AWSCURRENT;
@@ -927,7 +934,7 @@ type secretView struct {
 func (v secretView) withTags(tags map[string]string) secretView {
 	v.Owner, v.Tier = tags[policy.TagOwner], tags[policy.TagTier]
 	v.Kind, v.GitHubOwners, v.MaxGrant, v.DefaultGrant = tags[policy.TagKind], tags[policy.TagGitHubOwners], tags[policy.TagMaxGrant], tags[policy.TagDefaultGrant]
-	v.Requesters, v.Scopes, v.Admin, v.Shape = tags[policy.TagRequesters], tags[policy.TagScopes], tags[policy.TagAdmin], tags[policy.TagShape]
+	v.Requesters, v.Scopes, v.Admin = tags[policy.TagRequesters], tags[policy.TagScopes], tags[policy.TagAdmin]
 	return v
 }
 
@@ -975,13 +982,13 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tOWNER\tTIER\tKIND\tSHAPE\tMAX_GRANT\tDEFAULT_GRANT\tVALUE\tDELETED\tEARLIEST_PURGE")
+	fmt.Fprintln(tw, "NAME\tOWNER\tTIER\tKIND\tMAX_GRANT\tDEFAULT_GRANT\tVALUE\tDELETED\tEARLIEST_PURGE")
 	for _, v := range views {
 		value := "no"
 		if v.HasValue {
 			value = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, orDash(v.Owner), orDash(v.Tier), orDash(v.Kind), orDash(v.Shape), orDash(v.MaxGrant), orDash(v.DefaultGrant), value, formatTime(v.Deleted), formatTime(v.EarliestPurge))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, orDash(v.Owner), orDash(v.Tier), orDash(v.Kind), orDash(v.MaxGrant), orDash(v.DefaultGrant), value, formatTime(v.Deleted), formatTime(v.EarliestPurge))
 	}
 	if err := tw.Flush(); err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -1032,8 +1039,8 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\nkind: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nshape: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
-		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Kind), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.Shape), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
+	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\nkind: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
+		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Kind), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",
@@ -1070,7 +1077,6 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	requesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email) and registered services that may ask for this secret at all, separated by spaces ("<email> <service>"); an admin secret and a google-service-account one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
 	scopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"); read on that kind alone, and a secret without it mints cloud-platform`)
 	admin := flags.String("admin", "", "true marks a secret whose grant is an administrator's: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
-	shape := flags.String("shape", "", "token: the value is one line, so the broker removes its trailing line endings before it spends it; document: every byte of the value is part of it, so the broker releases it unchanged. Unset, the broker removes a trailing line ending only from a value that holds none inside it")
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
 	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
 	if err := flags.Parse(flagArgs); err != nil {
@@ -1102,9 +1108,6 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		err = checkAdmin(*admin, false)
 	}
 	if err == nil {
-		err = checkShape(*shape, false)
-	}
-	if err == nil {
 		err = checkMaxGrant(*maxGrant, false)
 	}
 	if err == nil {
@@ -1128,7 +1131,6 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		Requesters:   *requesters,
 		Scopes:       *scopes,
 		Admin:        *admin,
-		Shape:        *shape,
 		MaxGrant:     *maxGrant,
 		DefaultGrant: *defaultGrant,
 	})
@@ -1156,9 +1158,6 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if *admin != "" {
 		command = append(command, "--admin", *admin)
 	}
-	if *shape != "" {
-		command = append(command, "--shape", *shape)
-	}
 	if *maxGrant != "" {
 		command = append(command, "--max-grant", *maxGrant)
 	}
@@ -1169,9 +1168,9 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	// created the empty secret but before its answer reaches the form.
 	pending := &pendingCreate{s: s, form: form, name: name, owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
 	return runCreate(pending, func(deadline time.Time) (string, error) {
-		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), *shape, deadline, stderr)
+		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), deadline, stderr)
 		if err == nil && policy.ValidKind(*kind) {
-			err = checkValueFor(*kind, *shape, value)
+			err = checkValueFor(*kind, value)
 		}
 		return value, err
 	})
@@ -1197,23 +1196,22 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	// The value is read under the shape the secret already carries: a set names no tag, and
-	// reading a one-line value the untagged way would store a document's own final line ending
-	// away from an owner who declared it a document, who could then store no such value at all.
-	// It is checked under the kind the secret carries too, as the broker's minter for that kind
-	// will read it; a kind tag naming no kind the broker mints is refused before the value is
-	// read, since the broker serves no value under it.
+	// The value is checked under the kind the secret carries, as the broker's minter for that
+	// kind will read it; a kind tag naming no kind the broker mints is refused before the value
+	// is read, since the broker serves no value under it. Whoever stores a value may therefore
+	// read that secret's tags, and a store that refuses the read says which permission it needs
+	// (tagReadRefusal).
 	held, err := s.backend.currentTags(s.ctx, slug)
 	if err != nil {
-		return secretFailIn(stderr, form, s, fmt.Errorf("read %s's tags for its kind and shape: %w", name, err))
+		return secretFailIn(stderr, form, s, s.tagReadRefusal(name, err))
 	}
-	kind, shape := held.tags[policy.TagKind], held.tags[policy.TagShape]
+	kind := held.tags[policy.TagKind]
 	if kind != "" && !policy.ValidKind(kind) {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's kind tag %q names no kind the broker mints, and it refuses the secret as %s: retag it --kind %s or %s before setting its value", name, kind, policy.ReasonKindUnknown, strings.Join(policy.Kinds, ", "), tagNone)})
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), "secret", "set", name), shape, time.Time{}, stderr)
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), "secret", "set", name), time.Time{}, stderr)
 	if err == nil && kind != "" {
-		err = checkValueFor(kind, shape, value)
+		err = checkValueFor(kind, value)
 	}
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)

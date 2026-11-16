@@ -31,11 +31,10 @@ import (
 // MINT_FAILED; this line is the operator's.
 const MintFailedMessage = "broker: mint failed"
 
-// TrailingLineEndingRemovedMessage is logged, at INFO, in release, each time the shape rule
-// (policy.TrimForShape) changed a value the broker read from the store, followed by
+// TrailingLineEndingRemovedMessage is logged, at INFO, in release, each time the line-ending rule
+// (policy.TrimLineEnding) changed a value the broker read from the store, followed by
 // name=<the secret's name> and nothing else: no grant, which release is given none of, and no
-// part of any value. It is the operator's line for reading which secrets the rule reaches, so
-// an owner whose value it reads wrongly can retag that secret shape=document.
+// part of any value. It is the operator's line for reading which secrets the rule reaches.
 const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line ending was removed"
 
 // NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
@@ -405,8 +404,8 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // ends it. A kind source reads its frozen store source (on Secret
 // Manager its deletion verdict is cached for 30 s, as for every secret), then passes that value
 // and the name, tier, GitHub owners and Google OAuth scopes from the policy snapshot Values
-// checked to the minter. Either value is spent as the secret's shape tag says
-// (policy.TrimForShape): the stored value a session is handed, and the input the minter is
+// checked to the minter. Either value is spent by the one line-ending rule
+// (policy.TrimLineEnding): the stored value a session is handed, and the input the minter is
 // given, are read by the one rule, and each value the rule changed is logged as
 // TrailingLineEndingRemovedMessage with the secret's name. A token a minter makes is never
 // touched; the rule reaches the stored value alone.
@@ -416,9 +415,9 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // for Values to log as a refused narrowing, and is no mint failure. A minter that refuses the
 // stored value itself (secrets.ErrMintStoredValue, its secrets.ParseValue) also has the policy
 // refuse the secret as value-malformed (policy.Current.RefuseValue), at the version the live
-// policy listed when this release read the value and under the kind and shape it was decoded
+// policy listed when this release read the value and under the kind it was decoded
 // under, so the grants of it pause until a new value is stored; a retag since leaves the secret
-// to the decode of its new kind or shape. The failure line and this release's answer are every
+// to the decode of its new kind. The failure line and this release's answer are every
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
@@ -431,7 +430,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		if err != nil {
 			return secrets.Minted{}, err
 		}
-		return secrets.Minted{Value: shapedValue(stored, served.Shape, g.name)}, nil
+		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
 	}
 	if kind == policy.KindAzureLogin && g.decision != policy.Approval {
 		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
@@ -447,7 +446,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, mintRequest(g.name, kind, served, shapedValue(value, served.Shape, g.name), narrowing))
+	token, err := mint(ctx, mintRequest(g.name, kind, served, trimmedValue(value, g.name), narrowing))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
@@ -456,7 +455,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		// line is safe to log; the session sees the same words as MINT_FAILED.
 		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
-			m.Policy.RefuseValue(ctx, g.name, version, kind, served.Shape)
+			m.Policy.RefuseValue(ctx, g.name, version, kind)
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
@@ -464,7 +463,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 }
 
 // mintRequest is the input one granted name's release gives its minter: the name, the kind tag
-// its minters count their attempts under, the stored value as the shape rule spends it, the
+// its minters count their attempts under, the stored value as the line-ending rule spends it, the
 // tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
 // against, and the narrowing the caller asked for, nil where it asked for none. Create's check
 // builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
@@ -482,13 +481,13 @@ func mintRequest(name, kind string, served policy.Secret, value string, narrowin
 	}
 }
 
-// shapedValue answers the value release spends for a stored value it has just read, under that
-// secret's shape tag (policy.TrimForShape), and writes the operator's line
+// trimmedValue answers the value release spends for a stored value it has just read
+// (policy.TrimLineEnding), and writes the operator's line
 // (TrailingLineEndingRemovedMessage) naming the secret each time the rule changed it. Both of
 // release's reads pass through it, so the value a session is handed and the input a minter is
 // given are read by the one rule and logged alike.
-func shapedValue(value, shape, name string) string {
-	spend, changed := policy.TrimForShape(value, shape)
+func trimmedValue(value, name string) string {
+	spend, changed := policy.TrimLineEnding(value)
 	if changed {
 		slog.Info(TrailingLineEndingRemovedMessage, "name", name)
 	}

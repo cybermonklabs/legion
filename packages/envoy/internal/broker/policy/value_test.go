@@ -199,12 +199,12 @@ func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
 	}
 }
 
-// TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain: a retag changes what the value
-// is read as and leaves its version as it was, so the policy decodes the value again under the
-// kind and shape each retag lists: a shape retag reads it once more and still serves it, a kind
-// retag to github-app reads it once more and refuses the google-login value as value-malformed,
-// and the retag back serves it again, each with one line, the value's version the same throughout.
-func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
+// TestARetagOfTheKindOnTheSameVersionDecodesTheValueAgain: a retag of the kind changes what the
+// value is read as and leaves its version as it was, so the policy decodes the value again under
+// the kind each retag lists: a retag to github-app reads it once more and refuses the
+// google-login value as value-malformed, and the retag back reads it once more and serves it
+// again, each with one line, the value's version the same throughout.
+func TestARetagOfTheKindOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 	value := policytest.KindValue(policy.KindGoogleLogin)
 	login := kindSecret("RETAGGED_KEY", policy.KindGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(login)}
@@ -214,13 +214,7 @@ func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T
 	if version == "" {
 		t.Fatal("the policy lists no version of RETAGGED_KEY's value")
 	}
-	shaped := login
-	shaped.Tags = map[string]string{policy.TagShape: policy.ShapeToken}
-	for key, tag := range login.Tags {
-		shaped.Tags[key] = tag
-	}
 	app := kindSecret("RETAGGED_KEY", policy.KindGitHubApp, value)
-	app.Tags[policy.TagShape] = policy.ShapeToken
 
 	for _, step := range []struct {
 		name   string
@@ -229,9 +223,8 @@ func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T
 		served bool
 		lines  string
 	}{
-		{"a shape retag", shaped, 2, true, ""},
-		{"a kind retag to github-app", app, 3, false, refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, "")},
-		{"the kind retag back", shaped, 4, true, servableLine(id, policy.ReasonValueMalformed, kindOwner, "servable")},
+		{"a kind retag to github-app", app, 2, false, refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, "")},
+		{"the kind retag back", login, 3, true, servableLine(id, policy.ReasonValueMalformed, kindOwner, "servable")},
 	} {
 		store.Put(step.secret)
 		refresh(t, cur)
@@ -323,11 +316,11 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 		t.Fatal("the first load could not read APP_KEY's value and does not serve it; a failed read marks nothing")
 	}
 
-	cur.RefuseValue(context.Background(), "APP_KEY", "a-version-not-listed", policy.KindGitHubApp, "")
+	cur.RefuseValue(context.Background(), "APP_KEY", "a-version-not-listed", policy.KindGitHubApp)
 	if _, served := cur.Get().Secrets["APP_KEY"]; !served {
 		t.Fatal("a refusal at a version the policy does not list refused APP_KEY")
 	}
-	cur.RefuseValue(context.Background(), "APP_KEY", cur.Get().ValueVersion("APP_KEY"), policy.KindGitHubApp, "")
+	cur.RefuseValue(context.Background(), "APP_KEY", cur.Get().ValueVersion("APP_KEY"), policy.KindGitHubApp)
 	if _, served := cur.Get().Secrets["APP_KEY"]; served {
 		t.Fatal("a mint's refusal at the listed version left APP_KEY served")
 	}
@@ -669,38 +662,41 @@ func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 }
 
 // TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing: a mint refuses the value under the
-// version, kind and shape its release decoded it as (RefuseValue), and a retag of the shape
-// leaves the version and makes another key, which the policy decodes afresh. So a refusal from a
-// mint that decoded under the key before the retag refuses nothing, nor does one naming another
-// kind, and one under the key listed now refuses the secret, with one RefusedMessage line.
+// version and kind its release decoded it as (RefuseValue), and a retag of the kind leaves the
+// version and makes another key, which the policy decodes afresh. So a refusal from a mint that
+// decoded under the kind before the retag refuses nothing, nor does one naming another version,
+// and one under the key listed now refuses the secret, with one RefusedMessage line.
+//
+// The value names the fields of a google login and of an Azure login together, so one stored
+// value decodes under either kind (secrets.ParseValue) and the retag between them leaves the
+// secret served: what is under test is the key a refusal is weighed against, not the decode.
 func TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing(t *testing.T) {
-	secret := kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp))
+	const value = `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"refresh","tenant_id":"tenant"}`
+	secret := kindSecret("LOGIN_KEY", policy.KindGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(secret)}
 	cur, _, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
-	id, version := policytest.ID("APP_KEY"), cur.Get().ValueVersion("APP_KEY")
-	shaped := secret
-	shaped.Tags = map[string]string{policy.TagShape: policy.ShapeToken}
-	for key, tag := range secret.Tags {
-		shaped.Tags[key] = tag
-	}
-	store.Put(shaped)
+	id, version := policytest.ID("LOGIN_KEY"), cur.Get().ValueVersion("LOGIN_KEY")
+	store.Put(kindSecret("LOGIN_KEY", policy.KindAzureLogin, value))
 	refresh(t, cur)
-	if got := cur.Get().ValueVersion("APP_KEY"); got != version {
-		t.Fatalf("the shape retag moved the value's version from %q to %q", version, got)
+	if got := cur.Get().ValueVersion("LOGIN_KEY"); got != version {
+		t.Fatalf("the kind retag moved the value's version from %q to %q", version, got)
+	}
+	if _, served := cur.Get().Secrets["LOGIN_KEY"]; !served {
+		t.Fatalf("the retagged secret is not served; refused %+v", cur.Get().Refused)
 	}
 
-	for _, stale := range []struct{ kind, shape string }{{policy.KindGitHubApp, ""}, {policy.KindGoogleLogin, policy.ShapeToken}} {
-		cur.RefuseValue(context.Background(), "APP_KEY", version, stale.kind, stale.shape)
-		if _, served := cur.Get().Secrets["APP_KEY"]; !served {
-			t.Fatalf("a mint's refusal at the listed version as %s under shape %q, a key the policy no longer lists, refused APP_KEY", stale.kind, stale.shape)
+	for _, stale := range []struct{ version, kind string }{{version, policy.KindGoogleLogin}, {"another-version", policy.KindAzureLogin}} {
+		cur.RefuseValue(context.Background(), "LOGIN_KEY", stale.version, stale.kind)
+		if _, served := cur.Get().Secrets["LOGIN_KEY"]; !served {
+			t.Fatalf("a mint's refusal at version %q as %s, a key the policy no longer lists, refused LOGIN_KEY", stale.version, stale.kind)
 		}
 	}
 	if got := gained(); got != "" {
 		t.Fatalf("the retag and the refusals of keys it replaced logged:\n%s", got)
 	}
-	cur.RefuseValue(context.Background(), "APP_KEY", version, policy.KindGitHubApp, policy.ShapeToken)
-	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
+	cur.RefuseValue(context.Background(), "LOGIN_KEY", version, policy.KindAzureLogin)
+	refusedAs(t, cur.Get(), "LOGIN_KEY", policy.ReasonValueMalformed)
 	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
 		t.Fatalf("the mint's refusal under the listed key logged:\n%s\nwant:\n%s", got, want)
 	}

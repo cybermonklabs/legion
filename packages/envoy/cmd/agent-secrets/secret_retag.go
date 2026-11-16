@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -24,18 +25,35 @@ type heldTags struct {
 
 // errTagsChanged is a tag write another write raced: it changed the secret after the read the
 // write was made against. GCP refuses the write (an etag that no longer matches), so nothing is
-// written; AWS, whose tag calls take no condition, finds the race by reading the tags back and
-// restores the tags the retag read (awsBackend.raceCheck), wrapping errTagsRestored too.
+// written; AWS, whose tag calls take no condition, finds the race by reading the tags back
+// (awsBackend.raceCheck), where its own write has already landed beside the other writer's, and
+// wraps errTagsRaced too.
 var errTagsChanged = errors.New("another write changed the secret after this retag read it")
 
-// errTagsRestored is the part of an AWS errTagsChanged that says the write landed and was then
-// put back to the tags the retag read, which the broker must be asked to reread.
-var errTagsRestored = errors.New("the tags are restored to what this retag read; run the retag again once the other writer is done")
+// errTagsRaced is the part of an AWS errTagsChanged that says this retag's write landed and
+// nothing was put back, so the secret now holds both writes and the broker must be asked to
+// reread it. Nothing is restored: the tags this retag read are no more current than the other
+// writer's, and restoring them would take that writer's retag away.
+var errTagsRaced = errors.New("this retag's write landed beside another writer's, and nothing was restored")
+
+// tagPairs is tags as sorted `key=value` pairs separated by single spaces, for a message that
+// names one read of a secret's tags beside another. A tag is metadata, never a value.
+func tagPairs(tags map[string]string) string {
+	pairs := make([]string, 0, len(tags))
+	for key, value := range tags {
+		pairs = append(pairs, key+"="+value)
+	}
+	slices.Sort(pairs)
+	if len(pairs) == 0 {
+		return "no tags"
+	}
+	return strings.Join(pairs, " ")
+}
 
 // cmdSecretRetag changes a secret's owner, tier, kind, GitHub owners, requesters, scopes, admin
-// mark, shape, max grant or default grant, in one cloud write. A retag that names none
+// mark, max grant or default grant, in one cloud write. A retag that names none
 // (--kind none, --github-owners none, --requesters none, --scopes none, --admin none,
-// --shape none, --max-grant none, --default-grant none) removes those tags and does nothing
+// --max-grant none, --default-grant none) removes those tags and does nothing
 // else; --kind none also removes the rollback guard written with the kind. Any other retag sets
 // tags. A retag that does both is refused before anything is read or written: AWS removes tags
 // only with UntagResource, so it would be two calls, and a refused second call would leave it
@@ -45,16 +63,16 @@ var errTagsRestored = errors.New("the tags are restored to what this retag read;
 // once the write lands (after), and checks the github-owners rule and the broker's cross-tag
 // rules against those once (checkGitHubOwnersFor, checkTagsFor), so it leaves no github-app
 // secret without GitHub owners, names no owners for a kind that does not read them, and leaves
-// no secret the broker would then refuse for its scopes, its admin mark, its shape, its max
+// no secret the broker would then refuse for its scopes, its admin mark, its max
 // grant or who may ask for it. Whether an entry naming a service is one the deployment
 // registers is the one thing neither check can answer, since this CLI holds no list of
 // registered services: the broker's answer to the reread below is what catches it, and the
 // retag exits 1 with the tag written. The write is made against that read (heldTags), and a
 // write another writer raced answers errTagsChanged, which the retag prints, exiting 1; on AWS,
-// whose write then restored the tags it read (errTagsRestored), it also asks the broker to
-// reread.
+// whose own write landed beside that writer's and put nothing back (errTagsRaced), it also asks
+// the broker to reread.
 //
-// A retag that changes the kind tag, or the shape tag of a secret that keeps a kind, then reads the
+// A retag that changes the kind tag then reads the
 // secret's value and decodes it as the broker will once the write lands (checkRetagValue): a value
 // that kind's minter refuses is refused before anything is written, and a read the store refuses
 // as access denied leaves the retag to go ahead, saying on stderr that the value was not checked.
@@ -77,15 +95,14 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	newRequesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email) and registered services that may ask for this secret at all, separated by spaces ("<email> <service>"), or none; an admin secret and a google-service-account one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
 	newScopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that kind alone, and a secret without it mints cloud-platform`)
 	newAdmin := flags.String("admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
-	newShape := flags.String("shape", "", "token (the broker removes the value's trailing line endings before it spends it), document (the broker releases the value byte for byte) or none")
 	newMaxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows, or none")
 	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && *newKind == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newShape == "" && *newMaxGrant == "" && *newDefaultGrant == "" {
-		err = usageErr{errors.New("--owner, --tier, --kind, --github-owners, --requesters, --scopes, --admin, --shape, --max-grant, --default-grant or a combination is required")}
+	if err == nil && *newOwner == "" && *newTier == "" && *newKind == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newMaxGrant == "" && *newDefaultGrant == "" {
+		err = usageErr{errors.New("--owner, --tier, --kind, --github-owners, --requesters, --scopes, --admin, --max-grant, --default-grant or a combination is required")}
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
@@ -104,9 +121,6 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	}
 	if err == nil {
 		err = checkAdmin(*newAdmin, true)
-	}
-	if err == nil {
-		err = checkShape(*newShape, true)
 	}
 	if err == nil {
 		err = checkMaxGrant(*newMaxGrant, true)
@@ -131,9 +145,6 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if *newAdmin == tagNone {
 		remove = append(remove, policy.TagAdmin)
 	}
-	if *newShape == tagNone {
-		remove = append(remove, policy.TagShape)
-	}
 	if *newMaxGrant == tagNone {
 		remove = append(remove, policy.TagMaxGrant)
 	}
@@ -146,7 +157,6 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		Requesters:   *newRequesters,
 		Scopes:       *newScopes,
 		Admin:        *newAdmin,
-		Shape:        *newShape,
 		MaxGrant:     *newMaxGrant,
 		DefaultGrant: *newDefaultGrant,
 	})
@@ -201,7 +211,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if len(remove) > 0 {
 		if err := s.backend.removeTags(s.ctx, slug, held, remove); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
-			rereadIfRestored(s, stdout, stderr, form, name, err)
+			rereadIfRaced(s, stdout, stderr, form, name, err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "retagged %s in %s (removed %s)\n", name, s.storeName(), strings.Join(remove, ", "))
@@ -220,7 +230,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		if s.backend.isAccessDenied(err) && (held.tags[policy.TagOwner] == policy.OwnerShared || owner == policy.OwnerShared) {
 			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, sharedRetagRefused)
 		}
-		rereadIfRestored(s, stdout, stderr, form, name, err)
+		rereadIfRaced(s, stdout, stderr, form, name, err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "retagged %s in %s (owner=%s, tier=%s)\n", name, s.storeName(), owner, tier)
@@ -232,8 +242,8 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 
 // checkRetagValue decodes the value of the secret name, slug under the prefix, as the broker will
 // read it once a retag leaves it with after's tags, held being the tags it holds now, when the
-// retag changes what the broker reads the value as: the kind tag, or the shape tag of a secret
-// that keeps a kind. A retag that changes neither reads no value, and one that leaves no kind, or
+// retag changes what the broker reads the value as: the kind tag. A retag that changes it not at
+// all reads no value, and one that leaves no kind, or
 // a kind the broker does not mint (which it refuses as kind-unknown), leaves nothing to decode.
 // People commonly hold the right to retag a secret and not to read its value, so the read has
 // three outcomes, each handled apart:
@@ -247,14 +257,14 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 //     decoder's reason;
 //   - any other read error refuses the retag, and it writes nothing.
 func checkRetagValue(s *secretSession, name, slug string, held heldTags, after map[string]string) (unchecked string, err error) {
-	kind, shape := after[policy.TagKind], after[policy.TagShape]
-	if !policy.ValidKind(kind) || (kind == held.tags[policy.TagKind] && shape == held.tags[policy.TagShape]) {
+	kind := after[policy.TagKind]
+	if !policy.ValidKind(kind) || kind == held.tags[policy.TagKind] {
 		return "", nil
 	}
 	value, err := s.backend.readValue(s.ctx, slug)
 	switch {
 	case err == nil:
-		return "", checkValueFor(kind, shape, value)
+		return "", checkValueFor(kind, value)
 	case s.backend.isAccessDenied(err):
 		return fmt.Sprintf("the tags are written, but %s's value was not checked as %s secret's: the store refused this sign-in the read, which needs %s. The broker refuses a value its decoder refuses, and reports %s unservable with the decoder's reason", name, withArticle(kind), s.backend.valueReadPermission(), name), nil
 	default:
@@ -262,12 +272,12 @@ func checkRetagValue(s *secretSession, name, slug string, held heldTags, after m
 	}
 }
 
-// rereadIfRestored asks the broker to reread name after a tag write the store wrote and then put
-// back, because a racing writer left it a pair the broker refuses (errTagsRestored, AWS): the
+// rereadIfRaced asks the broker to reread name after a tag write that landed beside another
+// writer's, leaving a pair the broker refuses (errTagsRaced, AWS): the
 // secret's tags changed twice, so the broker is asked to serve them as they now stand. A write the
 // store refused wrote nothing (GCP's errTagsChanged alone), and needs no reread.
-func rereadIfRestored(s *secretSession, stdout, stderr io.Writer, form, name string, err error) {
-	if errors.Is(err, errTagsRestored) {
+func rereadIfRaced(s *secretSession, stdout, stderr io.Writer, form, name string, err error) {
+	if errors.Is(err, errTagsRaced) {
 		rereadAfter(s, stdout, stderr, form, name, true, nil)
 	}
 }

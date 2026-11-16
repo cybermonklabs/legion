@@ -284,7 +284,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagShape: policy.ShapeDocument, policy.TagMaxGrant: "1h"}
+	want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagMaxGrant: "1h"}
 	var heldAtRead bool
 	var tagsAtRead, labelsAtRead map[string]string
 	var keyAtRead string
@@ -302,7 +302,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 		}
 	})
 
-	stdout, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "human", "--shape", "document", "--max-grant", "1h")
+	stdout, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "human", "--max-grant", "1h")
 	if code != 0 || !strings.Contains(stdout, "created NEW_TEST in GCP Secret Manager project ") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and the created line", code, stdout, stderr)
 	}

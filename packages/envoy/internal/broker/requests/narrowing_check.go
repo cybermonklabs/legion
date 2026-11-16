@@ -171,10 +171,10 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		skippedNarrowingCheck(enrollmentID, name, "the stored value could not be read", err)
 		return false, nil
 	}
-	// The shape rule is spent here as the release spends it (Machine.release), and writes no
+	// The line-ending rule is spent here as the release spends it (Machine.release), and writes no
 	// line: the release logs TrailingLineEndingRemovedMessage once for each value the rule
 	// changed, and a check that logged it too would write that line twice for one release.
-	value, _ := policy.TrimForShape(stored, served.Shape)
+	value, _ := policy.TrimLineEnding(stored)
 	switch err := m.checkNarrowingMint(ctx, mint, name, served, value, narrowing); {
 	case err == nil:
 		return true, nil
