@@ -23,7 +23,9 @@
 // the script's lib starts is not. Dispatch is the real server built from the checkout, on that
 // broker and a database of its own, with header identity and the person `smoke`, as part one runs
 // it. Each run boots the whole daemon through run, the function `legion start` calls, on a
-// database, a state directory and a Dispatch project of its own.
+// database, a state directory and a Dispatch project of its own, with `review_round_cap` at the
+// loader's own default (testConfig), so the state a pane's `legion` tool reads is one the daemon
+// API contract describes.
 //
 // What is stood in for lies outside what a session decides. GitHub is the package's
 // repositoriesGitHub, and no session has a GitHub credential. The two Apps' tokens are
@@ -63,11 +65,15 @@
 // sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
 // calls it made, which the script counts. The outcome is a word of sessionsOutcome. PASS and FAIL
 // are runs that reached the step's assertion, and the script counts them for the arm. SETUP is a
-// run that stopped before its assertion, and HARNESS is a run the harness failed: neither says
-// anything about the prompts the arms differ in, so the script does not count them. A head run
-// that does not pass ends the proof there, whatever its outcome: the head must reach its
-// assertion and pass in every run, and every model call after a run that did not would be spent
-// for nothing. A base run's outcome is the control's, and never fails the driver.
+// run that stopped before its assertion, an architect that did not write the version its task asks
+// for among them. HARNESS is a run the harness failed: a fault of the harness before or after the
+// step's own outcome, or a session whose transcript holds the plugin's refusal of a daemon answer,
+// which ran with a `legion` tool that could not read the daemon. Neither SETUP nor HARNESS says
+// anything about the prompts the arms differ in, so the script does not count them. A HARNESS run
+// ends the proof in either arm, since no count of runs means anything past it. A head run that
+// does not pass ends the proof there, whatever its outcome: the head must reach its assertion and
+// pass in every run, and every model call after a run that did not would be spent for nothing. A
+// base run that ends PASS, FAIL or SETUP is the control's to read, and fails nothing.
 package daemon
 
 import (
@@ -148,27 +154,6 @@ const (
 // sessionsRuns is how many runs each arm makes of each step.
 const sessionsRuns = 3
 
-// sessionsOutcome is how one run of a step ended: the word its `run` line prints, which the script
-// counts. Only a run that reached the step's assertion counts for its arm. A run that stopped
-// before its assertion stopped on something both arms share, which says nothing about the prompts
-// they differ in, so a base arm that lost a run that way has not failed.
-type sessionsOutcome string
-
-const (
-	// sessionsPassed is a run whose assertion held.
-	sessionsPassed sessionsOutcome = "PASS"
-	// sessionsFailed is a run whose assertion did not hold: the sessions did not do what the step
-	// asks of the arm's prompts. An architect that did not write the version the operator's task
-	// asks for is such a run, since it ran on its arm's own prompts.
-	sessionsFailed sessionsOutcome = "FAIL"
-	// sessionsSetup is a run that stopped before its assertion, on what the step needs first and
-	// both arms share: a holder that did not end its start turn in the run's bound, or a reviewer
-	// the daemon never gave its news.
-	sessionsSetup sessionsOutcome = "SETUP"
-	// sessionsHarness is a run the harness failed, which ends the proof in either arm.
-	sessionsHarness sessionsOutcome = "HARNESS"
-)
-
 // sessionsRunBound bounds a run from its daemon's boot to its verdict. A run still waiting at its
 // bound fails, and its sessions are ended with it, so an agent that wanders spends no more than
 // this.
@@ -229,8 +214,9 @@ type sessionsLive struct {
 
 // TestRealSessionsTellAndAnswerANewVersionLive runs each step three times in the head arm and
 // then three times in the base arm, and stops at the first head run that does not pass: one that
-// failed its assertion, or one that stopped before it. A run that -test.run leaves out is neither,
-// which is how one run is driven alone.
+// failed its assertion, or one that stopped before it. It stops at a run of either arm that the
+// harness failed too (run). A run that -test.run leaves out is none of these, which is how one run
+// is driven alone.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	fixtureenv.Live(t)
 	s := newSessionsLive(t)
@@ -541,7 +527,9 @@ type sessionsMember struct {
 // it ran, which a -test.run pattern can leave out, and how it ended. Its sessions end with its
 // outcome, before anything else of the run is read, so none spends a model call past it. A fault
 // of the harness fails the subtest, prints the run's line as HARNESS and ends the proof, since no
-// count of runs means anything past it; otherwise the step's own outcome is the answer.
+// count of runs means anything past it: a fault before the step's own outcome, one in keeping the
+// transcripts after it, and a session whose transcript holds the plugin's refusal of a daemon
+// answer (sessionsEnding). Otherwise the step's own outcome is the answer.
 func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, body func(*sessionsRun) (sessionsOutcome, string)) (ran bool, outcome sessionsOutcome) {
 	name := fmt.Sprintf("%s %s %d", step, arm, n)
 	outcome = sessionsHarness
@@ -551,19 +539,30 @@ func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, bod
 		calls := s.calls.count()
 		fmt.Printf("== %s\n", name)
 		why := "the harness failed; its log is above"
-		var r *sessionsRun
+		var refused []string
+		// The run's line is deferred first, so it runs last: after the transcripts are kept, and
+		// even when keeping them stops the subtest.
 		defer func() {
-			if r != nil {
-				r.rt.killEverything()
-				if r.d != nil {
-					r.keepTranscripts()
-				}
-			}
+			outcome, why = sessionsEnding(outcome, why, t.Failed(), refused)
 			said := string(outcome)
 			if outcome != sessionsPassed {
 				said += ": " + why
 			}
 			fmt.Printf("run %s: %s in %ds, %d model calls\n", name, said, int(time.Since(started).Seconds()), s.calls.count()-calls)
+		}()
+		var r *sessionsRun
+		defer func() {
+			if r == nil {
+				return
+			}
+			r.rt.killEverything()
+			if r.d == nil {
+				return
+			}
+			refused = r.keepTranscripts()
+			for _, session := range refused {
+				t.Errorf("the legion plugin refused a daemon answer as a body the daemon API contract does not describe, in the transcript of %s", session)
+			}
 		}()
 		r = s.newRun(t, name, arm, gates)
 		outcome, why = body(r)
@@ -1053,13 +1052,15 @@ func (r *sessionsRun) printCalls(member *sessionsMember, role claim.Role, calls 
 }
 
 // keepTranscripts copies the session file of every claim the run seeded into the evidence
-// directory, under the run's own name.
-func (r *sessionsRun) keepTranscripts() {
+// directory, under the run's own name, and answers each session whose transcript holds the
+// plugin's refusal of a daemon answer (refusedByContract): its claim and the refusal, sorted.
+func (r *sessionsRun) keepTranscripts() []string {
 	dir := filepath.Join(r.s.evidence, strings.ReplaceAll(r.name, " ", "-"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		r.t.Errorf("make %s: %v", dir, err)
-		return
+		return nil
 	}
+	var refused []string
 	for token := range r.launchable {
 		file := r.claim(token).SessionFile
 		if file == "" {
@@ -1071,8 +1072,13 @@ func (r *sessionsRun) keepTranscripts() {
 			continue
 		}
 		writeProofFile(r.t, filepath.Join(dir, string(token)+".jsonl"), string(body))
+		if refusal := sessionsReadTranscript(body).refusedByContract(); refusal != "" {
+			refused = append(refused, string(token)+": "+sessionsExcerpt(refusal))
+		}
 	}
+	slices.Sort(refused)
 	r.note("transcripts kept in %s", dir)
+	return refused
 }
 
 // version2 answers whether artifact has a version 2, and that version as Dispatch answers it.
@@ -1252,10 +1258,10 @@ func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
 	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
 	written, text := r.version2(child.verification)
-	if !written || !strings.Contains(text, sessionsCheckAgain) {
-		return sessionsFailed, fmt.Sprintf("Dispatch holds no version 2 of %s's Verification document with the new words: the architect did not make the edit the operator's task asks for", child.key)
+	unwritten := sessionsUnwritten(child.key+"'s Verification document", written, text, sessionsCheckAgain)
+	if unwritten == "" {
+		r.evidence("version 2 of %s's Verification document %s holds %q", child.key, child.verification, sessionsCheckAgain)
 	}
-	r.evidence("version 2 of %s's Verification document %s holds %q", child.key, child.verification, sessionsCheckAgain)
 	var why []string
 	if told == "" {
 		why = append(why, fmt.Sprintf("the reviewer of %s was sent no Envoy message naming version 2 and the change", child.key))
@@ -1270,10 +1276,7 @@ func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	} else {
 		r.evidence("Dispatch holds no approval request on %s", child.key)
 	}
-	if len(why) > 0 {
-		return sessionsFailed, strings.Join(why, "; ")
-	}
-	return sessionsPassed, ""
+	return sessionsJudged(unwritten, why)
 }
 
 // publishedBy reads architect's transcript for its envoy_publish of the change to the role topic
@@ -1329,10 +1332,11 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	architect := r.transcript(root, claim.RoleArchitect)
 	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
 	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
-	if written, text := r.version2(root.spec); !written || !strings.Contains(text, "two pages") {
-		return sessionsFailed, fmt.Sprintf("Dispatch holds no version 2 of %s's spec with the new words: the architect did not make the edit the operator's task asks for", root.key)
+	written, text := r.version2(root.spec)
+	unwritten := sessionsUnwritten(root.key+"'s spec", written, text, "two pages")
+	if unwritten == "" {
+		r.evidence("version 2 of %s's spec %s holds the new Design sentence", root.key, root.spec)
 	}
-	r.evidence("version 2 of %s's spec %s holds the new Design sentence", root.key, root.spec)
 	var why []string
 	for i, holder := range holders {
 		if told[i] == "" {
@@ -1344,10 +1348,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 			why = append(why, missed)
 		}
 	}
-	if len(why) > 0 {
-		return sessionsFailed, strings.Join(why, "; ")
-	}
-	return sessionsPassed, ""
+	return sessionsJudged(unwritten, why)
 }
 
 // holderStart is the start task a holder of the a4 and off steps holds at the boot, in place of the

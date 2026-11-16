@@ -4987,6 +4987,7 @@ The reason is that the listener is built and tested against the checkout's nats-
 The lib's broker still starts, and part two leaves it idle.
 Dispatch is the real server, on that broker, with the person `smoke`.
 Each run boots the whole daemon on a database, a state directory and a Dispatch project of its own.
+Its `review_round_cap` is the loader's own default, 3, which `testConfig` (`internal/daemon/daemon_test.go`) gives every daemon it builds, so the state a pane's `legion` tool reads is one the daemon API contract describes.
 The daemon's own notices go to the package's `noticeListener`, so a session hears the daemon only as a task on its worker stream, and what it hears over Envoy is another session's message.
 The runtime starts only the claims a run seeds, so a phase the daemon starts after a step's act, such as the implementer a stale reviewer's move back starts, runs no session.
 
@@ -5000,9 +5001,11 @@ Each run reads its panes' prompts back from their own command lines and stops th
 Each step runs three times in the head arm and then three times in the base arm, each run on trees of its own and bounded at eight minutes.
 A run prints `== <step> <arm> <n>`, its evidence, read from the sessions' own transcripts (each tool call and its arguments, and each Envoy message and task a session was given), and `run <step> <arm> <n>: <outcome> … in <s>s, <n> model calls`.
 The outcome is `PASS` or `FAIL` for a run that reached the step's assertion, and the script counts these for the arm.
-It is `SETUP` for a run that stopped before its assertion, on something both arms share: a holder that did not end its start turn in the run's bound, or a reviewer the daemon never gave its news.
-An architect that did not write the version the operator's task asks for ran on its arm's own prompts, so that run is a `FAIL`.
-It is `HARNESS` for a run the harness failed, which ends the proof.
+It is `SETUP` for a run that stopped before its assertion: a holder that did not end its start turn in the run's bound, a reviewer the daemon never gave its news, or an architect that did not write the version the operator's task asks for.
+The assertion of the a4 and `off` steps is the telling of that version, so a run in which it was never written never tried the telling, in either arm.
+It is `HARNESS` for a run the harness failed, before or after the step's own outcome, which ends the proof in either arm.
+A run is `HARNESS` too when a session's transcript holds a tool result in which the plugin refused a daemon answer (`<method> <route> answered <status> with a body the daemon API contract does not describe: …`).
+That session's `legion` tool could not read the daemon, so the run says nothing about the prompts, and its line names the session.
 The script does not count a `SETUP` or `HARNESS` run, so such a run never makes the control bite.
 A head run must reach its assertion and pass: one that stopped before it fails the proof, and the `part-two` check names its line.
 The driver ends its sessions at the run's outcome, copies each transcript to `transcripts/<step>-<arm>-<n>/`, and stops at the first head run that does not pass, since the proof then fails whatever the rest show.
@@ -5013,7 +5016,7 @@ The driver ends its sessions at the run's outcome, copies each transcript to `tr
 | `off-the-architect-tells-the-holders` | under `gates.design: off`, a root in `implementing` and its child in `reviewing`, each under a live holder; the task asks the architect to write version 2 of the root's spec, changing its `## Design` | Dispatch holds that version 2; each holder's transcript holds an Envoy message naming version 2 and the change (its new words, `two pages`, or the heading as the news names it, `"Design"`, or as the spec writes it, `## Design`; the bare word "design" is not enough); the architect's transcript holds its own `envoy_publish` to that holder's role topic naming the same |
 | `answers-a-stale-reviewer-moves-back-a-current-one-comments` | under `root-issues`, two roots in `reviewing`, each gate open at version 1, each under a live reviewer whose start task says its review rests on the spec's `## Design`; once both have ended that turn, a version 2 of each spec, one changing `## Design` and one changing `## Later work` alone, which `smoke` approves, and the daemon sends each reviewer its news | the first reviewer's `request_backward_move` names version 2 and moves its issue back; the second writes a comment on its issue naming version 2, stays in `reviewing` and makes no move |
 
-`internal/daemon/approved_version_news_transcript_test.go`, untagged, runs the two reads of the a4 and `off` steps over fixture transcripts on every `go test`, so a change that breaks either fails CI, not the next live run.
+`internal/daemon/approved_version_news_transcript_test.go`, untagged, runs the driver's reads of a transcript over fixture transcripts on every `go test`, and the rules that pick the word a run's line prints, so a change that breaks either fails CI, not the next live run.
 An `envoy_publish` counts when it is the tool's own call, a write to its `xd://` device, or eval code that calls it, to the holder's role topic, naming version 2 and the change.
 A publish to another topic, an `envoy_send`, a `dispatch comment`, and a message without the version or the change do not count.
 

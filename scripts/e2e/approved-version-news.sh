@@ -53,13 +53,16 @@
 # below): a4-the-architect-tells-the-child-reviewer, off-the-architect-tells-the-holders and
 # answers-a-stale-reviewer-moves-back-a-current-one-comments, which the driver's file describes. It
 # prints each run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
-# reached the step's assertion. SETUP is a run that stopped before it, on something both arms
-# share, such as a holder that did not end its start turn in the run's bound. An architect that did
-# not write the version its task asks for ran on its arm's own prompts, so that run is a FAIL.
-# HARNESS is a run the harness failed. This script counts PASS and FAIL alone for an arm, prints
-# `<step> <arm>: <p> of <n> runs that reached the assertion passed` for each step and arm, and
-# names each run it did not count. Part two passes when every head run reached its assertion and
-# passed: a head run that stopped before its assertion fails the run, and its FAIL line names it.
+# reached the step's assertion. SETUP is a run that stopped before it, such as a holder that did
+# not end its start turn in the run's bound, or an architect that did not write the version its
+# task asks for, whose telling is the a4 and off steps' assertion. HARNESS is a run the harness
+# failed, before or after the step's own outcome, or one in which a session's `legion` tool could
+# not read the daemon: the plugin refused the daemon's answer as a body the daemon API contract
+# does not describe. The driver ends the proof at a HARNESS run in either arm. This script counts
+# PASS and FAIL alone for an arm, prints `<step> <arm>: <p> of <n> runs that reached the assertion
+# passed` for each step and arm, and names each run it did not count. Part two passes when every
+# head run reached its assertion and passed: a head run that stopped before its assertion fails
+# the run, and its FAIL line names it.
 # The base arm is the control of each step: it bites when a base run failed at its assertion. A
 # base arm that passed every run that reached its assertion is printed as no control for that
 # step, which fails nothing, and a setup failure is never counted as the control biting. The
