@@ -1602,10 +1602,20 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 	return Row{}, false
 }
 
-// StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to,
-// and tells its tree's architect that a child of it started (ChildStartedNotice). It is the
-// half of the old gate-opening behaviour that needs a slot, and it is deliberately the only half
-// here.
+// StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to.
+// For a child it also starts the child's own architect, which owns the child from then on, and
+// tells the architect above the child that it started (ChildStartedNotice). It is the half of the
+// old gate-opening behaviour that needs a slot, and it is deliberately the only half here.
+//
+// It is the one place a child's architect starts, because every door into a child's run — an
+// architect's release_children or rerun_child, a person's todo under a live tree, the close of the
+// last issue a child waited on — reaches the child's first phase only here. A start in each door
+// would start an architect for a child that then waits at admitted for a slot, and build a pod
+// for it. The start is the plain one (gateOpened's), with no task: the architect's catch-up at
+// its launch's ready tells it the child and every issue under it (claimReady). Starting a claim
+// that already exists resumes its session, so a child that comes back — a rerun, a person's move
+// back to todo — gets the architect that worked it before. A root's architect is admission's,
+// started when its tree was admitted, so a root's first phase starts no architect.
 //
 // It replaces the two doors that used to start a first phase themselves, the gate's opening
 // (advanceAdmittedTree) and a child's release (enterChild), which are gone. Neither could stay:
@@ -1622,11 +1632,12 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // and costs nothing, so a pass that stops at a held candidate still makes it, and the state's
 // `blocked` still reports exactly what the deciders decided.
 //
-// The start itself, its log line and the architect's notice all say that the issue starts
-// planning, so all of them wait for the slot and travel together: told for an issue that got no
-// slot, the notice would tell the tree's architect that a child began work it has not begun. A
-// pass that stops at a held candidate therefore withholds the start and the notice of it alike,
-// which is the honest pair.
+// The start itself, the child's architect's start, its log line and the notice all say that the
+// issue starts planning, so all of them wait for the slot and travel together: told for an issue
+// that got no slot, the notice would tell the architect above the child that a child began work
+// it has not begun, and the architect would run for a child that does none. A pass that stops at
+// a held candidate therefore withholds the starts and the notice of them alike, which is the
+// honest set.
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
@@ -1655,19 +1666,32 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // member, waits for that row, so no planner's push is the one that creates the branch. A member
 // whose earlier row a linger dropped, or one admitted before the daemon queued such rows, gets its
 // row here.
+//
+// A child's own architect starts between the two (StartFirstPhase says why here): the plain start
+// admission gives a root's architect, with no phase, task, entry or slot mark, so it waits for the
+// branch row as every start of the issue does and for no slot. It is queued before the planner's
+// start because the outbox runs an issue's starts one at a time, oldest first, so the architect's
+// claim exists by the planner's launch. That is the order the outbox tries, not one it holds to: a
+// start that fails and backs off holds back none of the rows behind it.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err
+	}
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}); err != nil {
+			return err
+		}
 	}
 	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which
-// admission or the tree's architect started, and each phase worker, whether or not it ever
-// reported a handoff. The phase rows record only handoffs, so they cannot list the claims; the
-// executor treats a request for a claim that does not exist as done. except is the one role left
-// out, "" for none: a merged child's close leaves out the role that works its production check
-// (Engine.checkRole), whose claim the check's own close retires (closeCheck).
+// admission starts with a root's tree and a child's first phase start starts for a child
+// (StartFirstPhase), and each phase worker, whether or not it ever reported a handoff. The phase
+// rows record only handoffs, so they cannot list the claims; the executor treats a request for a
+// claim that does not exist as done. except is the one role left out, "" for none: a merged
+// child's close leaves out the role that works its production check (Engine.checkRole), whose
+// claim the check's own close retires (closeCheck).
 func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except claim.Role) error {
 	for _, role := range claim.Roles {
 		if role == except {

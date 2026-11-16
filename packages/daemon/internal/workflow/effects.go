@@ -454,8 +454,9 @@ const testerVerdictLabel = "Tester's verdict"
 // never a transition's start. movedBack is whether the move into that phase was a move back to an
 // earlier one, which is written on the row beside the entry and is the transition's to read, not
 // this function's: the issue record already names the phase it moved into by the time a start
-// is made. A phase with no worker, and accepting, whose architect admission started with the
-// tree, start nobody.
+// is made. A phase with no worker, and accepting, whose architect is already started — admission
+// starts a root's with its tree and a child's own starts with the child's first phase
+// (StartFirstPhase) — start nobody.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -936,10 +937,11 @@ func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }
 
-// ChildStartedNotice is the notice the tree's architect is told whenever a child of it starts
-// its first phase (Engine.StartFirstPhase), its reason saying why it starts now. waited is every
-// issue the child's mirror row still names, in Dispatch's own order, all of them done by now:
-// the last of them closed, which is what freed the child.
+// ChildStartedNotice is the notice the architect above a child is told whenever the child starts
+// its first phase (Engine.StartFirstPhase), its reason saying why it starts now and that the
+// child's own architect starts with it. waited is every issue the child's mirror row still names,
+// in Dispatch's own order, all of them done by now: the last of them closed, which is what freed
+// the child.
 //
 // Empty, the child's own links say nothing about why it starts, and the reason says what is true
 // of every child the line starts instead: it reached the front of the waiting line and took a
@@ -949,15 +951,24 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // links that were taken off would be a guess, and a reason the architect reads and cannot check
 // is worse than a plain one.
 //
+// The reason then says what the reader keeps of the child: from this start the child's own
+// architect owns it — its decomposition, its children and its acceptance — so the reader hears
+// only the notices that go above that architect, the child's child-status and child-closed and
+// that architect's worker-died (record.OwningArchitect).
+//
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
-// with — the daemon's notice routing sends one on a non-root child to the architect that owns it
-// — and not phase-finished: no phase of the child ended, it is beginning its first.
+// with — the daemon's notice routing starts the walk for one at the child's parent, so it reaches
+// the architect above the child — and not phase-finished: no phase of the child ended, it is
+// beginning its first.
 func ChildStartedNotice(child, root string, waited []string) record.Notice {
-	reason := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, root, strings.Join(waited, ", "))
+	why := fmt.Sprintf("every issue it waited on (%s) is done", strings.Join(waited, ", "))
 	if len(waited) == 0 {
-		reason = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", child, root)
+		why = "it reached the front of the waiting line and took an admission slot"
 	}
+	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it from now on: "+
+		"its decomposition, its children and its acceptance. You hear its child-status and child-closed notices, "+
+		"and a worker-died when its architect fails", child, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
 
