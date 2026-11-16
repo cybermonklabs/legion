@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The generated Legion plugin's skills and agents leave whole test suites to CI, let every role
+  with a session work beside the role whose phase it is, pass a handoff body on standard input,
+  keep the reviewer from pushing to the branch it reviews, name a plan's tests before its code
+  (which the plan reviewer checks), and put no token in a command's arguments.

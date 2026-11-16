@@ -149,7 +149,7 @@ var podRuleForRootArchitect = []string{
 var completionAfterWorkForPlanner = []string{
 	"`head` (the 40-character lower-case commit",
 	"to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds",
-	"record it with `dispatch handoff-write --issue <issue> --phase plan --body-file \"$TMPDIR/<issue>-plan.json\"`, then report completion",
+	"Record it with `dispatch handoff-write --issue <issue> --phase plan --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, then report completion",
 }
 
 // rolePromptRuleLive is one run of the proof: the booted daemon, the one tree it seeds, and the

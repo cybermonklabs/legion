@@ -66,12 +66,13 @@ name is empty. Measured on 2026-11-04 from a Legion issue pod: Slack answered
 `{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
 a secret behind the airlock — exists only in the environment of the command the client starts, so
 that command must read it itself. Put the command in single quotes, inside
-`sh -c`, where the quotes keep the expansion for the child:
+`sh -c`, where the quotes keep the expansion for the child, and give `curl` the header on standard
+input (`-H @-`), so the value is in no command's arguments:
 
 ```sh
 # right
 agent-secrets LEGION_SLACK_BOT_TOKEN -- \
-  sh -c 'curl -sS -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" https://slack.com/api/auth.test'
+  sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
 
 The repository uses the same form for a GitHub App token in `docs/deployment.md`:
@@ -260,8 +261,9 @@ reaches no shell history.
 
 ```sh
 agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+  printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" |
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @- \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'

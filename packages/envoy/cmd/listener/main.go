@@ -804,6 +804,20 @@ func newStartingGate(name string, logger *logging.Logger) *startingGate {
 
 func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
 
+// route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
+// is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
+// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
+// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
+// a session id, or any other text a caller writes into a path, never becomes a series of its own.
+func (g *startingGate) route(r *http.Request) string {
+	if mux := g.mux.Load(); mux != nil {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			return pattern
+		}
+	}
+	return r.Pattern
+}
+
 func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := g.mux.Load()
 	if mux == nil {
@@ -979,11 +993,28 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	oidcAccounts, err := resolveListenerOIDCAccounts(os.Getenv, oidcIssuer)
+	if err != nil {
+		log.Fatal(err)
+	}
+	googleAudience, googleAccounts, err := resolveListenerGoogleConfig(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiVerifier, err := oidc.Discover(context.Background(), oidcIssuer, oidcAudience, oidc.DiscoveryTimeout)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// The broker-token settings are read here, beside the other two credentials, so a
+	// A Google identity token's issuer is Google itself, so only its audience is a setting.
+	var googleCallers *googleIdentities
+	if googleAudience != "" {
+		googleVerifier, err := oidc.Discover(context.Background(), oidc.GoogleIssuer, googleAudience, oidc.DiscoveryTimeout)
+		if err != nil {
+			log.Fatal(err)
+		}
+		googleCallers = &googleIdentities{audience: googleAudience, verifier: googleVerifier, accounts: googleAccounts}
+	}
+	// The broker-token settings are read here, beside the bearers' own, so a
 	// half-configured one refuses the start before anything is bound. Its verifier is built
 	// later, once JetStream is open: the spent-proof bucket it records a proof in lives there
 	// (brokerTokens.open).
@@ -992,11 +1023,20 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
-	if err := validateListenerAPIAuth(cfg, apiToken, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED"), apiVerifier); err != nil {
+	apiAuthConfig := listenerAPIAuth{
+		token:        apiToken,
+		verifier:     apiVerifier,
+		accounts:     oidcAccounts,
+		google:       googleCallers,
+		brokers:      brokerTokenAuth,
+		allowedHosts: cfg.AllowedHosts,
+		logger:       logger,
+	}
+	if err := validateListenerAPIAuth(cfg, apiAuthConfig, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED")); err != nil {
 		log.Fatal(err)
 	}
-	logger.Info("listener API auth: " + describeListenerAPIAuth(apiToken, oidcIssuer, brokerTokenAuth))
-	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiToken, apiVerifier, cfg.AllowedHosts))
+	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
+	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
 
 	// Load webhook config (fast — env var reads only).
 	webhookCfg, err := webhook.LoadWebhookConfig()
@@ -1090,7 +1130,9 @@ func main() {
 		mux.Handle(hook.path, webhookGate)
 	}
 	// Serve /v1/* on the listener port for local plugin registration.
-	v1Handler := apiAuth(apiToken, apiVerifier, brokerTokenAuth, cfg.AllowedHosts, logger, v1Gate)
+	apiAuthConfig.requests = newListenerRequests(met)
+	apiAuthConfig.route = v1Gate.route
+	v1Handler := apiAuth(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
 

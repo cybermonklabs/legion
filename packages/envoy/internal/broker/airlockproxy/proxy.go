@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -469,13 +470,13 @@ func (s *Server) refuseCredential(w http.ResponseWriter, r *http.Request, c call
 // as a bound connection's host is.
 func requestHost(r *http.Request) string {
 	if r.URL.IsAbs() {
-		return airlock.ASCIILower(r.URL.Hostname())
+		return fold.ASCII(r.URL.Hostname())
 	}
 	host, _, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		host = r.Host
 	}
-	return airlock.ASCIILower(host)
+	return fold.ASCII(host)
 }
 
 // grantUnreadable is what a command is told when a read of its grant did not answer at all. It
@@ -565,7 +566,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
 		return
 	}
-	host = airlock.ASCIILower(host)
+	host = fold.ASCII(host)
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -719,7 +720,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := airlock.ASCIILower(r.URL.Hostname())
+	host := fold.ASCII(r.URL.Hostname())
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
