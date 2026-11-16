@@ -49,7 +49,10 @@ import (
 // no longer resolves. The removing process closes its own room after the commit, and only then
 // (docs.Service.Evict): a settlement that commits against a row that has gone would fail, and a
 // client that reconnects between the two reads the document as gone rather than loading a room
-// for a row that is no longer there.
+// for a row that is no longer there. A settlement of the document already under way at the
+// commit - queued behind this transaction for the owner's row, or started before the eviction
+// ended what the room had armed - reads the row gone and ends without a word
+// (docs.Service.settleRoomWithin).
 func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {

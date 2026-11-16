@@ -1810,9 +1810,9 @@ type settleNext int
 
 const (
 	// settleEnded is a settlement nothing follows: it committed, found nothing to do, was
-	// superseded by a write that arms the settlement again, or ended on a path it logged itself (a
-	// shutdown's skip, a document outside the Proof schema) or that its room's close or failure
-	// accounts for.
+	// superseded by a write that arms the settlement again, found its document removed, or ended
+	// on a path it logged itself (a shutdown's skip, a document outside the Proof schema) or that
+	// its room's close or failure accounts for.
 	settleEnded settleNext = iota
 	// settleRetry is a settlement that stopped short having written nothing into its room. A
 	// timer's is run again a settle delay later and counted toward maxSettleFailures (retrySettle).
