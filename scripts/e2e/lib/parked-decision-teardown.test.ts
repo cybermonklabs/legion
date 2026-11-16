@@ -370,6 +370,15 @@ wait
         ["the stranger", stranger.pid],
       ])
     ).toEqual([]);
+    // And one member of the broker's session no /proc can hold: a pid above the kernel's pid_max
+    // whose stat names the broker's session and whose environment carries its runtime directory.
+    // stop_agent_daemons signals it only when it reads the root it is given, so a walk that went
+    // back to the host's /proc fails the row rather than only slowing it. It has no cwd, so
+    // run_processes, which reads one first, passes over it.
+    const unreal = String(Number(readFileSync("/proc/sys/kernel/pid_max", "utf8")) + 1);
+    mkdirSync(join(proc, unreal));
+    writeFileSync(join(proc, unreal, "stat"), `${unreal} (sleep) S 1 ${leader} ${leader} 0\n`);
+    writeFileSync(join(proc, unreal, "environ"), `OMP_DAEMON_RUNTIME_DIR=${runtime}\0`);
 
     // The pane goes, as cleanup-is-complete's kill-server takes it.
     Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
@@ -385,6 +394,8 @@ wait
 
     const stopped = harness(work, proc, "stop_agent_daemons");
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+    // Its note names each process it signals.
+    expect(stopped.stdout.trim().split(/\s+/)).toContain(unreal);
     await until("every member of the broker's session to end", () => !members.some(alive));
     // What no broker of the run ties to the run is left alone, and the check still names the one that
     // works inside $work.
