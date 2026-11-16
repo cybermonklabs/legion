@@ -1857,4 +1857,62 @@ package api
 // number moved once more, to 141, the lowest free number above 133 then. At the forward merge
 // that brought main in at 7baa398b, main declared 137, #4046's own, below 141, so the number
 // held.)
-const DaemonAPIVersion = 141
+//
+// 144: dispatch://INFRA-3557 -- the memory guard in an issue pod's launcher, which is two shapes of
+// the launcher wire. The daemon's answer to a launcher's hello carries the settings the guard runs
+// by, as one optional member of `shimwire.LauncherHelloAck` (`memoryGuard`: `actPercent`,
+// `floorPercent`, `waitSeconds` and `intervalMilliseconds`, from
+// `runtime.kubernetes.memory_guard.issue_pods`). The runtime fills it for an issue pod's launcher
+// alone (sandbox's Runtime.launcherHelloAck), and leaves it out where that block's `enabled` is
+// false. The launcher sends the daemon one `launcher_memory_kill` frame
+// (`shimwire.LauncherMemoryKill`) for each process its guard ended with SIGKILL, on the connection
+// of the role whose process it was. The frame names that process by `executable`, the base name of
+// its executable (its stat name where the guard could not read that), escaped and cut to 256 bytes,
+// and carries no command: none of the process's arguments, which may hold a credential no masking
+// rule names. The daemon applies it once, under the event id
+// `memory-guard-kill:<guard>:<sequence>`, and tells that role why on its role topic as a
+// `record.RoleMessage` row (workflow's memoryGuardNote): an outbox kind earlier releases already
+// decode, so this change adds no store migration and owes no rollback statement for the note.
+//
+// The skew is safe in both directions, and this entry records why. An older launcher ignores the
+// new member, since its decoder answered `LauncherHelloAck{}` without reading any member, and it
+// sends no report. An older daemon writes no member, and the launcher reads that absence as "run no
+// guard" (memoryguard's Guard.Apply), the same absence a deployment that turned the guard off
+// sends. That daemon also closes a connection on a frame type it does not name (`ServeLauncher`'s
+// `default: return`), and the launcher then redials, so the launcher sends `launcher_memory_kill`
+// only on a connection whose acknowledgement carried settings (`internal/launcher`'s
+// manager.openMemoryReports), and drops with a line a report that waits on any other. The same
+// rule keeps the settings on the acknowledgement: the launcher's own command loop closes the
+// connection on a frame type it does not name as well, so the settings must never become a
+// daemon-to-launcher frame of their own. The image probe pairs a daemon with an image by this
+// number (`runtime/sandbox/probe.go`), as it did for the launcher frames of 39 and 48, which is
+// why a change to a launcher frame carries one.
+//
+// The `runtime.kubernetes.memory_guard` key is no part of this number. The state's settings block
+// carries it as `settings.runtime.kubernetes.memory_guard`, and the plugin parses that block loosely
+// (35 above), so a later legion.yaml key changes no strictly parsed shape and bumps nothing, as 111
+// says of `stalled_tree_notice_hours`. An earlier loader refuses the key by name, so a file that
+// sets it takes the block out before an earlier image is pinned (docs/kubernetes.md, "Rolling back
+// below the release that guards an issue pod's memory").
+//
+// Two other changes touch the same frame: dispatch://INFRA-3531, the guard of the controller's pod,
+// which fills this same member for that pod from a block of its own beside `issue_pods`, and
+// cybermonklabs/legion#3519 (dispatch://INFRA-2009), which adds `volumeTrim` beside it and a
+// `launcher_volume_report` frame. Of this change and either of those, the one that merges second
+// takes a number above the first's, every site that names the number included, and keeps every
+// member of both.
+// (This change took 124, the lowest number above main's 111 that no open pull request declared,
+// read on 2026-11-14 in each head's own copy of this file, and kept it at the forward merge of
+// 2026-11-14 that brought main in at 25f3e38a3e29 (#3793's 123). It took 134 at the forward
+// merge of 2026-11-15 that brought main in at 8b0f29b971df (#3715's 132), and kept it at the one
+// that brought main in at a3ff3b81bbf0 (INFRA-3027's 133). It took 144 at the forward merge of
+// 2026-11-15 that brought main in at 7baa398b206b (#4046's 137), the lowest number above 137 that
+// no open pull request declared at 2026-11-15T12:47Z, and keeps it at the forward merge that
+// brings main in at 7ed023731622, which carries #3575's 141, the entry right above and the number
+// the base now carries: 144 is still above it, and the reading of every open head at
+// 2026-11-15T17:19Z gives 144 to this change alone. That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 144

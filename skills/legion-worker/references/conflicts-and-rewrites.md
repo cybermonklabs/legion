@@ -51,8 +51,17 @@ Every path it cites is in cybermonklabs/legion.
 
   ```bash
   base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-    jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "merge: resolve conflict against ${base}@origin"
+    jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
   ```
+
+  `<message>` is written in the repository's own commit convention, read from the repository
+  itself: its commit-message check (a commitlint configuration or the workflow that lints
+  commits) where it has one, else its recent commits on the base. Where it uses Conventional
+  Commits, that is a listed type and the merge in words, for example
+  `chore(<scope>): merge <base> into <branch>`. Where neither shows a convention, it is the
+  merge in words alone, for example `Merge <base> into <branch>`. Never a fixed prefix of the
+  skill's own: a check that lints every commit of the pull request refuses a type its list does
+  not hold, and `merge` is in no Conventional Commits list.
 
   Merge from the bookmark, never from `@`: a `jj split` leaves `@` an empty, undescribed
   commit above the described one the bookmark already names, and `jj git push` refuses to push
@@ -66,7 +75,7 @@ Every path it cites is in cybermonklabs/legion.
   fast-forward and *Rewriting pushed commits* never applies.
 - **After a retarget.** Retargeting a pull request to a new base does not re-run Tests. Read
   `base` again and merge the bookmark onto it in one command
-  (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`) and push it the
+  (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
   ordinary way — a genuine fast-forward, never `--allow-backwards` — so the new head runs Tests
   against the new merge result, and cite that run in the PR body.
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -339,6 +340,21 @@ func ruleParagraphs(text, marker string) []string {
 	for _, paragraph := range strings.Split(text, "\n\n") {
 		if folded := foldWhitespace(paragraph); strings.Contains(folded, marker) {
 			found = append(found, folded)
+		}
+	}
+	return found
+}
+
+// clauses are the clauses of text, each folded to one line: each blank-line paragraph cut after
+// every full stop and every semicolon a space follows. A code span's own full stop (`<title>.`) is
+// followed by its closing backtick, so it ends no clause, and a hard wrap inside one leaves it
+// whole. A clause is the span a reader takes one verdict's rule from: a sentence that lists the
+// three verdicts gives each its own clause, and the words of one clause limit no other.
+func clauses(text string) []string {
+	var found []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		for _, sentence := range strings.SplitAfter(foldWhitespace(paragraph), ". ") {
+			found = append(found, strings.SplitAfter(sentence, "; ")...)
 		}
 	}
 	return found
@@ -716,6 +732,87 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
 				}
+			}
+		})
+	}
+}
+
+// A production check opens at the issue's close, which comes at the merge or, for a merge that
+// waits on the issues beneath it, later (workflow.closeMerged), and its bound is counted from that
+// close (workflow.checkBound). Its last look fails a requirement only the deploy can show and still
+// unobserved only where production carries the merge: a merge production never carried leaves
+// every such requirement unobserved, and that look's verdict is its `pending`, which closes the
+// check as not run (workflow.checkTask). So every clause that makes such a requirement a fail at
+// the last look says, in that clause, that production carries the merge. The unit is the clause,
+// split at `; ` as well as at full stops as workflow's check task test splits its task, never the
+// sentence: matched sentence by sentence, this test passed with the concepts page's limit taken
+// out, since that page's one sentence of the three verdicts reads whether production carries the
+// merge in its opening clause and limits nothing of its `fail` clause by it. A test that passes on
+// the revert it exists to catch measures the wrong unit, so a check widened from here keeps the
+// clause. That is read over the composed prompt of each role a look reaches, the tester's and the
+// implementer's, and over the three pages that state the rule outside a prompt, the repository's
+// AGENTS.md, the e2e proof's account of the bound's look and the concepts page, read from the
+// repository root. What keeps an edit to one of them alone running this test is this file's RULES
+// row in .github/scripts/ci_job_reads.py: check-ci-filters.sh reads it and fails when ci.yaml's
+// test filter, through its daemon_go_tests list, stops matching AGENTS.md or the concepts page;
+// it matches scripts/e2e/README.md through its own scripts/e2e/** too, whatever that list holds.
+// Each text must hold one such clause at least, so a matcher that stopped finding the rule fails
+// here rather than passing on nothing. In the two composed prompts, besides: a
+// clause naming `production_check_hours` counts it from the close, never from the merge; a clause
+// saying the session is handed the check task names the close before it; and no clause says the
+// merge closes the issue, since in these two prompts the close is the moment the check task is
+// handed and the role's work ends, and a merge that waits on the issues beneath it comes before
+// that moment. The architect's, the merger's and the reviewer's "the merge closes" name only what
+// causes the close, which is true, and no prompt this test reads holds them. This shows the text
+// is loaded, never that a role follows it.
+func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const limit = "production carries the merge"
+	theClose := regexp.MustCompile(`\bclose\b`)
+	boundFromTheMerge := regexp.MustCompile("production_check_hours`? (after|from|since) the merge")
+	type text struct {
+		name, body string
+		composed   bool
+	}
+	var texts []text
+	for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
+		texts = append(texts, text{"the composed " + string(role) + " prompt", composedText(t, composer, role, false), true})
+	}
+	for _, page := range []string{"AGENTS.md", "scripts/e2e/README.md", "docs/site/src/content/docs/legion/concepts.md"} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", filepath.FromSlash(page)))
+		if err != nil {
+			t.Fatalf("read %s: %v", page, err)
+		}
+		texts = append(texts, text{page, string(body), false})
+	}
+	for _, tc := range texts {
+		t.Run(tc.name, func(t *testing.T) {
+			fails := 0
+			for _, clause := range clauses(tc.body) {
+				if strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail") {
+					fails++
+					if !strings.Contains(clause, limit) {
+						t.Errorf("%s makes a requirement still unobserved at the last look a fail without saying %q, so it fails a merge production never carried: %q", tc.name, limit, clause)
+					}
+				}
+				if !tc.composed {
+					continue
+				}
+				if strings.Contains(clause, "`production_check_hours`") && (!theClose.MatchString(clause) || boundFromTheMerge.MatchString(clause)) {
+					t.Errorf("%s counts the check's bound from something other than the issue's close: %q", tc.name, clause)
+				}
+				if before, _, found := strings.Cut(clause, "hands this session"); found && !theClose.MatchString(before) {
+					t.Errorf("%s hands this session the check task at something other than the issue's close: %q", tc.name, clause)
+				}
+				if strings.Contains(strings.ToLower(clause), "merge closes") {
+					t.Errorf("%s says the merge closes the issue, which puts the check's hand-off and the end of this role's work at the merge, before the close for a merge that waits on the issues beneath it: %q", tc.name, clause)
+				}
+			}
+			if fails == 0 {
+				t.Errorf("%s holds no clause making a requirement still unobserved at the last look a fail", tc.name)
 			}
 		})
 	}

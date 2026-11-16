@@ -237,6 +237,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/document-and-comment-read-alike.e2e.ts` | each row asserts inside the live spec editor |
 | `e2e/document-way-back.e2e.ts` | a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true |
 | `e2e/document.e2e.ts` | collaboration, uploads, marks, and the live connection dot |
+| `e2e/download-names.e2e.ts` | the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written |
 | `e2e/editor-paste.e2e.ts` | pastes into the live editor, read back after a reload |
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
@@ -306,6 +307,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/phone.e2e.ts` | the trap is asserted while a send is out; asserts the project document's live editor content |
 | `e2e/picture-link-click.e2e.ts` | the link is clicked inside the live document editor |
 | `e2e/pictures.e2e.ts` | pastes and uploads, with the live editor and stored markdown read back |
+| `e2e/pinned-review-events.e2e.ts` | the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state |
 | `e2e/pipeline.e2e.ts` | `sql`-seeded pipeline state the server aggregates |
 | `e2e/plain-http-origin.e2e.ts` | types into the live document over the plain-HTTP origin |
 | `e2e/plain-http-proxy.e2e.ts` | counts the live socket upstream of a real proxy |

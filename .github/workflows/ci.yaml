@@ -604,6 +604,7 @@ jobs:
               - 'packages/daemon/internal/launcher/*'
               - 'packages/daemon/internal/leakguard/*'
               - 'packages/daemon/internal/lookpath/*'
+              - 'packages/daemon/internal/memoryguard/*'
               - 'packages/daemon/internal/modeltoken/*'
               - 'packages/daemon/internal/natsauth/*'
               - 'packages/daemon/internal/notify/*'
@@ -770,11 +771,13 @@ jobs:
             # (internal/api/state_golden_test.go:27, internal/intake/intake_test.go:698), the two
             # Oh My Pi plugins internal/daemon/promptreferences_omp_test.go:132 packs, whose prepack
             # bundles contracts and envoy-client, stages skills/ and writes their notices, the
-            # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
+            # GitHub App helper internal/api/real_github_test.go:88 sources, the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
             # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322,
-            # internal/runtime/sandbox/reclaim_doc_test.go:144). The root manifest, lockfile and
-            # patches the packs resolve through are bun_install's.
+            # internal/runtime/sandbox/reclaim_doc_test.go:144), and the three pages
+            # internal/prompts/prompts_test.go:785 holds to the production check's rule beside the
+            # composed prompts (AGENTS.md, scripts/e2e/README.md and the concepts page). The root
+            # manifest, lockfile and patches the packs resolve through are bun_install's.
             daemon_go_tests: &daemon_go_tests
               - *go_workspace
               - 'packages/daemon/**'
@@ -795,6 +798,9 @@ jobs:
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
               - 'docs/kubernetes.md'
+              - 'AGENTS.md'
+              - 'scripts/e2e/README.md'
+              - 'docs/site/src/content/docs/legion/concepts.md'
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:

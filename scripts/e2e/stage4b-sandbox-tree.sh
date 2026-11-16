@@ -3554,8 +3554,9 @@ last long enough to be ended inside. A production check's task (its first line `
 waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. This proof has no production and no deploy
 role: no production carries the merge, so the look leaves `Production: pending deploy of <merge
-commit>` on the pull request's body (on the last look, writes on the pull request that the check
-did not run because production did not carry the merge within the bound) and reports verdict
+commit>` on the pull request's body (on the last look, whose pending is for production not
+carrying the merge alone, as here, writes on the pull request that the check did not run because
+production did not carry the merge within the bound) and reports verdict
 pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
 else wakes a check — no deploy, no Dispatch notice, nothing the daemon does of its own — so the
@@ -6558,9 +6559,10 @@ until_true 900 "the bound to start the last look of $tree1's production check" l
 state_file check-look-2
 # The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
 # A tester that reported the last look before this read has had its pod taken again. The
-# daemon's task names the last look and its rule (write on the pull request that the check did not
-# run within the bound, report pending), and the proof sends the closed issue nothing: the close of
-# the check is the observation.
+# daemon's task names the last look and its rule (its pending is for production not carrying the
+# merge alone, as here: write on the pull request that the check did not run within the bound,
+# report pending), and the proof sends the closed issue nothing: the close of the check is the
+# observation.
 last_look_pod_back() { root_running || check_closed "$tree1"; }
 on_tree "$tree1" until_true 900 "the bound's look to make the root's Sandbox $root_pod again, Running, and bring its pod back" last_look_pod_back
 until_true 600 "the last look's pending report to close $tree1's production check" check_closed "$tree1"
