@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -280,31 +281,79 @@ func redacted(body string) string {
 	return accessTokenField.ReplaceAllString(body, `"access_token":"<token>"`)
 }
 
-// withoutEntries is listing without the entries named.
-func withoutEntries(listing string, entries []string) string {
-	var kept strings.Builder
-	for _, line := range strings.SplitAfter(listing, "\n") {
-		if line != "" && !slices.Contains(entries, strings.TrimSuffix(line, "\n")) {
-			kept.WriteString(line)
-		}
+// The two content types GKE's server answers a value or a listing under: its own for the text
+// form, and JSON's for the form `?alt=json` asks for.
+const (
+	textType = "application/text"
+	jsonType = "application/json"
+)
+
+// entriesOf is the entries of a listing or a list value in the form contentType names: one a line
+// in the text form, and the strings of one JSON array in the form `?alt=json` asks for.
+func entriesOf(t *testing.T, contentType, body string) []string {
+	t.Helper()
+	if contentType != jsonType {
+		return strings.Split(strings.TrimSuffix(body, "\n"), "\n")
 	}
-	return kept.String()
+	var entries []string
+	if err := json.Unmarshal([]byte(body), &entries); err != nil {
+		t.Fatalf("%q is no JSON array of entries: %v", body, err)
+	}
+	return entries
+}
+
+// inForm is entries in the form contentType names (entriesOf), the JSON array as GKE's server
+// writes it: on one line, with no line break after it.
+func inForm(t *testing.T, contentType string, entries []string) string {
+	t.Helper()
+	if contentType != jsonType {
+		return strings.Join(entries, "\n") + "\n"
+	}
+	return oneLineJSON(t, entries)
+}
+
+// jsonForm is what GKE's server answers with `?alt=json` where it answers text without it, by the
+// rule the recording shows on the paths it holds in both forms: a value, which ends in no line
+// break, is a JSON string, and a list value or a listing, one entry a line, is a JSON array of
+// the entries.
+func jsonForm(t *testing.T, text string) string {
+	t.Helper()
+	if strings.HasSuffix(text, "\n") {
+		return inForm(t, jsonType, entriesOf(t, textType, text))
+	}
+	return oneLineJSON(t, text)
+}
+
+func oneLineJSON(t *testing.T, v any) string {
+	t.Helper()
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 // Every path the endpoint serves is answered as GKE's metadata server answered it from a Legion
 // issue pod (testdata/gke-metadata.json) — status, Metadata-Flavor, Content-Type, Location and
 // body — but for the token, which is the one the fake service handed out for the scopes the
 // request named, and its remaining seconds. A directory GKE lists entries of that the endpoint
-// does not serve is answered with exactly the entries it does serve, in GKE's order and form:
-// each entry it lists answers, and each it leaves out is a path it does not serve. Refusals, the
-// redirects and the unknown paths are GKE's own, `identity` among them.
+// does not serve is answered with exactly the entries it does serve, in GKE's order and form,
+// one a line or a JSON array: each entry it lists answers, and each it leaves out is a path it
+// does not serve. `?alt=json`, in any case of the letters, answers a value, a list value and a
+// listing as JSON and any other `alt` as text, while the token and `?recursive=true` stay JSON:
+// as recorded where the recording holds the path with that query, and on every other path it
+// holds as text, as the JSON of that text (jsonForm). Refusals, the redirects and the unknown
+// paths are GKE's own, `identity` among them.
 func TestMetadataAnswersEveryPathAsGKEsServerAnswersIt(t *testing.T) {
 	g := newMetadataRig(t)
 	unserved := map[string][]string{
-		"instance-dir": {"attributes/", "gke/", "hostname", "id", "name", "zone"},
-		"project-dir":  {"numeric-project-id"},
-		"default-dir":  {"identity"},
-		"email-dir":    {"identity"},
+		"instance-dir":          {"attributes/", "gke/", "hostname", "id", "name", "zone"},
+		"instance-dir-alt-json": {"attributes/", "gke/", "hostname", "id", "name", "zone"},
+		"project-dir":           {"numeric-project-id"},
+		"project-dir-alt-json":  {"numeric-project-id"},
+		"default-dir":           {"identity"},
+		"default-dir-alt-json":  {"identity"},
+		"email-dir":             {"identity"},
 	}
 	answers := recordedAnswers(t)
 	for _, want := range answers {
@@ -323,40 +372,57 @@ func TestMetadataAnswersEveryPathAsGKEsServerAnswersIt(t *testing.T) {
 				wantBody = servedToken(t, g, want, body)
 			}
 			dir, query, _ := strings.Cut(want.Path, "?")
-			if entries, ok := unserved[want.Name]; ok {
-				for _, entry := range entries {
-					if !strings.Contains(want.Body, entry+"\n") {
+			contentType := want.Headers["Content-Type"]
+			if left, ok := unserved[want.Name]; ok {
+				recorded := entriesOf(t, contentType, want.Body)
+				for _, entry := range left {
+					if !slices.Contains(recorded, entry) {
 						t.Errorf("the recording lists no %s; the endpoint leaves it out for nothing", entry)
 					}
 					if response, _ := g.get(t, dir+entry, flavor); response.StatusCode != http.StatusNotFound {
 						t.Errorf("%s, which the listing leaves out, answered %d, want 404", dir+entry, response.StatusCode)
 					}
 				}
-				wantBody = withoutEntries(want.Body, entries)
+				wantBody = inForm(t, contentType, slices.DeleteFunc(recorded, func(entry string) bool { return slices.Contains(left, entry) }))
 			}
 			if body != wantBody {
 				t.Errorf("body %q, want %q", redacted(body), redacted(wantBody))
 			}
-			if want.Status != http.StatusOK || want.Headers["Content-Type"] != "application/text" || !strings.HasSuffix(dir, "/") || query != "" {
+			if want.Status != http.StatusOK {
 				return
 			}
-			for _, entry := range strings.Fields(body) {
-				if response, _ := g.get(t, dir+entry, flavor); response.StatusCode != http.StatusOK && response.StatusCode != http.StatusMovedPermanently {
-					t.Errorf("%s, which the listing names, answered %d", dir+entry, response.StatusCode)
+			// A listing, in either form, names only entries that answer. `?recursive=true` answers
+			// a directory's contents, which is no listing.
+			if strings.HasSuffix(dir, "/") && !strings.Contains(query, "recursive=true") {
+				for _, entry := range entriesOf(t, response.Header.Get("Content-Type"), body) {
+					if response, _ := g.get(t, dir+entry, flavor); response.StatusCode != http.StatusOK && response.StatusCode != http.StatusMovedPermanently {
+						t.Errorf("%s, which the listing names, answered %d", dir+entry, response.StatusCode)
+					}
+				}
+			}
+			// The JSON form of each path recorded as text, the paths recorded in one form among
+			// them: the two directories above the API, most listings and the account's other name.
+			if contentType == textType && query == "" {
+				response, asJSON := g.get(t, want.Path+"?alt=json", want.RequestHeaders)
+				if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != jsonType ||
+					response.Header.Get("Metadata-Flavor") != "Google" || asJSON != jsonForm(t, body) {
+					t.Errorf("with ?alt=json answered %d %v %q, want 200 %s %q, the JSON of its text",
+						response.StatusCode, response.Header, asJSON, jsonType, jsonForm(t, body))
 				}
 			}
 		})
 	}
-	// The universe's other spelling, which GKE lists beside the one recorded.
+	// The universe's other spelling, which GKE lists beside the one recorded, in both forms.
 	for _, want := range answers {
-		if want.Name != "universe-domain" {
+		if want.Name != "universe-domain" && want.Name != "universe-domain-alt-json" {
 			continue
 		}
-		response, body := g.get(t, metadataPrefix+"universe/universe_domain", flavor)
+		path := strings.Replace(want.Path, "universe-domain", "universe_domain", 1)
+		response, body := g.get(t, path, flavor)
 		if response.StatusCode != want.Status || response.Header.Get("Metadata-Flavor") != want.Headers["Metadata-Flavor"] ||
 			response.Header.Get("Content-Type") != want.Headers["Content-Type"] || body != want.Body {
-			t.Errorf("universe_domain answered %d %v %q, want universe-domain's %d %v %q",
-				response.StatusCode, response.Header, body, want.Status, want.Headers, want.Body)
+			t.Errorf("%s answered %d %v %q, want %s's %d %v %q",
+				path, response.StatusCode, response.Header, body, want.Name, want.Status, want.Headers, want.Body)
 		}
 	}
 }
@@ -670,6 +736,114 @@ func TestMetadataListensAtTheConstantAddressUnlessATestNamesItsOwn(t *testing.T)
 	}
 	if got := (MetadataConfig{address: "127.0.0.1:0"}).listenAddress(); got != "127.0.0.1:0" {
 		t.Errorf("a test's endpoint listens at %q, want the address it named", got)
+	}
+}
+
+// A pod's endpoint, whose configuration names no bound, gives a client ten seconds to send a
+// request, its headers and any body, and a connection the client keeps a minute to send its next
+// one. Only a test names bounds of its own, short enough to wait out (the two tests below).
+func TestMetadataGivesARequestTenSecondsAndAKeptConnectionAMinute(t *testing.T) {
+	server := (MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}).httpServer(nil)
+	if server.ReadHeaderTimeout != 10*time.Second || server.ReadTimeout != 10*time.Second || server.IdleTimeout != time.Minute {
+		t.Errorf("a pod's endpoint gives a request's headers %s, the request %s and a kept connection %s, want 10s, 10s and 1m0s",
+			server.ReadHeaderTimeout, server.ReadTimeout, server.IdleTimeout)
+	}
+}
+
+// closeWait is how long a test waits for the endpoint to close a connection: far longer than the
+// bound the test named, and less than either of a pod's own, so an endpoint that kept a pod's
+// bound, or none, fails the test.
+const closeWait = 5 * time.Second
+
+// serveBoundedMetadata serves the endpoint as a pod's launcher does (serveMetadata), on a port of
+// its own and with the bounds named, 0 being a pod's own, until the test ends, and answers its
+// address.
+func serveBoundedMetadata(t *testing.T, readTimeout, idleTimeout time.Duration) string {
+	t.Helper()
+	holdMetadataVariables(t, "")
+	log := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped, address := serveMetadata(ctx, Config{RolesDir: t.TempDir(), Metadata: &MetadataConfig{
+		WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider,
+		address: "127.0.0.1:0", readTimeout: readTimeout, idleTimeout: idleTimeout,
+	}}, func(format string, args ...any) { _, _ = fmt.Fprintf(log, format+"\n", args...) })
+	if address == "" {
+		cancel()
+		t.Fatalf("the endpoint did not listen: %s", log.String())
+	}
+	t.Cleanup(func() {
+		cancel()
+		<-stopped
+	})
+	return address
+}
+
+// sendMetadata opens a connection to the endpoint at address, which the test's end closes and
+// which waits closeWait at most for what it reads, and sends it sent.
+func sendMetadata(t *testing.T, address, sent string) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(closeWait)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, sent); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// The endpoint gives a client its bound to send a request and no longer, so a process in the pod
+// holds no connection of the launcher's open by sending nothing more: a connection that sent part
+// of a request line, or a line and part of its headers, is closed with nothing served (Go's
+// server answers the first as a bad request and the second not at all), and one whose request
+// names a body it never sends is answered, since the endpoint reads no body, and closed.
+func TestMetadataClosesAConnectionWhoseRequestDoesNotArriveInTime(t *testing.T) {
+	address := serveBoundedMetadata(t, 200*time.Millisecond, 0)
+	const projectID = metadataPrefix + "project/project-id"
+	for _, tc := range []struct{ name, sent, served string }{
+		{"part of a request line", "GET " + projectID, ""},
+		{"part of the headers", "GET " + projectID + " HTTP/1.1\r\nHost: metadata\r\nMetadata-Flavor: Google\r\n", ""},
+		{
+			"a body named and never sent",
+			"POST " + projectID + " HTTP/1.1\r\nHost: metadata\r\nMetadata-Flavor: Google\r\nContent-Length: 8\r\n\r\n",
+			"\r\n\r\nexample-project",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answered, err := io.ReadAll(sendMetadata(t, address, tc.sent))
+			if err != nil {
+				t.Fatalf("the endpoint did not close the connection within %s: %v", closeWait, err)
+			}
+			got := string(answered)
+			if ok := strings.HasPrefix(got, "HTTP/1.1 200 OK\r\n"); ok != (tc.served != "") || !strings.HasSuffix(got, tc.served) {
+				t.Errorf("the connection was answered %q before it closed, want a 200 only for a whole request, ending %q", got, tc.served)
+			}
+		})
+	}
+}
+
+// A connection a client keeps after its answer is closed once it has sent no next request for the
+// endpoint's idle bound, which is not the bound of a request: that one is a pod's own ten seconds
+// here, longer than the test waits.
+func TestMetadataClosesAKeptConnectionThatSendsNoNextRequest(t *testing.T) {
+	address := serveBoundedMetadata(t, 0, 200*time.Millisecond)
+	conn := sendMetadata(t, address, "GET "+metadataPrefix+"project/project-id HTTP/1.1\r\nHost: metadata\r\nMetadata-Flavor: Google\r\n\r\n")
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("the request was not answered: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "example-project" || response.Close {
+		t.Fatalf("the request was answered %q (%v, closing: %v), want example-project on a connection the endpoint keeps", body, err, response.Close)
+	}
+	if rest, err := io.ReadAll(reader); err != nil || len(rest) != 0 {
+		t.Errorf("the endpoint did not close the kept connection within %s: it sent %q, and the read ended %v", closeWait, rest, err)
 	}
 }
 

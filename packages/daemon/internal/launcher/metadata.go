@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,18 +49,37 @@ const (
 // ServiceAccount is bound to no Google service account, and whose project is the project it
 // answers; IdentityProvider is the cluster's identity provider,
 // `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`,
-// which with the pool makes the token exchange's audience. address, tokenFile and tokenURL are a
-// test's, which only this package's tests set: "" is MetadataAddress, which a pod always listens
-// on, the token the daemon mounts (WorkloadIdentityDirName under the roles directory) and Google's
-// security token service. A test listens on a port of its own (`127.0.0.1:0`), so no test holds
-// the pod's.
+// which with the pool makes the token exchange's audience. address, tokenFile, tokenURL,
+// readTimeout and idleTimeout are a test's, which only this package's tests set: the zero value of
+// each is MetadataAddress, which a pod always listens on, the token the daemon mounts
+// (WorkloadIdentityDirName under the roles directory), Google's security token service,
+// metadataReadTimeout and metadataIdleTimeout. A test listens on a port of its own
+// (`127.0.0.1:0`), so no test holds the pod's, and names bounds short enough to wait out.
 type MetadataConfig struct {
 	WorkloadPool, IdentityProvider string
 	address, tokenFile, tokenURL   string
+	readTimeout, idleTimeout       time.Duration
 }
 
 // listenAddress is where the endpoint listens.
 func (c MetadataConfig) listenAddress() string { return cmp.Or(c.address, MetadataAddress) }
+
+// httpServer is the endpoint's HTTP server over handler, with a bound on each way a client could
+// hold a connection of the launcher's open: metadataReadTimeout to send a request, its line and
+// headers (ReadHeaderTimeout) and any body it names (ReadTimeout), and metadataIdleTimeout
+// between two requests of a connection it keeps. ReadTimeout stops counting once the request is
+// read, so a request with no body, which is every client's, is answered however long its token's
+// exchange takes; the endpoint reads no body, so one a request names and never sends ends at the
+// bound, answered, with its connection closed.
+func (c MetadataConfig) httpServer(handler http.Handler) *http.Server {
+	readTimeout := cmp.Or(c.readTimeout, metadataReadTimeout)
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       cmp.Or(c.idleTimeout, metadataIdleTimeout),
+	}
+}
 
 const (
 	// metadataPrefix is the version of the metadata API Google's clients read. Every path under it
@@ -91,6 +111,12 @@ const (
 	// maxFailureReason bounds the reason a failure line quotes, in bytes, so one long answer of the
 	// service cannot flood the log.
 	maxFailureReason = 256
+	// metadataReadTimeout bounds how long a client may take to send a request, so a process in the
+	// pod that opens a connection and sends nothing, or part of a request, does not hold it open.
+	metadataReadTimeout = 10 * time.Second
+	// metadataIdleTimeout bounds how long a connection a client keeps may wait for its next
+	// request, for the same reason.
+	metadataIdleTimeout = time.Minute
 )
 
 // accountScopes are the scopes GKE's server lists for a Workload Identity pod's account.
@@ -117,7 +143,7 @@ func serveMetadata(ctx context.Context, cfg Config, logf func(format string, arg
 		_ = os.Setenv(name, address)
 	}
 	metadata.tokenFile = cmp.Or(metadata.tokenFile, filepath.Join(cfg.RolesDir, WorkloadIdentityDirName, WorkloadIdentityTokenFile))
-	server := &http.Server{Handler: newMetadataServer(ctx, metadata, logf)}
+	server := metadata.httpServer(newMetadataServer(ctx, metadata, logf))
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
@@ -154,11 +180,8 @@ type metadataServer struct {
 	ctx                 context.Context
 	pool, audience      string
 	tokenFile, tokenURL string
-	// accounts is the listing of instance/service-accounts/ and accountJSON the account's answer
-	// to `?recursive=true`, each made once (newMetadataServer).
-	accounts    []string
-	accountJSON []byte
-	logf        func(format string, args ...any)
+	answers             metadataAnswers
+	logf                func(format string, args ...any)
 	// now is the clock a token's remaining seconds and the failure lines' interval are read
 	// against; a test replaces it.
 	now func() time.Time
@@ -170,21 +193,71 @@ type metadataServer struct {
 	failureLogged time.Time
 }
 
+// metadataAnswer is a value, a list value or a directory's listing in the two forms GKE's server
+// answers it in: the text form, and the JSON a request asks for with `?alt=json`.
+type metadataAnswer struct{ text, json []byte }
+
+// metadataAnswers is every value, list value and listing the endpoint serves, each made once in
+// both forms (newMetadataServer), and each listing naming only the entries the endpoint serves.
+type metadataAnswers struct {
+	// The two directories above the API, the API's own (api is /computeMetadata/v1/ itself and
+	// accounts is instance/service-accounts/) and its two values.
+	root, computeMetadata, api, project, instance, accounts, universe metadataAnswer
+	projectID, universeDomain                                         metadataAnswer
+	// The pod's one account's, the same under both of its names (account): its directory, its
+	// value, its two list values and its answer to `?recursive=true`, which has the JSON form
+	// alone.
+	account, email, aliases, scopes metadataAnswer
+	recursive                       []byte
+}
+
+// metadataValue is a value in both forms: itself, and itself as a JSON string.
+func metadataValue(value string) metadataAnswer {
+	return metadataAnswer{text: []byte(value), json: metadataJSON(value)}
+}
+
+// metadataList is a list value or a directory's listing in both forms: its entries one a line, and
+// a JSON array of them.
+func metadataList(entries ...string) metadataAnswer {
+	return metadataAnswer{text: []byte(strings.Join(entries, "\n") + "\n"), json: metadataJSON(entries)}
+}
+
+// metadataJSON is v as GKE's server writes JSON: on one line, with no line break after it. v
+// holds strings alone, which json.Marshal always encodes.
+func metadataJSON(v any) []byte {
+	encoded, _ := json.Marshal(v)
+	return encoded
+}
+
 func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format string, args ...any)) *metadataServer {
 	accounts := []string{"default/", cfg.WorkloadPool + "/"}
 	slices.Sort(accounts)
-	// Strings alone, which json.Marshal always encodes.
-	accountJSON, _ := json.Marshal(struct {
-		Aliases []string `json:"aliases"`
-		Email   string   `json:"email"`
-		Scopes  []string `json:"scopes"`
-	}{[]string{"default"}, cfg.WorkloadPool, accountScopes})
 	return &metadataServer{
 		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
 		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, stsTokenURL),
-		accounts: accounts, accountJSON: accountJSON, logf: logf, now: time.Now,
+		answers: metadataAnswers{
+			root:            metadataList("computeMetadata/"),
+			computeMetadata: metadataList("v1/"),
+			api:             metadataList("instance/", "project/", "universe/"),
+			project:         metadataList("project-id"),
+			projectID:       metadataValue(strings.TrimSuffix(cfg.WorkloadPool, workloadPoolSuffix)),
+			instance:        metadataList("service-accounts/"),
+			accounts:        metadataList(accounts...),
+			universe:        metadataList("universe-domain", "universe_domain"),
+			universeDomain:  metadataValue("googleapis.com"),
+			account:         metadataList("aliases", "email", "scopes", "token"),
+			email:           metadataValue(cfg.WorkloadPool),
+			aliases:         metadataList("default"),
+			scopes:          metadataList(accountScopes...),
+			recursive: metadataJSON(struct {
+				Aliases []string `json:"aliases"`
+				Email   string   `json:"email"`
+				Scopes  []string `json:"scopes"`
+			}{[]string{"default"}, cfg.WorkloadPool, accountScopes}),
+		},
+		logf: logf, now: time.Now,
 		sources: map[string]oauth2.TokenSource{}, notServed: map[string]bool{},
 	}
 }
@@ -193,14 +266,16 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 // status, Metadata-Flavor, Content-Type, Location and body. The two directories above the API
 // answer anyone; every path under it is refused without `Metadata-Flavor: Google` or with
 // X-Forwarded-For, before anything else is read, so a request a proxy forwards on a role's behalf
-// gets no token. Anything the endpoint does not serve is answered as GKE answers an unknown path.
+// gets no token. A value, a list value and a listing are answered as text or, to `?alt=json`, as
+// JSON (metadataAnswer.serve); the token and an account's `?recursive=true` are JSON whatever
+// `alt` says. Anything the endpoint does not serve is answered as GKE answers an unknown path.
 func (s *metadataServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/":
-		answerText(w, "computeMetadata/\n")
+		s.answers.root.serve(w, r.URL.Query())
 		return
 	case "/computeMetadata/":
-		answerText(w, "v1/\n")
+		s.answers.computeMetadata.serve(w, r.URL.Query())
 		return
 	}
 	rest, ok := strings.CutPrefix(r.URL.Path, metadataPrefix)
@@ -218,21 +293,21 @@ func (s *metadataServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch rest {
 	case "":
-		s.listing(w, r, "instance/", "project/", "universe/")
+		s.listing(w, r, s.answers.api)
 	case "project/":
-		s.listing(w, r, "project-id")
+		s.listing(w, r, s.answers.project)
 	case "project/project-id":
-		answerText(w, strings.TrimSuffix(s.pool, workloadPoolSuffix))
+		s.answers.projectID.serve(w, r.URL.Query())
 	case "instance", "instance/service-accounts":
 		redirectToDirectory(w, r)
 	case "instance/":
-		s.listing(w, r, "service-accounts/")
+		s.listing(w, r, s.answers.instance)
 	case "instance/service-accounts/":
-		s.listing(w, r, s.accounts...)
+		s.listing(w, r, s.answers.accounts)
 	case "universe/":
-		s.listing(w, r, "universe-domain", "universe_domain")
+		s.listing(w, r, s.answers.universe)
 	case "universe/universe-domain", "universe/universe_domain":
-		answerText(w, "googleapis.com")
+		s.answers.universeDomain.serve(w, r.URL.Query())
 	default:
 		s.account(w, r, rest)
 	}
@@ -254,17 +329,18 @@ func (s *metadataServer) account(w http.ResponseWriter, r *http.Request, rest st
 	}
 	switch item {
 	case "":
-		if r.URL.Query().Get("recursive") != "true" {
-			answerText(w, "aliases\nemail\nscopes\ntoken\n")
+		query := r.URL.Query()
+		if query.Get("recursive") == "true" {
+			answer(w, "application/json", s.answers.recursive)
 			return
 		}
-		answer(w, "application/json", s.accountJSON)
+		s.answers.account.serve(w, query)
 	case "email":
-		answerText(w, s.pool)
+		s.answers.email.serve(w, r.URL.Query())
 	case "aliases":
-		answerText(w, "default\n")
+		s.answers.aliases.serve(w, r.URL.Query())
 	case "scopes":
-		answerText(w, strings.Join(accountScopes, "\n")+"\n")
+		s.answers.scopes.serve(w, r.URL.Query())
 	case "token":
 		s.token(w, r)
 	default:
@@ -376,15 +452,17 @@ func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	s.logf("launcher: metadata: token exchange failed scopes=%q reason=%q", strings.Join(scopes, ","), reason)
 }
 
-// listing answers a directory: its entries, one a line, each one the endpoint serves. GKE's server
-// answers `?recursive=true` on a directory with all of it as JSON, which the endpoint does only for
-// an account (account), so on any other directory such a request is a path it does not serve.
-func (s *metadataServer) listing(w http.ResponseWriter, r *http.Request, entries ...string) {
-	if r.URL.Query().Get("recursive") == "true" {
+// listing answers a directory: its entries, each one the endpoint serves, in the form the request
+// asks for (metadataAnswer.serve). GKE's server answers `?recursive=true` on a directory with all
+// of it as JSON, which the endpoint does only for an account (account), so on any other directory
+// such a request is a path it does not serve, whatever `alt` it names.
+func (s *metadataServer) listing(w http.ResponseWriter, r *http.Request, entries metadataAnswer) {
+	query := r.URL.Query()
+	if query.Get("recursive") == "true" {
 		s.notFound(w, r.URL.EscapedPath()+"?recursive=true")
 		return
 	}
-	answerText(w, strings.Join(entries, "\n")+"\n")
+	entries.serve(w, query)
 }
 
 // notFound answers a path the endpoint does not serve as GKE's server answers an unknown one, and
@@ -414,11 +492,18 @@ func redirectToDirectory(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
-// answerText answers a value or a listing as GKE's server does, under its own content type.
-func answerText(w http.ResponseWriter, body string) {
-	answer(w, "application/text", []byte(body))
+// serve answers a in the form the request's query asks for, as GKE's server does: the JSON form
+// where its first `alt` is `json` in any case of the letters, and the text form for every other
+// `alt` and for none.
+func (a metadataAnswer) serve(w http.ResponseWriter, query url.Values) {
+	if strings.EqualFold(query.Get("alt"), "json") {
+		answer(w, "application/json", a.json)
+		return
+	}
+	answer(w, "application/text", a.text)
 }
 
+// answer answers body under contentType, as GKE's server answers what it serves.
 func answer(w http.ResponseWriter, contentType string, body []byte) {
 	w.Header().Set("Metadata-Flavor", "Google")
 	w.Header().Set("Content-Type", contentType)
