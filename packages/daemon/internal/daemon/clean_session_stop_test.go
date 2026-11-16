@@ -472,8 +472,8 @@ func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
 // A stop sent once the daemon's stop has begun its final wait is left out of that wait
 // (sessionStopsInFlight), not out of the work: it still reads the registration and deletes it, on
 // its own budget. Dropped instead, it would leave the ended process's registration standing until
-// the gone horizon, and a message to a released role would be stored for a session nothing reads,
-// with no wake.
+// its record expires, and a message to a released role would be stored for a session nothing
+// reads, with no wake.
 func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t *testing.T) {
 	listener := &listenerRecorder{
 		held:     storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
