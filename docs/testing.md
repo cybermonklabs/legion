@@ -277,6 +277,9 @@ That job runs the command with `-v` for a second check Go's detector does not ma
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
+A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
+`Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.
+A settlement timer's callback therefore holds the service and the room's state weakly (`scheduleSettleAfterLocked` in `packages/envoy/internal/dispatch/docs/service.go`): held strongly, a stopped one kept its shut-down service for up to an hour under a test's `settle = time.Hour`, and the check failed on a loaded machine in nearly every run (dispatch://INFRA-3904).
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.

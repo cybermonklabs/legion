@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -390,7 +391,10 @@ type Service struct {
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
 	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers     map[uint64]*time.Timer
+	timers map[uint64]*time.Timer
+	// self is the service held weakly, which is how a settlement timer's callback reaches it
+	// (scheduleSettleAfterLocked).
+	self       weak.Pointer[Service]
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -845,6 +849,7 @@ func New(deps Deps) *Service {
 		connectionCap:     connectionCap,
 		maxPendingItems:   maxUpdateItems,
 	}
+	service.self = weak.Make(service)
 	service.catchUps = newRoomCatchUps(service)
 	service.roomSyncSender = newRoomSyncSender(service)
 	service.awarenessRelay = newAwarenessRelay(service)
@@ -1375,7 +1380,21 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	s.stopSettleTimer(state.settle)
 	timerID := s.nextSettleTimer.Add(1)
 	s.registerSettleTimer(timerID)
+	// The callback holds the service and the room's state weakly. Stopping a timer does not free
+	// its callback: the runtime keeps a stopped timer in the heap of the P that armed it until that
+	// P next clears its stopped timers or the timer's time comes, and when an idle P next runs
+	// depends on the scheduler and the machine's load. Held strongly - the state reaches the
+	// service through its settle field - the callback of a timer Shutdown stopped kept the service
+	// and its rooms reachable that long, an hour under a test's settle delay, which the package's
+	// leak check reports (service_leak_test.go). While the timer is armed both resolve: the
+	// service's owner holds the service, and the service keeps an armed room's state
+	// (unusedLocked).
+	owner, record := s.self, weak.Make(state)
 	timer := time.AfterFunc(delay, func() {
+		s := owner.Value()
+		if s == nil {
+			return
+		}
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
 		// has left the register.
@@ -1383,7 +1402,8 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 			s.unregisterSettleTimer(timerID)
 			s.releaseIfUnused(room)
 		}()
-		if current, _ := s.rooms.Load(room); current != state {
+		state := record.Value()
+		if current, _ := s.rooms.Load(room); state == nil || current != state {
 			s.scheduleSettle(room)
 			return
 		}

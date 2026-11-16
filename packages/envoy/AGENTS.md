@@ -904,6 +904,9 @@ The rule covers the cleanup's argument alike, so an argument reaching the docume
 `keepInstance` once passed its `*roomLoad`, which reaches a document by two routes through `roomInstance.unstored`: each `queuedClass`'s `UpdateCredit` carries the `service`, and it carries the `state` whose `roomState.reservedFor` is a `*crdt.Doc`, so it holds the load weakly too and passes an empty struct.
 `envoy-go-docs-finalizers` runs `GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/` on the same `envoy_go_race_docs` filter, and fails on `is reachable from cleanup or cleanup argument` and then `fatal error: detected possible issues with cleanups and/or finalizers`;
 its `-v` also carries this package's leak line, `docs: <built> services built, <alive> still alive after <duration>`, which names each test that built a service and never shut it down, so a test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+A service that was shut down is still alive at that line, too, when a callback of one of its stopped timers holds it, which is why a settlement timer's callback holds the service and the room's state weakly (`scheduleSettleAfterLocked`, `docs/service.go`).
+`Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs.
+A callback holding the service strongly kept a shut-down service reachable that long, an hour under a test's `settle = time.Hour`, and the leak check failed wherever the P that armed the timer did not run again within its 30 s, which on a loaded machine was nearly every run (dispatch://INFRA-3904).
 This package is the only one of the repository that registers a cleanup today, and one added in another package comes with a detector job of its own, in the same pull request;
 `docs/testing.md` states the rule in full.
 
