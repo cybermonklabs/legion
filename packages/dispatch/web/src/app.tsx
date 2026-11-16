@@ -561,6 +561,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
+  // A restricted member reads only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads):
+  // the views over every project - Priorities, Delivery and Pipeline - are no page of theirs, and
+  // their addresses answer as an unknown one does. They are offered no Peek either, in the rail
+  // (`Sidebar`), in the phone header or by its key.
+  const restricted = user.member_kind === "restricted";
+  const overEveryProject = (page: ReactNode): ReactNode => (restricted ? <NotFoundPage /> : page);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -619,7 +625,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setInboxDrawerOpen((open) => !open),
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
-      when: () => !routeIsInbox(location.pathname),
+      when: () => !restricted && !routeIsInbox(location.pathname),
     },
     {
       id: "toggle-sidebar",
@@ -803,14 +809,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <span className={inboxBadgeClass}>{inboxLabel}</span>
               ) : (
                 <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
-                  >
-                    Peek
-                  </button>
+                  {restricted ? null : (
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                  )}
                   <Link className={inboxBadgeClass} to="/">
                     {inboxLabel}
                   </Link>
@@ -914,8 +922,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
-                <Route element={<PrioritiesPage />} path="/priorities" />
-                <Route element={<PriorityPage />} path="/priorities/:id" />
+                <Route element={overEveryProject(<PrioritiesPage />)} path="/priorities" />
+                <Route element={overEveryProject(<PriorityPage />)} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
@@ -925,8 +933,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelinePage />} path="/pipeline" />
+                <Route element={overEveryProject(<DeliveryPage />)} path="/delivery" />
+                <Route element={overEveryProject(<PipelinePage />)} path="/pipeline" />
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>

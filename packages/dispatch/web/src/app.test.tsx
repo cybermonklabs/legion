@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,6 +20,7 @@ import { AuthGate } from "./app";
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/project/ProjectPage";
+import { COMPACT_VIEWPORT_QUERY } from "./features/shell/useDialog";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -1076,5 +1077,118 @@ test("a live socket refused once the person is signed out takes the page to sign
   } finally {
     teardown();
     sockets.restore();
+  }
+});
+
+const BOB_RESTRICTED: AuthenticatedUser = {
+  event_head: "0",
+  kind: "user",
+  login: "bob",
+  member_kind: "restricted",
+};
+
+/** The shell at `path`, signed in as `user`, on a phone-sized screen when `compact` is set and a
+ *  wide one otherwise; returns the priorities read, to count, and the teardown. */
+function renderShellAt(
+  user: AuthenticatedUser,
+  path: string,
+  compact = false
+): { listPriorities: Mock<typeof api.listPriorities>; teardown: () => void } {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: compact && query === COMPACT_VIEWPORT_QUERY,
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  const spies = [
+    listPriorities,
+    spyOn(api, "whoAmI").mockResolvedValue(user),
+    spyOn(api, "listIssues").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "getInbox").mockResolvedValue([]),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <AuthGate />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    listPriorities,
+    teardown: () => {
+      view.unmount();
+      liveSocketFor(queryClient).close();
+      for (const spy of spies) spy.mockRestore();
+      window.matchMedia = originalMatchMedia;
+    },
+  };
+}
+
+// A restricted member reads only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads),
+// so the views over every project are no page of theirs: an address of Priorities, of one
+// priority, of Delivery or of Pipeline answers Page not found, and nothing reads the priorities.
+// A full member's address opens the page, as it always did.
+test("a restricted member's Priorities, Delivery and Pipeline addresses answer Page not found", async () => {
+  for (const path of ["/priorities", "/priorities/launch", "/delivery", "/pipeline"]) {
+    const { listPriorities, teardown } = renderShellAt(BOB_RESTRICTED, path);
+    try {
+      expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+      expect(listPriorities).not.toHaveBeenCalled();
+    } finally {
+      teardown();
+    }
+  }
+
+  const { teardown } = renderShellAt(
+    { event_head: "0", kind: "user", login: "alice" },
+    "/priorities"
+  );
+  try {
+    expect(await screen.findByRole("heading", { name: "Priorities" })).toBeTruthy();
+  } finally {
+    teardown();
+  }
+});
+
+// The phone header's Peek is the rail's Peek where the rail is a sheet, and `i` is the key that
+// opens the same drawer: a restricted member is offered neither. A full member's header keeps its
+// Peek.
+test("a restricted member's phone header has no Peek, and i opens no inbox drawer", async () => {
+  const user = userEvent.setup();
+  const peek = { name: "Peek at the inbox without leaving this page" };
+  const restricted = renderShellAt(BOB_RESTRICTED, "/nowhere", true);
+  try {
+    await screen.findByRole("heading", { name: "Page not found" });
+    expect(screen.getByRole("button", { name: "Open navigation" })).toBeTruthy();
+    expect(screen.queryByRole("button", peek)).toBeNull();
+    await user.keyboard("i");
+    expect(screen.queryByTestId("inbox-drawer")).toBeNull();
+  } finally {
+    restricted.teardown();
+  }
+
+  const full = renderShellAt({ event_head: "0", kind: "user", login: "alice" }, "/nowhere", true);
+  try {
+    await screen.findByRole("heading", { name: "Page not found" });
+    expect(screen.getByRole("button", peek)).toBeTruthy();
+    await user.keyboard("i");
+    expect(await screen.findByTestId("inbox-drawer")).toBeTruthy();
+  } finally {
+    full.teardown();
   }
 });
