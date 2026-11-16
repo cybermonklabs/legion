@@ -1,5 +1,7 @@
 import {
   AUTH_NO_IDENTITY,
+  AUTH_SIGNED_OUT_REASONS,
+  type AuthSignedOutReason,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
@@ -88,6 +90,15 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  reason?: string;
+  login?: string;
+}
+
+/** Why Dispatch signed the person out, and the address it signed out, as its `401
+ *  AUTH_NO_IDENTITY` names them (`AUTH_SIGNED_OUT_REASONS`). */
+export interface SignedOut {
+  readonly login: string;
+  readonly reason: AuthSignedOutReason;
 }
 
 export class ApiError extends Error {
@@ -102,6 +113,10 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** Why Dispatch signed the person out, for its own `401 AUTH_NO_IDENTITY` naming a reason this
+   *  page knows and the address; undefined for every other answer, a sign-out's and an expired
+   *  cookie's 401 among them. */
+  readonly signedOut: SignedOut | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -111,7 +126,19 @@ export class ApiError extends Error {
     this.state = payload.state;
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
+    this.signedOut = signedOutOf(status, payload);
   }
+}
+
+/** The reason and address a `401 AUTH_NO_IDENTITY` gives for a sign-out, when it gives a reason
+ *  `AUTH_SIGNED_OUT_REASONS` names and an address to name. */
+function signedOutOf(status: number, payload: ErrorPayload): SignedOut | undefined {
+  const { code, login, reason } = payload;
+  if (status !== 401 || code !== AUTH_NO_IDENTITY || typeof login !== "string" || login === "") {
+    return undefined;
+  }
+  const known = AUTH_SIGNED_OUT_REASONS.find((named) => named === reason);
+  return known === undefined ? undefined : { login, reason: known };
 }
 
 /** A request the browser could not get an answer to at all: the connection failed or dropped

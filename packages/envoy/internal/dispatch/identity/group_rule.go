@@ -77,6 +77,12 @@ func (r GroupRule) End(ctx context.Context, people auth.PeopleStore, sessions au
 	return ErrNoIdentity
 }
 
+// SignedOutReason tells no reason under a group, and reads nothing: a pool's members are all full
+// members, and the pool says why it stopped confirming one only to Dispatch's log.
+func (r GroupRule) SignedOutReason(context.Context, auth.PeopleStore, string) (string, error) {
+	return "", nil
+}
+
 // ConfirmCookie never refuses under a group: Dispatch records no subject for a pool sign-in, so
 // there is nothing another sign-in could have taken the address under.
 func (r GroupRule) ConfirmCookie(ctx context.Context, people auth.PeopleStore, email, subject string) error {

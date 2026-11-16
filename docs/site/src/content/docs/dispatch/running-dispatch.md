@@ -171,7 +171,11 @@ account's email must be verified, and an address at the domain that is not one o
 organization's own accounts is refused, as not in the domain. Someone outside the domain whom no
 list names reaches a page saying that no project's access list names them. Dispatch checks again
 at least hourly, as for everyone, and signs the person out once no list names them, or once the
-setting is off.
+setting is off. The sign-in page they then reach says why: that no project's access list names
+their address any more, or that Dispatch no longer signs in accounts from outside the domain. The
+API's `401 NO_IDENTITY` says the same, as a `reason` of `NOT_LISTED` or `OUTSIDE_SIGNIN_OFF` beside
+their address as `login`. A person who signs out, or whose sign-in simply expires, is told
+nothing more, and a deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` answers as it always did.
 
 For this the Google client's consent screen's audience is **External**. Dispatch asks for
 `openid`, `email` and `profile` alone, so the app can stay in Testing status with no list of test

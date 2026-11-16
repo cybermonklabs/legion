@@ -16,12 +16,14 @@ import (
 // measures it (the database's now() minus the time it recorded), never a server process's clock,
 // so every process judges a confirmation's age alike; it is zero when Confirmed is false. Subject
 // is the Google account (`sub`) that last signed in to the address with Google for a Workspace
-// domain; empty for an address no such sign-in recorded. Ending a sign-in keeps it.
+// domain; empty for an address no such sign-in recorded. Ending a sign-in keeps it, and keeps Kind,
+// the member kind the address's last sign-in or confirmation recorded.
 type PersonMembership struct {
 	RefreshToken string
 	Confirmed    bool
 	ConfirmedAge time.Duration
 	Subject      string
+	Kind         model.MemberKind
 }
 
 // PeopleStore persists the people who have signed in to Dispatch, keyed by lowercase email: the

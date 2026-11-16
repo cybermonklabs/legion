@@ -3,9 +3,11 @@ package identity
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -55,6 +57,44 @@ func TestOutsideSignInRuleAsksGoogleForNoDomainHint(t *testing.T) {
 		if got := rule.DomainHint(); got != want {
 			t.Errorf("%T.DomainHint() = %t, want %t", rule, got, want)
 		}
+	}
+}
+
+// Each rule tells a reason only for a restricted member whose sign-in no longer stands, and only
+// for what it no longer admits: the outside rule once no list names them, the domain rule always,
+// since it admits nobody from outside, and a group never. A full member, a restricted member signed
+// in (another browser, or another account, holds the address's refresh token), and an address that
+// never signed in are told none, and the lists are read only for a restricted sign-in that ended.
+func TestOutsideSignInRuleSaysWhyARestrictedSessionEnded(t *testing.T) {
+	ctx := context.Background()
+	people := newTestPeopleStore(&testSessionStore{generations: map[string]int64{}})
+	people.people["ended@other.example"] = testPerson{Subject: "g-1", Kind: model.MemberRestricted}
+	people.people["listed@other.example"] = testPerson{Subject: "g-2", Kind: model.MemberRestricted}
+	people.people["signed-in@other.example"] = testPerson{Subject: "g-3", RefreshToken: "refresh", ConfirmedAt: time.Now(), Kind: model.MemberRestricted}
+	people.people["full@example.com"] = testPerson{Subject: "g-4", Kind: model.MemberFull}
+	lister := &stubLister{listed: map[string]bool{"listed@other.example": true}}
+	for _, tc := range []struct{ email, outside, domain string }{
+		{"ended@other.example", SignedOutNotListed, SignedOutOutsideOff},
+		{"listed@other.example", "", SignedOutOutsideOff},
+		{"signed-in@other.example", "", ""},
+		{"full@example.com", "", ""},
+		{"never@other.example", "", ""},
+	} {
+		for _, rule := range []struct {
+			rule SignInRule
+			want string
+		}{{outsideRule(lister), tc.outside}, {workspace, tc.domain}, {dispatchMembers, ""}} {
+			if reason, err := rule.rule.SignedOutReason(ctx, people, tc.email); err != nil || reason != rule.want {
+				t.Errorf("%T.SignedOutReason(%s) = %q, %v; want %q", rule.rule, tc.email, reason, err, rule.want)
+			}
+		}
+	}
+	if asked := lister.calls(); !slices.Equal(asked, []string{"ended@other.example", "listed@other.example"}) {
+		t.Errorf("the lists were asked about %v, want only the two ended restricted sign-ins", asked)
+	}
+	failure := errors.New("connection refused")
+	if reason, err := outsideRule(&stubLister{err: failure}).SignedOutReason(ctx, people, "ended@other.example"); reason != "" || !errors.Is(err, ErrMembershipUnreadable) || !errors.Is(err, failure) {
+		t.Errorf("SignedOutReason while the lists do not answer = %q, %v; want no reason and ErrMembershipUnreadable carrying the failure", reason, err)
 	}
 }
 

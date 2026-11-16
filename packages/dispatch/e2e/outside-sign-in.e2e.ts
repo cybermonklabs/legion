@@ -220,7 +220,7 @@ test.describe("outside sign-in", () => {
         expect(await read.json()).toMatchObject({ key: pub });
       });
 
-      await test.step("once alice takes the outsider off PRIV, the next hourly confirmation signs them out", async () => {
+      await test.step("once alice takes the outsider off PRIV, the next hourly confirmation signs them out, and the sign-in page says why", async () => {
         await aliceWrites(
           aliceContext,
           "DELETE",
@@ -231,8 +231,14 @@ test.describe("outside sign-in", () => {
         );
         await outsiderPage.goto(`${outside}/issues/${priv}`);
         await expect(outsiderPage.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
+        await expect(
+          outsiderPage.getByText(
+            `You were signed out because no Dispatch project's access list names ${outsider} any more.`,
+            { exact: true }
+          )
+        ).toBeVisible();
         expect(await whoami(outsiderPage), "the outsider's GET /auth/whoami").toMatchObject({
-          body: { code: "NO_IDENTITY" },
+          body: { code: "NO_IDENTITY", login: outsider, reason: "NOT_LISTED" },
           status: 401,
         });
       });

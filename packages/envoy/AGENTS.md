@@ -3811,6 +3811,9 @@ Removing a key leaves the tokens sealed under it unopenable but revokes none at 
 It confirms a cookie's person with the issuer at least hourly (`identity.Membership`), the hour measured on the database's clock;
 a refresh the issuer refuses (`invalid_grant`), or one whose ID token no longer passes the group or domain rule, ends every session they hold, which the API answers as 401, while a refresh the issuer does not answer ends nothing:
 the request is answered `503 SIGNIN_UNAVAILABLE` and the sign-in is kept for the next request.
+A sign-in it ended for a person from outside the domain says why at that request and every one after it:
+the 401 `NO_IDENTITY` carries `reason` (`NOT_LISTED` once no access list names them, `OUTSIDE_SIGNIN_OFF` for a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off) and `login`, read afresh from the person's row and the lists (`identity.SignInRule.SignedOutReason`) rather than kept from the request that ended it, and the sign-in page says it in words;
+a sign-out, an expired cookie and a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` give none.
 A person is their email, so under a domain `people.sub` records the Google account that last signed in to each address, and a sign-in or confirmation under another account ends every session of the address;
 under a group nothing does, so the old holder of a reassigned address keeps the cookies they hold until those expire.
 Browser sessions carry a server-side generation that logout advances, and unsafe cookie-authenticated requests must prove the configured same origin; bearer automation remains separate.

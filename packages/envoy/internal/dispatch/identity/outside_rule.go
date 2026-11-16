@@ -29,9 +29,9 @@ func (f ListerFunc) Listed(ctx context.Context, email string) (bool, error) {
 
 // OutsideRule signs in Domain's people as DomainRule does, and also a verified Google account
 // outside the domain while some project names its email directly (People), as a restricted member.
-// Every method but Person and End is Domain's: the sign-in records the Google account's subject,
-// and the hourly confirmation runs Person again, so an account no list names any more is signed
-// out there.
+// Every method but Person, End and SignedOutReason is Domain's: the sign-in records the Google
+// account's subject, and the hourly confirmation runs Person again, so an account no list names
+// any more is signed out there, and told so.
 type OutsideRule struct {
 	Domain DomainRule
 	People Lister
@@ -120,6 +120,28 @@ func (r OutsideRule) ConfirmSubject(claims oidc.Claims, stored string) (string, 
 // hourly confirmation found: most often, for such a person, that no project names them any more.
 func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, sessions auth.SessionStore, email, subject, reason string) error {
 	return endSubject(ctx, people, email, subject, reason, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
+}
+
+// SignedOutReason is SignedOutNotListed for a restricted member whose sign-in no longer stands
+// (endedRestricted) while no project names them (People): the reason is read when the person asks,
+// not kept from the request that ended the sign-in, so it holds whichever request ran the hourly
+// confirmation. A person a list still names (one who signed out, or whose Google grant lapsed) is
+// told none, as is a full member; one who signed out and whom no list has named since is told it
+// too, at another browser still holding the session the sign-out ended (the browser that signed
+// out holds no cookie). Lists that cannot be read are an error matching ErrMembershipUnreadable.
+func (r OutsideRule) SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error) {
+	ended, err := endedRestricted(ctx, people, email)
+	if err != nil || !ended {
+		return "", err
+	}
+	listed, err := r.People.Listed(ctx, email)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMembershipUnreadable, err)
+	}
+	if listed {
+		return "", nil
+	}
+	return SignedOutNotListed, nil
 }
 
 // ConfirmCookie is DomainRule.ConfirmCookie.

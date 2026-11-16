@@ -160,7 +160,7 @@ func (s *memoryPeopleStore) Membership(_ context.Context, email string) (auth.Pe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject}
+	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind}
 	if !person.ConfirmedAt.IsZero() {
 		membership.Confirmed, membership.ConfirmedAge = true, s.clock().Sub(person.ConfirmedAt)
 	}

@@ -124,7 +124,7 @@ func (s *testPeopleStore) Membership(_ context.Context, email string) (auth.Pers
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject}
+	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind}
 	if !person.ConfirmedAt.IsZero() {
 		membership.Confirmed, membership.ConfirmedAge = true, s.clock().Sub(person.ConfirmedAt)
 	}
@@ -288,6 +288,30 @@ func TestWriteErrorMapsNoIdentityToUnauthorized(t *testing.T) {
 	WriteError(w, errors.New("database down"))
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("other error: status %d, want 500", w.Code)
+	}
+}
+
+// A session the sign-in rule says why it ended is still Dispatch's 401 NO_IDENTITY, which every
+// caller refusing no identity matches, now with the reason and the address it ended for.
+func TestOutsideSignInWriteErrorTellsTheReason(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&SignedOut{Email: "outsider@other.example", Reason: SignedOutNotListed},
+			`{"code":"NO_IDENTITY","error":"signed out: no Dispatch project's access list names outsider@other.example any more","login":"outsider@other.example","reason":"NOT_LISTED"}` + "\n"},
+		{fmt.Errorf("resolve the caller: %w", &SignedOut{Email: "outsider@other.example", Reason: SignedOutOutsideOff}),
+			`{"code":"NO_IDENTITY","error":"signed out: Dispatch no longer signs in outsider@other.example or any other account outside its Google Workspace domain","login":"outsider@other.example","reason":"OUTSIDE_SIGNIN_OFF"}` + "\n"},
+		{ErrNoIdentity, `{"code":"NO_IDENTITY","error":"unauthorized"}` + "\n"},
+	} {
+		if !errors.Is(tc.err, ErrNoIdentity) {
+			t.Errorf("%v does not match ErrNoIdentity", tc.err)
+		}
+		w := httptest.NewRecorder()
+		WriteError(w, tc.err)
+		if w.Code != http.StatusUnauthorized || w.Body.String() != tc.want {
+			t.Errorf("WriteError(%v) = %d %s, want 401 %s", tc.err, w.Code, w.Body.String(), tc.want)
+		}
 	}
 }
 
