@@ -40,6 +40,7 @@ import {
 } from "./never-decide";
 import { type RenderGuard, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
+import { RESERVE_VARIABLE, readReferenceOf } from "./reserve";
 
 /**
  * Draws the post-cut cases of a corpus into the four slices the pre-analysis plan's table names:
@@ -667,6 +668,13 @@ function countsTable(draw: Draw): string {
 }
 
 async function draw(flags: Flags): Promise<number> {
+  if (readReferenceOf(process.env[RESERVE_VARIABLE]) && flags.seed === undefined) {
+    // The rule's item 4: the final test is drawn by a seed registered then, so a draw that asks to
+    // read the reserve takes the one its registration's digest holds, and stops before the read.
+    throw new UsageError(
+      `a draw that reads the reserve takes --seed, the seed its registration names\n\n${USAGE}`
+    );
+  }
   const corpus = await readCorpus(flags.corpus);
   const directory = await outDirectory(flags.out);
   const cut = cutTime(flags.cut);

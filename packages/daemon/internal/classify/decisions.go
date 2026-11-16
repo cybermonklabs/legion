@@ -1101,21 +1101,51 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 }
 
 // CodeOnItsWay says whether a push lies on the path forward from the pull request's current head,
-// its new head not arrived yet: any push may change code. A push delivered late, after its new head
+// its new head not arrived yet: any push may change code. It is the one rule of what a recorded
+// push does to an approval. A recorded push from the head is code on its way, and it takes back an
+// approval of the head until its new head arrives. A push delivered late, after its new head
 // arrived and the branch returned to this one, is spent by the move the record made
 // (unspentPushes), so it is not on its way; the same two heads pushed again are spent as its repeat
 // (record.Move.Repeats), and look the same until their synchronize moves the head. The daemon
 // lands no merge meanwhile: the merger merges, and it merges the head its review approved.
+//
+// A push to no commit (record.NoCommit) is GitHub's deletion of the branch. It names no code, so
+// it is never on its way, and the path does not run through it. A release before the deletion
+// guard (intake's decodePush) stored such a push as it stored any push, so a record can hold one.
+//
+// A merged record keeps no pushes once its merge named the head, since that head is final
+// (workflow's merged), and it records no push after the merge (workflow's push). So a merged
+// record that still holds a push from its head is one whose merge did not name that head: a merge
+// the release before recorded, or a merge that names no head. That push can be the code GitHub
+// merged, so it stays on its way, and an approval of the head it left does not stand.
 func CodeOnItsWay(pr record.PullRequest) bool {
-	return len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
+	return len(pathFrom(withoutDeletions(pr.Pushes), pr.HeadSHA, true)) > 0
+}
+
+// withoutDeletions is pushes less GitHub's deletions of the branch, the pushes to no commit
+// (record.NoCommit). It returns pushes itself, with no copy, when it holds none.
+func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
+	for i, p := range pushes {
+		if p.SHA != record.NoCommit {
+			continue
+		}
+		kept := append(make([]record.ClassifiedPush, 0, len(pushes)-1), pushes[:i]...)
+		for _, q := range pushes[i+1:] {
+			if q.SHA != record.NoCommit {
+				kept = append(kept, q)
+			}
+		}
+		return kept
+	}
+	return pushes
 }
 
 // RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the
-// pull request's head: the issue is in reviewing, its reviewer's review approved the head the
-// pull request now stands at (ApprovalStands, which is the whole of that test: a review of
-// another head approves nothing, and a push on its way takes an approval of this head back), and
-// the merge state the record holds for that head is not one the issue may advance on
-// (record.MergeState.Mergeable), the unread state among them.
+// pull request's head: the issue is in reviewing, its pull request is open, its reviewer's review
+// approved the head the pull request now stands at (ApprovalStands, which is the whole of that
+// test: a review of another head approves nothing, and a push on its way takes an approval of this
+// head back), and the merge state the record holds for that head is not one the issue may advance
+// on (record.MergeState.Mergeable), the unread state among them.
 //
 // Two readers ask it, and they must answer alike, which is the whole reason the rule is here
 // rather than in either of them: the engine asks it to decide whether this round is one the
@@ -1133,14 +1163,17 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 // only thing that would ever say so. What tells those apart is read by the caller that needs them
 // apart (ChecksConcludedOnHead), never here.
 //
-// It makes no test of the pull request being open: reviewRound makes none, the read the engine
-// asks for has its own (workflow's askMergeStateFor), and a caller that needs one makes it itself
-// (projection's mergeWaitView, over record.PullRequestOpen).
+// It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
+// `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
+// askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
+// one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
+// a read of the head again (the opened handler, then Apply's askMergeState). Projection's
+// mergeWaitView makes no state test of its own and relies on this one.
 func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
 	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
 		return false
 	}
-	return reviewer.Decision.State == "approved" &&
+	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
 		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
 }
 

@@ -33,18 +33,19 @@ import (
 // that read with what it came to. The row's context has no deadline, and a running row renews its
 // lease, so a read GitHub never answered would hold the issue's role-message lane without end; a
 // read that runs out of issueRead is a failed read. A merged answer applies the merge as the
-// webhook's merge would (intake.PullRequestMerged, which closes the issue, and changes nothing when
-// the merge is already recorded), and nothing is sent to the merger. A failed read is read again
-// after the runtime's wait (workflowRuntime.mergeStateWait), or after GitHub's Retry-After when
-// that is longer, as the merge-state ladder reads a state GitHub has not computed yet, up to
-// mergeStateLadderReads attempts in all. The bound is on attempts, and each attempt makes at most
-// one read: the row's tries (record.OutboxRow.Attempts) count an attempt that a database error or
-// a failed apply ended too, so the log names the attempt and not a count of reads. Any other
-// answer, or the failed read of the last attempt, applies intake.MergeQueueReadDone, whose
-// transaction writes the merger's message (record.MergeQueueRemoval) while the issue still merges
-// at that head, Unread when no read succeeded. The read applies nothing else: no mergeability and
-// no head move, since a fact of that kind can move a phase (workflow's mergeability), and a
-// removal moves none (dispatch://INFRA-3274/spec R1).
+// webhook's merge would, at the head GitHub answers for (intake.PullRequestMerged, which closes the
+// issue, and changes nothing when the merge is already recorded), and nothing is sent to the
+// merger. A failed read is read again after the runtime's wait (workflowRuntime.mergeStateWait),
+// or after GitHub's Retry-After when that is longer, as the merge-state ladder reads a state
+// GitHub has not computed yet, up to mergeStateLadderReads attempts in all. The bound is on
+// attempts, and each attempt makes at most one read: the row's tries (record.OutboxRow.Attempts)
+// count an attempt that a database error or a failed apply ended too, so the log names the
+// attempt and not a count of reads. Any other answer, or the failed read of the last attempt,
+// applies intake.MergeQueueReadDone, whose transaction writes the merger's message
+// (record.MergeQueueRemoval) while the issue still merges at that head, Unread when no read
+// succeeded. The read applies nothing else: no mergeability and no synchronize of the head, since
+// a fact of that kind can move a phase (workflow's mergeability), and a removal moves none
+// (dispatch://INFRA-3274/spec R1).
 //
 // Both facts are applied under an event id that names the row, so a row run again after its finish
 // was lost applies neither a second time. The read and the wait are the runtime's, which attach
@@ -72,7 +73,7 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	case failed == nil && pull.Merged:
 		r.log.Info("outbox merge-queue read: GitHub answered merged; the merge is applied", append(attributes, "mergeCommit", pull.MergeCommitSHA)...)
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-merged:%s:%d", row.Issue, row.ID),
-			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA}, r.handlers...); err != nil {
+			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA, HeadSHA: pull.Head.SHA}, r.handlers...); err != nil {
 			return fmt.Errorf("apply the merge of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
 		return nil
