@@ -2051,7 +2051,7 @@ func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycl
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), streamName: "notifications", streamInfo: inspector}
 	const bare = "notifications.github.example-org.example-repo.pr.7"
-	want := bare + " carries only the pull request's opened, synchronize and closed events: subscribe to " + bare + ".> for its reviews, comments, mentions and checks as well"
+	want := bare + " carries only the pull request's own events (opened, synchronize, closed and its other actions): subscribe to " + bare + ".> for its reviews, comments, mentions and checks as well"
 	for _, others := range [][]string{
 		nil,
 		{"notifications.github.example-org.example-repo.pr.8.>"},

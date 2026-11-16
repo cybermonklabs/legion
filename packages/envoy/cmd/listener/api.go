@@ -2462,9 +2462,10 @@ func parseGithubRepositoryTopic(topic string) (githubRepositoryTopic, bool) {
 }
 
 // lifecycleOnly is whether the topic is a pull request's bare subject, `pr.<n>` with nothing after
-// it. That subject carries the pull request's opened, synchronize and closed events and nothing
-// else: its reviews, comments, mentions and checks are published as `pr.<n>.<kind>`, which only a
-// trailing wildcard such as `pr.<n>.>` reaches.
+// it. That subject carries the pull request's own events, every action of its `pull_request`
+// webhook (opened, synchronize, closed and the rest), and nothing else: its reviews, comments,
+// mentions and checks are published as `pr.<n>.<kind>`, which only a trailing wildcard such as
+// `pr.<n>.>` reaches.
 func (g githubRepositoryTopic) lifecycleOnly() bool {
 	return len(g.name) == 1 && len(g.rest) == 2 && g.rest[0] == "pr" && g.rest[1] != "" &&
 		strings.Trim(g.rest[1], "0123456789") == ""
@@ -2498,7 +2499,7 @@ func lifecycleOnlyWarning(parsed githubRepositoryTopic, topic string, topics []s
 	if slices.ContainsFunc(topics, func(other string) bool { return subjectMatches(other, review) }) {
 		return ""
 	}
-	return fmt.Sprintf("%s carries only the pull request's opened, synchronize and closed events: subscribe to %s.> for its reviews, comments, mentions and checks as well", topic, topic)
+	return fmt.Sprintf("%s carries only the pull request's own events (opened, synchronize, closed and its other actions): subscribe to %s.> for its reviews, comments, mentions and checks as well", topic, topic)
 }
 
 // warning is what a subscription to the topic is told when its name spans several tokens. A kind
