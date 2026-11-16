@@ -78,6 +78,37 @@ func (r *Runtime) recorded(token claim.Token) (runtime.Locator, bool) {
 	return loc, ok
 }
 
+// launchedSession is the session a Claude Code launch started or resumed under, and the
+// incarnation that launch started as.
+type launchedSession struct {
+	incarnation, session string
+}
+
+// nameSession records the session l's Claude Code launch, starting as loc, runs under: the id
+// prepare chose (claudeInputs), which its `--session-id` or `--resume` names. An Oh My Pi launch
+// names nothing, since its agent mints its id, and leaves no record for the claim.
+func (r *Runtime) nameSession(loc runtime.Locator, l launch) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !l.runsClaude() {
+		delete(r.sessions, loc.Claim)
+		return
+	}
+	r.sessions[loc.Claim] = launchedSession{incarnation: loc.Incarnation, session: l.claude.session}
+}
+
+// LaunchSession is runtime.LaunchSessionNamer: the session the claim's latest Claude Code launch
+// started or resumed under, while loc is the incarnation that launch started as.
+func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	named, ok := r.sessions[loc.Claim]
+	if !ok || named.incarnation != loc.Incarnation {
+		return "", false
+	}
+	return named.session, true
+}
+
 // Observe reports on every watched claim: each one at once, again whenever its Sandbox or pod
 // changes, and every claim again each probe interval. Every observation carries the recorded
 // locator, whatever pod it saw, so the supervisor's incarnation fence holds (B3). Gone and

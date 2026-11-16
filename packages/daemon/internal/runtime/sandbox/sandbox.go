@@ -165,6 +165,10 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
+	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
+	// under and the incarnation it started as (LaunchSession): written once that launch's start
+	// is sent, replaced by the claim's next launch. Memory only; a restarted daemon answers none.
+	sessions map[claim.Token]launchedSession
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -385,6 +389,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}

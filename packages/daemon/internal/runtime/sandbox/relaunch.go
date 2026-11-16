@@ -287,6 +287,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), launcherCommand(l, r)); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
+	r.nameSession(loc, l)
 	r.join(loc)
 	return loc, nil
 }
