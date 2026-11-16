@@ -17,14 +17,16 @@
 #         that lists no project, and alice's token, whose list names PRIV, a project the twin
 #         never holds.
 # Then, in sections, each of which runs whatever the ones before found:
-#   listed      bob, carol and carol's PRIV token find each object of PRIV.
-#   confined    bob and carol's PRIV token find nothing of PUB, no person and no agent outside
-#               PRIV, and no direct message that is not their own.
-#   private     PRIV is made private through PATCH /api/v1/projects/PRIV/access; the sections
+#   private     the two commands an operator runs on the deploy (envoy-dispatch
+#               backfill-session-projects and scrub-access-events) run against main's database,
+#               and PRIV is made private through PATCH /api/v1/projects/PRIV/access; the sections
 #               below need it, and are reported as not run when the route refuses. With
 #               --private-by-sql, a route that refuses is stood in for by the store write it
 #               makes (`update projects set visibility = 'private'`), so every section below
 #               runs; the stand-in is written to what did not run, so such a run never passes.
+#   listed      bob, carol and carol's PRIV token find each object of PRIV.
+#   confined    bob and carol's PRIV token find nothing of PUB, no person (once PRIV is private)
+#               and no agent outside PRIV, and no direct message that is not their own.
 #   walk        for alice, alice's PRIV token, carol's token that lists no project and the shared
 #               token ("the unseeing callers"): every GET row of GET /api/v1 and every write row
 #               whose path names an object, filled once with PRIV's objects and once with ids that
@@ -394,6 +396,17 @@ readonly object_reads=(
 )
 
 begin private
+# What an operator runs against the database on a deploy that carries private projects, before a
+# project can be made private: the fill of every event's session project, and the scrub of the
+# stored access events. Until each has written its marker row the switch answers 409
+# PRIVATE_PROJECTS_INCOMPLETE (cmd/dispatch README, "Filling the sessions' projects" and
+# "Scrubbing the access events"). Each reads DATABASE_URL alone.
+for command in backfill-session-projects scrub-access-events; do
+  env -i PATH="$PATH" HOME=/nonexistent TMPDIR="$work" DATABASE_URL="$main_database_url" \
+    "$work/bin/dispatch" "$command" >"$work/$command.out" 2>&1 ||
+    fail "main: envoy-dispatch $command failed: $(tail -n 5 "$work/$command.out")"
+  note "main: $(tail -n 1 "$work/$command.out")"
+done
 send main carol PATCH /api/v1/projects/PRIV/access '{"visibility":"private"}'
 if [ "$status" = 200 ]; then
   priv_private=1
@@ -484,10 +497,17 @@ for caller in bob carol-priv-token; do
     printf '%s GET /api/v1/projects: lists %s, want ["PRIV"]\n' "$caller" "$keys" >>"$work/differences"
     differed=$((differed + 1))
   }
-  send main "$caller" GET /api/v1/users
-  if grep -q "$alice" "$work/body"; then
-    printf '%s GET /api/v1/users: names %s, who is outside PRIV\n' "$caller" "$alice" >>"$work/differences"
-    differed=$((differed + 1))
+  # A person of PUB is one of PRIV's people only while PRIV is public (R2: every full member reads a
+  # public project, and so is one of its people), so the people a restricted member and a token that
+  # lists PRIV read is held to PRIV's own only once PRIV is private.
+  if [ "$priv_private" = 1 ]; then
+    send main "$caller" GET /api/v1/users
+    if grep -q "$alice" "$work/body"; then
+      printf '%s GET /api/v1/users: names %s, who is outside PRIV\n' "$caller" "$alice" >>"$work/differences"
+      differed=$((differed + 1))
+    fi
+  else
+    note "$caller GET /api/v1/users not compared: PRIV is public, so every full member is one of its people (R2)"
   fi
   send main "$caller" GET /api/v1/agents
   if grep -q ses-pub-session "$work/body"; then
