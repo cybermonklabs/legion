@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -749,7 +750,7 @@ func TestPublishHandler_RoleFreshDeafHolderIsAnsweredStored(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("publish role event: status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
@@ -1103,14 +1104,11 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
-	var answer struct {
-		Deleted bool   `json:"deleted"`
-		Reason  string `json:"reason"`
-	}
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.NewDecoder(rr.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
-	if answer.Deleted || answer.Reason != "the registration belongs to another client instance" {
+	if answer.Deleted == nil || *answer.Deleted || answer.Reason != "the registration belongs to another client instance" {
 		t.Fatalf("answer = %+v, want the registration kept with its reason", answer)
 	}
 	entry, err := sessions.Get(sessionID)
@@ -1156,14 +1154,11 @@ func TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment(t *te
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
-	var answer struct {
-		Deleted bool   `json:"deleted"`
-		Reason  string `json:"reason"`
-	}
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.NewDecoder(rr.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
-	if answer.Deleted || answer.Reason != "the registration was written after the moment the delete belongs to" {
+	if answer.Deleted == nil || *answer.Deleted || answer.Reason != "the registration was written after the moment the delete belongs to" {
 		t.Fatalf("answer = %+v, want the relaunch's registration kept with its reason", answer)
 	}
 	entry, err := sessions.Get(sessionID)
@@ -1831,7 +1826,7 @@ func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1901,7 +1896,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -2025,7 +2020,7 @@ func TestSessionsHandler_EmptyList(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -2053,7 +2048,7 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -2086,7 +2081,7 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var items []sessionInfo
+	var items []listenerwire.SessionInfo
 	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}

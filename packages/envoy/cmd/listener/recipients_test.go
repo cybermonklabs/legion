@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // recipientSender is the session every publish in these tests names as its source: it follows the
@@ -124,7 +125,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 // assertCounts fails unless the answer carries both recipient counts, with these values.
 func assertCounts(t *testing.T, recorder *httptest.ResponseRecorder, wantTotal, wantConnected int) {
 	t.Helper()
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
@@ -313,7 +314,7 @@ func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
 	}
 
 	recorder := rig.publish(t, contracts.RoleTopicPrefix+role, "role-1")
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}

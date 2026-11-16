@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // unreadableRoleClaims are role claim records the bus holds and no read can decode
@@ -56,7 +57,7 @@ func assertUnreadableRoleClaimAnswer(t *testing.T, recorder *httptest.ResponseRe
 	if got := recorder.Header().Get("Retry-After"); got != "" {
 		t.Fatalf("Retry-After = %q, want none: a retry reads the same record", got)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}

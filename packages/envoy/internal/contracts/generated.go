@@ -8,91 +8,14 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-type Envelope struct {
-	EventID           string            `json:"event_id"`
-	Source            string            `json:"source"`
-	SourceEventID     string            `json:"source_event_id"`
-	SourceSession     string            `json:"source_session,omitempty"`
-	Topic             string            `json:"topic"`
-	DedupeKey         string            `json:"dedupe_key"`
-	IssuedAt          int64             `json:"issued_at"`
-	ExpiresAt         *int64            `json:"expires_at,omitempty"`
-	KeptAt            *int64            `json:"kept_at,omitempty"`
-	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
-	PayloadSummary    string            `json:"payload_summary"`
-	PayloadRef        string            `json:"payload_ref,omitempty"`
-	Payload           string            `json:"payload,omitempty"`
-	TraceID           string            `json:"trace_id"`
-	Sender            *EnvelopeSender   `json:"sender,omitempty"`
-	InReplyTo         string            `json:"in_reply_to,omitempty"`
-	Supersedes        string            `json:"supersedes,omitempty"`
-	Urgency           string            `json:"urgency,omitempty"`
-	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
-}
-
-type EnvelopeSender struct {
-	SessionID string   `json:"session_id"`
-	Machine   string   `json:"machine,omitempty"`
-	Cwd       string   `json:"cwd,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	Roles     []string `json:"roles,omitempty"`
-}
-
-func (e Envelope) Validate() error {
-	if strings.TrimSpace(e.EventID) == "" {
-		return fmt.Errorf("event_id is required")
-	}
-	if strings.TrimSpace(e.Source) == "" {
-		return fmt.Errorf("source is required")
-	}
-	if strings.TrimSpace(e.SourceEventID) == "" {
-		return fmt.Errorf("source_event_id is required")
-	}
-	if strings.TrimSpace(e.Topic) == "" {
-		return fmt.Errorf("topic is required")
-	}
-	if strings.TrimSpace(e.DedupeKey) == "" {
-		return fmt.Errorf("dedupe_key is required")
-	}
-	if e.IssuedAt == 0 {
-		return fmt.Errorf("issued_at must be set")
-	}
-	if strings.TrimSpace(e.PayloadSummary) == "" {
-		return fmt.Errorf("payload_summary is required")
-	}
-	if strings.TrimSpace(e.TraceID) == "" {
-		return fmt.Errorf("trace_id is required")
-	}
-	if e.InReplyTo != "" && strings.TrimSpace(e.InReplyTo) == "" {
-		return fmt.Errorf("in_reply_to must not be empty")
-	}
-	if e.Supersedes != "" && strings.TrimSpace(e.Supersedes) == "" {
-		return fmt.Errorf("supersedes must not be empty")
-	}
-	switch e.Source {
-	case "agent", "human", "envoy", "github", "slack", "whatsapp", "ghostwispr", "dispatch":
-	default:
-		return fmt.Errorf("source must be one of: agent, human, envoy, github, slack, whatsapp, ghostwispr, dispatch")
-	}
-	if e.Urgency != "" {
-		switch e.Urgency {
-		case "low", "med", "high", "blocking":
-		default:
-			return fmt.Errorf("urgency must be one of: low, med, high, blocking")
-		}
-	}
-	if err := e.ExpectsReply.Validate(); err != nil {
-		return err
-	}
-	if e.Sender != nil {
-		if strings.TrimSpace(e.Sender.SessionID) == "" {
-			return fmt.Errorf("sender.session_id is required")
-		}
-	}
-	return nil
-}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+type Envelope = listenerwire.Envelope
+type EnvelopeSender = listenerwire.EnvelopeSender
 
 func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage

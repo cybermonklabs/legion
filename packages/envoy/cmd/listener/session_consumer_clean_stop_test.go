@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // stop sends sessionID's clean stop as every normal end of a session does, DELETE
@@ -132,7 +133,7 @@ func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing
 	outlived := rig.stop(t, "ses_relaunched", fmt.Sprintf("if_not_registered_after=%d", registered.UpdatedAt-1))
 
 	kept := stopAnswer(t, outlived)
-	if kept.Deleted || kept.Reason != "the registration was written after the moment the delete belongs to" {
+	if kept.Deleted == nil || *kept.Deleted || kept.Reason != "the registration was written after the moment the delete belongs to" {
 		t.Fatalf("answer = %+v, want the registration kept with its reason", kept)
 	}
 	if _, err := rig.sessions.Get("ses_relaunched"); err != nil {
@@ -143,7 +144,7 @@ func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing
 	covered := rig.stop(t, "ses_relaunched", fmt.Sprintf("if_not_registered_after=%d", registered.UpdatedAt))
 
 	deleted := stopAnswer(t, covered)
-	if !deleted.Deleted || deleted.Reason != "" {
+	if deleted.Deleted == nil || !*deleted.Deleted || deleted.Reason != "" {
 		t.Fatalf("answer = %+v, want the registration deleted", deleted)
 	}
 	if entry, err := rig.sessions.Get("ses_relaunched"); err == nil {
@@ -153,9 +154,9 @@ func TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord(t *testing
 }
 
 // stopAnswer is the body a stop that named a condition answered.
-func stopAnswer(t *testing.T, recorder *httptest.ResponseRecorder) deleteSessionResponse {
+func stopAnswer(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.DeleteSessionResponse {
 	t.Helper()
-	var answer deleteSessionResponse
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the stop's answer: %v", err)
 	}
@@ -223,7 +224,7 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 
 			answer := stopAnswer(t, stopSession(t, rig.mux, sessionID, kept.query(rig.entry(t, sessionID))))
 
-			if answer.Deleted || answer.Reason != kept.reason {
+			if answer.Deleted == nil || *answer.Deleted || answer.Reason != kept.reason {
 				t.Fatalf("answer = %+v, want the registration kept for the reason %q", answer, kept.reason)
 			}
 			if _, err := rig.harness.sessions.Get(sessionID); err != nil {

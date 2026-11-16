@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The two processes one session id can be claimed under: the one that registered the session and
@@ -357,7 +358,7 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/roles/%s once its holder's record has gone: status %d %s, want 404", role, recorder.Code, recorder.Body.String())
 	}
-	var answer roleHolderError
+	var answer listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
 	}

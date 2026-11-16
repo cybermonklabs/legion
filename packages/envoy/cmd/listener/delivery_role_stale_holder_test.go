@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // storeSessionHeartbeat registers sessionID with the heartbeat the test chose, by writing its
@@ -204,7 +205,7 @@ func TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing(t *testi
 	if refusal.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to an unclaimed role: status %d, body %s; want 404", refusal.Code, refusal.Body.String())
 	}
-	var answer roleHolderError
+	var answer listenerwire.RoleRefusal
 	if err := json.Unmarshal(refusal.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refusal.Body.String(), err)
 	}

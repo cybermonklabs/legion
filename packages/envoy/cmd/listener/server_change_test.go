@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const (
@@ -353,11 +354,11 @@ func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
 	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
-		var sessions []sessionInfo
+		var sessions []listenerwire.SessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {
 			return false
 		}
-		listed := slices.ContainsFunc(sessions, func(info sessionInfo) bool {
+		listed := slices.ContainsFunc(sessions, func(info listenerwire.SessionInfo) bool {
 			return info.SessionID == serverChangeSession &&
 				slices.Contains(info.Topics, serverChangeTeam) && slices.Contains(info.Topics, serverChangeCaptured)
 		})
