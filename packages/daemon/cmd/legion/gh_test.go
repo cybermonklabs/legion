@@ -1173,10 +1173,11 @@ func readRecord(t *testing.T, path string) string {
 //
 // A push made with the caller's own token carries GH_TOKEN or GITHUB_TOKEN into the guard, and so
 // into each of those reads. Each read runs under that token, for a repository of an owner the
-// bundle holds no directory for too. The token lets no other call through: another read under the
-// variable, the guard's read under no variable, and the guard's read of another repository than
-// the variable names are each refused before gh runs, naming the token, as every call under a
-// token is refused.
+// bundle holds no directory for too. The token widens nothing else. Under it, this command runs
+// the guard's two visibility reads, the shared check's own read, the exact `gh api rate_limit` and
+// `gh auth git-credential`, and refuses every other call before gh runs, naming the token. So
+// another read under the variable, the guard's read under no variable, and the guard's read of
+// another repository than the variable names are each refused.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)

@@ -36,9 +36,11 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's.
 // A command it cannot read for certain, one naming two owners, and one naming an owner the
 // bundle holds no directory for are refused, exit 2, naming why, and the real gh never runs: no
-// token but the target repository's or its owner's is ever sent. A command under a GH_TOKEN or
-// GITHUB_TOKEN, which gh sends in place of any directory's token, is refused the same way, but
-// for the guard's own visibility reads, which run with that token (ghVisibilityRead).
+// token but the target repository's or its owner's is ever sent. Under a GH_TOKEN or GITHUB_TOKEN,
+// which gh sends in place of any directory's token, every command is refused the same way but
+// these: the guard's own visibility reads, which run with that token (ghVisibilityRead), the
+// shared check's visibility read (sharedCheckVisibilityRead), the exact `gh api rate_limit`
+// (ghRateLimitRead) and `gh auth git-credential`.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
