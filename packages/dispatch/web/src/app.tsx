@@ -1,6 +1,6 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
@@ -217,6 +217,13 @@ function IssuePageFallback(): ReactNode {
       </div>
     </div>
   );
+}
+
+/** The views over every project - Priorities, Delivery and Pipeline. A restricted member reads
+ *  only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads), so
+ *  these are no page of theirs, and their addresses answer as an unknown one does. */
+function OverEveryProject({ restricted }: { restricted: boolean }): ReactNode {
+  return restricted ? <NotFoundPage /> : <Outlet />;
 }
 
 function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
@@ -561,12 +568,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
-  // A restricted member reads only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads):
-  // the views over every project - Priorities, Delivery and Pipeline - are no page of theirs, and
-  // their addresses answer as an unknown one does. They are offered no Peek either, in the rail
-  // (`Sidebar`), in the phone header or by its key.
+  // A restricted member is offered none of the views over every project (`OverEveryProject`),
+  // and no Peek either: in the rail (`Sidebar`), in the phone header or by its key.
   const restricted = user.member_kind === "restricted";
-  const overEveryProject = (page: ReactNode): ReactNode => (restricted ? <NotFoundPage /> : page);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -922,8 +926,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
-                <Route element={overEveryProject(<PrioritiesPage />)} path="/priorities" />
-                <Route element={overEveryProject(<PriorityPage />)} path="/priorities/:id" />
+                <Route element={<OverEveryProject restricted={restricted} />}>
+                  <Route element={<PrioritiesPage />} path="/priorities" />
+                  <Route element={<PriorityPage />} path="/priorities/:id" />
+                  <Route element={<DeliveryPage />} path="/delivery" />
+                  <Route element={<PipelinePage />} path="/pipeline" />
+                </Route>
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
@@ -933,8 +941,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={overEveryProject(<DeliveryPage />)} path="/delivery" />
-                <Route element={overEveryProject(<PipelinePage />)} path="/pipeline" />
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
