@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -706,5 +707,28 @@ func installHelperUnit(t *testing.T, home string) {
 	}
 	if err := os.WriteFile(unit, []byte("[Service]\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRegisterExecLooksTheCommandUpBeforeItRegisters: `register --exec` with a command that is not
+// on PATH exits 127 naming it and asks the helper nothing, so a mistyped command makes no
+// enrolment.
+func TestRegisterExecLooksTheCommandUpBeforeItRegisters(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	sock, requests := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "enrolled"})
+	const missing = "agent-secrets-test-command-on-no-path"
+	cmd := exec.Command(binary, "register", "--exec", "--", missing)
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != exitNotFound || !strings.Contains(stderr.String(), missing) {
+		t.Fatalf("register --exec %s = %v, stderr %q; want exit %d naming the command", missing, err, stderr.String(), exitNotFound)
+	}
+	select {
+	case req := <-requests:
+		t.Fatalf("the helper was asked %+v for a command that is not on PATH; want nothing", req)
+	default:
 	}
 }

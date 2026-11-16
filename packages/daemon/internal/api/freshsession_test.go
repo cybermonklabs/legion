@@ -642,8 +642,10 @@ func TestAFreshSessionOfAWorkerHoldingOnlyARelaunchDeliveryRestartsItsPhase(t *t
 // A phase worker that holds only a task of news of the approved design alone owes no task of its
 // phase either: such a task asks the worker to read what changed, and holds no work of the claim's
 // (supervise.HoldsWork). So its fresh session restarts its issue's phase as for a worker holding
-// nothing, and the phase's task then waits behind the news task (dispatch://INFRA-175's census,
-// item 10). Both doors are held to it, since the effect behind them is one.
+// nothing, and the restart's task, which carries the entry its row names, then takes the untaken
+// news task's place and carries that news itself (supervise's Machine.supersedes;
+// dispatch://INFRA-175's census, item 10). Both doors are held to it, since the effect behind them
+// is one.
 func TestAFreshSessionOfAWorkerHoldingOnlyANewsTaskRestartsItsPhase(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {

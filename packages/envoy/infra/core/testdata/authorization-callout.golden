@@ -21,3 +21,6 @@ authorization {
 }
 # example-sessions: a client presenting no credential becomes this user
 no_auth_user: "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5"
+# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s
+ping_interval: "20s"
+ping_max: 2

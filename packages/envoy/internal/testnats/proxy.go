@@ -13,7 +13,8 @@ import (
 // NATS while every other client keeps its own connection: Cut drops it, as a network that ends a
 // connection does, and Freeze silences it, as a network that drops packets does, and Restore ends
 // either. A Proxy started with ProxyLatency adds a round trip's delay to everything it relays, as
-// the route to a remote NATS hub does.
+// the route to a remote NATS hub does, and one started with ProxyRate moves no faster than its
+// rate, as a slow link does.
 type Proxy struct {
 	listener net.Listener
 	target   string
@@ -21,6 +22,8 @@ type Proxy struct {
 	delay    time.Duration
 	done     chan struct{}
 	closing  sync.Once
+	// rate is the bytes a second each direction of each connection reads at, 0 for no limit.
+	rate int
 
 	mu sync.Mutex
 	// conns are both ends of every connection the proxy is relaying.
@@ -40,6 +43,13 @@ type ProxyOption func(*Proxy)
 // nothing else.
 func ProxyLatency(rtt time.Duration) ProxyOption {
 	return func(p *Proxy) { p.delay = rtt / 2 }
+}
+
+// ProxyRate reads each direction of each connection at about bytesPerSecond, so a sender's socket
+// backs up as it does behind a slow link: the throttle is on the read, so the proxy's queue never
+// holds more than one read ahead of the rate, and the sender, not the proxy, buffers the rest.
+func ProxyRate(bytesPerSecond int) ProxyOption {
+	return func(p *Proxy) { p.rate = bytesPerSecond }
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
@@ -169,8 +179,14 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 	}
 }
 
-// relay copies src to dst, each chunk written the proxy's delay after it was read, until either
-// ends; then it closes both, which ends the other direction too.
+// proxyReadBuffer is the most one read of a relayed connection takes. With ProxyRate the reader
+// forwards each read before it sleeps for it, so a direction can run up to proxyReadBuffer bytes
+// ahead of its rate.
+const proxyReadBuffer = 64 << 10
+
+// relay copies src to dst, each chunk written the proxy's delay after it was read and each read
+// held to the proxy's rate, until either ends; then it closes both, which ends the other direction
+// too.
 func (p *Proxy) relay(dst, src net.Conn) {
 	defer p.untrack(dst, src)
 	type chunk struct {
@@ -180,12 +196,15 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	queue := make(chan chunk, 4096)
 	go func() {
 		defer close(queue)
-		buffer := make([]byte, 64<<10)
+		buffer := make([]byte, proxyReadBuffer)
 		for {
 			p.pass()
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
+				if p.rate > 0 {
+					time.Sleep(time.Duration(read) * time.Second / time.Duration(p.rate))
+				}
 			}
 			if err != nil {
 				return

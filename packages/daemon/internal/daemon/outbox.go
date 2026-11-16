@@ -1712,9 +1712,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// something to rewrite.
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
-		// look carries neither and is fenced on its check above, and every other start of no
-		// entry (record.SuperviseRequest.Entry, which lists them) is held to the generation
-		// alone.
+		// look carries neither and is fenced on its check above, every start of no entry
+		// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and
+		// so is a root architect's start, which carries an entry and names no phase, since that
+		// architect serves every phase of its tree and its row must act whatever phase the root
+		// stands in. What keeps one entry to one task for the architect is the claim's own rule:
+		// a delivery of an entry it was already queued a task of queues no second one
+		// (supervise.Claim.GivenEntry).
 		if payload.Entry > 0 && payload.Phase != "" {
 			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
 			if err != nil {
@@ -1823,11 +1827,59 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
 		}
+		// The task this start gives the claim, nil for a start that carries none. It is built here,
+		// before the start is recorded, because the record reads it: a task the claim holds back
+		// for a root that had no architect to hear it goes at the start, unless this start's own
+		// task takes its place (supervise.Machine.StartedBy), and that is decided against the
+		// request delivered below, so the two never read different starts.
+		//
+		// The row's phase, already held to the issue's above, travels with the delivery: it is
+		// what says the task is still the work to do once the delivery has outlived its id. The
+		// row's entry travels with it too, the number the start's own transaction raised on the
+		// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
+		// reports is held to (api/handoff.go), and what says a later row carrying the same
+		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
+		// the role the work of the entry its row already names travels with the mark that
+		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
+		// it was given that entry. A check start's look
+		// and check instance travel the same way, and are what say the completion this task's
+		// turn reports is a report on that look rather than a phase completion
+		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
+		// writes it with the delivery, so a retry of this row (a
+		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
+		// task again neither while it is pending nor once the claim has retired it
+		// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
+		// settles what its task named, that the claim has it (settleKept). What the task names
+		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
+		// claim's write of the delivery takes those rows from this start row and holds them
+		// under that claim and delivery id, and the write recording the turn's confirmation
+		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). The news
+		// the task carries travels the same way (supervise.Delivery.News): the task is the
+		// start's own text and the news after it, the send renders that news again from the
+		// record (the daemon's designNews), and the write recording the turn's confirmation
+		// raises what the prompt of that turn carried (supervise.Delivery.Carried, the claim
+		// store's settleDesignNews). A start queued for news alone travels marked so
+		// (supervise.RequestDeliver.NewsOnly, stored as pending_task_deliveries.news_only): its
+		// task holds no work, so the machine refuses it behind any task that does, the one a
+		// running turn works among them, and the row waits on its backoff until that turn has
+		// ended. A task of news alone the worker has not taken gives way to a start of an entry,
+		// whose own task carries that same news (supervise's Machine.supersedes), so the start
+		// that StartedBy is told of below reads it too.
+		var task *supervise.RequestDeliver
+		if payload.Task != "" || payload.News {
+			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
 		// this row created has no older stop to fence, and recording it here rather than only for
 		// a claim that already existed keeps one rule instead of a special case.
-		if err := machine.StartedBy(ctx, row.ID); err != nil {
+		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
@@ -1930,44 +1982,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
 				}
 			}
-		} else if payload.Task != "" || payload.News {
-			// The row's phase, already held to the issue's above, travels with the delivery: it is
-			// what says the task is still the work to do once the delivery has outlived its id. The
-			// row's entry travels with it too, the number the start's own transaction raised on the
-			// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
-			// reports is held to (api/handoff.go), and what says a later row carrying the same
-			// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
-			// the role the work of the entry its row already names travels with the mark that
-			// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-			// it was given that entry. A check start's look
-			// and check instance travel the same way, and are what say the completion this task's
-			// turn reports is a report on that look rather than a phase completion
-			// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
-			// writes it with the delivery, so a retry of this row (a
-			// settle or a ClaimReady below that failed, a crash before the row finished) queues the
-			// task again neither while it is pending nor once the claim has retired it
-			// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
-			// settles what its task named, that the claim has it (settleKept). What the task names
-			// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
-			// claim's write of the delivery takes those rows from this start row and holds them
-			// under that claim and delivery id, and the write recording the turn's confirmation
-			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). The news
-			// the task carries travels the same way (supervise.Delivery.News): the task is the
-			// start's own text and the news after it, the send renders that news again from the
-			// record (the daemon's designNews), and the write recording the turn's confirmation
-			// raises what the prompt of that turn carried (supervise.Delivery.Carried, the claim
-			// store's settleDesignNews). A start queued for news alone travels marked so
-			// (supervise.RequestDeliver.NewsOnly, stored as pending_task_deliveries.news_only): its
-			// task holds no work, so the machine refuses it behind any task that does, the one a
-			// running turn works among them, and the row waits on its backoff until that turn has
-			// ended.
-			kept, err := keptJSON(payload.Kept)
-			if err != nil {
-				return err
-			}
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}); err != nil {
+		} else if task != nil {
+			if err := machine.Handle(ctx, *task); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true
@@ -2125,7 +2141,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 // next decision retires it. A start naming no phase holds none, which is what a production check's
 // look is: each look's task is delivered whatever the claim holds. Nor is a task of news alone
 // (supervise.Delivery.NewsOnly) the phase's task: a retry of a failed claim that holds only that is
-// given its own task, which waits behind the news task until a turn has taken it.
+// given its own task, which takes the news task's place where the retry carries an entry, and so
+// the news with it (supervise's Machine.supersedes), and otherwise waits behind the news task until
+// a turn has taken it.
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
@@ -2719,10 +2737,13 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 //
 //  1. A start queued for news alone (record.SuperviseRequest.News) reaches only a claim such a
 //     start may reach as the claim stands now (newsOnlyRefusal): one that exists and was given the
-//     entry its role's phases row names, has not ended, and that no operator suspended. It never
-//     creates a claim, revives one or resumes an operator's, and one it may not reach finishes it,
-//     since the start that brings that claim back carries the news. The generation, the phase, the
-//     workflow and the linger have fenced it before this, as they fence any start.
+//     entry its role's phases row names, has not ended, and that no operator suspended. A root's
+//     architect is read so too, since it holds a phases row that states the work it is owed, as a
+//     phase worker does (dispatch://INFRA-2614): an architect behind its row's entry is owed that
+//     entry's start, which carries its summary. It never creates a claim, revives one or resumes an
+//     operator's, and one it may not reach finishes it, since the start that brings that claim back
+//     carries the news. The generation, the phase, the workflow and the linger have fenced it before
+//     this, as they fence any start.
 //  2. A merger's start waits while its tree's design gate is closed or its news is not recorded
 //     (mergerWaitsForTheDesignGate), after the refusal, so a news-only start that reaches no claim
 //     finishes rather than waits.
@@ -2734,11 +2755,9 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
 	machine *supervise.Machine, found bool, token claim.Token) (news startNews, finished bool, err error) {
 	if payload.News {
-		var entry int64
-		if payload.Role != claim.RoleArchitect {
-			if entry, err = r.phaseEntry(ctx, row.Issue, payload.Role); err != nil {
-				return startNews{}, false, err
-			}
+		entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
+		if err != nil {
+			return startNews{}, false, err
 		}
 		if why := newsOnlyRefusal(machine, found, entry); why != "" {
 			r.log.Info("outbox news-only start reaches no claim; finished without acting", "row", row.ID, "issue", issue.Key,

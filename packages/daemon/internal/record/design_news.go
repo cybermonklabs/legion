@@ -321,8 +321,11 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 //   - the step concerns the member (stepConcerns): spec and decisions concern every member, and
 //     criteria the tree root alone, since its checks are the root's to prove;
 //   - the member is in the workflow (InWorkflow), its tree does not linger (Issue.Lingers on the
-//     tree's root, as TreeLingers reads it), and its phase has a holder (phase.RoleFor): not
-//     admitted, awaiting_person, done, or held, which a restart moves back into its phase;
+//     tree's root, as TreeLingers reads it), and its phase has a holder, a phase whose work
+//     phase.RoleFor names a role for: not awaiting_person, done, or held, which a restart moves
+//     back into its phase, and not admitted, which phase.RoleFor names the tree's architect for
+//     (dispatch://INFRA-2614) and which comes before any working phase of the member, so its first
+//     phase's holder takes its baseline at that phase's start (workflow's Engine.enter);
 //   - its pull request has not merged, in whatever phase it stands: merging is the usual case,
 //     but a pull request can merge while its issue still stands in reviewing, and merged work
 //     never moves back.
@@ -407,9 +410,9 @@ func OwedNews(facts NewsFacts) TreeNews {
 // untold is why OwedNews owes member nothing, the first of the reasons that holds (UntoldReason),
 // or "" where member is owed news: owes says its holder has not taken some approved version that
 // concerns it, or its row owes the opening while the gate stands open, and other that it has not
-// taken one that does not concern it. Every phase no role holds is named before the last case
-// (done, admitted, awaiting_person, held), so the role check there only keeps a phase the record
-// never holds from being owed.
+// taken one that does not concern it. Every phase no holder works is named before the last case
+// (done, admitted, awaiting_person, held; admitted is the tree architect's, which holds no member's
+// phase), so the role check there only keeps a phase the record never holds from being owed.
 func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 	switch {
 	case !owes && other:

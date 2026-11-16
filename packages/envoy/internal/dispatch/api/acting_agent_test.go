@@ -158,7 +158,7 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-that-answers"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Project = brokertoken.ProjectScopePerson, ""
+	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, says)
 
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
@@ -234,7 +234,7 @@ func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testi
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-whose-body-lies"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Project = brokertoken.ProjectScopePerson, ""
+	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, says)
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",

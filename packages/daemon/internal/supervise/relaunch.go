@@ -216,9 +216,12 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // HoldsWork is whether pending is a task that hands the claim work: a task (HoldsTask) other than
 // one of news alone (Delivery.NewsOnly), which hands the worker only the news of the approved
 // design. Every reader that asks whether a claim still owes the work it was given asks it: the
-// workflow's owed and readyWorkerTask, and api's freshSession. A claim that holds a task of news
-// alone is read as owing no work, so the phase's task is sent to it as well; that task waits behind
-// the news task until a turn has taken it (queue), and is lost to neither.
+// workflow's owed and readyWorkerTask, and so the admission sweep's reading of a root architect's
+// start on its way (workflow.ArchitectStartPending), and api's freshSession. A claim that holds a
+// task of news alone is read as owing no work, so the phase's task is sent to it as well, and is
+// lost to neither: a task of an entry takes the news task's place while no turn has taken it,
+// carrying that news itself (supervise's queue, Machine.supersedes), and any other task waits
+// behind the news task until a turn has taken it.
 func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.NewsOnly }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own

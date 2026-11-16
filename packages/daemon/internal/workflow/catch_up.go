@@ -138,30 +138,13 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
-// about queued rows, read without its question about the claim's own liveness: this claim is
-// live, which is precisely why it is being given its task. A start queued for news alone carries
-// no task of the phase (startsWork), so it covers nothing, and the worker is given its task beside
-// it.
+// about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
+// liveness: this claim is live, which is precisely why it is being given its task. A start queued
+// for news alone carries no task of the phase (startsWork), so it covers nothing, and the worker is
+// given its task beside it.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
-	var stop int64
-	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
-			stop = max(stop, queued.ID)
-		}
-	}
-	if stop != 0 {
-		return true
-	}
-	for _, queued := range run.Queued {
-		if startsWork(queued.Request) && queued.Request.Phase == current {
-			return true
-		}
-	}
-	return false
+	stop := actingStop(run, root)
+	return stop != 0 || queuedStartActs(run, stop, current)
 }
 
 // readyWorkerTask gives a phase worker whose claim has just become ready its phase's task again,
@@ -188,7 +171,9 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // earlier launch its agent never read — would otherwise be given no phase task at all. A task of
 // news of the approved design alone is no work of the phase either (supervise.HoldsWork): it tells
 // the worker what changed and nothing of what to do, so a claim that holds only that is given its
-// phase's task too, which waits behind the news task until a turn has taken it.
+// phase's task too. An owed entry's task takes the news task's place while no turn has taken it,
+// and carries that news itself (supervise's Machine.supersedes); the phase's resume task carries
+// no entry, so it waits behind the news task until a turn has taken it.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -288,11 +273,11 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // says what is the architect's own to do.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, []string, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
-	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
+	handed, err := ArchitectCarried(ctx, tx, store, root)
 	if err != nil {
 		return record.CatchUp{}, nil, err
 	}
-	if handed != nil && handed.Generation == root.Generation {
+	if handed != nil {
 		catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 	}
 	gates, err := store.GatesOf(ctx, tx, root.Key)

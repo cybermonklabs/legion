@@ -166,7 +166,8 @@ func (c *newsClaims) readArchitects(ctx context.Context, tx pgx.Tx, records reco
 }
 
 // rootArchitect is the holder of the tree root's architect row: the root's architect claim, which
-// works no phase entry. A root whose project or key names no token has none.
+// works no phase but holds a phases row of the entries it is handed (dispatch://INFRA-2614). A root
+// whose project or key names no token has none.
 func (c *newsClaims) rootArchitect() (newsHolder, bool) {
 	if c.project == "" {
 		return newsHolder{}, false
@@ -179,8 +180,10 @@ func (c *newsClaims) rootArchitect() (newsHolder, bool) {
 }
 
 // owedHolder is the holder of one told row news owes (newsHolder), with what the record holds of
-// its claim: the entry its role's phases row names, 0 for an architect, which works no entry, and
-// its run (record.RoleRun: its queued starts and its claim).
+// its claim: the entry its role's phases row names, 0 where the row names none, and its run
+// (record.RoleRun: its queued starts and its claim). An architect's entry is read as a phase
+// worker's is: a root's architect holds a phases row that states the work it is owed
+// (dispatch://INFRA-2614), and a sub-architect, which no start hands an entry, holds none.
 type owedHolder struct {
 	newsHolder
 	entry int64
@@ -217,14 +220,12 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 	}
 	runKeys := make([]record.RoleRunKey, 0, len(holders))
 	for key, holder := range holders {
-		if holder.role != claim.RoleArchitect {
-			rows, err := records.Phases(ctx, tx, holder.issue.Key)
-			if err != nil {
-				return nil, err
-			}
-			holder.entry = record.PhaseRowOf(rows, holder.role).Entry
-			holders[key] = holder
+		rows, err := records.Phases(ctx, tx, holder.issue.Key)
+		if err != nil {
+			return nil, err
 		}
+		holder.entry = record.PhaseRowOf(rows, holder.role).Entry
+		holders[key] = holder
 		runKeys = append(runKeys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
 	}
 	runs, err := records.RoleRuns(ctx, tx, runKeys)
@@ -309,14 +310,16 @@ func holdsUntakenTask(held *record.RoleClaim) bool {
 }
 
 // newsClaimTakes is the one rule for whether a news-only start may hand its news to a claim the
-// caller holds, over what says it: it was given the entry its role's phases row names (entry, 0 for
-// an architect, which works no entry), since a claim behind that entry is owed its phase start,
-// which carries the news; it has not ended (claimEnded), since a failed or retired claim is
-// revived by its phase's own repair, whose start carries the news; and no operator holds it
-// suspended (operatorHolds). A claim an idle pod release suspended takes the news, and the start
-// that carries it wakes the claim as any start wakes one. Both readers state it through this: the
-// reconcile and the architect's summary over the claim the record holds (recordedClaimTakesNews),
-// and the start over the claim its machine holds (newsOnlyRefusal).
+// caller holds, over what says it: it was given the entry its role's phases row names (entry, 0
+// where the row names none), since a claim behind that entry is owed its phase start, which
+// carries the news — a root's architect among them, whose start of an entry carries its summary
+// as a phase worker's carries its news (dispatch://INFRA-2614); it has not ended (claimEnded),
+// since a failed or retired claim is revived by its phase's own repair, whose start carries the
+// news; and no operator holds it suspended (operatorHolds). A claim an idle pod release suspended
+// takes the news, and the start that carries it wakes the claim as any start wakes one. Both
+// readers state it through this: the reconcile and the architect's summary over the claim the
+// record holds (recordedClaimTakesNews), and the start over the claim its machine holds
+// (newsOnlyRefusal).
 func newsClaimTakes(given, entry int64, state supervise.ClaimState, operatorHolds bool) bool {
 	return given == entry && !claimEnded(state) && !operatorHolds
 }
@@ -334,7 +337,7 @@ func recordedClaimTakesNews(held *record.RoleClaim, entry int64) bool {
 // newsOnlyRefusal is why a news-only start reaches no claim, as the claim's machine holds it when
 // the start runs, and "" when it may: the guards the reconcile queued it under, read again
 // (newsClaimTakes), since the claim can have moved since. entry is the entry the role's phases row
-// names, 0 for an architect. The start's other guards are the executor's own, read before this:
+// names, 0 where it names none. The start's other guards are the executor's own, read before this:
 // an earlier generation, a phase the issue has left, an issue out of the workflow and a lingering
 // tree each finish it, as they finish any start.
 func newsOnlyRefusal(machine *supervise.Machine, found bool, entry int64) string {

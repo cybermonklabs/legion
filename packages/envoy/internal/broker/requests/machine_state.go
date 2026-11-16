@@ -479,6 +479,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	// A secret `agent-secrets secret create` made and has not yet filled is refused as such, never
+	// as unknown, which a caller takes as final: no request row, record or approver for it.
+	for _, name := range names {
+		if m.Policy.PendingValue(set, name) {
+			return Request{}, fmt.Errorf("%s %w", name, policy.ErrPendingValue)
+		}
+	}
 	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	for _, name := range names {
 		if limit, over := overMaxGrant(set, name, lifetime); over {

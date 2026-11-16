@@ -556,7 +556,9 @@ type RequestDeliver struct {
 	// work (HoldsTask), where any other newer task takes the place of a confirmed task or of one a
 	// provider error took back (queue): it is refused (ErrDeliveryPending), and its start waits on
 	// its row's backoff until the claim holds no such task. It still takes the place of the
-	// daemon's own delivery of a relaunch's record, which holds no work either.
+	// daemon's own delivery of a relaunch's record, which holds no work either. Once held, it
+	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
+	// start of an entry carries the same news itself.
 	NewsOnly bool
 }
 
@@ -1475,23 +1477,29 @@ func ackedInTurn(m *Machine, _ context.Context, ev Event) error {
 // unsaved (saved), and settle writes the claim and the delivery together before the next
 // decision, so the taken-back confirmation and this record reach the store on the first write
 // the store takes.
+//
+// A confirmation the refusal takes back that the claim's handshake recorded goes from the
+// handshake too (takeBackConfirmation), and the write is then of the claim and the delivery
+// together (putClaimAndPending), under the same mark and the same carrying on. A confirmation it
+// keeps for an outstanding prompt keeps the handshake's as well: that prompt's turn is the task's.
 func refused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(PromptRefused)
 	resend := m.helloDuringSend
 	m.helloDuringSend = false
 	p := m.claim.Pending
-	untold := false
+	untold, handshakeMoved := false, false
 	if !m.awaitsResult() {
 		// No acknowledged prompt of the task is left, so no copy of its news stands, and the
-		// write below puts back what a confirmation taken back raised (Delivery.Carried).
-		p.ConfirmedAt, p.Carried = time.Time{}, nil
+		// write below puts back what a confirmation taken back raised (Delivery.Carried,
+		// takeBackConfirmation).
+		handshakeMoved = m.takeBackConfirmation(p)
 		untold = m.moveTelling(p.ID, "")
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
 	p.LastSendError = scrubSendError(r.Err.Error())
 	var err error
-	if untold {
+	if untold || handshakeMoved {
 		err = m.saved(m.putClaimAndPending(ctx))
 	} else {
 		err = m.putPending(ctx)

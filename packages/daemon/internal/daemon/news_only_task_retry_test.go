@@ -15,10 +15,13 @@ import (
 // (supervise.Delivery.NewsOnly) holds no task of its phase: the news task names the phase and the
 // run, so that it is dropped once the issue leaves the phase, and asks the worker only to read
 // what changed. So the architect's retry of the held phase relaunches the claim and still hands it
-// the retry's own task, as it does to a claim that kept a task of another phase or run: that task
-// waits behind the news task (the claim refuses a second pending one), and the row is retried
-// until it goes. Read as the phase's task, the news task would have the retry deliver nothing, and
-// the relaunched worker would get the news and no work.
+// the retry's own task, as it does to a claim that kept a task of another phase or run. The retry
+// here carries no entry (retryHeldPhase), so it carries no news either, and its task waits behind
+// the news task (the claim refuses a second pending one), and the row is retried until it goes; a
+// start that carries an entry takes the news task's place instead, and carries its news
+// (supervise's TestAnEntrysTaskTakesTheUntakenNewsTasksPlaceForEveryRole). Read as the phase's
+// task, the news task would have the retry deliver nothing, and the relaunched worker would get the
+// news and no work.
 func TestARetryOfAFailedClaimHoldingOnlyANewsTaskStillDeliversItsPhaseTask(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

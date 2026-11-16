@@ -23,7 +23,13 @@ body: |-
   phase's task either: a worker that holds only a news task is still given its phase task when it
   comes back ready, when its held phase is retried, and by the repair of a silent worker. A start
   queued for news alone is not counted as the phase's start, and it does not keep an idle pod from
-  its release. A news task tells a member only while the claim it is held for holds that member's
+  its release. A start of a phase entry carries the news its role is owed, so the task of an entry
+  takes the place of a news task that no turn has taken yet: the worker gets its entry's work and
+  the news in one task, and its entry does not wait behind the news. A start with no entry still
+  waits behind the news task. A root's architect holds a phases row of its entries, so it gets a
+  news task only while its claim was given the entry that row names, as a phase worker does, and
+  otherwise the start of its owed entry carries its summary. A news task tells a member only while
+  the claim it is held for holds that member's
   phase: an architect's task does not tell a member that the architect signed off while the task
   waited, and the member's next holder is told instead. If the gate closes and opens again while a
   holder's news task waits, that task carries the opening, so the holder gets the opening once.

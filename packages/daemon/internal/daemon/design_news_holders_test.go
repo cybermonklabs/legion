@@ -14,6 +14,34 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// A phase worker holds a member's phase, and only a phase worker does (phaseHolder): admitted,
+// which phase.RoleFor answers the tree's architect for since #3711, has no phase holder, since a
+// member there has not started its work and its first phase's start carries its news; accepting,
+// which the owning architect holds, is named through newsClaims.holderOf and not here; a phase no
+// role works names none. A member in reviewing names its reviewer's claim.
+func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
+	for _, tc := range []struct {
+		phase phase.Phase
+		role  claim.Role
+	}{
+		{phase.Admitted, ""},
+		{phase.Accepting, ""},
+		{phase.AwaitingPerson, ""},
+		{phase.Reviewing, claim.RoleReviewer},
+		{phase.Merging, claim.RoleMerger},
+	} {
+		holder, held := phaseHolder("legion", record.Issue{Key: "LEGION-801", Phase: tc.phase})
+		if held != (tc.role != "") || held && holder.role != tc.role {
+			t.Fatalf("the holder of a member in %s = %+v (held %t), want role %q", tc.phase, holder, held, tc.role)
+		}
+		if held {
+			if want, _ := claim.NewToken("legion", "LEGION-801", tc.role); holder.token != want {
+				t.Fatalf("the holder of a member in %s is %s, want %s", tc.phase, holder.token, want)
+			}
+		}
+	}
+}
+
 // The holder of a member's phase is named from the member's record, whatever issues the caller
 // read (newsClaims.member). A member missing from the issues the caller passed is read from the
 // record with the rest of the tree, so the tester's claim is named for a member in testing, and
