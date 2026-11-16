@@ -17,6 +17,11 @@
       "types": "./src/refused-port.ts",
       "bun": "./src/refused-port.ts"
     },
+    "./socket-root": {
+      "types": "./src/socket-root.ts",
+      "bun": "./src/socket-root.ts",
+      "default": "./src/socket-root.ts"
+    },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",
       "bun": "./src/temporary-directories.ts"
