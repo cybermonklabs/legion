@@ -2566,7 +2566,7 @@ An operator gives any project to another full member with the database credentia
 envoy-dispatch project-owner <KEY> <email>
 ```
 
-It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` naming the new owner, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
 Who owned the project before, and whether that person is still a member, makes no difference.
 It exits 0 once the change commits;
 2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
@@ -2591,22 +2591,48 @@ When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
 ### Filling the sessions' projects
 
 `session_projects` records which projects each agent session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
-From migration `20261116015736_project_access` on, every event append records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.AppendAll`);
-the table has no unique key, on purpose, as the migration's header says.
+It records only a session the event's credential proved: an actor of kind `session` whose `act` names that same session and no personal token, which a broker-issued token's write carries (`events.provedSession`, `api.bearerSessionActor`).
+A credential that proves no session, the shared token or a personal token, names one in the request body, and its write records nothing, so no holder of a project's token can make another session look like one of that project's agents.
+Every event append records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.AppendAll`);
+the table has no unique key, on purpose, as migration `20261116015736_project_access`'s header says.
 The events written before that are covered once, by:
 
 ```sh
-envoy-dispatch backfill-session-projects
+envoy-dispatch backfill-session-projects [--reset]
 ```
 
 Run it after the deploy that carries the live insert, so every event is covered by the one or the other.
 It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement each, and records the pair the live insert would have recorded:
-for an event whose actor is a session (`actor->>'kind'` is `session` and `actor->>'id'` is not empty; a personal token's actor has an empty one), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
-A person's event, and an event of no project, records nothing.
+for an event whose stored actor is a proven session (`actor->>'kind'` is `session`, `actor->'act'->>'session'` is `actor->>'id'`, and `actor->'act'->>'token_id'` is empty or absent), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
+A person's event, a session a request body named, and an event of no project record nothing.
 The project is the one the issue or document is in when the fill reads it.
 A pair a row already holds is not written again, so a second run writes no pair, and a run interrupted anywhere is run again from the start.
 Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
-It exits 0 then, and 1 when the database cannot be opened or written.
+It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
+
+Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
+Under `Recreate` the build before has stopped when the migration runs.
+A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first runs the migration's two deletes, each in a statement of its own, and then fills.
+The migration's census answers `0`, because a census that counts refuses the deploy; the count it drops is `select count(*) from session_projects;` on the release still serving.
+
+### Scrubbing the access events
+
+`project.access_changed` names its project and its change and nothing else (`model.ProjectAccessEventPayload`), since every reader of the project's events reads it, credentials without the person scope included.
+Who a change named, and the owner and visibility it left, are the server's own record of the event, `project_access_changes`, written in the event's transaction (`access.recordProjectChanges`) and read only by a live resume, to tell whether a change in its gap moved what its caller sees; no route serves it.
+The release of migration `20261116015736_project_access` stored the project's whole access on the payload, its people's emails included, and `GET /api/v1/events/log` serves a stored payload as it was stored.
+After the deploy, run:
+
+```sh
+envoy-dispatch scrub-access-events
+```
+
+It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement and transaction each, beside the running server, and rewrites each `project.access_changed` whose payload holds anything else to `jsonb_build_object('project', payload->'project', 'change', payload->'change')`, first copying the payload's `principal`, `owner` and `visibility` into `project_access_changes` where no row holds that event.
+It is a command and not a migration because no index of `events` leads with `type`, so a migration would read the whole table in one transaction at boot.
+Once it has read every event it writes the one `access_events_scrubbed` row (migration `20261116085957_project_access_changes`, which creates both tables), none when a run before it did, and prints `scrub-access-events: events=<read> rewritten=<written> scrubbed`; a second run rewrites nothing.
+It exits 0 then, 1 when the database cannot be opened or written, and 2 for any argument.
+Until that row exists no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`, naming the command).
+A deployment that rolls runs it once the last old pod is gone, since an old build appends the old shape until then.
+Copies the outbox already published stay on the bus until its retention ends; they were published while every project was public, and only that project's tokens read them.
 
 ### Pre-deploy census
 
