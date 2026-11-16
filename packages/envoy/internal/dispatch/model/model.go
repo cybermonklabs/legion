@@ -78,6 +78,19 @@ func (c *Credential) Holds(scope string) bool {
 	return c != nil && slices.Contains(c.Scopes, scope)
 }
 
+// browserCredential is a person's own cookie: it holds every scope and names no agent that acted
+// for them. Every browser caller shares this one value, on the dashboard's hottest path, so nothing
+// writes it or appends to its Scopes.
+var browserCredential = &Credential{Scopes: Scopes}
+
+// BrowserActor is the caller a person's signed-in browser is: the person, with the cookie's
+// credential. Every reader of a cookie builds its caller here - api's optionalActor, the GitHub
+// proxy and the document socket - so access.Resolve, which reads the credential, reads each of
+// them as the browser it is.
+func BrowserActor(login string) Actor {
+	return Actor{Kind: "user", ID: login, Credential: browserCredential}
+}
+
 // Actor identifies the user or agent session that caused a change. Service is
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set

@@ -1060,27 +1060,15 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		return model.Actor{}, false, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
-	return BrowserActor(login), true, nil
+	// A person at a browser is the person, so their cookie holds every scope and names no agent
+	// that acted for them.
+	return model.BrowserActor(login), true, nil
 }
 
-// BrowserActor is the caller a person's signed-in browser is: the person, whose cookie holds every
-// scope and names no agent that acted for them. optionalActor answers it for a cookie, and a route
-// outside this package that reads its caller from the cookie alone (the GitHub proxy,
-// routes.repositoryHidden) builds it here, so access.Resolve reads the credential it resolves.
-func BrowserActor(login string) model.Actor {
-	return model.Actor{Kind: "user", ID: login, Credential: personCredential}
-}
-
-// The two credentials every request of their kind shares. Each is a fact of the deployment
-// rather than of one request — a browser's cookie holds both scopes, and the shared token and a
-// service-account token hold none — and the cookie's is on the dashboard's hottest path, so
-// allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actingPerson copies the slice header onto the act it records, and
-// tokenScopes builds a set of its own.
-var (
-	scopelessCredential = &model.Credential{}
-	personCredential    = &model.Credential{Scopes: model.Scopes}
-)
+// scopelessCredential is the credential the deployment's shared token and a service-account token
+// share: a fact of the deployment rather than of one request, which holds no scope, so allocating
+// it per request would be waste. Nothing writes it. The cookie's own is model.BrowserActor's.
+var scopelessCredential = &model.Credential{}
 
 // serviceTokenActor authenticates a JWT-shaped bearer as a Kubernetes pod's
 // projected service-account token. A rejected token is a 401 of its own: it

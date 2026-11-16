@@ -267,8 +267,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// The count of access re-checks is read before the person's read of the room, so a re-check
 	// that begins before this socket is recorded closes it once it is (schemaAdmissions.admit).
+	// The person is a cookie's (requestActor), so what they see is resolved as their browser's;
+	// the actor the room records stays without the credential (model.Actor.Recorded).
 	accessChecks := s.schemaAdmissions.accessCheckCount()
-	viewer, err := access.Resolve(r.Context(), s.queryFrom(r.Context()), actor)
+	viewer, err := access.Resolve(r.Context(), s.queryFrom(r.Context()), model.BrowserActor(actor.ID))
 	if err != nil {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return

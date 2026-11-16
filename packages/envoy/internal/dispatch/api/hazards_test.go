@@ -61,49 +61,54 @@ func TestATokenIsNeverReadAsABrowser(t *testing.T) {
 }
 
 // resolveCallers is every function of internal/dispatch that calls access.Resolve, by package and
-// name, with the call the actor it resolves comes from: each resolves the request's own caller,
-// with its credential, never an actor a write recorded. A new call is added here only once its
-// actor is shown to come from the request's credential.
-var resolveCallers = map[string]string{
-	"api.resolveReader":       "optionalActor",
-	"api.tokenProjects":       "optionalActor",
-	"routes.repositoryHidden": "BrowserActor",
+// name, with every call the actor it resolves comes from, sorted. Each is the request's own caller
+// with its credential, never an actor a write recorded: optionalActor's (resolveReader's and the
+// token mint's, both through readerFor); model.BrowserActor, a cookie's; and a live socket's caller
+// as its upgrade resolved it, credential kept (liveSocket.caller, and the subscription stream's
+// Caller, which answers it). A new call is added here only once its actor is shown to come from the
+// request's credential.
+var resolveCallers = map[string][]string{
+	"api.readerFor":           {"Caller", "caller", "optionalActor"},
+	"docs.ServeHTTP":          {"BrowserActor"},
+	"docs.readableRooms":      {"BrowserActor"},
+	"routes.repositoryHidden": {"BrowserActor"},
 }
 
 // TestEveryResolveTakesTheResolvedCredential reads every non-test Go file under internal/dispatch
 // and holds each call of access.Resolve to resolveCallers: the function that makes it, and the
-// call its actor argument comes from - the call itself where the argument is one, or each
-// assignment of the variable it names in that function. A call from any other function, or one
-// whose actor comes from anywhere else (a recorded actor, a field of the input, a literal), fails
-// naming its file, line and function. Every row of the table must be found, so a scan that read
-// nothing cannot pass.
+// calls its actor argument comes from (actorSources). A call from any other function, or one whose
+// actor comes from anywhere else (a recorded actor, a field of the input, a literal), fails naming
+// its file, line and function. Every row of the table must be found, so a scan that read nothing
+// cannot pass.
 func TestEveryResolveTakesTheResolvedCredential(t *testing.T) {
+	var functions []declaredFunction
+	for _, source := range moduleSources(t, "..") {
+		for _, declaration := range source.file.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Body != nil {
+				functions = append(functions, declaredFunction{source: source, decl: function})
+			}
+		}
+	}
 	var offences []string
 	found := map[string]bool{}
-	for _, source := range moduleSources(t, "..") {
-		pkg := source.file.Name.Name
-		for _, declaration := range source.file.Decls {
-			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil {
-				continue
-			}
-			name := pkg + "." + function.Name.Name
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok || !callsResolve(call, pkg) || len(call.Args) != 3 {
-					return true
-				}
-				where := filepath.ToSlash(source.path) + ":" + strconv.Itoa(source.positions.Position(call.Pos()).Line)
-				want, listed := resolveCallers[name]
-				sources := actorSources(function.Body, call.Args[2])
-				if !listed || len(sources) == 0 || slices.ContainsFunc(sources, func(got string) bool { return got != want }) {
-					offences = append(offences, where+": "+name+" resolves an actor from "+strings.Join(sources, ", "))
-					return true
-				}
-				found[name] = true
+	for _, function := range functions {
+		name := function.name()
+		ast.Inspect(function.decl.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || !callsResolve(call, function.source.file.Name.Name) || len(call.Args) != 3 {
 				return true
-			})
-		}
+			}
+			where := filepath.ToSlash(function.source.path) + ":" + strconv.Itoa(function.source.positions.Position(call.Pos()).Line)
+			sources := actorSources(functions, function, call.Args[2], map[string]bool{})
+			slices.Sort(sources)
+			sources = slices.Compact(sources)
+			if want, listed := resolveCallers[name]; !listed || !slices.Equal(sources, want) {
+				offences = append(offences, where+": "+name+" resolves an actor from "+strings.Join(sources, ", "))
+				return true
+			}
+			found[name] = true
+			return true
+		})
 	}
 	sort.Strings(offences)
 	if len(offences) > 0 {
@@ -115,6 +120,30 @@ func TestEveryResolveTakesTheResolvedCredential(t *testing.T) {
 			t.Errorf("no call of access.Resolve was found in %s: the scan read nothing, or the table names a caller that is gone", name)
 		}
 	}
+}
+
+// declaredFunction is one function declaration of the scanned sources.
+type declaredFunction struct {
+	source moduleSource
+	decl   *ast.FuncDecl
+}
+
+func (function declaredFunction) name() string {
+	return function.source.file.Name.Name + "." + function.decl.Name.Name
+}
+
+// parameter answers the position of name among the function's parameters, if it is one.
+func (function declaredFunction) parameter(name string) (int, bool) {
+	index := 0
+	for _, field := range function.decl.Type.Params.List {
+		for _, parameter := range field.Names {
+			if parameter.Name == name {
+				return index, true
+			}
+			index++
+		}
+	}
+	return 0, false
 }
 
 // callsResolve reports whether call is access.Resolve: qualified from another package, or bare
@@ -130,16 +159,38 @@ func callsResolve(call *ast.CallExpr, pkg string) bool {
 	return false
 }
 
-// actorSources names where argument comes from: the function a call argument calls, or, for a
-// variable, the function each of its assignments in body calls (one name per assignment). Anything
-// else is named by its own shape, which no row of resolveCallers holds.
-func actorSources(body *ast.BlockStmt, argument ast.Expr) []string {
+// actorSources names the calls argument, an expression of function, comes from: the function a
+// call argument calls; for a variable, the function each of its assignments in function calls; and
+// for a parameter of function, the sources of the argument each call of function in its own
+// package passes there, followed as far as it goes (seen stops a cycle). Anything else is named by
+// its own shape, which no row of resolveCallers holds.
+func actorSources(functions []declaredFunction, function declaredFunction, argument ast.Expr, seen map[string]bool) []string {
 	variable, ok := argument.(*ast.Ident)
 	if !ok {
 		return []string{calledName(argument)}
 	}
 	var sources []string
-	ast.Inspect(body, func(node ast.Node) bool {
+	if index, ok := function.parameter(variable.Name); ok && !seen[function.name()] {
+		seen[function.name()] = true
+		passed := false
+		for _, caller := range functions {
+			if caller.source.file.Name.Name != function.source.file.Name.Name {
+				continue
+			}
+			ast.Inspect(caller.decl.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if ok && calledName(call) == function.decl.Name.Name && len(call.Args) > index {
+					passed = true
+					sources = append(sources, actorSources(functions, caller, call.Args[index], seen)...)
+				}
+				return true
+			})
+		}
+		if !passed {
+			sources = append(sources, "a parameter of "+function.name()+" no call passes")
+		}
+	}
+	ast.Inspect(function.decl.Body, func(node ast.Node) bool {
 		assign, ok := node.(*ast.AssignStmt)
 		if !ok {
 			return true

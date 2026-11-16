@@ -593,7 +593,7 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 		{"a person whose credential lists two projects",
 			newWhoamiUser(model.Actor{Kind: "user", ID: carol, Credential: &model.Credential{Projects: both}}, "", []string{}),
 			`{"kind":"user","login":"carol@example.com","projects":["PRIV","PUB"],"scopes":[]}`},
-		{"a person at a browser", newWhoamiUser(model.Actor{Kind: "user", ID: seedAlice, Credential: personCredential}, "", whoamiScopes(personCredential)),
+		{"a person at a browser", newWhoamiUser(model.BrowserActor(seedAlice), "", whoamiScopes(model.BrowserActor(seedAlice).Credential)),
 			`{"kind":"user","login":"alice","scopes":["person","approve"]}`},
 	} {
 		encoded, err := json.Marshal(test.body)

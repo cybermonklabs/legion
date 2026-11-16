@@ -587,16 +587,15 @@ func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 }
 
 // repositoryHidden reports whether the person login may not see repository: the cookie's viewer
-// (access.Resolve of the browser login is, api.BrowserActor) fails access.RepositoryClause, so a
-// repository mapped to no project the person sees, or mapped to none while the person is a
-// restricted member, is hidden. A router with no Store, a test's, has no viewer to resolve, so it
-// reads the person as the closed viewer, which sees no repository: every repository is hidden
-// there.
+// (access.Resolve of model.BrowserActor) fails access.RepositoryClause, so a repository mapped to
+// no project the person sees, or mapped to none while the person is a restricted member, is
+// hidden. A router with no Store, a test's, has no viewer to resolve, so it reads the person as the
+// closed viewer, which sees no repository: every repository is hidden there.
 func (r *router) repositoryHidden(ctx context.Context, login, repository string) (bool, error) {
 	if r.ctx.Store == nil {
 		return true, nil
 	}
-	viewer, err := access.Resolve(ctx, r.ctx.Store.Pool, api.BrowserActor(login))
+	viewer, err := access.Resolve(ctx, r.ctx.Store.Pool, model.BrowserActor(login))
 	if err != nil {
 		return false, err
 	}
