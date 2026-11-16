@@ -127,6 +127,9 @@ func TestDispatchOutsideOriginTakesEveryPlainHost(t *testing.T) {
 		"https://xn--bcher-kva.example.com",
 		"https://example-outside.example-tailnet.ts.net",
 		"https://dispatch-outside.example.com:8443",
+		// np is on the public suffix list only as a "*.np" rule, as ck, er, fk, jm, kh, mm and pg
+		// are, so its top-level domain is one Google takes although the bare np has no rule.
+		"https://dispatch.example.com.np",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			args := dispatchArgs()

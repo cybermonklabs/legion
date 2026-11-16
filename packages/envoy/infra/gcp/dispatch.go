@@ -1076,7 +1076,7 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 	labels := strings.Split(host, ".")
 	if tld := labels[len(labels)-1]; len(labels) < 2 {
 		return "", fmt.Errorf("outsideOrigin's host %s is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host)
-	} else if suffix, icann := publicsuffix.PublicSuffix(tld); !icann || suffix != tld {
+	} else if _, icann := publicsuffix.PublicSuffix("x." + tld); !icann {
 		return "", fmt.Errorf("outsideOrigin's host %s ends in %s, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host, tld)
 	}
 	return origin.String(), nil
