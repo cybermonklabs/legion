@@ -287,6 +287,11 @@ source says why it had nothing:
   `agent-secrets machine login-status` prints `issued` only while it holds one. The person logs the
   machine in, as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows.
 
+A stopped helper is not a missing one. Where the helper is installed, or `AGENT_SECRETS_HELPER_SOCK`
+names its socket, and the socket is gone, the command exits 1 with
+`agent-secrets-helper at … so the helper is stopped`, and it does not act as the machine instead.
+Report that line; the person starts the helper (`systemctl --user start agent-secrets-helper`).
+
 On `UNKNOWN_SECRET` you stop, as above. You may tell the secret's owner how to find the cause:
 `agent-secrets secret list` and `agent-secrets secret show NAME`, under a cloud sign-in that may
 read the store (`gcloud auth login` against a broker on Google Cloud, an `AWS_PROFILE` against one

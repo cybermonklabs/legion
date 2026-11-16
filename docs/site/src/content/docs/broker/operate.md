@@ -487,7 +487,13 @@ a command does, so it needs no `AGENT_SECRETS_MACHINE_IDENTITY` either. With
 `AGENT_SECRETS_MACHINE_IDENTITY` unset the helper and the controller trade nothing and work as they
 did, through a machine login a person approves, and `agent-secrets` trades only once the broker
 names an exchange audience, which a broker with neither `BROKER_GOOGLE_OIDC_AUDIENCE` nor
-`BROKER_EXCHANGE_K8S_AUDIENCE` set never does.
+`BROKER_EXCHANGE_K8S_AUDIENCE` set never does. The broker names its Google audience only where
+`BROKER_VM_SERVICES` lists a machine: a Google audience set for API callers alone
+(`BROKER_API_ACCOUNTS`' `google:` entries) is not published, since its exchange takes no machine.
+`agent-secrets` reads those settings only from an `https` broker, or an `http` one on loopback,
+and keeps the first Google audience it reads, refusing a later one that differs; change
+`BROKER_GOOGLE_OIDC_AUDIENCE` on a deployed broker only together with removing each machine's
+`~/.local/state/agent-secrets/machine/google-exchange-audience`.
 
 ## Approval sign-in
 
@@ -686,9 +692,9 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 - The settings and reread routes take no credential. `GET /v1/settings` answers the store, the
   namespace prefix and, per store, the agent-secrets key's ARN with its AWS account and region, or
   the Cloud KMS key's name with the project number; and, on either store,
-  `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`) and `kubernetes_exchange_audience`
-  (`BROKER_EXCHANGE_K8S_AUDIENCE`), each absent where it is unset, from which `agent-secrets` finds
-  the machine's own identity with no setting.
+  `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`, absent unless `BROKER_VM_SERVICES`
+  lists a machine) and `kubernetes_exchange_audience` (`BROKER_EXCHANGE_K8S_AUDIENCE`, absent where
+  it is unset), from which `agent-secrets` finds the machine's own identity with no setting.
   `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store at once,
   and answers whether it now serves it, as which kind (`kind`: `github-app` or `google-login`,
   absent for a stored secret) and, if not, why. Neither releases a value. What a reread

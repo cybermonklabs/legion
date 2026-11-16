@@ -3,5 +3,8 @@ body: |-
   The broker's `GET /v1/settings` names its exchange audiences, `google_exchange_audience` and
   `kubernetes_exchange_audience`, and `agent-secrets` finds a machine identity against them with no
   setting of its own: a projected Kubernetes token, an `external_account` credentials file, or the
-  Google metadata server. Against a broker that names neither, the client tries no machine identity
-  and says the broker accepts none.
+  Google metadata server. The Google audience is named only where `BROKER_VM_SERVICES` lists a
+  machine. Against a broker that names neither, the client tries no machine identity and says the
+  broker accepts none. The client reads these settings only from an `https` broker, or an `http` one
+  on loopback, and keeps the first Google audience it reads: a broker that later names another is
+  refused before any identity token is minted for it.
