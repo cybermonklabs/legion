@@ -3345,6 +3345,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3896,6 +3897,7 @@ jobs:
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
