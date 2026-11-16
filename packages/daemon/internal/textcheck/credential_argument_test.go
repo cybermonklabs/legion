@@ -30,10 +30,11 @@ import (
 // A header curl reads with `-H @…` names no `Authorization:` after the flag, so it matches nothing.
 var bearerArgument = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\s*)\\?["']?authorization:\s*(?:bearer|token)\s+(?:\\?["'])*\\?[$<]`)
 
-// credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`) or a
-// request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`). It is written
-// case-sensitive, since `-D` and `-U` are other flags.
-var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form)(?:=|[ \t]+)`)
+// credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
+// request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
+// itself (`--token`, kubectl's and gh's). It is written case-sensitive, since `-D` and `-U` are
+// other flags; `--token-file` and `--github-token` are other flags too, and match nothing.
+var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form|--token)(?:=|[ \t]+)`)
 
 // passwordWord matches a `-u` word whose password is a variable, a token file read into it or a
 // placeholder (`"$user:$token"`, `"ada:$(cat …)"`, `"ada:<password>"`), or a variable named for a
@@ -45,6 +46,12 @@ var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:c
 // JSON field `"…token": "$…"`, a variable named for one (`$agent_token`, but not
 // `$app_tokens_dir`), or a token file read into it.
 var tokenWord = regexp.MustCompile(`(?i)token\\?["']?\s*[=:]\s*\\?["']?\\?[$<]|\$\{?\w*token\b|\$\(\s*(?:cat\s|<)[^)]*token`)
+
+// tokenValue matches a `--token` value that is one variable, one command substitution or one
+// placeholder, quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`. A value that joins
+// several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file and no token, and
+// a fixed fixture value (`--token fixture-token`) is no secret, so neither matches.
+var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
 
 // shellWord is the shell word s starts with: up to the first blank, `|`, `;`, `&`, `<`, `>` or `)`
 // that stands outside quotes and outside a `$(…)`, so a quoted body with blanks in it, or with a
@@ -101,12 +108,19 @@ func credentialArgument(line string) bool {
 	}
 	for _, at := range credentialFlag.FindAllStringSubmatchIndex(line, -1) {
 		word := shellWord(line[at[1]:])
-		if flag := line[at[2]:at[3]]; flag == "-u" || flag == "--user" {
+		switch flag := line[at[2]:at[3]]; flag {
+		case "-u", "--user":
 			if passwordWord.MatchString(word) {
 				return true
 			}
-		} else if tokenWord.MatchString(word) {
-			return true
+		case "--token":
+			if tokenValue.MatchString(line[at[1]:]) {
+				return true
+			}
+		default:
+			if tokenWord.MatchString(word) {
+				return true
+			}
 		}
 	}
 	return false
@@ -208,6 +222,12 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl -F "token=${upload_token}" "$url"`,
 		`--data-urlencode "printed=$(field printed)" --data-urlencode "token=$(field token)" \`,
 		`  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then`,
+		`kubectl config set-credentials legion-daemon --kubeconfig "$kubeconfig" --token "$token"`,
+		`gh auth login --token=$GH_TOKEN`,
+		`kubectl --token "$(cat "$token_file")" get pods`,
+		`kubectl --token ${!name} get pods`,
+		`  --token "$model_token" --refusal "${workdir}/model-refusal" --status "$model_status" \`,
+		`run_search.py --url http://127.0.0.1:8799 --token <bearer> --out out.jsonl`,
 	} {
 		if !credentialArgument(line) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -232,6 +252,11 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`[ -n "$app_tokens_dir" ] && [ -d "$app_tokens_dir" ] ||`,
 		`app_key_unsets+=(-u "$implement_app_secret")`,
 		`printf '%s' "$(field token)" | curl -sS --data-urlencode token@- "$url"`,
+		`  --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \`,
+		`dev-airlock-stands enroll-pod --url "$URL" --token-file "$REGISTRAR_TOKEN_FILE"`,
+		`agent-secrets "$GITHUB_SECRET" --github-owner "$owner" --github-token -- sh -c 'exit 0'`,
+		`python3 run_search.py --url http://127.0.0.1:8799 --token fixture-token --workers 8`,
+		`kubectl config set users.legion-daemon.tokenFile "$token_file"`,
 	} {
 		if credentialArgument(line) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)

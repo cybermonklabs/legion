@@ -1477,13 +1477,16 @@ git init -q $d/repo
 say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 -u GIT_CONFIG_KEY_2 -u GIT_CONFIG_VALUE_2 -u GIT_CONFIG_KEY_3 -u GIT_CONFIG_VALUE_3 -u GIT_CONFIG_KEY_4 -u GIT_CONFIG_VALUE_4 git -c http.proxy="\$HTTPS_PROXY" -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
 
 # The plain clients to S, each with the fake value in the header it uses, and none with it in its
-# command line: curl reads the header on standard input, and wget, which reads a header from no
-# pipe, from a startup file of its own (a pipe's /dev/fd path it refuses), removed after.
+# command line: curl reads the header on standard input. wget reads a header from no pipe, so it
+# gets a startup file of its own, removed when this script exits: the airlock's WGETRC first,
+# whose ca_certificate is the one way the proxy's certificate reaches wget
+# (cmd/agent-secrets/airlock.go, wgetrcFor), then the header. --config would read that file in
+# place of WGETRC and lose the certificate, so the file is named as WGETRC for this one call.
 say "curl=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/curl)"
 wgetrc=\$(mktemp)
-printf 'header = Authorization: Bearer %s\n' "\$AIRLOCK_DEMO_TOKEN" >"\$wgetrc"
-say "wget=\$(wget -q -O /dev/null --config="\$wgetrc" $AIRLOCK_S_URL/wget && echo 200 || echo failed)"
-rm -f "\$wgetrc"
+trap 'rm -f "\$wgetrc"' EXIT
+{ if [ -n "\${WGETRC:-}" ]; then cat "\$WGETRC"; echo; fi; printf 'header = Authorization: Bearer %s\n' "\$AIRLOCK_DEMO_TOKEN"; } >"\$wgetrc"
+say "wget=\$(WGETRC="\$wgetrc" wget -q -O /dev/null $AIRLOCK_S_URL/wget && echo 200 || echo failed)"
 say "node=\$(node -e 'fetch("$AIRLOCK_S_URL/node", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}).then(r => console.log(r.status)).catch(e => console.log("error", e.message))')"
 say "bun=\$(bun -e 'const r = await fetch("$AIRLOCK_S_URL/bun", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}); console.log(r.status)' 2>&1 | tail -n 1)"
 say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.request

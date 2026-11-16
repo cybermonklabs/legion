@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Run the cases against a Dispatch search route and record where the right answer landed.
 
-usage: run_search.py --cases cases.json --fixture-dsn <dsn> --url http://127.0.0.1:8799 \\
-         --token <bearer> --out $TMPDIR/out.jsonl [--only serial120.json] [--workers 1]
+usage: DISPATCH_TOKEN_FILE=<file> run_search.py --cases cases.json --fixture-dsn <dsn> \\
+         --url http://127.0.0.1:8799 --out $TMPDIR/out.jsonl [--only serial120.json] [--workers 1]
+
+The bearer is read from the file DISPATCH_TOKEN_FILE names, which keeps it out of the command
+line every process on the machine can read. --token gives one as an argument, for a fixture
+server's own fixed token alone.
 
 Each case's query is read back out of the fixture the server is serving (case_text.py) and
 checked against the descriptor's SHA-256: a case whose text has moved is refused, never guessed
@@ -30,7 +34,8 @@ def main():
     parser.add_argument("--cases", required=True)
     parser.add_argument("--fixture-dsn", required=True)
     parser.add_argument("--url", required=True, help="the search server, built from this tree")
-    parser.add_argument("--token", default="", help="bearer; else DISPATCH_TOKEN_FILE's contents")
+    parser.add_argument("--token", default="",
+                        help="a fixture server's fixed bearer; else DISPATCH_TOKEN_FILE's contents")
     parser.add_argument("--out", required=True)
     parser.add_argument("--only", default="", help="a JSON list of case ids to run")
     parser.add_argument("--workers", type=int, default=1)

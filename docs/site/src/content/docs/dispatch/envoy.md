@@ -802,7 +802,8 @@ intact.
    ```
 
    When `.env` sets `ENVOY_API_TOKEN`, send that token as the bearer on standard input, so it is in
-   no command line:
+   no command line. This reads it from `envoy.json` with `jq`, which must be installed: without it
+   the header goes out as `Authorization: Bearer ` and the listener refuses it.
 
    ```sh
    printf 'Authorization: Bearer %s' "$(jq -r .envoy.token ~/.config/legion/envoy.json)" |

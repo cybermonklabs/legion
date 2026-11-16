@@ -660,7 +660,9 @@ ci_tools_ghcr_token() {
   # A credential reaches curl in a config on standard input (`-K -`): never as an argument, where
   # every process of the runner could read it, and never spliced into the URL, where it would reach
   # a log line and the process name of a redirect. Inside the config's double quotes a backslash
-  # and a double quote are escaped.
+  # and a double quote are escaped. The config is a here-string the shell writes before curl
+  # starts, not a pipe from printf: a curl that takes no `-K -` never reads it, and a printf that
+  # wrote after such a curl had exited would end a pipeline under pipefail with 141.
   local -a authentication=()
   if [ -n "$credential" ]; then
     authentication=(-K -)
@@ -673,8 +675,8 @@ ci_tools_ghcr_token() {
     return 1
   }
   url="$base/token?service=ghcr.io&scope=repository:$path:$scope"
-  printf '%s\n' "$config" | ci_tools_curl "$token_file" "$max_time" "$url" \
-    ${authentication[@]+"${authentication[@]}"} || status=$?
+  ci_tools_curl "$token_file" "$max_time" "$url" \
+    ${authentication[@]+"${authentication[@]}"} <<<"$config" || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$token_file"
     ci_tools__curl_report "$status" "$token_file" \
