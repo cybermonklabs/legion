@@ -113,7 +113,7 @@ type apiError struct {
 	AnswerID string
 	said     *string
 	// withheld is whether the answer came from an address that is not clean, so that none of
-	// its text prints: the decision doStatus made, read by every printer of this refusal.
+	// its text prints: the decision doStatus made, read by Error and podRefusal.
 	withheld bool
 }
 

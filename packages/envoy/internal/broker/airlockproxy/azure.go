@@ -18,11 +18,11 @@
 // broker, so an exchange made as whatever application the command named would sell the grant
 // of one name for a token of any of them, and one made at another host the entry binds would
 // hand that host the token itself. Nor does the federated token leave the broker any other way:
-// a request that is no token request and carries its placeholder is refused before anything is
-// sent (serveBound), since the header swap would put the token itself in it, whether it goes to
-// the authority or to another host the entry binds, and whatever that entry's kind: an
+// a request that is no token request and carries its placeholder in a header is refused before
+// anything is sent (serveBound), since the header swap would put the token itself in it, whether
+// it goes to the authority or to another host the entry binds, and whatever that entry's kind: an
 // azure-login name's value is the federated token under an entry of any kind, and only one of
-// kind azure makes the exchange.
+// kind azure exchanges a command's token request.
 //
 // The exchange is the one place the proxy writes an answer of its own. It still reads no answer
 // of any API service, which is what the design's rule is about: what it reads here is the

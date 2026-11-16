@@ -153,7 +153,10 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 // Beside that address none of them, and no error of the enrolment, the renew or the revoke, holds
 // the credential, the broker's words or its code - only the status - and each refusal is still a
 // BrokerError with the status and the code the helper acts on. Beside a clean address the broker's
-// words and code are what a person acts on, and print.
+// words and code are what a person acts on, and print. Whether a refusal's text is withheld is
+// decided from the address where do builds the refusal, and never read back from what the refusal
+// says: a clean broker whose words are brokeraddr.WordsNotPrinted itself is a clean broker still,
+// and its refusal of the renew names its code.
 func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	var asked atomic.Int64
 	var words string
@@ -214,6 +217,15 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		return refusal{err: enrollErr, log: out.String(), lastError: sess.snapshot().LastError}
 	}
 
+	// renew is the renew of enrollment-1 at address, and the Broker it ran on, for a revoke after.
+	renew := func(t *testing.T, address string) (*Broker, error) {
+		t.Helper()
+		b := &Broker{URL: brokeraddr.New(address), HTTP: srv.Client(), SignIns: signIns}
+		t.Cleanup(b.Close)
+		_, err := b.renewIdentity(context.Background(), identity{EnrollmentID: "enrollment-1", Key: key})
+		return b, err
+	}
+
 	// withheld is what the answerer wrote: the credential, the words that repeat it, the code.
 	withheld := append(slices.Clone(markers), "which is not this broker", "INVALID_SLOT")
 
@@ -236,9 +248,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	})
 
 	t.Run("the renew and the revoke beside that address", func(t *testing.T) {
-		b := &Broker{URL: brokeraddr.New(credentialed), HTTP: srv.Client(), SignIns: signIns}
-		t.Cleanup(b.Close)
-		_, renewErr := b.renewIdentity(context.Background(), identity{EnrollmentID: "enrollment-1", Key: key})
+		b, renewErr := renew(t, credentialed)
 		revokeErr := b.Revoke(context.Background(), "enrollment-1")
 		for call, err := range map[string]error{"the renew": renewErr, "the revoke": revokeErr} {
 			var be *BrokerError
@@ -263,36 +273,18 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 			}
 		}
 	})
-}
 
-// TestACleanBrokersRefusalWhoseWordsAreTheMarkerStillNamesItsCode: whether a refusal's text is
-// withheld is decided from the address where do builds the refusal, and never read back from what
-// the refusal says. So a clean broker whose words are brokeraddr.WordsNotPrinted itself is a clean
-// broker still, and its refusal names its code.
-func TestACleanBrokersRefusalWhoseWordsAreTheMarkerStillNamesItsCode(t *testing.T) {
-	var asked atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked.Add(1)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_SLOT", "error": brokeraddr.WordsNotPrinted})
-	}))
-	t.Cleanup(srv.Close)
-	key, err := proof.NewKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := &Broker{URL: brokeraddr.New(srv.URL), HTTP: srv.Client()}
-	t.Cleanup(b.Close)
-	_, renewErr := b.renewIdentity(context.Background(), identity{EnrollmentID: "enrollment-1", Key: key})
-	if asked.Load() == 0 {
-		t.Fatalf("the renew never reached the broker (renewIdentity: %v)", renewErr)
-	}
-	var be *BrokerError
-	if !errors.As(renewErr, &be) || be.Status != http.StatusBadRequest || be.Code != "INVALID_SLOT" {
-		t.Fatalf("the renew answered %v, want the broker's 400 INVALID_SLOT as a BrokerError", renewErr)
-	}
-	if want := "broker 400 INVALID_SLOT: " + brokeraddr.WordsNotPrinted; be.Error() != want || !strings.Contains(renewErr.Error(), want) {
-		t.Errorf("the refusal reads %q (the renew's error %q), want %q", be.Error(), renewErr, want)
-	}
+	t.Run("a clean address whose words are the marker", func(t *testing.T) {
+		words = brokeraddr.WordsNotPrinted
+		_, err := renew(t, srv.URL)
+		var be *BrokerError
+		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || be.Code != "INVALID_SLOT" {
+			t.Fatalf("the renew answered %v, want the broker's 400 INVALID_SLOT as a BrokerError", err)
+		}
+		if !strings.Contains(err.Error(), "broker 400 INVALID_SLOT") {
+			t.Errorf("the renew's error %q does not name the clean broker's code", err)
+		}
+	})
 }
 
 // TestAnOlderBrokersNotLiveVerdictHoldsBesideACredentialedAddress: an older broker says that an

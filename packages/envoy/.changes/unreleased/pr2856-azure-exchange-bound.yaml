@@ -10,11 +10,11 @@ body: |-
   `client_id`, the command's `scope` (and its `resource` at the v1 endpoint) and the federated
   token, and no other field the command wrote. An access token a broker pod exchanges for itself
   is held to the same host and ids and sent the same form. A request that is no token request
-  and carries the federated token's placeholder, to any host the entry binds and whatever that
-  entry's kind, is refused `403 FEDERATED_TOKEN_SWAP_REFUSED` and reaches no host; a request
-  carrying an access token's placeholder is swapped as before. Before, the exchange was made at
-  whichever host of the entry the command posted to, as whatever application and tenant it
-  named, and with every field of its form, and the header swap put the federated token itself
+  and carries the federated token's placeholder in a header, to any host the entry binds and
+  whatever that entry's kind, is refused `403 FEDERATED_TOKEN_SWAP_REFUSED` and reaches no host;
+  a request carrying an access token's placeholder is swapped as before. Before, the exchange was
+  made at whichever host of the entry the command posted to, as whatever application and tenant
+  it named, and with every field of its form, and the header swap put the federated token itself
   into any other call that carried its placeholder, so a holder of one azure grant could ask for
   a token as any application that trusts the broker's federated identity, or hand that
   identity's token to any host the entry binds. `scope` stays the command's own, since one
