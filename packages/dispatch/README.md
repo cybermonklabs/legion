@@ -616,6 +616,41 @@ All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an u
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
+(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
+were given to Dispatch, to prove that path reaches Dispatch and nothing else of ours. It is handed
+to that person as the one file with its target list, so it sources nothing and needs only bash
+(3.2, as macOS ships it, or later) and curl 7.40 or later; curl's own `--connect-timeout` and
+`--max-time` bound every probe, so it needs no GNU `timeout`. Its inputs:
+
+- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`;
+- `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
+  listeners, the secrets broker, the other Dispatch origin). `#` starts a comment, so the address a
+  name stands for is written beside it; `host` is a name that resolves on that person's network or
+  a literal address, and a `svc:` selector, which resolves nowhere, is refused.
+
+```bash
+OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
+  bash outside-path-reach.sh
+```
+
+It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401), then
+probes the origin's own host and port and every target at once, each with
+`curl telnet://<host>:<port>`, and judges each probe by whether TCP connected (`time_connect`), not
+by curl's exit code alone: NATS, an HTTP listener and a TLS port each accept a connection and then
+wait for the client, so a reached one ends at `--max-time` with the exit a blackholed address
+gives. It prints the origin, the device's name, the UTC time, one line per probe with its exit
+code and times, and a verdict: `PASS` (exit 0) only when Dispatch answered, the probe reached the
+origin itself and every target was unreachable; `FAIL` (exit 1) naming each target it reached, or
+an origin that served a read with no credential; and `UNKNOWN` (exit 2) for every run that proved
+nothing — an input refused, curl missing or too old, the origin not answering as Dispatch, the
+probe unable to reach the origin, a target that did not resolve, an empty list — which is never a
+pass. `OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"` judges one recorded probe alone. A
+path that puts a sign-in of its own in front of Dispatch, such as an identity-aware proxy, answers
+a request with no credential with that sign-in's redirect or refusal, not Dispatch's 200 and 401,
+so the run reads `UNKNOWN` there.
+`e2e/__tests__/outside-path-reach.test.ts` (`bun run test`) drives it against real listeners.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
