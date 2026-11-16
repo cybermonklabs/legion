@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -57,6 +58,20 @@ type RoleInitConfig struct {
 // roleStatusFD is the descriptor role-init writes the shim's wait status to: the launcher's one
 // extra file, so the first descriptor after the standard three.
 const roleStatusFD = 3
+
+// roleNamespaceDrain bounds the wait role-init gives a role whose shim exited on its own: the
+// span between the SIGTERM it sends over the role's namespace and the SIGKILL that ends the
+// namespace, which is the only time anything the role left running has to finish what it was
+// doing. Two seconds, because what the wait is there for is a git or a jj whose index or
+// operation lock is held across a write of a few files, which it finishes in milliseconds, and
+// the wait ends the moment the namespace is empty, so the bound is paid only by a process that
+// ignores SIGTERM or hangs on it. It is a constant and no flag of role-init and no setting of the
+// pod, so no deployment can set it to a span that holds the launcher's next generation up.
+//
+// It costs the role's next generation nothing the daemon waits on: the launcher reads the status
+// pipe and only then waits on role-init (manager.wait), so the daemon learns the role's exit
+// before this wait begins, and only the generation's own teardown spends it.
+const roleNamespaceDrain = 2 * time.Second
 
 // RoleInitSetupFailedExit is the exit status `legion launcher role-init` uses for one thing alone:
 // it failed before it started the shim, setting up the role's namespaces or starting the shim

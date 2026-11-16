@@ -3456,20 +3456,40 @@ A write that fails, as a write to a process that is not dumpable does, is logged
 **The kills.**
 The kernel counts each process it stops in the cgroup's `oom_kill`: the `oom_kill` line of `memory.events` on cgroup v2, and of `memory.oom_control` on cgroup v1.
 Nothing else tells the launcher which process it stopped, since a stopped command's exit goes to its parent, the shell that ran it, and not to the launcher.
-So at each scan the watch keeps every process it read, by its pid and its start time, with its role and its resident size (the `rss` field of its `stat`), and it reads the counter after the scan.
+So at each scan the watch keeps every process it read, by its pid and its start time, with its role, whether it runs its role's session, and its resident size (the `rss` field of its `stat`), and it reads the counter after the scan.
 
-The watch names a process as stopped only on the sign that the kernel's stop leaves on it: the process is still in `/proc`, running or a zombie, and its `status` has SIGKILL pending, the `0x100` bit of its `SigPnd` or `ShdPnd` mask.
+The watch names a process as stopped only on the sign that the kernel's stop leaves on it: the process is still in `/proc`, running or a zombie, and its `status` has SIGKILL pending for its whole thread group, the `0x100` bit of its `ShdPnd` mask.
 The kernel raises the counter and then sends SIGKILL to the process it stops (`__oom_kill_process` in the kernel's `mm/oom_kill.c`), and that SIGKILL stays pending until the process's parent reaps it.
+A process's `SigPnd` mask, the signals pending for one of its threads, is no sign.
+The kernel adds SIGKILL to that mask in each thread of a process that any fatal signal is ending (`complete_signal` in the kernel's `kernel/signal.c`), such as the SIGTERM that `role-init`'s drain sends to every process of a role whose agent has ended.
 So while kills are pending, at each scan the watch reads the `status` of each process it holds, and of each one that the last scan held, a process that has just become a zombie among them.
 It then reads that process's start time again, so that a pid back with another start time, which is another process, is not taken for it.
 Each process that shows SIGKILL pending is named for one kill, with its reads from the scan before, and it is never named for a later kill while it stays in `/proc`.
-Where more processes show SIGKILL pending at one read than there are kills left to name, the sign does not say which one the kernel stopped, and the watch names none of them.
+Where more processes show SIGKILL pending at one read than there are kills left to name, the watch reads the counter again.
+Where the counter rose, the kernel has stopped another process since the last read, so the watch marks none of them and weighs them at its next read against the larger count.
+Where it did not rise, the sign does not say which one the kernel stopped, and the watch names none of them.
+
+A role's session ends with a SIGKILL of its own `role-init`'s.
+Once the role's shim has exited, `role-init` sends SIGTERM to every process of the role's namespace, waits up to 2 s (`roleNamespaceDrain`) for them to go, and then sends SIGKILL to each one left (`kill(-1)`, `runRoleShim` in `packages/daemon/internal/launcher/roleinit_linux.go`), which shows in `ShdPnd` as the kernel's does.
+So the watch keeps, for each role, the time that it last saw one of the role's session processes leave `/proc`: the role's `role-init`, its shim, or a direct child of its shim.
+A read while kills are pending finds that such a process has left where its `stat` is gone or its pid is back with another start time, and a zombie has not left.
+A scan finds that it has left where the scan no longer holds it, a zombie among them, after that scan's own read has judged it.
+At each read while kills are pending the watch first looks for those processes, and a role whose session process left at most 3 s before the first rise of the wait, or at any time since, has no process named for the rest of the wait.
+Its processes that show SIGKILL pending are set aside, and the kills stay pending, to end on the `killed unnamed` line.
+The 3 s are `roleNamespaceDrain` and a second more, which the launcher passes the watch (`SessionDrain`): `role-init` sends its `kill(-1)` within one 10 ms poll of the drain's end, and the rest of the second covers a `role-init` that the memory pressure behind the rise runs late.
+A session process that shows the sign before it leaves, as an agent that the kernel stopped does while it is a zombie its shim has not reaped, is named as any process is.
+
+The classifier cannot tell the agent from the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, so it counts them all as session processes.
+Where one of those ends by itself, the watch names no process of its role for that wait either.
+That costs at most a kill left unnamed, never a process named in another's place.
 
 The kernel shows that sign only until the process's parent reaps it.
 For a 1.5 GiB process whose parent reaps it at once, the sign showed for 51 to 85 ms, and the 100 ms scan alone named such a process 3 times of 5.
 So on cgroup v2 the watch also wakes on the file-modified event of `memory.events`, which the kernel raises whenever one of the file's counters changes.
 At that event the watch reads the counter at once, and where the counter did not rise and no kill is pending, as when the cgroup only reached its limit, it reads nothing more.
 While kills are pending, it then reads at once the `status` of each process that the last scan left it, and again after pauses of 1, 2, 4, 8 and 16 ms, about 30 ms in all, until no kill is left to name, because the kernel raises the counter just before it sends SIGKILL.
+It does that once for each rise of the counter: at the event whose read rose, or at the first event after a scan that read the rise, since the rise's own event can come just after that scan's read.
+Any other event while kills are pending costs the read of the counter alone, so a stream of `max` and `high` events from a pod under pressure does not read statuses for the whole wait, and the scans go on reading.
 The wake does not scan `/proc` or set any score.
 The 100 ms scan stays as the fallback.
 It is the only path on cgroup v1, whose `memory.oom_control` raises no such event, and where the watch of the event cannot start or ends (`wake off`, "The lines", below).
@@ -3484,8 +3504,13 @@ When the wait ends, the kills that the watch named no process for have one `kill
 
 **What the sign does not show.**
 
-- A process that something other than the kernel has sent SIGKILL is named in place of the kernel's victim, where it is still in `/proc` while kills are pending and the victim has already left.
-  In a microVM pod the memory guard is off, so only a role's own `kill -9`, or a timeout tool that sends SIGKILL, can send it.
+- A process that something other than the kernel, or than `role-init`'s drain, has sent SIGKILL is named in place of the kernel's victim, where it is still in `/proc` while kills are pending and the victim has already left.
+  In a microVM pod the memory guard is off, and these can send it:
+  a role's own `kill -9`;
+  a timeout tool that sends SIGKILL;
+  `procgroup`'s stop, which sends SIGKILL to a command's process group a second (`StopGrace`) after its SIGTERM (`Configure`, `packages/daemon/internal/procgroup/procgroup.go`);
+  the launcher's stop, which sends SIGKILL to a role's `role-init` at the end of the stop grace, and the kernel then to every process of the role's namespace (`endGeneration`, `packages/daemon/internal/launcher/process.go`);
+  and the Claude bridge's stop, which sends SIGKILL to Claude Code its grace after its SIGTERM (`end`, `packages/daemon/internal/claudebridge/bridge.go`).
 
 - A victim whose parent reaps it before the watch reads its `status`, at the wake or at the next scan, shows no sign, and its kill has the `killed unnamed` line.
   How many kills a microVM pod's watch names, and how many it leaves unnamed, has not been measured.
@@ -3595,7 +3620,7 @@ Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on 
 The watch then reads the counter at its 100 ms scan alone, so it names a stopped process only where that process still shows SIGKILL pending at a scan.
 
 `killed unnamed` comes when a wait ends with kills that no process was named for, and at each rise of the counter once the watch is off.
-It is the kill line with the process unknown: no process showed SIGKILL pending, or more showed it at one read than there were kills left to name.
+It is the kill line with the process unknown: no process showed SIGKILL pending, or more showed it at one read than there were kills left to name, or each one that showed it was of a role whose session had ended ("The kills", above).
 It gives the count of those kills, the counter's total, and the pod's four figures as an `ended` line gives them, read at the first rise of the wait, and it tells no role.
 
 `score failed` comes once for each process a score write failed on, with that process's start time in clock ticks since boot and the score the write would have set.

@@ -2,6 +2,7 @@ package memoryguard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -201,9 +202,10 @@ const (
 
 // guestTree adds guestTree's processes to pod, each at oom_score_adj start, and answers what a
 // classifier says of them: the role-init, the shim, the agent and its helpers are the tester's and
-// protected, gopls, the eval kernel and the command are the tester's, the test database's process
-// is protected and of no role, and the exec's shell is neither. No process here has an oom_score
-// above 1150, so a test's process above it is the first the kernel would pick.
+// protected, and the role-init, the shim and the agent run the tester's session, gopls, the eval
+// kernel and the command are the tester's, the test database's process is protected and of no
+// role, and the exec's shell is neither. No process here has an oom_score above 1150, so a test's
+// process above it is the first the kernel would pick.
 func guestTree(pod *fakePod, start int) map[int]Class {
 	const omp = "/opt/omp/bin/omp"
 	const legion = "/usr/local/bin/legion"
@@ -223,8 +225,9 @@ func guestTree(pod *fakePod, start int) map[int]Class {
 		at(guestTestDB, 1, "/usr/lib/postgresql/17/bin/postgres", []string{"postgres", "-D", "/roles/test-pg/data"}, 90, 300*mib),
 	)
 	tester := func(protected bool) Class { return Class{Role: "tester", Protected: protected} }
+	session := Class{Role: "tester", Protected: true, Session: true}
 	return map[int]Class{
-		guestInit: tester(true), guestShim: tester(true), guestAgent: tester(true), guestBroker: tester(true), guestMux: tester(true),
+		guestInit: session, guestShim: session, guestAgent: session, guestBroker: tester(true), guestMux: tester(true),
 		guestGopls: tester(false), guestEval: tester(false), guestBash: tester(false),
 		guestTestDB: {Protected: true},
 	}
@@ -706,11 +709,13 @@ func TestGuestNamesAZombieThatShowsTheKillThoughTheScanLeavesItOut(t *testing.T)
 	}
 }
 
-// A process shows the kernel's kill by SIGKILL's bit, 0x100, in either pending mask of its status:
-// SigPnd, its thread's, or ShdPnd, its thread group's. Other signals pending, SIGKILL's bit in the
-// masks of signals blocked, ignored or caught, a pending mask that does not parse, and a status
-// with no pending mask show nothing.
-func TestGuestReadsTheKillInEitherPendingMaskOfAStatus(t *testing.T) {
+// A process shows the kernel's kill by SIGKILL's bit, 0x100, in ShdPnd, the pending mask of its
+// thread group, where the kill sends it, whatever SigPnd holds. SIGKILL in SigPnd alone, the
+// thread's own mask, is no kill: the kernel puts it there for every thread of a process that any
+// fatal signal is ending, a SIGTERM role-init's drain sends among them. Other signals pending,
+// SIGKILL's bit in the masks of signals blocked, ignored or caught, a pending mask that does not
+// parse, and a status with no pending mask show nothing.
+func TestGuestReadsTheKillInTheThreadGroupsPendingMaskAlone(t *testing.T) {
 	const head = "Name:\tpython3\nState:\tR (running)\nTgid:\t850\nPid:\t850\nPPid:\t108\nThreads:\t1\nSigQ:\t1/63451\n"
 	const tail = "SigBlk:\t0000000000000000\nSigIgn:\t0000000001001000\nSigCgt:\t0000000180000002\n"
 	for _, tc := range []struct {
@@ -718,7 +723,10 @@ func TestGuestReadsTheKillInEitherPendingMaskOfAStatus(t *testing.T) {
 		want         bool
 	}{
 		{"SIGKILL pending for the thread group alone, as a zombie's", head + "SigPnd:\t0000000000000000\nShdPnd:\t0000000000000100\n" + tail, true},
-		{"SIGKILL pending for the thread alone", head + "SigPnd:\t0000000000000100\nShdPnd:\t0000000000000000\n" + tail, true},
+		{"SIGKILL pending for the thread group and the thread, as a group's SIGKILL leaves a running process",
+			head + "SigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n" + tail, true},
+		{"SIGKILL pending for the thread alone, as a fatal SIGTERM leaves it", head + "SigPnd:\t0000000000000100\nShdPnd:\t0000000000004000\n" + tail, false},
+		{"SIGKILL pending for the thread alone, nothing for the group", head + "SigPnd:\t0000000000000100\nShdPnd:\t0000000000000000\n" + tail, false},
 		{"SIGKILL among other signals pending", head + "SigPnd:\t0000000000000000\nShdPnd:\t0000000000004102\n" + tail, true},
 		{"SIGTERM and SIGINT pending, not SIGKILL", head + "SigPnd:\t0000000000004002\nShdPnd:\t0000000000004000\n" + tail, false},
 		{"SIGKILL's bit in the masks of signals blocked, ignored and caught alone",
@@ -734,10 +742,11 @@ func TestGuestReadsTheKillInEitherPendingMaskOfAStatus(t *testing.T) {
 	}
 }
 
-// A process of no role that the kernel killed has the guard's line, naming role none, and reaches
-// no sink; it counts in the sequence, as the guard's kills do, so the next kill, of the tester's,
-// is the second.
-func TestGuestTellsNoSinkOfAKillOfAProcessOfNoRole(t *testing.T) {
+// A process of no role that the kernel killed has the guard's line, naming role none, and the sink
+// takes its kill with an empty Role, as the guard's sink takes the guard's: the launcher's sink
+// keeps a role's kills alone, so no role is told of it. It counts in the sequence, as the guard's
+// kills do, so the next kill, of the tester's, is the second.
+func TestGuestHandsTheSinkAKillOfAProcessOfNoRoleWithAnEmptyRole(t *testing.T) {
 	const outside, load = 840, 841
 	pod := newFakePod(t)
 	pod.setSelfScore(0)
@@ -756,14 +765,15 @@ func TestGuestTellsNoSinkOfAKillOfAProcessOfNoRole(t *testing.T) {
 	if ended := h.log.with("ended "); len(ended) != 1 || !strings.HasPrefix(ended[0], fmt.Sprintf("launcher: memory guard: ended pid=%d role=none ", outside)) {
 		t.Fatalf("the kill lines are %q, want the one of pid %d in role none; the log:\n%s", ended, outside, h.logged())
 	}
-	if kills := h.reported(); len(kills) != 0 {
-		t.Fatalf("the sink took %+v, want nothing for a process of no role", kills)
+	if kills := h.reported(); len(kills) != 1 || kills[0].PID != outside || kills[0].Role != "" || kills[0].Sequence != 1 ||
+		kills[0].Cause != shimwire.MemoryKillCauseKernel || kills[0].SizeBytes != 700*mib {
+		t.Fatalf("the sink took %+v, want the one kill of pid %d with no role, the first", kills, outside)
 	}
 
 	reaped(pod, load, 8410, "python3")
 	cgroup.setKills(2)
 	h.tick()
-	if kills := h.reported(); len(kills) != 1 || kills[0].PID != load || kills[0].Sequence != 2 || kills[0].Role != "tester" {
+	if kills := h.reported(); len(kills) != 2 || kills[1].PID != load || kills[1].Sequence != 2 || kills[1].Role != "tester" {
 		t.Fatalf("the sink took %+v, want the tester's %d as the second kill", kills, load)
 	}
 }
@@ -1097,8 +1107,9 @@ func TestGuestNamesNoProcessThatExitsByItselfDuringABurst(t *testing.T) {
 // (the agent here, which Oh My Pi's in-process shell can grow past every command), that the kernel
 // killed has the guard's own line as every kill has, and one Kill of its role with the kernel's
 // protected cause, so its role is told what that end does to it. A protected process of no role
-// (the test database's server) has the line alone, as every process of no role has, and counts in
-// the sequence.
+// (the test database's server) has the line, and its Kill with no role, which the launcher's sink
+// drops, as every process of no role has, with the kernel's protected cause, and counts in the
+// sequence.
 func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testing.T) {
 	pod := newFakePod(t)
 	pod.setSelfScore(0)
@@ -1141,8 +1152,182 @@ func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testi
 		!strings.HasSuffix(ended[1], `executable="postgres"`) {
 		t.Fatalf("the kill lines are %q, want the agent's, then the test database's in role none; the log:\n%s", ended, h.logged())
 	}
+	if kills := h.reported(); len(kills) != 2 || kills[1].PID != guestTestDB || kills[1].Role != "" || kills[1].Sequence != 2 ||
+		kills[1].Cause != shimwire.MemoryKillCauseKernelProtected {
+		t.Fatalf("the sink took %+v, want the test database's kill with no role as the second", kills)
+	}
+}
+
+// A role whose session ends during the wait names nothing for the rest of the burst: role-init's
+// drain ends what the role left running with a SIGKILL that shows in ShdPnd as the kernel's does
+// (kill(-1) in runRoleShim). The kernel kills the tester's python3, whose parent reaps it before
+// any scan reads it. The tester's agent then leaves /proc, and the drain leaves the tester's rg
+// with SIGKILL pending. rg is not named, the kill has its unnamed line once the wait ends, and the
+// tester is told nothing.
+func TestGuestNamesNoProcessOfARoleWhoseSessionEndedDuringTheWait(t *testing.T) {
+	const python, rg = 930, 931
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9300, "python3", 1400, 1500*mib), command(rg, 9310, "rg", 1340, 50*mib))
+	classes[python], classes[rg] = Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills python3, and its parent reaps it at once.
+	pod.remove(python)
+	cgroup.setKills(1)
+	h.tick()
+	// The tester's agent leaves, and role-init's drain kills what the role left running.
+	pod.remove(guestAgent)
+	showKill(pod, rg, "rg", false)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v, want neither: rg shows the SIGKILL of the tester's role-init; the log:\n%s", ended, kills, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// A role whose session ended names nothing for the burst, and every other role names its kills as
+// ever. The kernel kills the tester's python3, whose parent reaps it before any scan reads it. The
+// tester's agent leaves /proc, and role-init's drain leaves the tester's rg with SIGKILL pending.
+// The counter rises again, and the reviewer's cargo shows the kill: cargo is named, to the
+// reviewer, as the burst's one named kill, rg is named for none, and the first kill has its
+// unnamed line once the wait ends.
+func TestGuestNamesAnotherRolesKillInABurstWhereARolesSessionEnded(t *testing.T) {
+	const python, rg, cargo = 932, 933, 934
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9320, "python3", 1400, 1500*mib), command(rg, 9330, "rg", 1340, 50*mib),
+		guestProcess{fakeProcess: fakeProcess{pid: cargo, ppid: 1, start: 9340, args: []string{"cargo"}, resident: 900 * mib}, score: 1380})
+	classes[python], classes[rg], classes[cargo] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "reviewer"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills python3, and its parent reaps it at once.
+	pod.remove(python)
+	cgroup.setKills(1)
+	h.tick()
+	// The tester's agent leaves, and role-init's drain kills what the role left running.
+	pod.remove(guestAgent)
+	showKill(pod, rg, "rg", false)
+	h.tick()
+	// The kernel kills the reviewer's cargo, which stays in /proc while its memory is freed.
+	showKill(pod, cargo, "cargo", false)
+	cgroup.setKills(2)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != cargo || kills[0].Role != "reviewer" || kills[0].Sequence != 1 || kills[0].SizeBytes != 900*mib {
+		t.Fatalf("the sink took %+v, want the one kill of the reviewer's cargo (%d); the log:\n%s", kills, cargo, h.logged())
+	}
+	if ended := h.log.with("ended "); len(ended) != 1 || !strings.HasSuffix(ended[0], `executable="cargo"`) {
+		t.Fatalf("the kill lines are %q, want cargo's alone; the log:\n%s", ended, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 2, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// A session process that shows the kill before it leaves /proc is named as any process is. The
+// kernel kills the tester's agent, which shows the kill as a zombie its shim has not reaped yet, a
+// process that has not left, and a command whose parent reaps it at once. The agent is named, to
+// the tester, with the kernel's protected cause, at its size before the kill. Its shim then reaps
+// it, and role-init's drain leaves the tester's bash with SIGKILL pending: bash is named for none,
+// and the second kill has its unnamed line once the wait ends.
+func TestGuestNamesARolesAgentThatShowsTheKillAsAZombieBeforeItsShimReapsIt(t *testing.T) {
+	const omp = "/opt/omp/bin/omp"
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills the agent, a zombie its shim has not reaped, and a command reaped at once.
+	pod.add(fakeProcess{pid: guestAgent, ppid: guestShim, exe: omp, args: []string{omp, "--mode", "rpc"}, zombie: true})
+	showKill(pod, guestAgent, "omp", true)
+	cgroup.setKills(2)
+	h.tick()
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != guestAgent || kills[0].Role != "tester" || kills[0].Sequence != 1 ||
+		kills[0].Cause != shimwire.MemoryKillCauseKernelProtected || kills[0].SizeBytes != 2*gib {
+		t.Fatalf("the sink took %+v, want the tester's agent (%d) with the protected cause at its %d bytes before the kill; the log:\n%s",
+			kills, guestAgent, 2*gib, h.logged())
+	}
+	// The shim reaps the agent, and role-init's drain kills what the role left running.
+	pod.remove(guestAgent)
+	showKill(pod, guestBash, "bash", false)
+	h.tick()
+	h.tickAfter(guestKillWait)
 	if kills := h.reported(); len(kills) != 1 {
-		t.Fatalf("the sink took %+v, want nothing more for a protected process of no role", kills)
+		t.Fatalf("the sink took %+v, want the agent's kill alone: bash shows the SIGKILL of the tester's role-init; the log:\n%s", kills, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 2, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// role-init's kill(-1) lands up to its drain after the role's shim has left /proc, so a burst
+// whose first rise comes within GuestConfig.SessionDrain after the watch saw a session process of
+// a role leave names nothing of that role either. The tester's shim leaves at one scan, with no
+// kill pending. A second later the counter rises while the drain's SIGKILL is pending in the
+// ShdPnd of the tester's rg, and no other process shows the kill: rg is not named, and the kill has
+// its unnamed line once the wait ends. Where the rise comes after the bound has passed, or the
+// bound is zero, so only a departure during the wait counts, rg is named.
+func TestGuestNamesNoProcessOfARoleWhoseShimLeftWithinTheSessionDrainBeforeTheRise(t *testing.T) {
+	const rg = 935
+	const drain = 3 * time.Second
+	for _, tc := range []struct {
+		name         string
+		sessionDrain time.Duration
+		after        time.Duration
+		named        bool
+	}{
+		{"the rise comes within the bound", drain, time.Second, false},
+		{"the rise comes after the bound", drain, drain, true},
+		{"the bound is zero", 0, time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.setSelfScore(0)
+			classes := guestTree(pod, 0)
+			pod.addGuest(command(rg, 9350, "rg", 1340, 50*mib))
+			classes[rg] = Class{Role: "tester"}
+			cgroup := newFakeCgroup(t, cgroupV2)
+			h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+			h.g.sessionDrain = tc.sessionDrain
+			h.run()
+
+			// The tester's agent has ended, and its shim leaves.
+			pod.remove(guestAgent)
+			pod.remove(guestShim)
+			h.tick()
+			// role-init's drain kills rg as the counter rises.
+			showKill(pod, rg, "rg", false)
+			cgroup.setKills(1)
+			h.tickAfter(tc.after)
+			h.tickAfter(guestKillWait)
+			kills := h.reported()
+			if !tc.named {
+				if ended := h.log.with("ended "); len(ended) != 0 || len(kills) != 0 {
+					t.Fatalf("the watch wrote %q and reported %+v, want neither: rg shows the SIGKILL of the tester's role-init; the log:\n%s", ended, kills, h.logged())
+				}
+				if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+					t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+				}
+				return
+			}
+			if len(kills) != 1 || kills[0].PID != rg || kills[0].Role != "tester" {
+				t.Fatalf("the sink took %+v, want the one kill of the tester's rg (%d); the log:\n%s", kills, rg, h.logged())
+			}
+			if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+				t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+			}
+		})
 	}
 }
 
@@ -1397,6 +1582,146 @@ func TestGuestWakeWithNoRiseReadsTheCounterAlone(t *testing.T) {
 	}
 	if ended, unnamed := h.log.with("ended "), h.lines("killed unnamed"); len(ended) != 0 || len(unnamed) != 0 {
 		t.Fatalf("the watch wrote %q and %q with no rise, want neither", ended, unnamed)
+	}
+}
+
+// firedWatch sets h's watch of the file-modified event to one the test fires itself, and answers
+// its channel: a send returns once the watch has taken the value, and so once the wake of the
+// value before it has ended, and h.tick after a send returns once that send's wake has ended.
+func firedWatch(h *guestHarness) chan<- struct{} {
+	modified := make(chan struct{})
+	h.g.watchModified = func(string) (<-chan struct{}, func(), error) { return modified, func() {}, nil }
+	return modified
+}
+
+// Where more processes newly show the kill at one pass than kills are pending, the pass reads the
+// counter again, since the kernel may have killed again after the last read. At the wake of a rise
+// of one no process shows the kill yet. In the first pause the kernel kills again: the counter
+// reads two, and the tester's cc1 and ld both show SIGKILL pending. The pass after that pause
+// reads two processes against one kill, reads the counter again, finds two, and marks neither;
+// the pass after the second pause names both, cc1 then ld, each for one kill at its size before,
+// and no kill is left unnamed.
+func TestGuestReadsTheCounterAgainWhereMoreProcessesShowTheKillThanArePending(t *testing.T) {
+	const cc1, ld = 940, 941
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(cc1, 9400, "cc1", 1300, 300*mib), command(ld, 9410, "ld", 1200, 900*mib))
+	classes[cc1], classes[ld] = Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+	modified := firedWatch(h)
+	// The pauses run on the watch's goroutine, so they write the pod with no t.Fatal, and read the
+	// watch's state with no lock.
+	var mu sync.Mutex
+	var pauses []time.Duration
+	var failed []error
+	var marked []int
+	reportedAtSecond := -1
+	h.g.pause = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		pauses = append(pauses, d)
+		switch len(pauses) {
+		case 1:
+			for _, p := range []struct {
+				pid  int
+				name string
+			}{{cc1, "cc1"}, {ld, "ld"}} {
+				failed = append(failed, os.WriteFile(filepath.Join(pod.proc, strconv.Itoa(p.pid), "status"), fmt.Appendf(nil,
+					"Name:\t%s\nState:\tR (running)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n",
+					p.name, p.pid, p.pid), 0o644))
+			}
+			failed = append(failed, os.WriteFile(cgroup.path("memory.events"),
+				[]byte("low 0\nhigh 0\nmax 41\noom 3\noom_kill 2\noom_group_kill 0\n"), 0o644))
+		case 2:
+			for _, w := range h.g.known {
+				if w.sigkill {
+					marked = append(marked, w.key.pid)
+				}
+			}
+			reportedAtSecond = len(h.reported())
+		}
+	}
+	h.run()
+
+	cgroup.setKills(1)
+	modified <- struct{}{}
+	h.tick()
+	mu.Lock()
+	defer mu.Unlock()
+	if err := errors.Join(failed...); err != nil {
+		t.Fatal(err)
+	}
+	if len(marked) != 0 || reportedAtSecond != 0 {
+		t.Fatalf("at the second pause the watch had marked %v and reported %d kills, want neither: the pass after the first pause read the counter again; the log:\n%s",
+			marked, reportedAtSecond, h.logged())
+	}
+	if want := []time.Duration{time.Millisecond, 2 * time.Millisecond}; !slices.Equal(pauses, want) {
+		t.Fatalf("the wake paused %v, want %v: it names both at the pass after the second pause", pauses, want)
+	}
+	kills := h.reported()
+	if len(kills) != 2 || kills[0].PID != cc1 || kills[0].Sequence != 1 || kills[0].SizeBytes != 300*mib ||
+		kills[1].PID != ld || kills[1].Sequence != 2 || kills[1].SizeBytes != 900*mib {
+		t.Fatalf("the sink took %+v, want cc1 (%d) then ld (%d), each at its size before the kill; the log:\n%s", kills, cc1, ld, h.logged())
+	}
+	h.tickAfter(guestKillWait)
+	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+}
+
+// A wake runs its evidence passes, and their pauses, once for each rise of the counter: at the
+// first wake after the scan that read a rise, since the rise's own event can come just after that
+// scan's read, and at a wake whose own read rose. Every other file-modified event while kills are
+// pending, as the max and high events of a pod under pressure come, costs the read of the counter
+// alone, and the scans go on reading. No process shows the kill here, so the rise a scan read and
+// ten events with no rise after it pause for one whole schedule, 1, 2, 4, 8 and 16 ms, and a
+// second rise, read at a wake, pauses for the schedule once more.
+func TestGuestWakeRunsItsRereadsOnceForEachRiseOfTheCounter(t *testing.T) {
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+	modified := firedWatch(h)
+	var mu sync.Mutex
+	var pauses []time.Duration
+	h.g.pause = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		pauses = append(pauses, d)
+	}
+	paused := func() []time.Duration {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(pauses)
+	}
+	h.run()
+
+	cgroup.setKills(1)
+	h.tick()
+	for i := uint64(0); i < 10; i++ {
+		cgroup.setEvents(42+i, 1)
+		modified <- struct{}{}
+	}
+	h.tick()
+	schedule := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond, 16 * time.Millisecond}
+	if got := paused(); !slices.Equal(got, schedule) {
+		t.Fatalf("a rise a scan read and ten events with no rise paused %v, want the schedule %v once; the log:\n%s", got, schedule, h.logged())
+	}
+	cgroup.setKills(2)
+	modified <- struct{}{}
+	h.tick()
+	if got, want := paused(), slices.Concat(schedule, schedule); !slices.Equal(got, want) {
+		t.Fatalf("after a second rise read at a wake the wakes paused %v, want %v; the log:\n%s", got, want, h.logged())
+	}
+	h.tickAfter(guestKillWait)
+	if got, want := h.lines("killed unnamed"), unnamedLine(2, 2, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+	}
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v, want neither", ended, kills)
 	}
 }
 

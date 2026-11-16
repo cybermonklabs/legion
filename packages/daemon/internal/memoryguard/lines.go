@@ -51,11 +51,12 @@ const (
 // raises no such event, or the watch of the event could not start, or it ended; the watch then
 // reads the counter at its scans alone. The kills of a burst of the counter's rises that no
 // process was named for by the wait's end, since none showed the kernel's kill, or more showed it
-// at one pass than kills were pending, and every kill of a rise where the watch reads no /proc,
-// have one guestKilledUnnamedLine, which names no process: the count of those kills, the
-// counter's total, and the pod's memory at the burst's first rise, the fields an endedLine gives
-// it (reading, counter, shmem and limit). A process whose score write failed has its
-// guestScoreFailedLine once, with the score the write would have set.
+// at one pass than kills were pending, or each that showed it was of a role whose session had
+// ended (Guest's sessionEnded), and every kill of a rise where the watch reads no /proc, have one
+// guestKilledUnnamedLine, which names no process: the count of those kills, the counter's total,
+// and the pod's memory at the burst's first rise, the fields an endedLine gives it (reading,
+// counter, shmem and limit). A process whose score write failed has its guestScoreFailedLine once,
+// with the score the write would have set.
 const (
 	guestPrefix            = "launcher: guest memory: "
 	guestStartLine         = guestPrefix + "start cgroup=%s dir=%s oom_group=%s score=%s"

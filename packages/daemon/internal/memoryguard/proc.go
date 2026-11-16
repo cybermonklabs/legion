@@ -436,14 +436,24 @@ func heldMemfdBytes(dir, link string, counted map[memfdID]bool, shmem uint64) ui
 
 // meminfoBytes is the value of key's line in a /proc/meminfo, in bytes, read in place.
 func meminfoBytes(data []byte, key string) (uint64, bool) {
+	value, ok := keyValue(data, key)
+	if !ok {
+		return 0, false
+	}
+	return parseKB(value)
+}
+
+// keyValue is what follows the colon of key's `Key:` line in data, a file of such lines as a
+// /proc/meminfo or a /proc/<pid>/status is, read in place; false where no line has key.
+func keyValue(data []byte, key string) ([]byte, bool) {
 	for len(data) > 0 {
 		var line []byte
 		line, data, _ = bytes.Cut(data, []byte{'\n'})
 		if len(line) > len(key) && line[len(key)] == ':' && string(line[:len(key)]) == key {
-			return parseKB(line[len(key)+1:])
+			return line[len(key)+1:], true
 		}
 	}
-	return 0, false
+	return nil, false
 }
 
 // parseKB reads `  123 kB` as bytes, and a number with no unit as bytes already.

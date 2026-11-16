@@ -728,6 +728,52 @@ func TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace(t *testing.
 	}
 }
 
+// The classifier marks as a session process, whose end ends its role's session, each role's
+// role-init, its shim and every direct child of the shim: Oh My Pi, the Claude Code bridge, and
+// the secrets renewer, which no place in the tree tells from the agent. It marks no Oh My Pi
+// helper or eval kernel, no Python kernel, nothing under the bridge, no command or what a command
+// runs, no orphan the role-init adopted, and none of the launcher's own processes or the test
+// database's.
+func TestMemoryGuardMarksEachRolesInitShimAndTheShimsChildrenAsItsSession(t *testing.T) {
+	pod, classifier := podTree(t)
+	classes := classifier.classify(scanTable(t, pod))
+	for _, tc := range []struct {
+		pid     int
+		session bool
+		what    string
+	}{
+		{os.Getpid(), false, "the launcher"},
+		{treeHeldScript, false, "the test database's script, which the launcher holds"},
+		{treeHeldChild, false, "a child of the script the launcher holds"},
+		{treePostmaster, false, "the test database's postmaster"},
+		{treeBackend, false, "a backend of the test database"},
+		{treeExecShell, false, "a shell a kubectl exec started"},
+		{treeTesterInit, true, "the Oh My Pi role's role-init"},
+		{treeTesterShim, true, "the Oh My Pi role's shim"},
+		{treeTesterOmp, true, "Oh My Pi, the shim's child"},
+		{treeTesterRenewer, true, "the secrets renewer, the shim's child, which no place in the tree tells from the agent"},
+		{treeTesterHelper, false, "an Oh My Pi helper"},
+		{treeTesterEval, false, "Oh My Pi's JavaScript eval kernel"},
+		{treeTesterKernel, false, "a Python kernel"},
+		{treeTesterCommand, false, "a command Oh My Pi started"},
+		{treeTesterTest, false, "what that command ran"},
+		{treeTesterFakeShim, false, "a worker-shim under the agent's command"},
+		{treeTesterOrphanShim, false, "a worker-shim the role-init adopted after its shim"},
+		{treeTesterReparented, false, "a role's process reparented out of its role-init's subtree"},
+		{treeTesterPostgres, false, "a postgres the agent started in the test database's directory"},
+		{treeReviewerInit, true, "the Claude Code role's role-init"},
+		{treeReviewerShim, true, "the Claude Code role's shim"},
+		{treeReviewerBridge, true, "the Claude Code bridge, the shim's child"},
+		{treeReviewerClaude, false, "claude, the bridge's child"},
+		{treeReviewerMCP, false, "claude's MCP server"},
+		{treeReviewerCommand, false, "a command claude started"},
+	} {
+		if got := classes[tc.pid].Session; got != tc.session {
+			t.Errorf("%s (pid %d): session = %v, want %v", tc.what, tc.pid, got, tc.session)
+		}
+	}
+}
+
 // The agent holding the most memory of the pod is spared, and the command it started is ended:
 // the pod's guard ends the role's process its classifier lets it end, and gives the kill to that
 // role's manager. Without the rule that spares the shim's children, the guard would end the agent.
@@ -1373,17 +1419,21 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 // follows. Its guest watch reports the kernel's kill of the tester's process, which shows the kill
 // with SIGKILL pending in its status, to the tester's manager, which sends it, with the kernel's
 // cause, on the tester's connection, whose acknowledgement carries kernelKills; the reviewer's
-// connection, which carries kernelKills too, gets nothing.
+// connection, which carries kernelKills too, gets nothing. The kill of a process of no role in the
+// same rise, which the watch hands the launcher's sink with no role, has its line and reaches no
+// connection.
 func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testing.T) {
-	const testers, reviewers = 750, 751
+	const testers, reviewers, outside = 750, 751, 752
 	pod := newGuardPod(t)
 	pod.add(
 		guardProcess{pid: testers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, resident: 900 * guardMiB},
 		guardProcess{pid: reviewers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "lint.py"}, resident: 300 * guardMiB},
+		guardProcess{pid: outside, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "outside.py"}, resident: 200 * guardMiB},
 	)
 	pod.setSelfScore(0)
 	pod.setScore(testers, 0, 1400)
 	pod.setScore(reviewers, 0, 1100)
+	pod.setScore(outside, 0, 1000)
 	pod.setKernelKills(0, guardGiB, 32*guardMiB)
 	noGuard(t, "a microVM pod's launcher built a memory guard")
 	rig := useGuestPod(t, pod, map[int]string{testers: "tester", reviewers: "reviewer"})
@@ -1404,7 +1454,8 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	}
 
 	pod.showKernelKill(testers)
-	pod.setKernelKills(1, 3500*guardMiB, 64*guardMiB)
+	pod.showKernelKill(outside)
+	pod.setKernelKills(2, 3500*guardMiB, 64*guardMiB)
 	rig.tick()
 	at := rig.clock.Now()
 	report := f.role("tester").nextMemoryKill()
@@ -1422,11 +1473,15 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	if err := report.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process, the reviewer's connection")
+	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
 	f.role("tester").noMemoryKill("after its one report, the tester's connection")
-	ended := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
-		testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit)
-	if got := guardLines(f.stderr, ""); !slices.Equal(got, []string{off, ended}) {
-		t.Fatalf("the launcher's memory guard lines are %q, want %q", got, []string{off, ended})
+	ended := []string{off,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
+	}
+	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {
+		t.Fatalf("the launcher's memory guard lines are %q, want %q", got, ended)
 	}
 }

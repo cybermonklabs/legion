@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -24,6 +25,16 @@ var newMemoryGuard = memoryguard.New
 // newMemoryGuard is, so that a test can point the watch the launcher built at a fake /proc, cgroup
 // directory and clock.
 var newGuest = memoryguard.NewGuest
+
+// guestSessionDrain is the guest watch's SessionDrain: how long after a role's session process
+// leaves /proc a SIGKILL the role's processes show can still be its role-init's. Once the shim has
+// exited, role-init writes the shim's status, sends SIGTERM over the role's namespace and drains
+// for roleNamespaceDrain, asking whether the namespace is empty every namespaceReapPoll, so it sees
+// the drain's end up to one poll and one reapNamespace pass late, and then sends kill(-1, SIGKILL)
+// (runRoleShim, roleinit_linux.go). That lands milliseconds past the drain; the rest of the second
+// is a margin for role-init running late under the memory pressure that raises the counter. A
+// wider bound costs only a kill of the role's next generation left unnamed in its first seconds.
+const guestSessionDrain = roleNamespaceDrain + time.Second
 
 // containerInit is whether this launcher is its container's first process, PID 1 of the
 // container's PID namespace, the one rule that also starts the orphan reaper (Run). The pod's
@@ -86,7 +97,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	var watch func(context.Context)
 	if cfg.MicroVM {
 		managers[0].log.linef("launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process")
-		watch = newGuest(memoryguard.GuestConfig{Classify: classify, Sink: sink, Logf: managers[0].log.linef}).Run
+		watch = newGuest(memoryguard.GuestConfig{Classify: classify, Sink: sink, Logf: managers[0].log.linef, SessionDrain: guestSessionDrain}).Run
 	} else {
 		guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: managers[0].log.linef})
 		for _, m := range managers {
@@ -156,6 +167,13 @@ const (
 // namespace alone would read as no role's; the namespace catches a role's process reparented out
 // of the role-init's subtree.
 //
+// It marks as a session process (memoryguard.Class.Session), whose end ends its role's session,
+// each role-init, its shim, and every direct child of the shim: the agent (a Claude Code role's
+// bridge), and the shim's other children, which no place in the tree tells from it (the secrets
+// renewer, the working copy's adoption, the CodeGraph warm-up). That superset of the agent costs at
+// most a kill left unnamed, never a wrong name (memoryguard.Guest). Nothing below the agent is
+// one: an Oh My Pi helper can end alone.
+//
 // It keeps nothing a scan changes: each role-init is read under its manager's lock and the
 // launcher's own children under the pid guard's lock, at each scan, so the guard's loop and its
 // hourly scan may ask it at the same time.
@@ -208,6 +226,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 	}
 
 	protected := map[int]bool{c.launcher: true}
+	session := map[int]bool{}
 	// The launcher's own children and the test database, each with every process under it.
 	whole := held
 	for _, p := range t.Children(c.launcher) {
@@ -240,12 +259,15 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 			byNamespace[init.PIDNamespace] = ri.role
 		}
 		protected[init.PID] = true
+		session[init.PID] = true
 		shim := c.shim(t, init)
 		if shim == nil {
 			continue
 		}
 		protected[shim.PID] = true
+		session[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
+			session[agent.PID] = true
 			c.protectAgent(t, agent, protected)
 		}
 	}
@@ -257,7 +279,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		if !found {
 			role = byNamespace[p.PIDNamespace]
 		}
-		if class := (memoryguard.Class{Role: role, Protected: protected[p.PID]}); class != (memoryguard.Class{}) {
+		if class := (memoryguard.Class{Role: role, Protected: protected[p.PID], Session: session[p.PID]}); class != (memoryguard.Class{}) {
 			classes[p.PID] = class
 		}
 	}
