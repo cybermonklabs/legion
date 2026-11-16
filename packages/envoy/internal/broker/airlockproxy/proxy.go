@@ -835,3 +835,4 @@ func (w slogWriter) Write(p []byte) (int, error) {
 func hostHeaderOf(target string) string {
 	return strings.TrimSuffix(target, ":443")
 }
+// selection probe, never merged
