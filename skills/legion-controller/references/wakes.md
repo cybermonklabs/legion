@@ -130,10 +130,7 @@ Read `read_state`. It has no `paused:` line now, its `last pause:` line gives th
 ended it and when, and its `wakes waiting <n>` line counts the launches that the daemon's wake
 pacing still holds, with the moment the next one is due after `next`. Each session the pause held
 work for starts once, at that pacing, and every other session the pause stopped stays stopped
-until its next wake. Start none of them yourself. The resume's launches are a wave, so until that
-line reads `wakes waiting 0`, publish to role topics only as
-[Trees waiting on a root claim](skill://legion-controller/SKILL.md#trees-waiting-on-a-root-claim)
-allows.
+until its next wake. Start none of them yourself.
 
 Say in your summary that the project runs again, who resumed it and when. Tell nobody who already
 knows. This notice alone is never a reason to pause the project again.
@@ -293,10 +290,10 @@ at every run, while the text of `<cause>` can change from one run to the next. T
 admitted and keeps working while you ask ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A comment or a reply from any session counts as yours
 here, because the controller's session id changes when it restarts or is taken over.
 
-1. Look for the ask you opened for this key already. List the root's comments that name an ask:
+1. Look for the ask you opened for this key already. List the root's comments that name an ask, in bash:
 
    ```text
-   notes=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
+   notes=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
    ```
 

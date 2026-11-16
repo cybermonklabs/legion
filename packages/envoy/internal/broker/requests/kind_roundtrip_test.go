@@ -44,7 +44,7 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			if err != nil || grant.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", grant, err)
 			}
-			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil); err != nil || release.Values["QUIET_KIND_KEY"] != "github-installation-token" {
+			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{}); err != nil || release.Values["QUIET_KIND_KEY"] != "github-installation-token" {
 				t.Fatalf("Values before the retag = %v, %v; want the GitHub App minter's token", release.Values, err)
 			}
 			moved := secret
@@ -59,7 +59,7 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			}
 			retag(t, machine, moved)
 			retag(t, machine, secret)
-			release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil)
+			release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, nil, ReleaseCall{})
 			if err != nil || release.Values["QUIET_KIND_KEY"] != "github-installation-token" {
 				t.Fatalf("Values once the kind is back, with no release while it was away = %v, %v; want the GitHub App minter's token: the grant is as it was", release.Values, err)
 			}
@@ -103,7 +103,7 @@ func TestAMaxGrantLoweredAndRaisedWithNoReleaseBetweenLeavesTheGrantAsItWas(t *t
 	}
 	retag(t, machine, requestKindSecret("QUIET_BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "30m"))
 	retag(t, machine, requestKindSecret("QUIET_BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "1h"))
-	release, err := machine.Values(t.Context(), *long.GrantID, enrollmentID, nil)
+	release, err := machine.Values(t.Context(), *long.GrantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil || release.Values["QUIET_BOUNDED_LOGIN"] != "google-access-token" {
 		t.Fatalf("Values(1h) once max-grant is 1h again, with no release while it was 30m = %v, %v; want the Google login minter's token: the grant is as it was", release.Values, err)
 	}
