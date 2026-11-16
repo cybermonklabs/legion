@@ -281,6 +281,19 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "DB_PASSWORD=x MY_PGPASSWORD=x psql",
       "DB_PASSWORD=x MY_PGPASSWORD=x psql",
     ],
+    "the keyword form glued to psql's -d": ["-dpassword=sekrit", "-dpassword=***"],
+    "the sslpassword keyword glued to psql's -d": [
+      "-dsslpassword=sekrit host=127.0.0.1",
+      "-dsslpassword=*** host=127.0.0.1",
+    ],
+    "a PGPASSWORD assignment glued to a short option": ["-ePGPASSWORD=sekrit", "-ePGPASSWORD=***"],
+    // A key after `-` stands after a character no key holds, so a long option hides as the
+    // keyword form does.
+    "the keyword form as a long option": ["--password=sekrit", "--password=***"],
+    "short options that hold no secret key": [
+      "-dbname=x -dmydb -dpasswords=x",
+      "-dbname=x -dmydb -dpasswords=x",
+    ],
   };
   expect(
     Object.fromEntries(Object.entries(forms).map(([form, [text]]) => [form, masked(text)])),
@@ -361,8 +374,11 @@ test("a child's name prints an environment value only for a variable that tells 
   // from another (`runTellingVariables`), and every other entry by its name alone: a token no mask
   // knows, a connection string that holds a password, and PGPASSWORD alike. A caller whose runs
   // differ only in such a name tells them apart by DISPATCH_E2E_CASE, whose value prints. A name
-  // the caller takes away prints as `NAME=`, and HOME, PATH and TMPDIR, which every caller gives,
-  // not at all. Every value here is made up.
+  // the caller takes away prints as `NAME=`. `named` prints every name the caller gave but HOME,
+  // PATH and TMPDIR, which it leaves out because a caller writes them only to give a child a home,
+  // a path or a temporary directory, never to tell two runs apart. A value that prints is masked
+  // as an argument is, and is quoted as JSON writes it where it is empty or holds whitespace or a
+  // `"`, so `NAME=""` is an empty value and never a name taken away. Every value here is made up.
   const from = import.meta.url;
   expect(
     {
@@ -380,6 +396,21 @@ test("a child's name prints an environment value only for a variable that tells 
       labelled: named({
         argv: ["psql"],
         env: { DATABASE_URL: "host=127.0.0.1 password=sekrit", DISPATCH_E2E_CASE: "x" },
+        from,
+      }),
+      maskedValue: named({
+        argv: ["psql"],
+        env: { DISPATCH_E2E_CASE: "password=sekrit" },
+        from,
+      }),
+      spacedAndEmpty: named({
+        argv: ["psql"],
+        env: { DISPATCH_E2E_PROCESSES: "", DISPATCH_E2E_SIGNIN: " oidc" },
+        from,
+      }),
+      brokenAndQuoted: named({
+        argv: ["psql"],
+        env: { DISPATCH_E2E_CASE: '"a"\nb' },
         from,
       }),
       libpq: named({
@@ -400,13 +431,21 @@ test("a child's name prints an environment value only for a variable that tells 
       }),
     },
     "A child's name printed the value of a variable that does not tell runs apart, which may be " +
-      "a secret, or hid the value of one that does, or lost a name the caller took away."
+      "a secret, or hid the value of one that does, or lost a name the caller took away, or " +
+      "printed a password in a value it prints, or wrote a value it prints in a way the legend " +
+      "of `named` does not read back."
   ).toEqual({
     token: "e2e/__tests__/bounded-subprocess.test.ts | psql | SOME_TOKEN",
     runTelling:
       "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_PROCESSES=2 " +
       "DISPATCH_E2E_SERVER_BIN=/given/envoy-dispatch DISPATCH_E2E_SIGNIN=oidc TEST_PARALLEL_INDEX=1",
     labelled: "e2e/__tests__/bounded-subprocess.test.ts | psql | DATABASE_URL DISPATCH_E2E_CASE=x",
+    maskedValue: "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_CASE=password=***",
+    spacedAndEmpty:
+      "e2e/__tests__/bounded-subprocess.test.ts | psql | " +
+      'DISPATCH_E2E_PROCESSES="" DISPATCH_E2E_SIGNIN=" oidc"',
+    brokenAndQuoted:
+      'e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_CASE="\\"a\\"\\nb"',
     libpq:
       "e2e/__tests__/bounded-subprocess.test.ts | psql | DATABASE_URL PASSWORD PGHOST PGPASSWORD",
     takenAway: "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_SIGNIN= PGPASSWORD=",

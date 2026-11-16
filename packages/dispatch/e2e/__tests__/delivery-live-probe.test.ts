@@ -754,15 +754,16 @@ test(
 // the probe's dial and of this process's accept and close handlers, so load can shorten it as
 // well as lengthen it: in 30 runs of this row alone under nine busy loops, three per CPU, on a
 // pod of 3 CPUs on 2026-11-15, the lowest measured 952.0 ms. The upper bound follows the
-// module's rule, three times the largest reading of its kind under load, rounded up to the next
-// 100 ms, read from 5 runs of the whole lane,
-// `bun test --parallel --timeout 60000 e2e/__tests__`, under nine busy loops, three per CPU, on
-// a pod of 3 CPUs on 2026-11-15: there a correct 1 s timer's accept-to-close measured
-// 1 001.6-1 048.7 ms, three times the largest of which is 3 146.1 ms, so the bound is 3 200 ms.
+// module's rule, three times the largest reading of its kind under load, in whichever shape gave
+// it, rounded up to the next 100 ms. Under nine busy loops, three per CPU, on a pod of 3 CPUs on
+// 2026-11-15, a correct 1 s timer's accept-to-close reached 1 123.0 ms in those 30 runs of this
+// row alone, and 1 001.6-1 048.7 ms in 5 runs of the whole lane,
+// `bun test --parallel --timeout 60000 e2e/__tests__`. The bound stands on the larger, the
+// row-alone 1 123.0 ms: three times it is 3 369.0 ms, so the bound is 3 400 ms.
 // So the row catches a timer set well short, one set several times too long and one left at the
-// 45 s default; it does not catch one set between about 0.5 s and about 3.2 s, such as 2 s for
+// 45 s default; it does not catch one set between about 0.5 s and about 3.4 s, such as 2 s for
 // 1 s, which held 1 987-2 029 ms.
-const heldUnderMs = 3_200;
+const heldUnderMs = 3_400;
 
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
@@ -819,8 +820,8 @@ test(
       expect(
         held,
         `the probe held its connection for ${heldUnderMs} ms or longer, more than three times the ` +
-          `largest hold, 1 048.7 ms, that a correct ${openWithinMs} ms timer showed in the whole ` +
-          `lane under load, against the ${openWithinMs} ms that --open-within gave it`
+          `largest hold, 1 123.0 ms, that a correct ${openWithinMs} ms timer showed under load, in ` +
+          `30 runs of this row alone, against the ${openWithinMs} ms that --open-within gave it`
       ).toBeLessThan(heldUnderMs);
     } finally {
       silent.stop(true);

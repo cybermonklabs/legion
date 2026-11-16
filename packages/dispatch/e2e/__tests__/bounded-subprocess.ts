@@ -407,9 +407,12 @@ interface Child {
   readonly from: string;
 }
 
-/** The three variables a caller passes only to give a child a home, a path and a temporary
- *  directory. Every caller that names an environment at all writes them, so they tell no two
- *  children apart and the cost line leaves them out. */
+/** The three variables `named` leaves out of a child's name: an entry named `HOME`, `PATH` or
+ *  `TMPDIR` prints not at all, whatever it holds, a name taken away included. `named` prints
+ *  every other name the caller gave. A caller writes these three only to give a child a home, a
+ *  path or a temporary directory, never to tell two runs apart, so their names would say nothing
+ *  of which run a line is. Not every caller writes all three: `harness-signin.test.ts` gives no
+ *  `HOME`, and several callers give no `TMPDIR`. */
 const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
 
 /** The environment variables whose value `named` prints, as `NAME=value`: those whose value tells
@@ -424,7 +427,11 @@ const environmentFloor = new Set(["HOME", "PATH", "TMPDIR"]);
  *  exists to label the run: the child never reads it. Such a caller gives each of its cases a
  *  value of its own, and a later caller with the same need sets this variable too, so this list
  *  does not grow for each caller. A variable joins this list only when its value tells two runs
- *  apart and is no URL, no credential and no path to a secret. */
+ *  apart and is no URL, no credential and no path to a secret. `named` reads a listed value
+ *  through `masked`, as it reads an argument, so the code holds that rule too for each password
+ *  `masked` knows: a caller that puts one in a listed value, as `DISPATCH_E2E_CASE=password=…`,
+ *  prints it as `***`. A URL with no password in it, or a secret `masked` does not know, still
+ *  prints whole; for those the rule rests on this list alone. */
 const runTellingVariables: ReadonlySet<string> = new Set([
   "DISPATCH_E2E_CASE",
   "DISPATCH_E2E_PROCESSES",
@@ -504,19 +511,24 @@ const passwordKey = secretKeys
  *  or `env` writes the variable libpq reads a password from, with no whitespace on either side of
  *  its `=`, since a shell ends the assignment at whitespace. Every key stands at the start of the
  *  text or after a character no key holds, which is anything but a letter, a digit, `_` or `%`:
- *  after whitespace, `?` or `&` where libpq or a shell reads it, and after `=` or a quote where a
- *  variable, a flag or JSON holds the connection string. Whitespace may stand on either side of a
- *  secret key's `=`, as libpq reads `password = sekrit`, and it is kept as written. The value
- *  starts after that whitespace and runs to the next whitespace, `&`, quote or backslash, or,
- *  where it opens with `'`, as libpq and a shell quote a value holding a space, to the `'` that
- *  closes it. An empty value, as in `password=`, `password=&dbname=d`, `password=''` or
- *  `PGPASSWORD=`, holds no password and is left as it is. No other key is hidden, as a key is
- *  read whole and `_` is a character a key holds: `dbname=mine`, `passwords=x`, `mypassword=x`,
- *  `sslpasswords=x`, `mysslpassword=x`, `my_oauth_client_secret=x` and `scram_client_keys=x`
+ *  after whitespace, `?` or `&` where libpq or a shell reads it, after `=` or a quote where a
+ *  variable, a flag or JSON holds the connection string, and after `-`, as in `--password=x`. A
+ *  key also stands right after a short option, `-` and one letter at the start of a word, where
+ *  a word starts the text or follows whitespace, a quote or a backslash: psql reads
+ *  `-d<conninfo>`, so `-dpassword=x` and `-dsslpassword=x host=h` hide, and `-ePGPASSWORD=x`
+ *  hides alike. Whitespace may stand on either side of a secret key's `=`, as libpq reads
+ *  `password = sekrit`, and it is kept as written. The value starts after that whitespace and
+ *  runs to the next whitespace, `&`, quote or backslash, or, where it opens with `'`, as libpq
+ *  and a shell quote a value holding a space, to the `'` that closes it. An empty value, as in
+ *  `password=`, `password=&dbname=d`, `password=''` or `PGPASSWORD=`, holds no password and is
+ *  left as it is. No other key is hidden, as a key is read whole and `_` is a character a key
+ *  holds: `dbname=mine`, `passwords=x`, `mypassword=x`, `sslpasswords=x`, `mysslpassword=x`,
+ *  `my_oauth_client_secret=x`, `scram_client_keys=x`, `-dbname=x`, `-dmydb` and `-dpasswords=x`
  *  stay, but in `password= dbname=mine` libpq reads `dbname=mine` as the password, and it is
  *  hidden. */
 const passwordParameter = new RegExp(
-  String.raw`(?<![\w%])(pgpassword=|(?:${passwordKey})\s*=\s*)` +
+  String.raw`(?:(?<![\w%])|(?<=(?:^|[\s"'\\])-[a-z]))` +
+    String.raw`(pgpassword=|(?:${passwordKey})\s*=\s*)` +
     String.raw`(?:'(?:[^'\\]|\\[\s\S])+'?|[^\s&"'\\]+)`,
   "gi"
 );
@@ -547,14 +559,20 @@ export function masked(text: string): string {
  *  hide because they are what tells two runs of a file apart, and none of them can be left out.
  *
  *  An environment entry is read against a list of what to show: an entry of
- *  `runTellingVariables` prints as `NAME=value`, and every other entry as its bare `NAME`,
- *  whatever its value holds. The cost line and the failure go to the run's stderr, which CI
- *  keeps in a public log, and a list of what to hide would print any secret it does not know,
- *  such as a token or a key a caller hands a child, where a name alone says the caller gave that
- *  variable and shows nothing of its value. A name the caller takes away, by giving it no value,
- *  prints as `NAME=` with nothing after the `=`. So a bare `NAME` is a variable the caller gave a
- *  value this line does not print, and `NAME=` is one the caller took away, or a listed one it
- *  gave the empty value.
+ *  `runTellingVariables` prints as `NAME=value`, its value read by `masked` as an argument is,
+ *  and every other entry as its bare `NAME`, whatever its value holds. The cost line and the
+ *  failure go to the run's stderr, which CI keeps in a public log, and a list of what to hide
+ *  would print any secret it does not know, such as a token or a key a caller hands a child,
+ *  where a name alone says the caller gave that variable and shows nothing of its value. A name
+ *  the caller takes away, by giving it no value, prints as `NAME=` with nothing after the `=`. A
+ *  listed value that is empty, or holds whitespace or a `"`, prints in double quotes, as
+ *  `JSON.stringify` writes it: a value never ends at a space inside it, where a reader would
+ *  take what follows for another name, and an empty one never reads as a name taken away. So a
+ *  bare `NAME` is a variable the caller gave a value this line does not print; `NAME=` is one
+ *  the caller took away; `NAME=""` is a listed one it gave the empty value; and `NAME=value`,
+ *  which ends at the next space, or `NAME="value"`, which ends at its closing quote, is a listed
+ *  one and the value it gave. A `"` in a value quotes it too, so a value that opens with `"` is
+ *  always one `JSON.stringify` wrote.
  *
  *  The environment here is read BY NAME: every entry of `env` but the three of
  *  `environmentFloor`, sorted by name, whatever this process's own value for a name is. Reading
@@ -571,14 +589,15 @@ export function named({ argv, env, from }: Child): string {
       : Object.entries(env)
           .filter(([name]) => !environmentFloor.has(name))
           .sort(([one], [other]) => one.localeCompare(other))
-          // A name the caller gives no value to is a name it takes away, which `NAME=` says.
-          .map(([name, value]) =>
-            value === undefined
-              ? `${name}=`
-              : runTellingVariables.has(name)
-                ? oneLine(`${name}=${value}`)
-                : name
-          )
+          // A name the caller gives no value to is a name it takes away, which `NAME=` says. A
+          // listed value is masked first and then quoted as the legend above says, and
+          // `JSON.stringify` writes a line break in it as `\n`.
+          .map(([name, value]) => {
+            if (value === undefined) return `${name}=`;
+            if (!runTellingVariables.has(name)) return name;
+            const shown = masked(value);
+            return `${name}=${shown === "" || /[\s"]/.test(shown) ? JSON.stringify(shown) : shown}`;
+          })
           .join(" ") || "no variable of its own";
   const command = argv.map((word) => oneLine(masked(word))).join(" ");
   return `${relative(dispatchPackage, fileURLToPath(from))} | ${command} | ${chosen}`;
