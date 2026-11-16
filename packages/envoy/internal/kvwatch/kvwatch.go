@@ -338,10 +338,12 @@ func (w *Watcher) Start() {
 // rewatched by the listener's self-health rebuild on the monitor's tick instead
 // (cmd/listener/main.go, rewatchListenerKVWatchers, called from rebuildListenerDependencies).
 // Either way the wait armed at the stop reports the outage once, at bus.RepairGrace (closed). The
-// error is returned unchanged, which its caller already logs. Every request of the move (the
-// bucket's open, the stream read, the watcher's create) is made under ctx, which a reconnect hook
-// passes as the run's context, so a move on a connection that drops ends at the drop; the watcher a
-// move installs does not end with ctx (watch).
+// error is returned unchanged, which its caller already logs. The move waits on nothing past ctx,
+// which a reconnect hook passes as the run's context: the bucket's open, the stream read and the
+// watcher's create are made under it, and the legacy lookup and the previous watcher's consumer
+// delete, which nats.go gives no context, are waited for only until it ends (bus.OpenKeyValue,
+// watch). So a move on a connection that drops ends at the drop; the watcher a move installs does
+// not end with ctx (watch).
 func (w *Watcher) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {

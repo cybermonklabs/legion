@@ -201,9 +201,9 @@ func warnIgnoredEnv(logger *logging.Logger, name string, reason string) {
 		slog.String("value", value))
 }
 
-// rewatchListenerKVWatchers recreates cache watchers that are not represented
-// by bus.Client subscriptions, each move's requests under ctx. It attempts every one so a failed
-// rebuild of one cannot leave the other caches permanently stale too.
+// rewatchListenerKVWatchers recreates cache watchers that are not represented by bus.Client
+// subscriptions, each move waiting on nothing past ctx. It attempts every one so a failed rebuild
+// of one cannot leave the other caches permanently stale too.
 func rewatchListenerKVWatchers(ctx context.Context, conn *nats.Conn, caches []listenerCache) error {
 	var errs []error
 	for _, c := range caches {

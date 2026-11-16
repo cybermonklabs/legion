@@ -476,7 +476,7 @@ func (r *SessionRegistry) Ping() error {
 }
 
 // Rewatch moves the cache's watcher and the handle the registry writes through to conn
-// (kvwatch.Watcher.Rewatch), its requests under ctx, the reconnect hook's run.
+// (kvwatch.Watcher.Rewatch), waiting on nothing past ctx, the reconnect hook's run.
 func (r *SessionRegistry) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	return r.watcher.Rewatch(ctx, conn)
 }

@@ -267,8 +267,9 @@ func (r *Registry) roles() bus.KeyValue {
 // buckets from the reconnect on. A failure to open the role bucket or to rewatch the interest
 // watcher moves nothing: both watchers and both handles stay where they were. The role claim
 // watcher is rewatched last, once the interest watcher and the role handle have moved, and its
-// failure is returned with the role claim view left on its previous watcher. Every request of the
-// move is made under ctx, which a reconnect hook passes as the run's context.
+// failure is returned with the role claim view left on its previous watcher. The move waits on
+// nothing past ctx, which a reconnect hook passes as the run's context (bus.OpenKeyValue,
+// kvwatch.Watcher.Rewatch).
 func (r *Registry) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	// The role bucket opens first, so a failure leaves both handles on the previous connection
 	// rather than the interests on conn and the roles behind.

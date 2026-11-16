@@ -157,10 +157,12 @@ func (c *Client) closeStopped(nc *nats.Conn) {
 // a disconnect's hooks may run while it waits, and a hook that then fails leaves the hooks due.
 //
 // A hook is given the run's context (whileConnected), which ends when conn leaves CONNECTED or the
-// client stops, and makes every request of its own under it: a request sent on a connection that
-// then drops gets no answer, and one that waited out its own bound (10 s for most) there would keep
-// the next reconnect's run behind this one (TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest).
-// A hook whose context has ended returns, with the context's error or its request's.
+// client stops, and waits on nothing past it: it makes each request it can under it, and waits for
+// one nats.go gives no context (the legacy bucket lookup, a previous watcher's consumer delete)
+// only until it ends. A request sent on a connection that then drops gets no answer, and one that
+// waited out its own bound (10 s for most) there would keep the next reconnect's run behind this
+// one (TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest). A hook whose context
+// has ended returns, with the context's error or its request's.
 func (c *Client) AddReconnectHook(hook func(ctx context.Context, conn *nats.Conn) error) {
 	if hook == nil {
 		return

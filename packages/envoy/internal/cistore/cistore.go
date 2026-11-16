@@ -475,7 +475,8 @@ func (s *Store) Ping() error {
 // (kvwatch.Watcher.Rewatch), and then gives up on every write's KV call still waiting for an
 // answer (kvCall), since it runs on every reconnect: their retries take the handle it installed.
 // It gives them up even when the move fails, since after a reconnect the connection they were sent
-// on went away either way. The move's requests are made under ctx, the reconnect hook's run.
+// on went away either way. The move waits on nothing past ctx, the reconnect hook's run
+// (kvwatch.Watcher.Rewatch).
 func (s *Store) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	err := s.watcher.Rewatch(ctx, conn)
 	s.rewatchMu.Lock()
