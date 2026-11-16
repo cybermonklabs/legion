@@ -1,8 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
+import { gitBinary } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
@@ -18,6 +19,11 @@ const runs = path.join(work, "runs");
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
+// The git binary this host's `git` runs (`gitBinary`), linked here by the hook below: the
+// pushed-code run's repository is built with it, and `score.ts runs` finds it first on its PATH.
+// A git wrapper on the host's PATH may change what git does, as the dotfiles git shim gives an
+// agent session's commits in a repository with a remote a trailer.
+const bin = path.join(work, "bin");
 
 /**
  * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
@@ -28,7 +34,9 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
-beforeAll(() => {
+beforeAll(async () => {
+  mkdirSync(bin);
+  symlinkSync(await gitBinary(bin), path.join(bin, "git"));
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
@@ -273,8 +281,17 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 stagings.push(() => {
   const git = (...args: string[]) => {
     const result = Bun.spawnSync(
-      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      [
+        path.join(bin, "git"),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "-C",
+        pushWork,
+        ...args,
+      ],
+      { cwd: pushWork, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -3084,7 +3101,9 @@ for (const [n, faults] of [2, 4, 3].entries())
 let out = "";
 let scoredExitCode: number | null = null;
 beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+  });
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 });
