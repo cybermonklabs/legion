@@ -203,10 +203,13 @@ type newsListened struct {
 // of a tree that lingers, items, opening and summary alike. A holder listener whose member's phase
 // reader does not hold now (newsClaims.holderOf) is dropped too, items and opening: its told row is
 // what the session holding that phase took, and that session is another claim now, whose own task
-// tells it. Every item dropped for that reason or any other names its tree among the dropped, for
-// the reconcile its caller queues. An item that stands is decided on what the delivery carries
-// (rekeyed, carriedChange); the summary's members are read as a start reads the record
-// (memberDraft.told). The gate's state is said to a listener as openingAtSend decides.
+// tells it. An item dropped as an item of such a listener, as one that no longer stands, or as one
+// the record cannot tell yet names its tree among the dropped, for the reconcile its caller queues.
+// An item dropped because the record does not hold its issue or its tree, or because it is to the
+// architect of a lingering tree, names none, since no reconcile has anything to send it. An item
+// that stands is decided on what the delivery carries (rekeyed, carriedChange); the summary's
+// members are read as a start reads the record (memberDraft.told). The gate's state is said to a
+// listener as openingAtSend decides.
 func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
 	carried record.DeliveryNews, now func() time.Time) (newsAtSend, error) {
 	trees := map[string]*newsTree{}
@@ -464,7 +467,7 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 // root architect's summary names it: what OwedNews owes each now, read from the facts that rule
 // reads (record.TreeNewsFacts), and what each is told. claims is the send's own for the tree
 // (newsTree.claims), so a holder item of the same send and this read share one read of the tree's
-// issues and of its architect claims: the facts seed the issues where claims holds none yet.
+// architect claims, and each member is read through it (newsClaims.member).
 //
 // A member owed news is told by a task now (workflow.NewsSentNow) when its holder's claim was
 // given its phase's current entry, runs and holds no task its worker has not taken yet — the claim
@@ -474,8 +477,7 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 // (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at all, or
 // one retired, failed or suspended by an operator. A member in accepting is answered by the
 // architect that owns it (owningArchitect): the root architect itself (workflow.NewsYouAnswer), or
-// a sub-architect, whose task tells it now, or whose news waits the same way while the
-// sub-architect's claim holds a task it has not taken (holdsUntakenTask). Who holds each member is
+// a sub-architect, whose claim is told as any holder's is (holderTold). Who holds each member is
 // the one answer the reconcile and the start read too (readOwedHolders).
 //
 // A member owed nothing is told nothing, for the reason OwedNews gives (record.TreeNews.Untold),
@@ -494,7 +496,6 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 	slices.SortStableFunc(members, func(a, b record.Issue) int {
 		return boolOrder(claim.IsTreeRoot(b.Key, b.Tree)) - boolOrder(claim.IsTreeRoot(a.Key, a.Tree))
 	})
-	claims.seedMembers(members)
 	owed := record.OwedNews(facts)
 	told, err := readMemberClaims(ctx, tx, records, claims, owed)
 	if err != nil {
@@ -514,11 +515,10 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 }
 
 // readMemberClaims is how each member owed news is told, by its key, from the claim that holds its
-// phase as the reconcile names it (readOwedHolders): for a member whose phase a worker holds, how
-// its claim is told (holderTold); for one in accepting, whether the root architect owns it, which
-// then answers it itself, or a sub-architect, and whether that sub-architect's claim holds a task
-// its worker has not taken yet (holdsUntakenTask), behind which the reconcile queues no news-only
-// start. A member whose holder cannot be named is told at its next start (newsClaims.holderOf).
+// phase as the reconcile names it (readOwedHolders): a member the root architect holds, in
+// accepting, is answered by the root architect itself, and any other holder's claim is told as the
+// reconcile treats it (holderTold), a sub-architect that owns a member in accepting included. A
+// member whose holder cannot be named is told at its next start (newsClaims.holderOf).
 func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, claims *newsClaims, owed record.TreeNews) (map[string]workflow.NewsState, error) {
 	keys := make([]toldKey, 0, len(owed.Members))
 	for _, news := range owed.Members {
@@ -535,14 +535,10 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, clai
 		switch {
 		case !held:
 			told[news.Issue] = workflow.NewsAtNextStart
-		case !news.HeldByArchitect():
-			told[news.Issue] = holderTold(holder.run, holder.entry)
 		case holder.token == rootArchitect.token:
 			told[news.Issue] = workflow.NewsYouAnswer
-		case holdsUntakenTask(holder.run.Claim):
-			told[news.Issue] = workflow.NewsWaitsForTask
 		default:
-			told[news.Issue] = workflow.NewsSentNow
+			told[news.Issue] = holderTold(holder.run, holder.entry)
 		}
 	}
 	return told, nil

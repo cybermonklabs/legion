@@ -36,14 +36,15 @@ var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prom
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
-// (readIdleView, IssueReleaseStop): a row of one of those kinds, but a start queued for news of
-// the approved design alone (record.SuperviseRequest.News, which its payload writes as
-// `"news": true`). Such a start reaches only a claim already given its phase's entry, and the claim
-// an idle release suspended is one: the start resumes it as any start does, so a release under
-// the start loses nothing, and the role comes back with its news. And such a start can wait a long
-// time. A merger's waits for its tree's design gate for the whole time the gate stays closed (the
-// daemon's mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not
-// finished (supervise's queue). A pod held for it would stand idle for all that time.
+// (readIdleView, IssueReleaseStop), and, where it is a start, at the teardown (IssueRelease): a
+// row of one of those kinds, but a start queued for news of the approved design alone
+// (record.SuperviseRequest.News, which its payload writes as `"news": true`). Such a start
+// reaches only a claim already given its phase's entry, and the claim an idle release suspended
+// is one: the start resumes it as any start does, so a release under the start loses nothing, and
+// the role comes back with its news. And such a start can wait a long time. A merger's waits for
+// its tree's design gate for the whole time the gate stays closed (the daemon's
+// mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
+// (supervise's queue). A pod held for it would stand idle for all that time.
 const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),

@@ -186,12 +186,9 @@ type resolvedBaselines struct {
 // before its To, once for each document and version, and at every reconcile, whatever an earlier
 // one recorded of that question; and it names every pair of versions the items name once those
 // are known. A read that answered fills the step, with 0 where no version was approved before. An
-// item whose read failed names no pair and fills nothing. A document Dispatch no longer holds
-// (dispatch.ErrDocumentNotFound) has its question recorded unread at once, with Dispatch's
-// refusal as the reason, since the document does not come back with a wait. Any other failure is
-// returned beside what was read, until the row's designChangesAttempts-th attempt: there its
-// question is recorded unread with the reason instead, since nothing else can end a read Dispatch
-// keeps failing, and a failure is never written as a version.
+// item whose read failed names no pair and fills nothing. A failed read records its question
+// unread, or is returned beside what was read, as giveUpReason answers, and a failure is never
+// written as a version.
 func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []owedNewsItem) (resolvedBaselines, error) {
 	type answer struct {
 		version int
@@ -210,16 +207,12 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 			if !asked {
 				got.version, got.err = r.dispatch.ApprovedVersionBefore(ctx, question.ArtifactID, question.To)
 				answers[question] = got
-				switch {
-				case got.err == nil:
+				if got.err == nil {
 					resolved.answered = append(resolved.answered, question)
-				case errors.Is(got.err, dispatch.ErrDocumentNotFound):
+				} else if reason, giveUp := giveUpReason(row, got.err, "the document's review history"); giveUp {
 					resolved.unread = append(resolved.unread, record.DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
-						Reason: got.err.Error()})
-				case row.Attempts+1 >= designChangesAttempts:
-					resolved.unread = append(resolved.unread, record.DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
-						Reason: fmt.Sprintf("Dispatch failed %d reads of the document's review history, the last with: %v", row.Attempts+1, got.err)})
-				default:
+						Reason: reason})
+				} else {
 					failed = errors.Join(failed, fmt.Errorf("read the version of %s approved before version %d: %w", question.ArtifactID, question.To, got.err))
 				}
 			}
@@ -242,11 +235,8 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 // readChangeSets is the second step's second half (designChanges): the change set of each of
 // pairs that recorded does not hold, as it is to be recorded. A pair from version 0, which only a
 // told row or a review history that answered names, is recorded read with nothing listed, and
-// Dispatch is not asked. A document Dispatch no longer holds has the pair recorded unavailable at
-// once. Any other failure is returned, beside every set that was read, until the row's
-// designChangesAttempts-th attempt, which records the pair unavailable with that failure as its
-// reason: a Dispatch build without the changes route among them (dispatch.ErrNoChangesRoute),
-// since while Dispatch rolls out the next attempt can reach the build that has it.
+// Dispatch is not asked. A failed read records the pair unavailable, or is returned beside every
+// set that was read, as giveUpReason answers.
 func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs []record.VersionPair,
 	recorded map[record.VersionPair]record.DesignChanges) ([]record.DesignChanges, error) {
 	at := r.now().UTC()
@@ -261,19 +251,36 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 			continue
 		}
 		answer, err := r.dispatch.ArtifactChanges(ctx, pair.ArtifactID, pair.From, pair.To)
-		switch {
-		case err == nil:
+		if err == nil {
 			read = append(read, changesFromDispatch(pair, answer, at))
-		case errors.Is(err, dispatch.ErrDocumentNotFound):
-			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, Reason: err.Error(), ReadAt: at})
-		case row.Attempts+1 >= designChangesAttempts:
-			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, ReadAt: at,
-				Reason: fmt.Sprintf("Dispatch failed %d reads of it, the last with: %v", row.Attempts+1, err)})
-		default:
+		} else if reason, giveUp := giveUpReason(row, err, "it"); giveUp {
+			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, Reason: reason, ReadAt: at})
+		} else {
 			failed = errors.Join(failed, fmt.Errorf("read what changed in %s from version %d to %d: %w", pair.ArtifactID, pair.From, pair.To, err))
 		}
 	}
 	return read, failed
+}
+
+// giveUpReason is the one rule for giving up on a Dispatch read of the design_changes row row
+// that failed with err (resolveBaselines, readChangeSets): whether the reconcile gives up, and the
+// reason it records, in which what names what was read. A document Dispatch no longer holds
+// (dispatch.ErrDocumentNotFound) is given up on at once, with Dispatch's refusal as the reason,
+// since a deleted document does not come back with a wait. Any other failure is given up on at the
+// row's designChangesAttempts-th attempt, with the count and the last failure as the reason,
+// since nothing else ends a read Dispatch keeps failing. A Dispatch build without the changes
+// route (dispatch.ErrNoChangesRoute) is one such failure: while Dispatch rolls out, the next
+// attempt can reach the build that has it. Before then giveUp is false, and the caller returns the
+// failure for the row to retry on its backoff.
+func giveUpReason(row record.OutboxRow, err error, what string) (reason string, giveUp bool) {
+	switch {
+	case errors.Is(err, dispatch.ErrDocumentNotFound):
+		return err.Error(), true
+	case row.Attempts+1 >= designChangesAttempts:
+		return fmt.Sprintf("Dispatch failed %d reads of %s, the last with: %v", row.Attempts+1, what, err), true
+	default:
+		return "", false
+	}
 }
 
 // changesFromDispatch is Dispatch's answer for pair as the record keeps it, read at at: whether the
@@ -631,7 +638,8 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 // issue is the tree root and its row is owed, and the holder form of each member in accepting it
 // owns. Each told row it speaks for carries the opening too, where the row owes it and the
 // standing gate is open. An architect is never handed a worker's news, and a worker never an
-// architect's.
+// architect's. Where the tree's root is not among its issues, nothing is carried, since every
+// holder is named over the root's record (newsClaims).
 func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFacts, issue record.Issue, role claim.Role,
 	token claim.Token) ([]record.DeliveryNewsItem, []record.DeliveryOpening, error) {
 	owed := record.OwedNews(facts)
@@ -647,12 +655,11 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 			openings = append(openings, record.DeliveryOpening{Issue: key, Audience: audience, Seq: told.Opening})
 		}
 	}
-	root := record.Issue{Key: issue.Tree, Tree: issue.Tree, Project: issue.Project}
-	for _, member := range facts.Members {
-		if claim.IsTreeRoot(member.Key, member.Tree) {
-			root = member
-		}
+	rootAt := slices.IndexFunc(facts.Members, func(member record.Issue) bool { return claim.IsTreeRoot(member.Key, member.Tree) })
+	if rootAt < 0 {
+		return nil, nil, nil
 	}
+	root := facts.Members[rootAt]
 	claims := newNewsClaims(root, facts.Members)
 	if holder, held := claims.rootArchitect(); held && holder.token == token && owed.ArchitectOwed() {
 		tell(root.Key, record.AudienceArchitect, owed.Architect)
@@ -663,7 +670,11 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 		if role != claim.RoleArchitect && news.Issue != issue.Key {
 			continue
 		}
-		holder, held, err := claims.holderOf(ctx, tx, r.records, claims.members[news.Issue])
+		member, err := claims.member(ctx, tx, r.records, news.Issue)
+		if err != nil {
+			return nil, nil, err
+		}
+		holder, held, err := claims.holderOf(ctx, tx, r.records, member)
 		if err != nil {
 			return nil, nil, err
 		}

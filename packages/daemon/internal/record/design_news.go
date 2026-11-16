@@ -272,13 +272,6 @@ type MemberNews struct {
 	Items []NewsItem
 }
 
-// HeldByArchitect says the member stands in accepting, whose holder is the architect that owns the
-// member — the tree's root architect, or a sub-architect running for it — which the daemon
-// resolves when it sends.
-func (m MemberNews) HeldByArchitect() bool {
-	return m.Phase == phase.Accepting
-}
-
 // NewsItem is one step whose approved version is news to its audience: the step's document, the
 // version the audience took (From, nil where the record does not know it, which the reconcile
 // reads from Dispatch's review history, and which stays nil while that history cannot be read),
