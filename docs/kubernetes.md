@@ -5532,8 +5532,7 @@ To exercise this on a kind cluster, crash the process from the node rather than 
 `node=$(kind get nodes --name <cluster>)`, `cid=$(docker exec "$node" crictl ps -q --name
 worker --label io.kubernetes.pod.name=<pod>)`, `pid=$(docker exec "$node" crictl inspect --output
 go-template --template '{{.info.pid}}' "$cid")`, `docker exec "$node" kill -9 "$pid"` — a `kill -9 1` from inside the pod's own pid namespace is dropped by the kernel.
-Expect the daemon log line `<role token>: worker process died (its stream closed and the one reconnect was refused);
-launch failure 1/3; relaunching the same agent with --resume and its catch-up`, then `respawning <issue> by resuming OMP session <path>`, within seconds.
+Expect the daemon's warning `supervise: process died`, with the dead process's `incarnation`, the `observed` kind, its `detail` and `chargedBefore` (`Machine.died`, `internal/supervise/machine.go`), then, within seconds, `supervise: launched` with the claim's `generation`, the new `incarnation` and `resumed=true`, since the relaunch resumes the session it recorded.
 
 ### Trust model: the provisioning token
 
