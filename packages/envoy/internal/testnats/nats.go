@@ -22,14 +22,12 @@ package testnats
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -233,61 +231,6 @@ func deleteStreams(t testing.TB, uri string) {
 			t.Errorf("delete the test's stream %s: %v", name, err)
 		}
 	}
-}
-
-// StoredConsumerState is a consumer's position as nats-server last wrote it to the consumer's
-// state file: its ack floor and its last delivery, each as a consumer and a stream sequence, and
-// how many of its deliveries await an ack.
-type StoredConsumerState struct {
-	AckFloorConsumer, AckFloorStream   uint64
-	DeliveredConsumer, DeliveredStream uint64
-	Pending                            uint64
-}
-
-// StoredConsumer reads the state file of consumer on stream, in the account uri names on the
-// package's shared server (URL). nats-server v2.15.1 keeps it at
-// jetstream/<account>/streams/<stream>/obs/<consumer>/o.dat in the store, and a goroutine of the
-// consumer's own rewrites it after the consumer's state changes (consumerFileStore.flushLoop,
-// server/filestore.go:13729-13782), each time as a temporary o.dat.tmp renamed over it
-// (writeAtomicallyWithTemp, 14781-14814), so a read finds one write whole. The file is magic 22 and
-// version 2, then the ack floor's consumer and stream sequence, the last delivery's, and the count
-// of pending messages, each an unsigned varint (encodeConsumerState, server/store.go:478-504). A
-// file that does not read that way is an error naming it, and so is one that is not there.
-func StoredConsumer(t testing.TB, uri, stream, consumer string) (StoredConsumerState, error) {
-	t.Helper()
-	parsed, err := url.Parse(uri)
-	if err != nil || parsed.User == nil {
-		t.Fatalf("testnats: %q is not a URL of the shared server's (URL)", uri)
-	}
-	if shared == nil {
-		t.Fatal("testnats: no shared server runs; StoredConsumer reads the store of the one URL starts")
-	}
-	// accountsConfig names user tN's account TN.
-	account := strings.ToUpper(parsed.User.Username())
-	path := filepath.Join(shared.srv.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return StoredConsumerState{}, err
-	}
-	if len(data) < 2 || data[0] != 22 || data[1] != 2 {
-		return StoredConsumerState{}, fmt.Errorf("%s does not start with magic 22 and version 2: % x", path, data[:min(len(data), 2)])
-	}
-	var fields [5]uint64
-	rest := data[2:]
-	for i := range fields {
-		value, n := binary.Uvarint(rest)
-		if n <= 0 {
-			return StoredConsumerState{}, fmt.Errorf("%s: field %d of 5 is not an unsigned varint", path, i+1)
-		}
-		fields[i], rest = value, rest[n:]
-	}
-	return StoredConsumerState{
-		AckFloorConsumer:  fields[0],
-		AckFloorStream:    fields[1],
-		DeliveredConsumer: fields[2],
-		DeliveredStream:   fields[3],
-		Pending:           fields[4],
-	}, nil
 }
 
 // Server is a nats-server running in this test process, reached through a relay this process owns.
@@ -598,8 +541,9 @@ const hostOnlyConfig = "host: 127.0.0.1\n"
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
-// test ends the server is shut down, the relay closed and the server's directory removed. It is
-// the one place a server of this package is made: every helper here is a call on it.
+// test ends the server is shut down, the relay closed and the server's directory removed; until
+// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
+// place a server of this package is made: every helper here is a call on it.
 func start(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
@@ -614,15 +558,18 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
 	}
+	address := listener.Addr().String()
 	server := &Server{
 		store:      filepath.Join(dir, "store"),
 		configPath: filepath.Join(dir, "nats.conf"),
 		args:       serverArgs,
 		log:        &logCapture{},
-		url:        "nats://" + listener.Addr().String(),
+		url:        "nats://" + address,
 	}
 	server.relay = newRelay(listener, server.address, true)
+	registerServer(address, server)
 	t.Cleanup(func() {
+		unregisterServer(address)
 		server.stop()
 		server.relay.Close()
 		if err := os.RemoveAll(dir); err != nil {

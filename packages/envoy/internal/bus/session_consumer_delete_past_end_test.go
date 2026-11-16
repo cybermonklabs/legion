@@ -358,6 +358,9 @@ func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeT
 				t.Fatalf("the stream holds %d to %d before the delete, want %d to %d, the two messages stored after the cut", end.firstSeq, end.lastSeq, held[0], held[1])
 			}
 
+			// The reconcile the restarted server made of the consumer kicked its state file's
+			// write.
+			waitForStoredState(t, owner, session)
 			floor, err := consumers.Delete(ctx, session, nil)
 			if err != nil {
 				t.Fatalf("delete: %v", err)
