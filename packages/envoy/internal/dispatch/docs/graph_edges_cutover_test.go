@@ -699,7 +699,7 @@ func graphEdgeBacklinkCounts(t *testing.T, database *store.Store, rows []graphEd
 	for _, kind := range refs.BacklinkKinds() {
 		ids := targets[kind]
 		slices.Sort(ids)
-		count, err := refs.BacklinkCounts(context.Background(), database.Pool, model.Actor{}, kind, ids, nil)
+		count, err := refs.BacklinkCounts(context.Background(), database.Pool, model.Actor{Viewer: model.ServerViewer}, kind, ids, nil)
 		if err != nil {
 			t.Fatalf("count %s backlinks: %v", kind, err)
 		}
