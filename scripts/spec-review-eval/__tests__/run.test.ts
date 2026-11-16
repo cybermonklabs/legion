@@ -704,8 +704,8 @@ describe("what the agent of a fixture reads", () => {
     ]);
   }
 
-  function readsOf(id: string, seed = 1): [Fixture, Root, Places] {
-    const found = readsIn(seed).find(([agent]) => agent.fixture.id === id);
+  function readsOf(id: string): [Fixture, Root, Places] {
+    const found = readsIn(1).find(([agent]) => agent.fixture.id === id);
     if (found === undefined) throw new Error(`no agent of ${id}`);
     const root = plan.roots.find((one) => one.name === found[0].fixture.root);
     if (root === undefined) throw new Error(`no root of ${id}`);
