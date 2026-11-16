@@ -223,7 +223,8 @@ export const PHASE_OP_SENTENCES = {
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
     "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
-    "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
+    "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is " +
+    "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
@@ -529,7 +530,11 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * ever. `wakeToFirstTurnSeconds` measures each resume the daemon has seen a first turn for,
  * `withoutFirstTurn` counting the rest, and reports the nearest-rank median and 90th percentile
  * and the maximum; it reads the resume rows, of which a release that suspended no role has none,
- * so it leaves those releases out by its own shape.
+ * so it leaves those releases out by its own shape. A resume that carries `pause` is a wake a
+ * project pause held (`api.ResumeRecord`): it waited until the project ran again, so its seconds
+ * to the first turn would measure the pause and not the pod's return. `heldByPause` counts those
+ * resumes, and they are in neither `measured` nor `withoutFirstTurn`. A held wake pairs with no
+ * release, so the release counts, the pod hours and the woken share never read it.
  */
 async function releaseRecords(
   runtime: PhaseOpRuntime,
@@ -565,13 +570,17 @@ async function releaseRecords(
     if (woken !== undefined && woken - from <= WOKEN_SOON_MS) wokenSoon += 1;
   }
   const wakeable = records.releases.length - suspendedNoRole;
-  const waits = records.resumes
-    .flatMap((resume) =>
-      resume.firstTurnAt === undefined
-        ? []
-        : [(Date.parse(resume.firstTurnAt) - Date.parse(resume.at)) / 1000]
-    )
-    .sort((one, other) => one - other);
+  let heldByPause = 0;
+  let withoutFirstTurn = 0;
+  const waits: number[] = [];
+  for (const resume of records.resumes) {
+    // A wake a project pause held is counted here and measured nowhere, whether or not its
+    // first turn has come: its wait is the pause's.
+    if (resume.pause !== undefined) heldByPause += 1;
+    else if (resume.firstTurnAt === undefined) withoutFirstTurn += 1;
+    else waits.push((Date.parse(resume.firstTurnAt) - Date.parse(resume.at)) / 1000);
+  }
+  waits.sort((one, other) => one - other);
   const whole = (value: number | null) => (value === null ? null : Math.round(value));
   return {
     since,
@@ -594,7 +603,8 @@ async function releaseRecords(
     },
     wakeToFirstTurnSeconds: {
       measured: waits.length,
-      withoutFirstTurn: records.resumes.length - waits.length,
+      withoutFirstTurn,
+      heldByPause,
       median: whole(percentile(waits, 0.5)),
       p90: whole(percentile(waits, 0.9)),
       max: whole(waits.at(-1) ?? null),

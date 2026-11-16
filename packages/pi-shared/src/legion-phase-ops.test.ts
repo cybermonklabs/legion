@@ -972,6 +972,7 @@ test("read_release_records posts the claim's own token and secret, and counts th
     wakeToFirstTurnSeconds: {
       measured: 2,
       withoutFirstTurn: 1,
+      heldByPause: 0,
       median: 120,
       p90: 360,
       max: 360,
@@ -1013,6 +1014,7 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
     wakeToFirstTurnSeconds: {
       measured: 0,
       withoutFirstTurn: 0,
+      heldByPause: 0,
       median: null,
       p90: null,
       max: null,
@@ -1083,10 +1085,70 @@ test("a release that suspended no role is counted as a release and measured in n
     wakeToFirstTurnSeconds: {
       measured: 1,
       withoutFirstTurn: 0,
+      heldByPause: 0,
       median: 120,
       p90: 120,
       max: 120,
     },
+  });
+});
+
+// The window the daemon's own golden wrote (`release-records.json`): a release woken after half
+// an hour, a release that suspended no role, a backstop wake with no first turn yet, and a wake
+// a project pause held, which carries `pause` and pairs with no release. The held wake reached
+// its first turn 31 minutes after it was taken, and those minutes are the pause's: it is counted
+// as `heldByPause` and is in neither the measured seconds nor `withoutFirstTurn`, while the
+// resume counts still name it and the release figures never read it.
+test("a wake a project pause held is counted apart and left out of the wake-to-first-turn seconds", async () => {
+  const golden = daemonFixture("release-records.json");
+  const { ops } = recordsRuntime(golden);
+
+  await expect(
+    executePhaseOp(ops, { op: "read_release_records", since: "2026-11-01T00:00:00Z" })
+  ).resolves.toEqual({
+    since: "2026-11-01T00:00:00Z",
+    asOf: "2026-11-01T18:00:00.000Z",
+    ...golden,
+    counts: {
+      releases: 2,
+      releasesSuspendingNoRole: 1,
+      resumes: 3,
+      resumesByKind: { delivery: 1, backstop: 1, pause: 1 },
+      holds: 2,
+      holdsByReason: { background_work: 1, overtaken: 1 },
+    },
+    // The half hour of the one release a wake ended; the held wake names no release.
+    podHoursReleased: 0.5,
+    wokenWithinTenMinutes: { releases: 0, share: 0 },
+    // The delivery wake's 120 seconds alone. The held wake's 1860 are not among them.
+    wakeToFirstTurnSeconds: {
+      measured: 1,
+      withoutFirstTurn: 1,
+      heldByPause: 1,
+      median: 120,
+      p90: 120,
+      max: 120,
+    },
+  });
+
+  // A held wake with no first turn yet is held all the same: it is not one the pod is slow for.
+  const resumes = golden.resumes as Record<string, unknown>[];
+  const waiting = resumes.map((resume) =>
+    resume.pause === undefined
+      ? resume
+      : { ...resume, podReadyAt: undefined, firstTurnAt: undefined }
+  );
+  const unturned = (await executePhaseOp(recordsRuntime({ ...golden, resumes: waiting }).ops, {
+    op: "read_release_records",
+    since: "2026-11-01T00:00:00Z",
+  })) as { readonly wakeToFirstTurnSeconds: Record<string, unknown> };
+  expect(unturned.wakeToFirstTurnSeconds).toEqual({
+    measured: 1,
+    withoutFirstTurn: 1,
+    heldByPause: 1,
+    median: 120,
+    p90: 120,
+    max: 120,
   });
 });
 
