@@ -130,6 +130,16 @@
       ],
       "planted": [{ "kind": "undefined-noun", "node": "voucher-print", "subject": "voucher" }],
       "mustNotName": [{ "node": "door-close-sixty" }, { "node": "terms", "subject": "quiet hours" }]
+    },
+    {
+      "id": "10-entry-lines",
+      "root": "without",
+      "spec": "10-entry-lines.md",
+      "planted": [{ "kind": "principle", "node": "inbox-simple" }],
+      "mustNotName": [
+        { "node": "inbox-overdue-first" },
+        { "node": "terms", "subject": "overdue ask" }
+      ]
     }
   ]
 }
