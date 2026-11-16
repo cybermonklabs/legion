@@ -1206,6 +1206,54 @@ func TestARequestOfTwoDocumentsRefusesASecondDefinition(t *testing.T) {
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
 }
 
+// termLineFinding is the finding of a line in the form of a term line outside Terms, in the
+// document name whose id is artifactID, that defines term again as definition with detail.
+func termLineFinding(name, artifactID string, version int, term, definition, detail string) specFormFinding {
+	return specFormFinding{Document: name, ArtifactID: artifactID, Version: version, Finding: specform.Finding{
+		Node: term, Kind: "term_line", Where: fmt.Sprintf("%s version %d", name, version),
+		Rule: "term-second-definition", Detail: detail, Excerpt: definition,
+	}}
+}
+
+// A line in the form of a term line under another heading is a definition (R50): with lease in
+// the list, a request whose spec defines lease again under "## Glossary" is refused, and the
+// finding says that the form of the line makes it a definition. A document that a person approved
+// with such a line adds no term to the list. The control: the same line with a name that nothing
+// defines opens the request.
+func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+	glossary := createFormIssue(t, tree.handler, tree.root, "Defines lease again under Glossary", "# Spec\n\n## Glossary\n\n- "+termLine("lease", otherLease)+"\n")
+	finding := termLineFinding("spec.md", glossary.PrimaryArtifactID, 1, "lease", otherLease, "spec.md version 1 of "+listed.Key+
+		` already defines this term. A line of the form "- **<term>**: <definition>" is a definition under each heading. If this line is no definition, change its form. `+
+		"If it is a definition, use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first")
+	requireFormRefusal(t, "request of a spec with lease under Glossary", requestFormApproval(t, tree.handler, glossary.PrimaryArtifactID, nil),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+	plain := createFormIssue(t, tree.handler, tree.root, "Names valve under Glossary", "# Spec\n\n## Glossary\n\n- "+termLine("valve", "A part of a pump that opens and closes.")+"\n")
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, plain.PrimaryArtifactID, nil))
+	approveFormDocument(t, tree.handler, plain.PrimaryArtifactID)
+	if count := countTerm(t, tree.handler, listed.PrimaryArtifactID, "valve"); count != 0 {
+		t.Fatalf("the list holds valve %d times after the person approved a spec that names it under Glossary, want 0", count)
+	}
+}
+
+// Two lines of one name in the form of a term line in the documents of one request are two
+// definitions, wherever each stands: a spec and its Verification document, requested together,
+// that each name lease under another heading are refused at the second. The control: the spec
+// alone is opened.
+func TestARequestOfTwoDocumentsRefusesTwoTermLinesOfOneName(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	issue := createFormIssue(t, tree.handler, tree.root, "Names lease in two documents", "# Spec\n\n## Glossary\n\n- "+termLine("lease", leaseDefinition)+"\n")
+	verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md", "# Verification\n\n## Notes\n\n- "+termLine("lease", otherLease)+"\n")
+	finding := termLineFinding("verification.md", verification.ID, 1, "lease", otherLease, "spec.md version 1 of "+issue.Key+
+		` already defines this term. A line of the form "- **<term>**: <definition>" is a definition under each heading. If this line is no definition, change its form. `+
+		"If it is a definition, use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first")
+	requireFormRefusal(t, "request of both", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true}),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
+}
+
 // countTerm is how many times the list of the read of artifactID holds term.
 func countTerm(t *testing.T, handler http.Handler, artifactID, term string) int {
 	t.Helper()
@@ -1593,5 +1641,129 @@ func TestWhenTheKeeperMovesOutTheListHoldsTheDefinitionThatJoinedNext(t *testing
 		alreadyDefines("spec.md version 1 of "+arrivals[1].Key))
 	if read := specFormReadOf(t, tree.handler, arrivals[0].PrimaryArtifactID); !reflect.DeepEqual(read.Findings, []specFormFinding{finding}) {
 		t.Fatalf("the read of %s = findings %#v, want %#v", arrivals[0].Key, read.Findings, []specFormFinding{finding})
+	}
+}
+
+// olderBuild is a server of this release on tree's database whose setting names no root of The
+// Spec. To the list of terms it does what the release before this one does with a move: it
+// writes the issue and its events, takes no lock of a list and writes nothing else, since it
+// knows no root.
+func olderBuild(t *testing.T, tree specFormTree) http.Handler {
+	t.Helper()
+	handler, _, _ := newTestServer(t, testServerOptions{store: tree.database})
+	return handler
+}
+
+// moveThrough is alice's move of issue under parent through handler, which must pass.
+func moveThrough(t *testing.T, handler http.Handler, issue, parent string) {
+	t.Helper()
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"parent": parent}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s", issue, parent, response.Code, response.Body.String())
+	}
+}
+
+// A move that a build with no root of The Spec made changes no definition of the list (the
+// tester's TestAMoveThatWroteNoArrivalRowChangesNoDefinitionOfTheListAccept3, from the third
+// acceptance run). The tester made the older release's move as this build's move with its arrival
+// row deleted, the state that release leaves; this release writes no such row, so the older
+// release's move is made here through a server that names no root (olderBuild), which does what
+// that release does. v-terms: "A change to a definition waits for the approval of the person."
+// The control: the same move through the server that names the root.
+func TestAMoveByABuildThatNamesNoRootChangesNoDefinitionOfTheList(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	older := olderBuild(t, tree)
+	for _, c := range []struct {
+		term  string
+		mover http.Handler
+		who   string
+	}{
+		{"lease", tree.handler, "control, the server that names the root"},
+		{"sigil", older, "a server that names no root, as the release before this one"},
+	} {
+		earlier := createFormIssue(t, tree.handler, tree.outside, "Defines "+c.term+" outside the root, first", specWithTerms(termLine(c.term, otherLease)))
+		approveFormDocument(t, tree.handler, earlier.PrimaryArtifactID)
+		listed := createFormIssue(t, tree.handler, tree.root, "Defines "+c.term+" under the root", specWithTerms(termLine(c.term, leaseDefinition)))
+		approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+		moveThrough(t, c.mover, earlier.Key, tree.root)
+		want := specFormTerm{Term: c.term, Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: listed.Key}
+		if got, count := listedOf(t, tree.handler, listed.PrimaryArtifactID, c.term); count != 1 || got != want {
+			t.Errorf("%s: after it moved %s under %s, the list holds %s %d times, as %#v; want the definition it held, %#v",
+				c.who, earlier.Key, tree.root, c.term, count, got, want)
+		}
+		finding := definitionFinding("spec.md", earlier.PrimaryArtifactID, 1, c.term, otherLease, "term-second-definition", alreadyDefines("spec.md version 1 of "+listed.Key))
+		if read := specFormReadOf(t, tree.handler, earlier.PrimaryArtifactID); !reflect.DeepEqual(read.Findings, []specFormFinding{finding}) {
+			t.Errorf("%s: the read of %s = findings %#v, want %#v", c.who, earlier.Key, read.Findings, []specFormFinding{finding})
+		}
+	}
+}
+
+// The order of the list never depends on which build handled a move: each case of moves gives one
+// list whether the server that names the root made the moves or a server that names none
+// (olderBuild), as the release before this one and a rollback to it do. Each case also names the
+// document that the list keeps its term from, by the order the decision gives: a definition joins
+// the list at the later of its first approval and the move that brought it under the root.
+func TestTheListIsTheSameWhicheverBuildMadeTheMoves(t *testing.T) {
+	type moves func(tree specFormTree, move func(issue, parent string)) (keeper string, read string)
+	cases := []struct {
+		name  string
+		moves moves
+	}{
+		{"a document approved outside first moves in", func(tree specFormTree, move func(string, string)) (string, string) {
+			earlier := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside, first", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, tree.handler, earlier.PrimaryArtifactID)
+			listed := createFormIssue(t, tree.handler, tree.root, "Defines lease under the root", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+			move(earlier.Key, tree.root)
+			return listed.Key, listed.PrimaryArtifactID
+		}},
+		{"the keeper moves inside the root after a later one moved in", func(tree specFormTree, move func(string, string)) (string, string) {
+			first := createFormIssue(t, tree.handler, tree.root, "The first level", "# Level\n\nThe first level.\n")
+			second := createFormIssue(t, tree.handler, tree.root, "The second level", "# Level\n\nThe second level.\n")
+			earlier := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside, first", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, tree.handler, earlier.PrimaryArtifactID)
+			keeper := createFormIssue(t, tree.handler, first.Key, "Defines lease under the first level", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, tree.handler, keeper.PrimaryArtifactID)
+			move(earlier.Key, tree.root)
+			move(keeper.Key, second.Key)
+			return keeper.Key, keeper.PrimaryArtifactID
+		}},
+		{"the keeper moves out and in again", func(tree specFormTree, move func(string, string)) (string, string) {
+			keeper := createFormIssue(t, tree.handler, tree.root, "Defines lease under the root, first", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, tree.handler, keeper.PrimaryArtifactID)
+			later := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside, later", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, tree.handler, later.PrimaryArtifactID)
+			move(later.Key, tree.root)
+			move(keeper.Key, tree.outside)
+			move(keeper.Key, tree.root)
+			return later.Key, later.PrimaryArtifactID
+		}},
+		{"a parent outside the root moves in with its child", func(tree specFormTree, move func(string, string)) (string, string) {
+			parent := createFormIssue(t, tree.handler, tree.outside, "A parent outside the root", "# Parent\n\nSome other work.\n")
+			child := createFormIssue(t, tree.handler, parent.Key, "Defines lease under that parent, first", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, tree.handler, child.PrimaryArtifactID)
+			listed := createFormIssue(t, tree.handler, tree.root, "Defines lease under the root", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+			move(parent.Key, tree.root)
+			return listed.Key, listed.PrimaryArtifactID
+		}},
+	}
+	for _, c := range cases {
+		lists := map[string][]specFormTerm{}
+		for _, build := range []string{"the server that names the root", "a server that names no root"} {
+			tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+			mover := tree.handler
+			if build == "a server that names no root" {
+				mover = olderBuild(t, tree)
+			}
+			keeper, read := c.moves(tree, func(issue, parent string) { moveThrough(t, mover, issue, parent) })
+			if got, count := listedOf(t, tree.handler, read, "lease"); count != 1 || got.Issue != keeper {
+				t.Errorf("%s, moves by %s: the list holds lease %d times, as %#v; want once, from %s", c.name, build, count, got, keeper)
+			}
+			lists[build] = specFormReadOf(t, tree.handler, read).Terms
+		}
+		if !reflect.DeepEqual(lists["the server that names the root"], lists["a server that names no root"]) {
+			t.Errorf("%s: the list is %#v after moves by the server that names the root, and %#v after moves by a server that names none",
+				c.name, lists["the server that names the root"], lists["a server that names no root"])
+		}
 	}
 }

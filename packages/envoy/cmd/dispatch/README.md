@@ -1700,12 +1700,6 @@ a pending row that its reopen's write inserts names no editor, so the settlement
 a pending row that a write of this release inserts before then, naming no editor of its own, names that kept editor, and a settlement of that row by the earlier release names that editor on its version too, since that release does not tell the kept editor apart.
 The table is new and its foreign key cascades with the document, so no row is refused or rewritten, and its census answers `0`.
 
-Migration `20261116160000_spec_term_arrivals` creates `spec_term_arrivals` (`api.specTermArrivalOf`, "The form of The Spec", below).
-Each row is the move that brought a covered document under a root of The Spec, by the id of the move's event.
-The earlier release neither reads nor writes the table, so a move by that release writes no row.
-Such a document joins the list of terms at its first approval, as every document did before.
-The table is new and its foreign key cascades with the document, so no row is refused or rewritten, and its census answers `0`.
-
 Migration `0092_refs_excerpts` adds three nullable columns to `refs` with no default (`excerpt_block_id`, `excerpt_text`, `excerpt_version`), a catalog change that rewrites no row, and the partial index `refs_excerpt_drift` over the rows whose `excerpt_version` is null:
 the stored excerpt `GET /api/v1/references` answers a document mention with, which every version write fills and the reference-excerpt reconciliation fills for every row stored before it (`packages/envoy/AGENTS.md`).
 On the 2026-10-10 production dump the reconciliation's first pass filled 7,498 mentions of 2,150 documents in 248 s at `GOMAXPROCS=2`.
@@ -4689,6 +4683,15 @@ Each other line under that heading breaks the form (rule `term-line`), unless it
 Its finding names the line.
 A heading that reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
 Such a heading has the text `terms` in another case, with emphasis marks or with a last colon, such as `## TERMS`, `## **Terms**` or `## Terms:`.
+A line of the term-line form is a definition under each heading, under no heading and in a typed block, outside a code fence.
+Only a line under `Terms` adds a term to the list.
+Such a line in another place breaks the form (rule `term-second-definition`, kind `term_line`) when it names a term of the list.
+It also breaks the form when another line of that form in the document names the same term.
+So Dispatch also refuses a list item in prose that has the form of a term line and names a term of the list.
+Its finding tells the writer to change the form of the line when the line is no definition.
+After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
+A name with another character breaks the form (rule `term-name`), and the finding names each such character with its code point.
+So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>` and `limit's wait`, and a full-width letter or a ligature folds to its plain letters.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
@@ -4696,7 +4699,10 @@ Dispatch compares the names of terms in the caseless form that Unicode defines f
 That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
 The list holds one definition of each term.
 The root's `terms.md` comes first, then each other document in the order in which it joined the list.
-A document joins the list at the later of its first approval and the move that brought it under the root.
+A document joins the list at the later of its first approval and the move that last brought its issue under the root.
+Dispatch reads that move from the events of the issues, which each release of Dispatch writes for each move.
+So the release that made a move changes no order, and a rollback to an earlier release changes none.
+The setting decides which issues are roots at each move, also at a move from before the setting named that root.
 Dispatch orders these by its events.
 Two documents that joined at one move come in the order of their first approvals.
 So a move into the root or inside it changes no definition that the list holds.
@@ -4704,14 +4710,15 @@ An approval from before the setting named the root changes none either.
 The read of the other document names the definition that the list holds as a finding.
 When the document that the list keeps a term from leaves the root, the list holds the definition that joined next.
 A move changes no text.
-Migration `20261116160000_spec_term_arrivals` records each move into a root (table `spec_term_arrivals`).
 A definition of a term of the list also breaks the form.
 So does a second definition of a term in the documents that one request names.
 The finding names the term and the document that defines it.
 To change a definition, change the document that defines it, and request approval of that document.
 A person's approval takes the lock of the root's list before it reads the list.
-A move into the root takes that lock before it writes.
+A move into the root takes that lock before it writes its event.
 So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
+While an earlier release serves beside this one, its move takes no lock.
+So its move and an approval at one time can join the list in either order.
 
 A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
 `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.

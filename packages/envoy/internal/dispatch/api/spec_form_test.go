@@ -76,3 +76,47 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 		t.Fatalf("approval body = error %q, changes_reason %q", approval.Error, approval.ChangesReason)
 	}
 }
+
+// The arrival of an issue under a root is read from the parents as the events left them at each
+// move (parentHistory.arrival): the last event at which the nearest named root above the issue
+// became the root. In each case R is a root and R2 a root under it, O and P stand outside every
+// root, L1 and L2 are levels under R, and each issue's changes are its events: its creation, then
+// each write that set its parent. A move inside the root, a move of the root itself and an issue
+// made under the root are no arrival; a move in, a move back in and a move of an ancestor are.
+func TestAnArrivalIsReadFromTheParentsAsTheyWereAtEachMove(t *testing.T) {
+	base := parentHistory{
+		"R": {{1, ""}}, "O": {{2, ""}}, "L1": {{3, "R"}}, "L2": {{4, "R"}}, "R2": {{5, "L1"}}, "P": {{6, "O"}},
+	}
+	with := func(changes parentHistory) parentHistory {
+		history := parentHistory{}
+		for key, list := range base {
+			history[key] = list
+		}
+		for key, list := range changes {
+			history[key] = list
+		}
+		return history
+	}
+	for _, c := range []struct {
+		name    string
+		history parentHistory
+		issue   string
+		event   int64
+		arrived bool
+	}{
+		{"made under the root", with(parentHistory{"I": {{10, "L1"}}}), "I", 0, false},
+		{"moved in once", with(parentHistory{"I": {{10, "O"}, {20, "L1"}}}), "I", 20, true},
+		{"moved inside the root after it moved in", with(parentHistory{"I": {{10, "O"}, {20, "L1"}, {30, "L2"}}}), "I", 20, true},
+		{"moved out and in again", with(parentHistory{"I": {{10, "L1"}, {20, "O"}, {30, "L2"}}}), "I", 30, true},
+		{"a parent moved in with it", with(parentHistory{"I": {{10, "P"}}, "P": {{6, "O"}, {20, "L1"}}}), "I", 20, true},
+		{"a parent moved inside the root", with(parentHistory{"I": {{10, "P"}}, "P": {{6, "L1"}, {20, "L2"}}}), "I", 0, false},
+		{"a parent moved in before the issue was made", with(parentHistory{"I": {{30, "P"}}, "P": {{6, "O"}, {20, "L1"}}}), "I", 20, true},
+		{"the root itself moved", with(parentHistory{"I": {{10, "L1"}}, "R": {{1, ""}, {20, "O"}}}), "I", 0, false},
+		{"moved from the root under it to a level of the root", with(parentHistory{"I": {{10, "R2"}, {20, "L2"}}}), "I", 20, true},
+		{"the events put it under no root", with(parentHistory{"I": {{10, "O"}}}), "I", 0, false},
+	} {
+		if event, arrived := c.history.arrival(c.issue, "R", []string{"R", "R2"}); event != c.event || arrived != c.arrived {
+			t.Errorf("%s: arrival = %d, %t; want %d, %t", c.name, event, arrived, c.event, c.arrived)
+		}
+	}
+}

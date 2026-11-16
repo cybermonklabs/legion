@@ -63,8 +63,10 @@ func (e *extraction) add(node string, kind Kind, body string) {
 // that is not blank and not a heading is a text of Kind line, named by the line in quotes: a term
 // line has one form, "- **<term>**: <definition>", and a line in any other form is a break of the
 // form, not a term. A heading that reads as Terms in another form (readsAsTerms) is a text of Kind
-// heading, named by its line in quotes, and no Terms part: the heading Terms has one form too.
-// Each text's Where is "<document> version <n>".
+// heading, named by its line in quotes, and no Terms part: the heading Terms has one form too. A
+// line in the form of a term line anywhere else, under another heading, under none or in a typed
+// block, is a text of Kind term_line (termLineElsewhere): it adds no term, and it is still a
+// definition (R50). Each text's Where is "<document> version <n>".
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
 		return Extracted{}, fmt.Errorf("%s version %d is not valid UTF-8", document, version)
@@ -84,7 +86,7 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 		line := lines[index]
 		trimmed := strings.TrimSpace(line)
 		if fence != "" {
-			if strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]) == "" {
+			if closesFence(trimmed, fence) {
 				fence = ""
 			}
 			continue
@@ -105,6 +107,7 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 			}
 			end := blockEnd(lines, index, colonCount(trimmed))
 			body := strings.Join(lines[index+1:end], "\n")
+			e.termLinesIn(lines[index+1 : end])
 			index = end
 			if name == "requirement" {
 				e.add(node, KindStatement, body)
@@ -159,9 +162,45 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 			} else {
 				e.add(fmt.Sprintf("%q", trimmed), KindLine, trimmed)
 			}
+		} else if match := termLine.FindStringSubmatch(line); match != nil {
+			e.termLineElsewhere(match)
 		}
 	}
 	return e.out, nil
+}
+
+// termLineElsewhere keeps a line in the form of a term line outside a Terms part, of its termLine
+// match, as a text of Kind term_line named by its term, with its definition as its body. It adds
+// no term; Check judges it as a second definition. Two such lines of one name are two texts.
+func (e *extraction) termLineElsewhere(match []string) {
+	e.out.Texts = append(e.out.Texts, Text{Node: strings.TrimSpace(match[1]), Kind: KindTermLine, Body: strings.TrimSpace(match[2]), Where: e.where})
+}
+
+// termLinesIn keeps each line of body, the lines of a typed block, that is in the form of a term
+// line outside a code fence (termLineElsewhere).
+func (e *extraction) termLinesIn(body []string) {
+	fence := ""
+	for _, line := range body {
+		trimmed := strings.TrimSpace(line)
+		switch marker := fenceMarker(trimmed); {
+		case fence != "":
+			if closesFence(trimmed, fence) {
+				fence = ""
+			}
+		case marker != "":
+			fence = marker
+		default:
+			if match := termLine.FindStringSubmatch(line); match != nil {
+				e.termLineElsewhere(match)
+			}
+		}
+	}
+}
+
+// closesFence reports whether trimmed closes the code fence that opened with fence: a run of the
+// same character, at least as long.
+func closesFence(trimmed, fence string) bool {
+	return strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]) == ""
 }
 
 // fenceMarker is the opening run of a code fence line, "```" or "~~~" or longer, or "".
