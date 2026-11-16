@@ -1533,9 +1533,10 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 // the read's failure, and the caches of repositories no longer served are listed with when they go.
 // Contract 152: the block is every repository the daemon serves, the mapping's and the records'
 // alike, and each entry says which role App is installed on it (`apps`), which is what decides
-// whether the project can work there. A state without the block, or without its caches, is
-// refused. An entry without `apps` is read all the same, with that one answer absent: a daemon
-// of an earlier contract writes none.
+// whether the project can work there. A refused entry says what GitHub answered of each App on it
+// wherever GitHub answered both reads, and nothing where a read failed, its reason saying so. A
+// state without the block, or without its caches, is refused. An entry without `apps` is read all
+// the same, with that one answer absent: a daemon of an earlier contract writes none.
 test("the state golden carries each issue's repository and the repositories it serves", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -1571,9 +1572,19 @@ test("the state golden carries each issue's repository and the repositories it s
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
   });
-  expect(state.repositories.refused[0]?.reason).toBe(
-    "the review App is not installed on acme/gadgets"
-  );
+  expect(state.repositories.refused).toEqual([
+    {
+      repo: "acme/gadgets",
+      reason: "the review App is not installed on acme/gadgets",
+      apps: { implement: true, review: false },
+    },
+    {
+      repo: "zeta/archive",
+      reason:
+        "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
+    },
+  ]);
+  expect(state.repositories.refused[1]?.apps).toBeUndefined();
   expect(state.repositories.caches).toEqual([
     {
       repo: "acme/legacy",

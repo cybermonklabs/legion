@@ -212,9 +212,10 @@ type MappedRepositoryView struct {
 // Both are true on a repository the daemon serves, which is the admission rule of each of the
 // two doors into the served set: a mapped repository one of the two Apps does not reach is
 // served for nothing — no token exists for its work — so it stands under
-// RepositoriesView.Refused instead, where the reason names the App that is missing or the read
-// that did not answer; and an issue is recorded on a repository no mapping names only once
-// GitHub has answered that both Apps are installed on it.
+// RepositoriesView.Refused instead, and an issue is recorded on a repository no mapping names only
+// once GitHub has answered that both Apps are installed on it. So the entries where the two can
+// differ are the refused ones, and each carries what GitHub answered of both Apps on the name
+// Dispatch maps (RefusedRepositoryView.Apps).
 type AppInstallationsView struct {
 	Implement bool `json:"implement"`
 	Review    bool `json:"review"`
@@ -244,9 +245,18 @@ type CacheView struct {
 // names it, and why: a role App is not installed on it, or that installation could not be read.
 // A repository no mapping names is never refused for that (INFRA-2543 R6), since the mapping
 // stopped deciding where a project may work.
+//
+// Apps is each role App's installation on Repo as GitHub answered it, so a reader learns which
+// App is missing without parsing Reason. It is present wherever GitHub answered both Apps' reads
+// of Repo, a repository left out for its default-branch read after both answered installed
+// among them (both true then, Reason naming the read), and absent where a read of Repo failed or
+// Repo is no <owner>/<name> at all, Reason naming which. A configured rename's other name, read
+// where neither App answered installed on Repo, is not what Apps answers for: Reason names what
+// GitHub said of it.
 type RefusedRepositoryView struct {
-	Repo   string `json:"repo"`
-	Reason string `json:"reason"`
+	Repo   string                `json:"repo"`
+	Reason string                `json:"reason"`
+	Apps   *AppInstallationsView `json:"apps,omitempty"`
 }
 
 // WebhookAppGapView is a served repository that Dispatch's GitHub App is not installed on, or

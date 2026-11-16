@@ -528,6 +528,14 @@ func podAppRoles(kind podKind) []appauth.AppRole {
 	return apps
 }
 
+// PodAppRoles is podAppRoles of the pod role runs in (podKindFor): both Apps for a workflow role,
+// whose issue pod projects the directories every role's bundle holds and no more (gitHubBundles,
+// volumes), and the review App alone for the project controller. A role's container holds only
+// the directories of that projection, so a caller that says which owners a role's token reaches
+// in a pod of this runtime reads them for these Apps together (internal/daemon's plan.appOwners),
+// as the drift check does (movedGhDirs).
+func PodAppRoles(role claim.Role) []appauth.AppRole { return podAppRoles(podKindFor(role)) }
+
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
 // holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is
 // `<owner>/<repo>`. It is what movedGhDirs compares, a repository directory a pod lacks being no

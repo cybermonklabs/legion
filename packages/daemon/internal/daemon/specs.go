@@ -76,7 +76,11 @@ type specs struct {
 	// (RepositoriesClause). The two conditions are one rule, GitHubDirs': an installed owner the
 	// last bundle left out — not installed, suspended, granted none, permissions refused, or a
 	// login that is no directory name — holds no token this role could use, so naming it would
-	// promise a reach the role does not have. The daemon answers it from
+	// promise a reach the role does not have. Under runtime: kubernetes the Apps read are the
+	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
+	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
+	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
+	// The daemon answers it from
 	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
 	// which costs no read of its own on a launch; a role whose App no bundle has been built for
 	// yet — the first launch of a daemon that has built none — is answered the owners of the

@@ -1000,12 +1000,18 @@ const legionCacheView = z.object({
   retainedUntil: timestamp.optional(),
 });
 
+/** `api.AppInstallationsView` — each role App's installation on one repository (contract 152):
+ * the implement App a worker pushes and opens pull requests with, and the review App a reviewer
+ * approves with. */
+const legionAppInstallations = z.object({ implement: z.boolean(), review: z.boolean() });
+
 /** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
  * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
  * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
  * its repository cache under the Kubernetes runtime), each repository it leaves out with
- * `reason`, a role App not installed on it or an installation it could not read, each served
- * repository Dispatch's GitHub App is not known to be installed on (`withoutWebhookApp`, with
+ * `reason`, a role App not installed on it or an installation it could not read, and `apps`,
+ * what GitHub answered of each App on it, each served repository Dispatch's GitHub App is not
+ * known to be installed on (`withoutWebhookApp`, with
  * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
  * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
  *
@@ -1015,22 +1021,30 @@ const legionCacheView = z.object({
  * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
  * null (contracts 31, 32).
  *
- * `apps` is optional here and is written by every daemon of contract 152 and above. It is read as
- * absent rather than refused so that a plugin of this contract reading a daemon of an earlier one
- * — the window a roll of the daemon and the worker image opens, since the two ship apart — loses
- * that one answer and keeps the rest of the state, where a required key would refuse the whole
- * body. */
+ * A served entry's `apps` is both Apps installed, since the daemon serves no repository either
+ * App is missing from, so the entries where the two differ are the refused ones. A refused
+ * entry carries `apps` wherever GitHub answered both Apps' reads of its `repo` (both true for one
+ * left out for its default-branch read alone), and none where a read of it failed or `repo` is
+ * no `<owner>/<name>`, which its `reason` then names.
+ *
+ * `apps` is optional on both and is written by every daemon of contract 152 and above wherever it
+ * holds the answer. It is read as absent rather than refused so that a plugin of this contract
+ * reading a daemon of an earlier one — the window a roll of the daemon and the worker image opens,
+ * since the two ship apart — loses that one answer and keeps the rest of the state, where a
+ * required key would refuse the whole body. */
 const legionRepositories = z.object({
   owners: z.array(nonEmptyString),
   mapped: z.array(
     z.object({
       repo: nonEmptyString,
       default: z.boolean(),
-      apps: z.object({ implement: z.boolean(), review: z.boolean() }).optional(),
+      apps: legionAppInstallations.optional(),
       cache: legionCacheView.optional(),
     })
   ),
-  refused: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
+  refused: z.array(
+    z.object({ repo: nonEmptyString, reason: nonEmptyString, apps: legionAppInstallations.optional() })
+  ),
   withoutWebhookApp: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
   caches: z.array(legionCacheView),
 });
@@ -1359,7 +1373,8 @@ export const LegionControllerSecretResponse = z.object({
 });
 
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
- * the review App's read-only token for every GitHub owner of the project, each rendered as the two
+ * the review App's read-only token for every GitHub owner that App is installed on, and for each
+ * owner a configured rename moved a repository away from, each rendered as the two
  * files gh reads (`ghconfig.Rendered`) and keyed by lowercased owner, the owner whose directory
  * `GH_CONFIG_DIR` names, the soonest of the tokens' expiries, `renames`, the configured pairs the
  * bundle routes a moved repository by, each `<owner>/<name>` as GitHub spells it, which a project

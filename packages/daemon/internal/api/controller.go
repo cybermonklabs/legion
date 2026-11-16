@@ -59,7 +59,9 @@ type ControllerCredentialRequest struct {
 }
 
 // ControllerCredentialResponse is `POST /legion/v1/controller/github-credential`'s answer: the
-// review App's read-only token for every GitHub owner of the project, each rendered as the two
+// review App's read-only token for every owner that App is installed on, and for an owner a
+// configured rename moved a repository away from (appauth.ControllerCredential), each one
+// rendered as the two
 // files gh reads (`ghconfig.Rendered`: Hosts for hosts.yml, Config for config.yml) and keyed by
 // lowercased owner; Default, the owner whose directory the controller's GH_CONFIG_DIR names (the
 // request's, or the first owner, sorted); the App name; the soonest of the tokens' expiries;

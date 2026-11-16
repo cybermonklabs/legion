@@ -848,8 +848,10 @@ func populatedState(t *testing.T) State {
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),
-		// Three repositories of two owners: two the daemon serves, both role Apps being installed
-		// on them, and one the review App is not installed on, which the daemon leaves out.
+		// Four repositories of two owners: two the daemon serves, both role Apps being installed
+		// on them; one the review App is not installed on, which the daemon leaves out saying what
+		// GitHub answered of each App; and one whose implement App read GitHub did not answer,
+		// left out for now with no answer of the Apps at all, since GitHub gave it none.
 		// zeta/tools stands for a repository only a record names, which the daemon serves exactly
 		// as a mapped one and which is the project's default in no mapping (INFRA-2543 R6).
 		// acme/widgets' cache is Ready and its last health read answered, zeta/tools' could not be
@@ -866,7 +868,10 @@ func populatedState(t *testing.T) State {
 					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 				}},
 			},
-			Refused: []RefusedRepositoryView{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}},
+			Refused: []RefusedRepositoryView{
+				{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
+				{Repo: "zeta/archive", Reason: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
+			},
 			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
 			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
 			Caches: []CacheView{{

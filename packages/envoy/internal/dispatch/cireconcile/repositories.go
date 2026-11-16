@@ -111,7 +111,9 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		}
 		// Its token could not be minted, or GitHub did not answer about its installation:
 		// neither mends itself within a pass, so the repository is named once and the pass
-		// goes on.
+		// goes on. Neither is held either, since neither is GitHub saying the App is not
+		// installed: the next pass asks again
+		// (TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass).
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository it holds no token for", "repository", row, "error", err)
 		return reconciled{}, nil
@@ -176,9 +178,17 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 // is skipped at WARN and counted in mappings_skipped on every pass the fault stands for, which
 // is what that count and that WARN mean to the person reading them. A repository only an issue
 // names is any `owner/name` a person or an agent wrote, and one the App is not installed on is
-// expected and refuses that issue no work: it is counted apart (repositories_without_app), so
-// a mappings_skipped above zero still means a mapping to mend, and named at INFO only by the
-// pass that asked GitHub, which is once every AbsentAppRecheck and not once a pass.
+// expected and refuses that issue no work: it is counted apart (repositories_without_app), and
+// named at INFO only by the pass that asked GitHub, which is once every AbsentAppRecheck and not
+// once a pass.
+//
+// That keeps the App missing from such a repository out of mappings_skipped, but it does not
+// make every mappings_skipped above zero a mapping to mend: every other skip of resolve counts
+// there whoever names the repository. One such case stands at every pass. An issue-only
+// repository whose Dispatch App installation is suspended answers the installation lookup 200
+// and the token mint 403, which is no ErrNoInstallation, so resolve skips it at WARN as a
+// repository it holds no token for and counts it in mappings_skipped at every pass, exactly as
+// it does a mapping the App is missing from.
 func (r *Reconciler) appAbsent(row string, mapped bool, err error, asked bool, c *counts) {
 	if mapped {
 		c.mappingsSkipped++

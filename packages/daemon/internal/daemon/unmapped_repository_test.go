@@ -13,7 +13,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -249,10 +251,14 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 	const tree, root, parent, child = "LEGION-963", "LEGION-964", "LEGION-965", "LEGION-966"
 	liveRoot(t, w, client, tree)
 	client.show(issue(parent, unmappedRepo, "backlog", false, tree, 1), issue(child, unmappedRepo, "todo", false, parent, 1))
-	w.awaitRecovery(unmappedRepo, tree, child, parent)
 	before := len(treeNotices(t, w, tree))
 	listings := client.listingCount()
 	deliver(t, w, client, issue(root, unmappedRepo, "todo", true, "", 1))
+	// release_children leaves a child to a repository's recovery only while the daemon holds it
+	// unread, as it does from the root's failed preparation on.
+	if !w.awaitRecovery(unmappedRepo, tree, child, parent) {
+		t.Fatalf("the wait for %s on %s was refused while the daemon holds it unread", child, unmappedRepo)
+	}
 	// A recovery lists once, at its start, so the second listing says the first recovery is over.
 	testwait.Eventually(t, "a recovery GitHub fails again is over", func() bool { return client.listingCount() >= listings+2 })
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 0 {
@@ -326,11 +332,12 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 // Letting a repository go tells each tree's architect, once, of every child its release_children
 // left to that repository's recovery that nothing will record: the daemon stops reading GitHub
 // for the repository, so no recovery will ever take these children, and the notice says that,
-// names the status Dispatch gives each child now and asks for the release again once it is todo.
-// The waits leave with the repository's marker, so nothing is told twice. A child recorded since
-// is named in no notice. Before, the waits stayed in the daemon's memory for the whole of its
-// life and the architect, whose release_children had answered that the child was released, heard
-// nothing at all.
+// names the status Dispatch gives each child now and what to release: here the child's parent
+// first, since the daemon records neither and a child only under a recorded parent. The waits
+// leave with the repository's marker, so nothing is told twice. A child recorded since is named
+// in no notice. Before, the waits stayed in the daemon's memory for the whole of its life and the
+// architect, whose release_children had answered that the child was released, heard nothing at
+// all.
 func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
@@ -338,20 +345,23 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	w, client, installs, _ := unmappedRig(t, installs)
 	const tree, root, parent, stalled, recorded = "LEGION-973", "LEGION-974", "LEGION-975", "LEGION-976", "LEGION-977"
 	liveRoot(t, w, client, tree)
-	// Two children a release_children left while GitHub did not answer: one Dispatch now shows
-	// in backlog, which no recovery would record, and one the daemon has recorded since.
+	// Two children a release_children left while GitHub did not answer, which it does only while
+	// the daemon holds the repository unread, as it does from the root's failed preparation on:
+	// one Dispatch now shows in backlog, which no recovery would record, and one the daemon
+	// records since on a served repository.
 	client.show(issue(parent, unmappedRepo, "backlog", false, tree, 1), issue(stalled, unmappedRepo, "backlog", false, parent, 1))
-	w.awaitRecovery(unmappedRepo, tree, stalled, parent)
-	w.awaitRecovery(unmappedRepo, tree, recorded, tree)
+	deliver(t, w, client, issue(root, unmappedRepo, "todo", true, "", 1))
+	if waiting := w.unreadReasons(); len(waiting) != 1 || !strings.HasPrefix(waiting[0], unmappedRepo+": ") {
+		t.Fatalf("the daemon waits on %q, want %s alone", waiting, unmappedRepo)
+	}
+	if !w.awaitRecovery(unmappedRepo, tree, stalled, parent) || !w.awaitRecovery(unmappedRepo, tree, recorded, tree) {
+		t.Fatalf("a wait on %s was refused while the daemon holds it unread", unmappedRepo)
+	}
 	deliver(t, w, client, issue(recorded, "acme/widgets", "todo", false, tree, 1))
 	if got := recordedIssue(t, w, recorded); got == nil || got.Tree != tree {
 		t.Fatalf("%s = %+v, want it recorded in %s's tree on the served repository", recorded, got, tree)
 	}
 	before := len(treeNotices(t, w, tree))
-	deliver(t, w, client, issue(root, unmappedRepo, "todo", true, "", 1))
-	if waiting := w.unreadReasons(); len(waiting) != 1 || !strings.HasPrefix(waiting[0], unmappedRepo+": ") {
-		t.Fatalf("the daemon waits on %q, want %s alone", waiting, unmappedRepo)
-	}
 
 	// The root leaves todo before GitHub answers, so no preparation will read GitHub for the
 	// repository again and the daemon lets it go. The notice is what the pass does last — the
@@ -363,8 +373,8 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	}
 	notices := treeNotices(t, w, tree)[before:]
 	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") ||
-		!strings.Contains(notices[0], "the daemon no longer waits for GitHub to answer for "+unmappedRepo+", because no todo issue names it now") ||
-		!strings.Contains(notices[0], stalled+" (backlog in Dispatch now: release it again once it is todo)") || strings.Contains(notices[0], recorded) {
+		!strings.Contains(notices[0], "the daemon no longer waits for GitHub to answer for "+unmappedRepo+", because no todo issue labelled for Legion or under a parent names it now") ||
+		!strings.Contains(notices[0], stalled+" (backlog in Dispatch now, and its parent "+parent+" is not recorded: release "+parent+" first, then "+stalled+")") || strings.Contains(notices[0], recorded) {
 		t.Fatalf("notices to %s's architect once %s was let go = %q, want one naming %s with its Dispatch status, not %s",
 			tree, unmappedRepo, notices, stalled, recorded)
 	}
@@ -377,6 +387,62 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	time.Sleep(10 * installReadRetry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
 		t.Fatalf("notices after %s was let go = %d, want the one only", unmappedRepo, len(got))
+	}
+}
+
+// A let-go notice says what is true of the repository it names and of each child. It opens with
+// why the repository was let go: no todo issue an admission would record names it, or one does
+// and the mapping or an earlier answer of GitHub's answers for it without a read of GitHub. It
+// names a child whose parent the daemon does not record with that parent to release first, as the
+// recovery's own notice does: release_children files a todo child under its parent's unread
+// repository when the parent is what waits, and the child is recorded only under a recorded
+// parent. Before, every let-go notice said no todo issue named the repository, false where one
+// did, and told such a child, todo all along, to be released again once it is todo.
+func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testing.T) {
+	const tree, parent, child = "LEGION-985", "LEGION-986", "LEGION-987"
+	noTodo := "the daemon no longer waits for GitHub to answer for " + unmappedRepo + ", because no todo issue labelled for Legion or under a parent names it now"
+	elsewhere := "the daemon no longer waits for GitHub to answer for " + unmappedRepo + ", because Dispatch's repository mapping, or a read GitHub answered for it at another issue's preparation, answers for it now"
+	backlog := child + " (backlog in Dispatch now: release it again once it is todo)"
+	for _, tc := range []struct {
+		name string
+		why  letGoWhy
+		// shown is what Dispatch shows of the child, and of its parent where the wait names one
+		// other than the tree's recorded root (parent).
+		shown  []dispatch.Issue
+		parent string
+		// opening and line are what the notice must say, and never what it must not.
+		opening, line, never string
+	}{
+		{name: "no todo issue is left on it", why: letGoNoTodo, parent: tree,
+			shown:   []dispatch.Issue{issue(child, unmappedRepo, "backlog", false, tree, 1)},
+			opening: noTodo, line: backlog, never: elsewhere},
+		{name: "a todo issue is left on it that the mapping answers for", why: letGoAnsweredElsewhere, parent: tree,
+			shown:   []dispatch.Issue{issue(child, unmappedRepo, "backlog", false, tree, 1)},
+			opening: elsewhere, line: backlog, never: "because no todo issue"},
+		{name: "a todo child filed under its unrecorded parent's repository", why: letGoNoTodo, parent: parent,
+			shown:   []dispatch.Issue{issue(parent, unmappedRepo, "backlog", false, tree, 1), issue(child, "acme/widgets", "todo", false, parent, 1)},
+			opening: noTodo, line: child + " (todo in Dispatch now, and its parent " + parent + " is not recorded: release " + parent + " first, then " + child + ")",
+			never: "release it again once it is todo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			w, client, _, _ := unmappedRig(t, &installations{})
+			liveRoot(t, w, client, tree)
+			client.show(tc.shown...)
+			listing, err := client.ListIssues(ctx, "LEGION", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := len(treeNotices(t, w, tree))
+			dropped := []letGo{{repo: unmappedRepo, why: tc.why, waits: map[string]releaseWait{child: {tree: tree, parent: tc.parent}}}}
+			if err := w.tellLetGoWaits(ctx, dropped, listing); err != nil {
+				t.Fatalf("tell the let-go waits: %v", err)
+			}
+			notices := treeNotices(t, w, tree)[before:]
+			if len(notices) != 1 || !strings.Contains(notices[0], tc.opening) || !strings.Contains(notices[0], tc.line) || strings.Contains(notices[0], tc.never) {
+				t.Fatalf("notices to %s's architect = %q, want one opening %q and naming %q, never %q", tree, notices, tc.opening, tc.line, tc.never)
+			}
+		})
 	}
 }
 
@@ -524,26 +590,135 @@ func TestTheStateListsARepositoryOnlyALiveRecordNamesAfterARestart(t *testing.T)
 	}
 }
 
-// The preparation of an issue Legion never records puts no repository in the state (R6): a
-// person's own todo issue, not handed to Legion and no child of a tree, is prepared as any todo
-// issue is, which reads GitHub for its repository and keeps the read, and no record names the
-// repository. The state listed every repository a preparation had kept a read of before, so it
-// named a repository no tree of the project works in.
+// The preparation of an issue Legion never records puts no repository in the state (R6): a todo
+// child under a parent no live tree holds is prepared as any issue admission would record is,
+// which reads GitHub for its repository and keeps the read, and no record names the repository.
+// The state listed every repository a preparation had kept a read of before, so it named a
+// repository no tree of the project works in.
 func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
 	w, client, installs, _ := unmappedRig(t, &installations{})
-	const key = "LEGION-969"
-	deliver(t, w, client, issue(key, unmappedRepo, "todo", false, "", 1))
+	const key, parent = "LEGION-969", "LEGION-970"
+	deliver(t, w, client, issue(key, unmappedRepo, "todo", false, parent, 1))
 	if got := recordedIssue(t, w, key); got != nil {
-		t.Fatalf("%s recorded as %+v, want a person's own issue left alone", key, got)
+		t.Fatalf("%s recorded as %+v, want a child under an unrecorded parent left alone", key, got)
 	}
 	if reads := installs.reads("implement " + unmappedRepo); reads != 1 {
-		t.Fatalf("the preparation made %d reads of %s's installation, want one: it reads GitHub as any todo issue's does", reads, unmappedRepo)
+		t.Fatalf("the preparation made %d reads of %s's installation, want one: it reads GitHub as any issue admission would record does", reads, unmappedRepo)
 	}
 	if got := w.repositories.lookup(unmappedRepo); got.source != fromRecorded || got.read.Name.String() != unmappedNamed {
 		t.Fatalf("lookup(%s) = %+v, want the read the preparation kept", unmappedRepo, got)
 	}
 	if listed := servedNames(w); slices.Contains(listed, unmappedNamed) {
 		t.Fatalf("the state lists %v, want no %s: no record names it", listed, unmappedNamed)
+	}
+}
+
+// A person's own todo issue — not handed to Legion and under no parent — on a repository no
+// mapping names asks GitHub nothing, at any of its events: admission never records it, so its
+// apply never resolves the repository, and a read made for it is a read made for nothing. Nothing
+// is left unread for it either, since no recovery would ever record it, and no read of the
+// mapping is asked for. Its preparation read both Apps' installations and the repository's name
+// at every event of the issue before, since no refusal is kept, each read up to
+// installReadAttempt long.
+func TestAPersonsOwnTodoIssueOnARepositoryNoMappingNamesAsksGitHubNothing(t *testing.T) {
+	var named atomic.Int64
+	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		path := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
+		if path == unmappedRepo {
+			named.Add(1)
+		}
+		branch := map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", unmappedRepo: unmappedNamed + "@trunk"}[path]
+		if branch == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+			return
+		}
+		name, head, _ := strings.Cut(branch, "@")
+		_, _ = w.Write([]byte(`{"full_name":"` + name + `","default_branch":"` + head + `"}`))
+	}})
+	w, client, installs, _ := mappingRigWith(t, &installations{}, func(w *workflowRuntime) {
+		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github, defaultBranchTTL, time.Now)
+	})
+	requested := w.mappingRequested.Load()
+	const key = "LEGION-985"
+	deliver(t, w, client, issue(key, unmappedRepo, "todo", false, "", 1))
+	deliver(t, w, client, issue(key, unmappedRepo, "todo", false, "", 2))
+	if reads := installs.reads("implement "+unmappedRepo) + installs.reads("review "+unmappedRepo); reads != 0 {
+		t.Fatalf("two events of a person's own todo issue on %s made %d installation reads, want none: nothing records the issue", unmappedRepo, reads)
+	}
+	if reads := named.Load(); reads != 0 {
+		t.Fatalf("two events of a person's own todo issue on %s read its name and default branch %d times, want none", unmappedRepo, reads)
+	}
+	if got := recordedIssue(t, w, key); got != nil {
+		t.Fatalf("%s recorded as %+v, want a person's own issue left alone", key, got)
+	}
+	if got := w.repositories.lookup(unmappedRepo).source; got != fromNeither {
+		t.Fatalf("lookup(%s) answered from set %d, want no read kept: none was made", unmappedRepo, got)
+	}
+	if waiting := w.unreadReasons(); len(waiting) != 0 {
+		t.Fatalf("the daemon waits on %q, want nothing left unread: no recovery would record the issue", waiting)
+	}
+	if asked := w.mappingRequested.Load(); asked != requested {
+		t.Fatalf("the events asked for %d reads of the mapping, want none", asked-requested)
+	}
+}
+
+// bootReconcile marks the context a test hands the boot's reconcile, so the installation reads
+// made under it are told apart from the ones the refresher makes on its own context beside it.
+type bootReconcile struct{}
+
+// bootCountedInstallations is installations counting apart, in atBoot, the reads asked under a
+// context bootReconcile marks.
+type bootCountedInstallations struct {
+	*installations
+	atBoot atomic.Int64
+}
+
+func (i *bootCountedInstallations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+	if ctx.Value(bootReconcile{}) != nil {
+		i.atBoot.Add(1)
+	}
+	return i.installations.InstalledOn(ctx, role, repo)
+}
+
+// The boot's listing asks GitHub nothing for a repository no mapping names. It runs inside the
+// boot's bounded reconcile (readinessAttempt(workflow.reconcile, bootTimeout, …)), where the
+// installation reads of tens of todo issues on such repositories, or two slow ones, used the
+// bound up, failed every read after it at once and then the boot attempt itself. The issue is
+// left unread instead, with the marker the recovery reads, and the refresher's recovery after the
+// boot reads the repository once and admits the issue on GitHub's answer, with nothing said on
+// it. A person's own todo issue on another such repository is read for by neither.
+func TestTheBootsListingAsksGitHubNothingForARepositoryNoMappingNamesAndItsRecoveryAdmitsIt(t *testing.T) {
+	ctx := context.Background()
+	installs := &bootCountedInstallations{installations: &installations{}}
+	w, client, _, _ := unmappedRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	w.bootID = "unmapped-listing-boot"
+	const handed, persons, loose = "LEGION-981", "LEGION-982", "loose/notes"
+	client.show(issue(handed, unmappedRepo, "todo", true, "", 1), issue(persons, loose, "todo", false, "", 1))
+	if err := w.reconcile(context.WithValue(ctx, bootReconcile{}, true)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if reads := installs.atBoot.Load(); reads != 0 {
+		t.Fatalf("the boot's listing made %d installation reads, want none: it runs inside the boot's bounded reconcile", reads)
+	}
+	testwait.Eventually(t, handed+" admitted on "+unmappedNamed+" by the recovery after the boot", func() bool {
+		got := recordedIssue(t, w, handed)
+		return got != nil && got.Repo == unmappedNamed
+	})
+	if notes := repositoryNotes(t, w, handed); len(notes) != 0 {
+		t.Fatalf("notes on %s = %q, want none: it was left, then recovered", handed, notes)
+	}
+	testwait.Eventually(t, "nothing left unread and nothing left to recover", func() bool {
+		return len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	})
+	if reads := installs.reads("implement " + unmappedRepo); reads != 1 {
+		t.Fatalf("%s's implement App was read %d times, want once, by the recovery", unmappedRepo, reads)
+	}
+	if reads := installs.reads("implement "+loose) + installs.reads("review "+loose); reads != 0 {
+		t.Fatalf("%s, which only a person's own todo issue names, was read %d times, want none", loose, reads)
+	}
+	if got := recordedIssue(t, w, persons); got != nil {
+		t.Fatalf("%s recorded as %+v, want a person's own issue left alone", persons, got)
 	}
 }
 

@@ -193,19 +193,31 @@ type workflowRuntime struct {
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
 	recheckAfter      func(time.Duration) <-chan time.Time
-	// heard is what GitHub intake hears now (heardRepositories): the boot's set (heardAtBoot) and
-	// then each read of the mapping's (refreshMapping), kept under mappingMu so a record that
-	// first names a repository can add it with no read of the records (hearRecorded) and no read
-	// of the mapping can overwrite what a record just added. heardPending marks a consumer update
-	// a record's repository could not be given, which the refresher's next read publishes in
-	// full. unread is each repository no mapping names whose GitHub reads a preparation could not
-	// make (leaveUnread), lowercased, with why, under recoveringMu: while any is, the refresher
-	// reads again of its own and recovers the issues each left. cacheRepos is what the runtime
-	// keeps a repository cache of (cacheRepositories), published for the sweep to read without a
-	// lock.
-	heard        []ghrepo.Repository
+	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot) and then
+	// each read of the mapping's (refreshMapping), with each repository a record first names added
+	// to it with no read of the records (hearRecorded). Every write holds mappingMu, so no read of
+	// the mapping overwrites what a record just added, and publishes a new set whole; a recording
+	// reads it with no lock at all, so one whose repository it names waits on no read of the
+	// mapping (hearRepository, which says why reading it without the lock is sound).
+	// heardPending marks a consumer update a record's repository could not be given, which the
+	// refresher's next read publishes in full. unread is each repository no mapping names whose
+	// GitHub reads a preparation could not make (leaveUnread) or the boot's listing did not make
+	// (leaveForRecovery), lowercased, with why, under recoveringMu: while any is, the refresher
+	// reads again of its own and recovers the issues each left. unreadMarks is, by the same
+	// repository, the last mark a preparation's failure or GitHub's answer gave it (markUnread,
+	// readAnswered), each a value of the sequence unreadMarked no mark held before, under
+	// recoveringMu. It exists because a marker already present is no evidence that nothing
+	// happened: leaveUnread returns at once when the repository was unread already, recording
+	// nothing, so without the mark a preparation that failed inside a recovery's own window — an
+	// issue moved to todo after its listing was read — is invisible to the pass that then lets the
+	// repository go, and that issue's note of its silence is read by no later pass
+	// (settleRecovery). cacheRepos is what the runtime keeps a repository cache of
+	// (cacheRepositories), published for the sweep to read without a lock.
+	heard        atomic.Pointer[[]ghrepo.Repository]
 	heardPending atomic.Bool
 	unread       map[string]string
+	unreadMarks  map[string]uint64
+	unreadMarked uint64
 	cacheReposMu sync.Mutex
 	cacheRepos   atomic.Pointer[[]ghrepo.Repository]
 	// commitIssueTrailerRepos is the project's `commit_issue_trailer_repos`, the repositories
@@ -914,7 +926,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		switch {
 		case fact.Status == "todo":
-			prepared, err := w.prepareListed(ctx, records, walk, fact)
+			prepared, err := w.prepareListed(ctx, records, walk, fact, boot)
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}

@@ -213,6 +213,10 @@ install it is replaced at its next launch.
 An uninstall opens no round and replaces no pod: the next bundle holds no directory for the
 account, a pane loses its directory at the next refresh, and a running pod keeps one that the
 daemon refreshes no more.
+The one exception is the account that holds the role's own issue repository, or the controller's
+default owner: that directory cannot be left out, so every bundle built for that role fails, no
+refresh writes any of its directories, and the pane or pod keeps its last tokens until they
+expire within the hour.
 All of that is true of a daemon that mints with its own App key (`private_key`,
 `private_key_command` or `private_key_secret`).
 A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
@@ -657,9 +661,10 @@ What each part is for:
 - **`runtime.kubernetes.setup`** (optional) is a command, as an argv, that every role, in its own
   namespaces,
   runs before each start of its Oh My Pi. It runs in the role's working directory with the role's
-  environment, and its `git` answers `https://github.com` with the role's App token for every
-  repository that App's installations hold: write on the owner of the issue's repository, read on
-  every other owner. Oh My Pi starts only once it exits 0; a failure is a failed launch, and its
+  environment, and its `git` answers `https://github.com` from the role's gh bundle: the role's
+  own App token on every owner that App is installed on, with the role's own permissions, each
+  reaching every repository that owner's installation holds, and the controller's read-only.
+  Oh My Pi starts only once it exits 0; a failure is a failed launch, and its
   output is in the role's log. Under
   this runtime it must fetch nothing: a clone in a role's launch context ends the pod's gVisor
   sandbox a few seconds in, so install skills with `skills_repository` below and leave `setup` to
@@ -1477,8 +1482,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `repositories` (every repository the daemon serves, the ones Dispatch's mapping names and the
   ones the project's own records name: `owners`, `mapped`, each entry with its `repo`, `default`,
   `cache` and `apps` — `{"implement": bool, "review": bool}`, each role App's installation on that
-  repository — `refused`, each with its `repo` and the `reason` a role App is not installed on it
-  or its installation could not be read, and `withoutWebhookApp` with each served repository
+  repository — `refused`, each with its `repo`, the `reason` a role App is not installed on it or
+  its installation could not be read, and `apps`, the same shape, wherever GitHub answered both
+  Apps' installation reads of `repo` (absent where a read failed or `repo` is no `<owner>/<name>`),
+  and `withoutWebhookApp` with each served repository
   Dispatch's GitHub App is not known to be installed on, its `repo` and `reason`),
   `consumers` (each durable consumer's `name`; `waiting`; `oldestAt` and `oldestAgeSeconds`, the
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing

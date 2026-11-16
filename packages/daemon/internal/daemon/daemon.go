@@ -825,41 +825,58 @@ type plan struct {
 	checkLaunch func(context.Context, supervise.Claim) error
 }
 
-// appOwners is the owner accounts the addressing of every launch of role names as the ones its
-// own GitHub App is installed on and its token reaches (specs.appOwners,
-// daemon.RepositoriesClause): the owners the last gh bundle of that App read from GitHub
-// (appauth.Installed), which costs the launch no read of its own, less every one whose
-// directory a bundle of that App does not hold, and the owners of the repositories Dispatch
-// maps to the project while no bundle of that App has been built yet.
+// appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
+// of a role names as the ones its own GitHub App is installed on and its token reaches
+// (specs.appOwners, daemon.RepositoriesClause): the owners the last gh bundle of that App read
+// from GitHub (appauth.Installed), which costs the launch no read of its own, less every one
+// the role's container holds no directory for, and the owners of the repositories Dispatch maps
+// to the project while no bundle has been read for the Apps that container's directories come
+// from.
 //
-// An installed owner is not always one the role's bundle holds a directory for. A mint GitHub
+// An installed owner is not always one the role's container holds a directory for. A mint GitHub
 // answers definitively about the owner's installation — not installed there after all,
 // suspended, granted none of the role's permissions, the permissions refused — leaves that
 // owner's directory out of the bundle (appauth's mintBundle, recorded in left), and so does a
-// login that is no directory's name (appauth's bundleDirs). The clause says the role's token
-// reaches every repository of each owner it names, which is false of such an owner, so it is
-// not named. The rule is asked of the one place that holds it and not written a second time:
-// appauth.GitHubDirs is the directories a bundle of that App built now would hold, which the
-// drift check reads a pod against, and the owners kept are the installed ones it names. It
-// names one more directory for each owner a configured rename moved a repository away from,
-// which is no installed owner and so is never one of these.
+// login that is no directory's name (appauth's bundleDirs). Under the Kubernetes runtime there
+// is a third way: an issue pod projects only the directories every one of its roles' bundles
+// holds (sandbox's gitHubBundles), and its roles run as two Apps, so an owner the other App is
+// not installed on, or whose directory the other App's mint left out, is in no container of
+// the pod, the implementer's included (sandbox.PodAppRoles). A tmux pane holds its own role's
+// bundle and no other, so there the role's own App is the whole answer. The clause says the
+// role's token reaches every repository of each owner it names, which is false of any such
+// owner, so it is not named. The rule is asked of the one place that holds it and not written
+// a second time: appauth.GitHubDirs is the directories a bundle of those Apps built now would
+// hold, which is what the Kubernetes drift check reads a pod against, and the owners kept are
+// the installed ones it names. It names one more directory for each owner a configured rename
+// moved a repository away from, which is no installed owner and so is never one of these.
 //
 // The fallback is the honest answer there rather than a silence: a bundle is built by the
 // runtime, after the specs the launch is composed from, so the first launch of a daemon that
 // has built none has no read to report; and the mapping's owners are accounts both role Apps
 // are installed on (checkMapping), so the clause names a true part of the App's reach and
-// never more than it. Every launch after any bundle of that App names the App's own owners,
-// which is what an agent is owed: the Kubernetes runtime builds one for every live pod's roles
-// at its minute tick (sandbox's refreshGitHubCredentials), and the tmux runtime for every
-// tracked pane.
-func (p plan) appOwners(role claim.Role) []string {
-	app := appauth.AppRoleFor(role)
-	owners, read := p.installed.Owners(app)
-	if !read {
-		return p.repositories.Owners()
+// never more than it. Every launch after a bundle of each of those Apps names the App's own
+// owners, which is what an agent is owed: the Kubernetes runtime builds one of each App for
+// every live issue pod at its minute tick (sandbox's refreshGitHubCredentials), and the tmux
+// runtime one for every tracked pane.
+func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
+	return func(role claim.Role) []string {
+		app := appauth.AppRoleFor(role)
+		apps := []appauth.AppRole{app}
+		if runtimeName == "kubernetes" {
+			apps = sandbox.PodAppRoles(role)
+		}
+		owners, read := p.installed.Owners(app)
+		for _, other := range apps {
+			if _, otherRead := p.installed.Owners(other); !otherRead {
+				read = false
+			}
+		}
+		if !read {
+			return p.repositories.Owners()
+		}
+		held := appauth.GitHubDirs(p.repositories.Accepted, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 	}
-	held := appauth.GitHubDirs(p.repositories.Accepted, p.repositories.renames, p.installed, p.left, []appauth.AppRole{app}, ghrepo.Repository{})
-	return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -1513,7 +1530,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
-			appOwners:   p.appOwners,
+			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
@@ -2348,7 +2365,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var handoffCompleted func(string)
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
-	var await func(repo, tree, child, parent string)
+	var await func(repo, tree, child, parent string) bool
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
 	if workflow != nil {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -227,7 +228,7 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 	if got := repos.Accepted(); len(got) != 2 || got[0] != ghrepo.MustParse("Acme/Widgets") || got[1] != ghrepo.MustParse("zeta/tools") {
 		t.Fatalf("Accepted = %v, want Acme/Widgets and zeta/tools", got)
 	}
-	if got, want := repos.Refused(), []refusedRepository{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}}; !reflect.DeepEqual(got, want) {
+	if got, want := repos.Refused(), []refusedRepository{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", apps: appAnswers{answered: true, implement: true}}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Refused = %#v, want %#v", got, want)
 	}
 	if mapped := repos.Mapped(); len(mapped) != 2 || !mapped[0].Default || mapped[1].Default {
@@ -253,13 +254,19 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 // A repository both Apps lack names both. An installation read that fails, transient or not, is no
 // answer: it leaves only its own repository out for now, naming the App, the repository and the
 // failure, and marked as a failed read so it is read again, and the rest of the mapping is checked
-// as it stands.
+// as it stands. Each refusal keeps what GitHub answered of both Apps for legion state wherever it
+// answered both reads, and nothing where a read failed, since that read answered nothing of its
+// App: legion state carried the constant "both installed" on served entries alone before, and a
+// reader parsed the reason to learn which App was missing.
 func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFailed(t *testing.T) {
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}}}
 	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true, "review acme/gadgets": true}}
 	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
 	if err != nil || len(accepted) != 0 || len(refused) != 1 || refused[0].Reason != "the implement and review Apps are not installed on acme/gadgets" || refused[0].readErr != nil {
 		t.Fatalf("readMapping = %#v, %#v, %v; want acme/gadgets left out naming both Apps", accepted, refused, err)
+	}
+	if got, want := refused[0].apps, (appAnswers{answered: true}); got != want {
+		t.Fatalf("acme/gadgets' Apps = %+v, want %+v: GitHub answered both, neither installed", got, want)
 	}
 
 	for _, failure := range []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}, errors.New("GitHub answered 403")} {
@@ -277,6 +284,9 @@ func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFaile
 		if len(refused) != 1 || refused[0].Repo != "acme/gadgets" || refused[0].Reason != want || !errors.Is(refused[0].readErr, failure) {
 			t.Fatalf("refused = %#v, want acme/gadgets refused for now with %q", refused, want)
 		}
+		if refused[0].apps.answered {
+			t.Fatalf("acme/gadgets' Apps = %+v with its review App read failing (%v), want no answer kept", refused[0].apps, failure)
+		}
 	}
 
 	// An App GitHub answered is missing leaves the repository out, but a read that failed to
@@ -288,8 +298,64 @@ func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFaile
 	installs.setFailing(failure, "implement acme/gadgets")
 	_, refused, _, err = readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
 	want := "the review App is not installed on acme/gadgets; the implement App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
-	if err != nil || len(refused) != 1 || refused[0].Reason != want || !errors.Is(refused[0].readErr, failure) {
-		t.Fatalf("readMapping = %#v, %v; want acme/gadgets refused for now with %q", refused, err, want)
+	if err != nil || len(refused) != 1 || refused[0].Reason != want || !errors.Is(refused[0].readErr, failure) || refused[0].apps.answered {
+		t.Fatalf("readMapping = %#v, %v; want acme/gadgets refused for now with %q and no answer of the Apps kept", refused, err, want)
+	}
+}
+
+// legion state carries, on each refused repository, what GitHub answered of both role Apps on it
+// (api.RefusedRepositoryView.Apps): the App missing named as a field where GitHub answered both
+// reads, both installed on one left out for its default-branch read alone, and no answer at all
+// where a read failed or Dispatch's name is no <owner>/<name>. A served repository carries both
+// Apps as installed, as before.
+func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T) {
+	client := &mappingDispatch{mappings: []dispatch.RepoProject{
+		{Repo: "acme/widgets", Project: "LEGION", Default: true},
+		{Repo: "acme/gadgets", Project: "LEGION"},
+		{Repo: "acme/tools", Project: "LEGION"},
+		{Repo: "not a repository", Project: "LEGION"},
+	}}
+	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true}}
+	installs.setFailing(errors.New("GitHub answered 502"), "review acme/tools")
+	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
+	if err != nil {
+		t.Fatalf("readMapping: %v", err)
+	}
+	limited := unreadDefaultBranch(mappedRepository{Repo: ghrepo.MustParse("zeta/limited")}, errors.New("GitHub's rate limit"))
+	repos := newRepositories("LEGION", ghrepo.Renames{})
+	repos.set(accepted, append(refused, limited))
+
+	view := repos.view(nil)
+	if len(view.Mapped) != 1 || view.Mapped[0].Apps != (api.AppInstallationsView{Implement: true, Review: true}) {
+		t.Fatalf("served = %+v, want acme/widgets with both Apps installed", view.Mapped)
+	}
+	apps := map[string]*api.AppInstallationsView{}
+	for _, entry := range view.Refused {
+		apps[entry.Repo] = entry.Apps
+	}
+	for repo, want := range map[string]*api.AppInstallationsView{
+		"acme/gadgets":     {Review: true},
+		"zeta/limited":     {Implement: true, Review: true},
+		"acme/tools":       nil,
+		"not a repository": nil,
+	} {
+		got, held := apps[repo]
+		if !held {
+			t.Fatalf("refused = %+v, want %s among them", view.Refused, repo)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s's Apps = %+v, want %+v", repo, got, want)
+		}
+	}
+	encoded, err := json.Marshal(view.Refused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"repo":"acme/gadgets","reason":"the implement App is not installed on acme/gadgets","apps":{"implement":false,"review":true}}`; !strings.Contains(string(encoded), want) {
+		t.Errorf("refused on the wire = %s, want it to hold %s", encoded, want)
+	}
+	if strings.Count(string(encoded), `"apps"`) != 2 {
+		t.Errorf("refused on the wire = %s, want apps on acme/gadgets and zeta/limited alone", encoded)
 	}
 }
 
@@ -862,8 +928,8 @@ func TestEveryReaderOfARepositoryTakesTheSetThatAnsweredFromOneLookup(t *testing
 				t.Fatalf("repositoryUnread(%s) = %v, want %v", tc.resolved, got, tc.unread)
 			}
 			asked := len(installs.asks())
-			fact := intake.DispatchIssue{Key: "LEGION-7", Seq: 1, Status: "todo", Title: "todo", Rank: "A", ResolvedRepo: tc.resolved}
-			if _, err := w.prepareUnrecorded(ctx, fact, false, 0); err != nil {
+			fact := intake.DispatchIssue{Key: "LEGION-7", Seq: 1, Status: "todo", Title: "todo", Rank: "A", HandedOver: true, ResolvedRepo: tc.resolved}
+			if _, err := w.prepareUnrecorded(ctx, fact, false, 0, false); err != nil {
 				t.Fatalf("prepare a todo issue on %s: %v", tc.resolved, err)
 			}
 			if got := len(installs.asks()) - asked; got != tc.reads {
@@ -877,10 +943,16 @@ func TestEveryReaderOfARepositoryTakesTheSetThatAnsweredFromOneLookup(t *testing
 // GitHub answered for it, has not failed for it again, and no issue fell silent for it while the
 // pass ran. It lets a repository GitHub does not answer for go only where no preparation will
 // read GitHub for it again: no unrecorded todo issue is left on it, or the mapping answers for it
-// by now, and no issue fell silent for it since the pass began. What a release left to that
-// repository's recovery leaves with its marker, for the architects to be told once
-// (tellLetGoWaits), and stays exactly while the marker does. Every listed repository counted
-// as recovered before, and nothing but an answered read ever let one go.
+// by now, and no issue fell silent for it since the pass began, with why it did. What a release
+// left to that repository's recovery leaves with its marker, for the architects to be told once
+// (tellLetGoWaits), and stays exactly while the marker does. Every listed repository counted as
+// recovered before, and nothing but an answered read ever let one go.
+//
+// Nothing is settled for a repository a preparation marked while the pass ran, a marker held
+// already or not. An issue a person moves to todo after the pass read the listing is prepared,
+// finds GitHub failing and the marker held, and notes its silence only after the pass settles,
+// its apply waiting on the fact lock the pass's reconcile holds: let go, the repository was listed
+// by no later pass and that issue was never recorded.
 func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 	const repo = "stranger/tools"
 	waits := map[string]map[string]releaseWait{repo: {"LEGION-2": {tree: "LEGION-1", parent: "LEGION-1"}}}
@@ -889,20 +961,26 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 		// unread and recovering are how the repository stands once the pass's listing has
 		// applied; silent is whether an issue fell silent for it since the pass began, todo
 		// whether the listing holds an unrecorded todo issue on it, and mapped whether the
-		// mapping names it by now.
-		unread, recovering, silent, todo, mapped bool
+		// mapping names it by now. failed and answeredNow are what a preparation that ran
+		// while the pass did found: GitHub failing (leaveUnread), or GitHub answering
+		// (readAnswered), after the pass took its set.
+		unread, recovering, silent, todo, mapped, failed, answeredNow bool
 		// answered is whether the pass recovered it, which is when its release waits are told,
 		// kept whether it is still left unread after the pass, and gone whether the pass took
-		// the release wait on it out with its marker, to tell.
+		// the release wait on it out with its marker, to tell, for why.
 		answered, kept, gone bool
+		why                  letGoWhy
 	}{
 		{name: "GitHub answered and the pass left nothing silent", recovering: true, answered: true},
 		{name: "GitHub answered after an issue of the pass fell silent", recovering: true, silent: true},
 		{name: "GitHub answered once and fails again", recovering: true, unread: true, todo: true, kept: true},
 		{name: "GitHub does not answer for its todo issue", unread: true, todo: true, kept: true},
-		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true},
+		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true, why: letGoNoTodo},
 		{name: "GitHub does not answer and an issue fell silent after the listing", unread: true, silent: true, kept: true},
-		{name: "GitHub does not answer and the mapping names it by now", unread: true, todo: true, mapped: true, gone: true},
+		{name: "GitHub does not answer and the mapping names it by now", unread: true, todo: true, mapped: true, gone: true, why: letGoAnsweredElsewhere},
+		{name: "GitHub does not answer and the mapping names it with no todo issue left", unread: true, mapped: true, gone: true, why: letGoNoTodo},
+		{name: "an issue moved to todo after the listing finds GitHub failing", unread: true, failed: true, kept: true},
+		{name: "GitHub answers an issue of its own while the pass runs", unread: true, answeredNow: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
@@ -919,7 +997,15 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 				w.noteUnread("LEGION-3", repo)
 			}
 			w.releaseWaits = map[string]map[string]releaseWait{repo: maps.Clone(waits[repo])}
-			answered, told, dropped := w.settleRecovery([]string{repo}, waits, map[string]bool{repo: tc.todo})
+			// The pass takes its set, the repository's mark among it, before anything below.
+			marks := map[string]uint64{repo: w.unreadMarks[repo]}
+			if tc.failed {
+				w.leaveUnread(ghrepo.MustParse(repo), "the implement App's installation on stranger/tools could not be read: GitHub answered 502")
+			}
+			if tc.answeredNow {
+				w.readAnswered(ghrepo.MustParse(repo))
+			}
+			answered, told, dropped := w.settleRecovery([]string{repo}, waits, map[string]bool{repo: tc.todo}, marks)
 			if got := slices.Contains(answered, repo); got != tc.answered || (len(told) != 0) != tc.answered {
 				t.Fatalf("the pass recovered %v and tells %v, want %s recovered: %v, with its release wait told exactly then", answered, told, repo, tc.answered)
 			}
@@ -930,6 +1016,49 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 			if taken != tc.gone {
 				t.Fatalf("the pass took %v out to tell, leaving %d waits on %s; want its release wait taken out with its marker: %v",
 					dropped, len(w.releaseWaits[repo]), repo, tc.gone)
+			}
+			if tc.gone && dropped[0].why != tc.why {
+				t.Fatalf("%s was let go for %d, want %d: its architects are told why", repo, dropped[0].why, tc.why)
+			}
+		})
+	}
+}
+
+// release_children leaves a child to a repository's recovery only while the daemon holds the
+// repository unread, and is told so: a wait on a repository its recovery has stopped waiting on
+// (let go, or answered) is refused and holds nothing, so the route falls back to the
+// child-release retry. Before, the wait was held all the same, on a repository no pass lists
+// again, where no recovery read it and no architect was told of it.
+func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
+	const repo = "stranger/tools"
+	for _, tc := range []struct {
+		name string
+		// unread is whether the marker is held; mapped is the mapping's answer, "" for none.
+		unread bool
+		mapped string
+		held   bool
+	}{
+		{name: "a repository no mapping names that GitHub did not answer for", unread: true, held: true},
+		{name: "a repository no mapping names that a pass has let go"},
+		{name: "a mapped repository left out for a read GitHub did not answer", mapped: "unread", held: true},
+		{name: "a mapped repository served", mapped: "served"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
+			switch tc.mapped {
+			case "unread":
+				w.repositories.set(nil, []refusedRepository{{Repo: repo, Reason: "GitHub answered 502; Legion reads it again", readErr: errors.New("GitHub answered 502")}})
+			case "served":
+				w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("Stranger/Tools")}}, nil)
+			}
+			if tc.unread {
+				w.unread = map[string]string{repo: "GitHub answered 502"}
+			}
+			if got := w.awaitRecovery("Stranger/Tools", "LEGION-1", "LEGION-2", "LEGION-1"); got != tc.held {
+				t.Fatalf("awaitRecovery = %v, want %v", got, tc.held)
+			}
+			if got := len(w.releaseWaits[repo]) == 1; got != tc.held {
+				t.Fatalf("%d waits held on %s, want one exactly when the wait is accepted", len(w.releaseWaits[repo]), repo)
 			}
 		})
 	}

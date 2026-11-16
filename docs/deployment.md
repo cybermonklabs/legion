@@ -91,6 +91,7 @@ A daemon that gets its tokens from the secrets broker through `token_command`, a
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
 There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
+The one exception is the account that holds the pane's own issue repository, or the controller's default owner: that directory cannot be left out, so every bundle built for the pane fails, no refresh writes any of its directories, and the pane keeps its last tokens until they expire within the hour.
 The account's name is among the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 What an install changes for a running pod is in `docs/kubernetes.md`.
 

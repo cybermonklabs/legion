@@ -54,7 +54,8 @@ func controllerCredentialSuperseded(err error) bool {
 // /legion/v1/controller/github-credential: the controller capability secret proves which
 // controller is asking, defaultOwner names the owner whose directory its GH_CONFIG_DIR names (empty
 // on the first fetch, which the daemon answers with the first owner), and the daemon answers the
-// review App's read-only token for every owner of the project, each rendered as the two files gh
+// review App's read-only token for every owner that App is installed on, and for an owner a
+// configured rename moved a repository away from, each rendered as the two files gh
 // reads, and the configured renames its gh routes a moved repository by, as a gh bundle
 // (ghconfig.Bundle) whose every owner carries the answer's App and its
 // expiry, parsed from the API's RFC 3339 nanosecond timestamp (time.RFC3339Nano, the format

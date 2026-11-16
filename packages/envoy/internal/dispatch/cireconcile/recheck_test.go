@@ -72,6 +72,59 @@ func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing
 	}
 }
 
+// Only GitHub's answer that the App is not installed is held. A lookup GitHub did not answer at
+// all -- here a 502, which is no rate limit and says nothing about the installation -- is asked
+// again at the very next pass, so the repository is read as soon as GitHub answers. A pass that
+// held such a failure for AbsentAppRecheck would leave the repository unread for an hour over one
+// failed request.
+func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.issueInRepository(rowRepository)
+	h.listHead()
+	h.github.setCheckRuns(gitHubRepository, headSHA,
+		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+	)
+	h.github.failNext(installationPath(rowRepository))
+	settlements := h.subscribe()
+
+	h.pass()
+
+	// The failure is skipped as every failure the pass cannot read as an answer is: named at
+	// WARN and counted in mappings_skipped, and never as a repository without the App.
+	line := h.passLine()
+	if got := number(t, line, "mappings_skipped"); got != 1 {
+		t.Errorf("the pass GitHub failed reports %d repositories skipped, want 1: %v", got, line)
+	}
+	if got := number(t, line, "repositories_without_app"); got != 0 {
+		t.Errorf("the pass GitHub failed reports %d repositories without the App, want none: GitHub said nothing about the App: %v", got, line)
+	}
+	if got := number(t, line, "heads"); got != 0 {
+		t.Errorf("the pass GitHub failed read %d heads, want none: %v", got, line)
+	}
+	// An error rather than a stop: what the next pass does is the behaviour this test is about,
+	// and a held failure shows there as the lookup that is never asked again.
+	if held := len(h.reconciler.absent); held != 0 {
+		t.Errorf("the Reconciler holds %d answers after a lookup GitHub failed, want none: %v", held, h.reconciler.absent)
+	}
+
+	h.pass()
+
+	if asked := h.github.countPath(installationPath(rowRepository)); asked != 2 {
+		t.Errorf("GitHub was asked %d times whether the App is installed on %s, want twice: once a pass", asked, rowRepository)
+	}
+	line = h.passLine()
+	if got := number(t, line, "heads"); got != 1 {
+		t.Errorf("the pass after the failure read %d heads, want the repository's one: %v", got, line)
+	}
+	if got := number(t, line, "mappings_skipped"); got != 0 {
+		t.Errorf("the pass after the failure reports %d repositories skipped, want none: %v", got, line)
+	}
+	settled := h.settlement(settlements, "after the pass after GitHub failed the lookup")
+	if settled.SHA != headSHA || settled.Passed.Count != 1 {
+		t.Fatalf("settlement = %+v, want the head settled on its one passing check", settled)
+	}
+}
+
 // The answer held about a repository is forgotten with the cycle that no longer covers it, as
 // the ETags of a head the order has left are: what the Reconciler keeps follows the
 // repositories mappings and issues name now, not every one an issue has ever named.

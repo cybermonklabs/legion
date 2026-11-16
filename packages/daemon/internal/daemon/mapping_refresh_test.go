@@ -411,6 +411,160 @@ func TestAnAdmissionAgainstTheOldMappingStaysHeard(t *testing.T) {
 	}
 }
 
+// gatedInstallations is installations whose reads, once armed, say they are in flight at entered
+// and wait there until release closes: a read of the mapping held in its installation check, with
+// mappingMu held, for as long as a test needs it held.
+type gatedInstallations struct {
+	*installations
+	armed   atomic.Bool
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedInstallations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+	if g.armed.Load() {
+		g.once.Do(func() { close(g.entered) })
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return g.installations.InstalledOn(ctx, role, repo)
+}
+
+// A recording on a repository GitHub intake already hears waits on no read of the mapping. A read
+// holds mappingMu for its whole run — its Dispatch listing, its installation reads of up to
+// installReadAttempt each, its reads of GitHub's names — and the recording's commit hook took
+// that lock before it looked at what intake hears, so every admission, a mapped repository's
+// among them, stood still on the Dispatch consumer's goroutine for as long as a read ran. Here a
+// read is held in its installation check while a root is admitted on acme/widgets, which the
+// mapping serves and intake hears: the admission must finish while the read is still held.
+func TestARecordingOnAHeardRepositoryWaitsOnNoReadOfTheMapping(t *testing.T) {
+	ctx := context.Background()
+	gate := &gatedInstallations{installations: &installations{}, entered: make(chan struct{}), release: make(chan struct{})}
+	w, client, _, _ := mappingRigWith(t, gate.installations, func(w *workflowRuntime) { w.installs = gate })
+	release := sync.OnceFunc(func() { close(gate.release) })
+	t.Cleanup(release)
+	gate.armed.Store(true)
+	w.requestMappingRead()
+	select {
+	case <-gate.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read of the mapping never reached its installation check")
+	}
+
+	root := issue("LEGION-990", "acme/widgets", "todo", true, "", 1)
+	client.show(root)
+	fact := intake.DispatchIssue{Key: root.Key, Seq: 1, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true, ResolvedRepo: "acme/widgets"}
+	admitted, done := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(done)
+		prepared, err := w.prepareRepository(ctx, fact)
+		if err == nil {
+			_, err = intake.ApplyFact(ctx, w.pool, "test", root.Key+"-todo-1", prepared, w.handlers...)
+		}
+		admitted <- err
+	}()
+	t.Cleanup(func() { release(); <-done })
+	select {
+	case err := <-admitted:
+		if err != nil {
+			t.Fatalf("the admission on acme/widgets: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admission on acme/widgets, which intake hears, did not finish within 5s while a read of the mapping was held: its recording waits on the read's lock")
+	}
+	if got := recordedIssue(t, w, root.Key); got == nil || got.Repo != "acme/widgets" {
+		t.Fatalf("%s = %+v, want it admitted on acme/widgets", root.Key, got)
+	}
+}
+
+// narrowingHeld stands in for the runtime's subscription update (workflowRuntime's
+// setRepositories): it holds the first call whose set does not name zeta/tools — a read of the
+// mapping narrowing what intake hears once the mapping stops serving zeta/tools — at reached
+// until release closes, and hands every call to intake, so the test reads what intake hears.
+type narrowingHeld struct {
+	w       *workflowRuntime
+	held    atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (h *narrowingHeld) set(ctx context.Context, repositories []ghrepo.Repository) error {
+	if !slices.Contains(repositories, ghrepo.MustParse("zeta/tools")) && !h.held.Swap(true) {
+		close(h.reached)
+		<-h.release
+	}
+	return h.w.consumers.SetRepositories(ctx, repositories)
+}
+
+// A record on a repository the mapping stops serving, committed while the read of the mapping
+// that stops serving it stands between its record snapshot and its narrowing, stays heard. The
+// recording finds the repository outside the set the read holds from its snapshot on, so it waits
+// for the read and adds the repository after the narrowing. A recording that answered from the
+// set intake was last told — the read's superset, until its narrowing has run — would find
+// zeta/tools there and add nothing, and the narrowing would then drop it from what intake hears
+// while a live record names it: the plain fast path, which this guards against.
+func TestARecordCommittedBeforeAReadsNarrowingStaysHeard(t *testing.T) {
+	ctx := context.Background()
+	held := &narrowingHeld{reached: make(chan struct{}), release: make(chan struct{})}
+	w, client, _, stream := mappingRigWith(t, &installations{}, func(w *workflowRuntime) { held.w, w.setRepositories = w, held.set })
+	release := sync.OnceFunc(func() { close(held.release) })
+	t.Cleanup(release)
+	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	refreshed, read := make(chan error, 1), make(chan struct{})
+	go func() { defer close(read); refreshed <- w.refreshMapping(ctx) }()
+	t.Cleanup(func() { release(); <-read })
+	select {
+	case <-held.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read of the mapping never reached its narrowing")
+	}
+
+	// The read has published the mapping that no longer serves zeta/tools and holds its
+	// narrowing, so a root handed over on zeta/tools now is on a repository no mapping names:
+	// read from GitHub, and recorded on what GitHub answers.
+	root := issue("LEGION-995", "zeta/tools", "todo", true, "", 1)
+	client.show(root)
+	fact := intake.DispatchIssue{Key: root.Key, Seq: 1, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true, ResolvedRepo: "zeta/tools"}
+	admitted, done := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(done)
+		prepared, err := w.prepareRepository(ctx, fact)
+		if err == nil {
+			_, err = intake.ApplyFact(ctx, w.pool, "test", root.Key+"-todo-1", prepared, w.handlers...)
+		}
+		admitted <- err
+	}()
+	t.Cleanup(func() { release(); <-done })
+	// The commit hook adds the repository to the cache set and then looks at what intake hears,
+	// so once the cache set names zeta/tools the record has committed and the hook is at its look.
+	// A recording that does not wait for the read finishes within the wait after it.
+	testwait.Eventually(t, root.Key+"'s commit hook running", func() bool {
+		return slices.Contains(repositoryNames(w.cacheRepositories()), "zeta/tools")
+	})
+	select {
+	case err := <-admitted:
+		admitted <- err
+	case <-time.After(500 * time.Millisecond):
+	}
+	release()
+	if err := <-refreshed; err != nil {
+		t.Fatalf("the read of the mapping: %v", err)
+	}
+	if err := <-admitted; err != nil {
+		t.Fatalf("the admission on zeta/tools: %v", err)
+	}
+	if got := recordedIssue(t, w, root.Key); got == nil || got.Repo != "zeta/tools" {
+		t.Fatalf("%s = %+v, want it recorded on zeta/tools", root.Key, got)
+	}
+	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.zeta.tools.>") {
+		t.Fatalf("GitHub filters = %v, want zeta/tools heard: %s is recorded on it", filters, root.Key)
+	}
+}
+
 // GitHub intake hears every repository a record of the project names, whatever its tree's state:
 // a root that closed on a repository the mapping no longer serves is heard across the refresh
 // that unmaps it and across a restart, so a person moving it back to todo re-admits it on a
@@ -1125,7 +1279,7 @@ func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testi
 	}
 	// An admission on the kept repository reads no default branch from GitHub: it takes the last
 	// read, so it waits for no read that is failing.
-	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-801", Seq: 1, Status: "todo", Title: "kept", Rank: "A", HandedOver: true, ResolvedRepo: "acme/widgets"}, false, 0); err != nil {
+	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-801", Seq: 1, Status: "todo", Title: "kept", Rank: "A", HandedOver: true, ResolvedRepo: "acme/widgets"}, false, 0, false); err != nil {
 		t.Fatalf("prepare an admission on kept acme/widgets = %v, want its last read with no GitHub read", err)
 	}
 }

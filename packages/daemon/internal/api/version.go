@@ -1924,7 +1924,10 @@ package api
 // both always written): that is the answer an operator and a plugin ask of a repository, and no
 // reader should have to parse it out of a refusal's prose. `refused` keeps `repo` and `reason`
 // and holds a repository a role App is not installed on, or one whose installation could not be
-// read, and never one for want of a mapping; `withoutWebhookApp` and `caches` cover the
+// read, and never one for want of a mapping; it gains an optional `apps` of that same shape,
+// written wherever GitHub answered both Apps' installation reads of `repo` and left out where a
+// read failed or `repo` is no `<owner>/<name>`, so which App is missing is read from the field on
+// a refused repository as on a served one; `withoutWebhookApp` and `caches` cover the
 // repositories the records name beside the mapped ones. `packages/contracts/src/legion-api.ts`
 // mirrors the entry and reads `apps` as optional, so a plugin of this contract meeting a daemon
 // of an earlier one mid-roll loses that one answer rather than refusing the whole body, and a

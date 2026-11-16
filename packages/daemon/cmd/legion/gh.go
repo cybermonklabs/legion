@@ -37,7 +37,8 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // or the owner alone, runs with the owner's one directory, since the bundle holds no narrower
 // token to run it with, and one naming a moved repository by both of its names runs with the
 // directory of the owner holding it now. A command naming no owner at all, in a working
-// directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's. A command it
+// directory whose git remotes name none, keeps GH_CONFIG_DIR: the directory the issue's
+// repository routes to (ghconfig.RouteDir), or a controller's default owner's. A command it
 // cannot read for certain, one whose repositories route to two directories (two owners'
 // repositories, or a repository a rename moved beside another of the owner it moved from), one
 // naming an owner the bundle holds no directory for — an owner the role's App is not installed

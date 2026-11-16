@@ -481,7 +481,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			installed: []string{"cybermonklabs"},
 			asks:      reads(old),
 			unread:    moved,
-			refuses:   []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, mappedDefault: true}},
+			refuses:   []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, apps: appAnswers{answered: true, implement: true}, mappedDefault: true}},
 		},
 		{
 			// The entry naming the old name holds the implement App and not the review App, so
@@ -501,7 +501,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			served:         []string{moved},
 			serves:         moved,
 			owners:         []string{"cybermonklabs"},
-			refuses:        []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old}},
+			refuses:        []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, apps: appAnswers{answered: true, implement: true}}},
 			minted:         []string{"cybermonklabs"},
 			gaps:           []webhookAppGap{{Repo: moved, Reason: movedGapReason}},
 		},

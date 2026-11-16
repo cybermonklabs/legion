@@ -630,18 +630,21 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	// later), record the chain under the recorded one, parents first. Nothing is told now: a child
 	// still unrecorded when the repository's recovery has run is named then (tellReleaseWaits).
 	if stop == nil {
-		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
-			"issue", child.Key, "tree", tree, "repo", repo)
 		if !s.clearChildReleaseRetry(w, r, child.Key) {
 			return "", false, true
 		}
-		return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, ""), true
+		ok := s.tellReleaseWait(w, r, tree, child, parent, repo, "")
+		if ok {
+			s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
+				"issue", child.Key, "tree", tree, "repo", repo)
+		}
+		return repo, ok, true
 	}
 	blocker := *stop
 	if !s.clearChildReleaseRetry(w, r, child.Key) {
 		return "", false, true
 	}
-	return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, fmt.Sprintf(
+	return repo, s.tellReleaseWait(w, r, tree, child, parent, repo, fmt.Sprintf(
 		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit) will not record %s either. Release %s first, then release %s again.",
 		child.Key, blocker.Key, blocker.Status, repo, child.Key, blocker.Key, child.Key)), true
 }
@@ -649,10 +652,20 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 // tellReleaseWait leaves child, released in tree under parent, to the recovery of the unread
 // repo (Options.AwaitRecovery), which tells the architect if it is still unrecorded then, and,
 // when reason is given, tells the architect at once in a child-release-stalled notice. It reports
-// whether the wave goes on: false once the notice's write failed and its answer is written.
-func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree, child, parent, repo, reason string) bool {
-	if s.await != nil {
-		s.await(repo, tree, child, parent)
+// whether the wave goes on: false once an answer is written, the notice's write having failed or
+// the retry scheduled.
+//
+// The daemon may refuse the wait: repo was unread when this request read it, and its recovery has
+// stopped waiting on GitHub for it since (Options.AwaitRecovery answering false). A child left to
+// that recovery would be read by no pass and named to no architect, while this route had answered
+// it released, so it is answered as a child on no unread repository is, with the child-release
+// retry (scheduleChildReleaseRetry), and the notice is not written: its reason says the
+// repository is left out, which the daemon has just said it no longer is.
+func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, parent, repo, reason string) bool {
+	if s.await != nil && !s.await(repo, tree, child.Key, parent) {
+		s.log.Info("api: release_children's child was on a repository the daemon no longer holds unread, so its release is retried rather than left to a recovery",
+			"issue", child.Key, "tree", tree, "repo", repo)
+		return s.scheduleChildReleaseRetry(w, r, tree, child, parent)
 	}
 	if reason == "" {
 		return true
@@ -667,7 +680,7 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree, c
 		}
 		return s.records.Enqueue(scoped, tx, row)
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child))
+		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
 	committed()
@@ -974,7 +987,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			if above, repo := pendingAncestor(child.view, byKey, pending); above != "" {
 				pending[child.view.Key] = repo
 				parent := intake.ObservedIssue(child.view).Parent
-				if !s.tellReleaseWait(w, r, grant.Tree, child.view.Key, parent, repo, fmt.Sprintf(
+				if !s.tellReleaseWait(w, r, grant.Tree, child.view, parent, repo, fmt.Sprintf(
 					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
 					child.view.Key, above, repo, child.view.Key, above, repo)) {
 					return
