@@ -369,14 +369,14 @@ type LauncherVolumeMissing struct {
 
 // The three things that raise an episode, which a report's RaisedBy names. An episode is the run
 // of readings the daemon's notice bounds count against, so what raised it is what a reader needs
-// to tell three reports apart: one of a volume that has just filled, one of a volume that fell
-// below its low mark and has filled again, and one whose last two reported sweeps started five
+// to tell three reports apart: one of a volume that has just filled, one of a volume that fell to
+// its low mark or below and has filled again, and one whose last two reported sweeps started five
 // points or more above where the episode before it was anchored.
 const (
 	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
 	VolumeEpisodeFirst = "first"
-	// VolumeEpisodeRecovery is a reading of the trimmer's own below the low mark, an interval's or
-	// a sweep's last, after one at or above the high mark.
+	// VolumeEpisodeRecovery is a reading of the trimmer's own at or below the low mark, an
+	// interval's or a sweep's last, after one at or above the high mark.
 	VolumeEpisodeRecovery = "recovery"
 	// VolumeEpisodeRise is a floor five percentage points or more above the anchor of the
 	// episode it ends, the floor being the lower of the last two reported sweep starts, and no
@@ -384,11 +384,11 @@ const (
 	// episode no rise raised, the first and one a recovery raised, is the lowest start of its
 	// reported sweeps, which a later reported sweep that starts lower lowers; that of one a rise
 	// raised is the floor that raised it, which never moves. So a volume that keeps filling raises
-	// a new episode at each five points its sweep starts climb, one reported sweep after the
-	// volume first stands there, except after two reported starts in a row read a transient high
-	// such as 97%: that raises a rise anchored there, and a fill from lower down then raises none
-	// until two starts stand five points above it, and none at all where it is above 95%, until
-	// a recovery starts a new chain. A peak that one start reads raises nothing. Each rise lifts
+	// a new episode at each five points its sweep starts climb, one reported sweep after the first
+	// that starts there, except after two reported starts in a row read a transient high such as
+	// 97%: that raises a rise anchored there, and a fill from lower down then raises none until
+	// two starts stand five points above it, and none at all where it is above 95%, until a
+	// recovery starts a new chain. A peak that one start reads raises nothing. Each rise lifts
 	// the anchor five points or more and a reading is at most 100%, so until a recovery a chain
 	// whose anchor is A at its first rise holds at most (100 − A) / 5 rises, rounded down; every
 	// anchor is a reported sweep's start, at or above the high mark that sweep ran by, so a chain

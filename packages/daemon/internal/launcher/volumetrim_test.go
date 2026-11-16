@@ -3339,9 +3339,12 @@ func TestThePauseIsEngagedByASweepUnderAPointAndNotByOneOverIt(t *testing.T) {
 	}
 }
 
-// The worst case of a volume the trimmer cannot bring under the high mark is two sweeps and
-// then one every eleven intervals: the first sweep frees what it can, the second finds nothing
-// eligible and so frees under a point, and that engages the ten-interval pause.
+// A volume the trimmer cannot bring under the high mark is swept at least once every eleven
+// intervals, and a volume whose first sweep deletes every eligible entry is swept that seldom: two
+// sweeps and then one every eleven intervals, since the first sweep frees what it can, the second
+// finds nothing eligible and so frees under a point, and that engages the ten-interval pause. A
+// sweep that frees a point or more engages no pause, so one whose roles refill what each sweep
+// frees is swept every interval.
 func TestTheWorstCaseIsTwoSweepsAndThenOneEveryEleventhInterval(t *testing.T) {
 	f := newTrimFixture(t, 10) // forty entries, four points, which leaves the volume at 86%
 	f.useVolume(f.modelled(90))
@@ -3561,9 +3564,9 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 }
 
 // The episode number follows the volume across the marks: the first reading at the high mark
-// opens episode 1, a reading below the low mark after that opens the next, and two reported sweeps
-// in a row that start five points or more above the episode's anchor, here the lowest start of
-// its reported sweeps, open another. A reading between the marks raises nothing, and a volume
+// opens episode 1, a reading at or below the low mark after that opens the next, and two reported
+// sweeps in a row that start five points or more above the episode's anchor, here the lowest start
+// of its reported sweeps, open another. A reading between the marks raises nothing, and a volume
 // oscillating between them raises nothing, which is what keeps the daemon's three-notice bound
 // from being spent on a trimmer doing its job.
 //
@@ -4132,8 +4135,8 @@ func TestTheRisesBeforeARecoveryAreBoundedByTheRoomAboveTheHighMark(t *testing.T
 	}
 }
 
-// Each recovery starts a chain of its own, which can rise again: a volume that falls below the
-// low mark and fills back past the high mark raises a recovery episode, anchored afresh at the
+// Each recovery starts a chain of its own, which can rise again: a volume that falls to the low
+// mark or below and fills back past the high mark raises a recovery episode, anchored afresh at the
 // lowest start of its reported sweeps, and then a rise once two reported sweeps in a row start
 // five points or more above that anchor. In each cycle here the sweeps start at 86%, 91% and
 // 91%, and one reading in the third pause falls to 65%, below the low mark, after which the volume
@@ -4249,6 +4252,139 @@ func TestASweepThatBringsTheVolumeBelowTheLowMarkEndsTheEpisode(t *testing.T) {
 	if refill := reports[len(reports)-1]; refill.Episode <= 2 || refill.RaisedBy != shimwire.VolumeEpisodeRecovery {
 		t.Errorf("the second fill's first report carries episode %d (%s), want a new episode raised by %q: the sweep before it left the volume at 69.9%%, below the low mark, and the episode it was in is over; the reports were %q",
 			refill.Episode, refill.RaisedBy, shimwire.VolumeEpisodeRecovery, reportsSeen(f))
+	}
+}
+
+// A sweep that ends exactly at the low mark ends the episode, as one that ends under it does: the
+// sweep stops at the first reading at or below the low mark and reports only where it ends above
+// it (sweep), so a recovery read only under the mark would leave a sweep that lands on it neither
+// reporting nor recovering, and the episode whose notices are spent would carry through the next
+// fill. The case is TestASweepThatBringsTheVolumeBelowTheLowMarkEndsTheEpisode with the clearing
+// sweep's last reading at 70.0% in place of 69.9%, which the fixture reads as exactly the mark;
+// that case is the reading a tenth under the boundary, and this one the reading on it. At
+// f01689f0, where the recovery asked for a reading under the mark, the second fill's first report
+// carried episode 2 (rise).
+func TestASweepThatEndsExactlyAtTheLowMarkEndsTheEpisode(t *testing.T) {
+	if mark := usageAt(70).Percent(); mark != 70 {
+		t.Fatalf("the fixture reads 70%% as %v, want exactly the low mark 70: the case would not stand on the boundary", mark)
+	}
+	f := newTrimFixture(t, 0)
+	var mu sync.Mutex
+	level := 86.0
+	sweepReads := map[int]float64{} // the clearing sweep's own two readings, by read
+	f.useVolume(func(call int) volumeUsage {
+		mu.Lock()
+		defer mu.Unlock()
+		if reading, ok := sweepReads[call]; ok {
+			return usageAt(reading)
+		}
+		return usageAt(level)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	at := func(reading float64, ends string) {
+		t.Helper()
+		mu.Lock()
+		level = reading
+		mu.Unlock()
+		f.tick(ends)
+		if t.Failed() {
+			t.FailNow()
+		}
+	}
+	for _, start := range []float64{86, 91, 91} {
+		at(start, "the sweep ended")
+		for range volumeQuietIntervals {
+			at(start, "no sweep for another")
+		}
+	}
+	before := f.reports()
+	if last := before[len(before)-1]; last.Episode != 2 || last.RaisedBy != shimwire.VolumeEpisodeRise {
+		t.Fatalf("the sweeps from 86%%, 91%% and 91%% left the trimmer in episode %d (%s), want 2 (%s); the reports were %q",
+			last.Episode, last.RaisedBy, shimwire.VolumeEpisodeRise, reportsSeen(f))
+	}
+
+	for _, root := range f.roots {
+		if root.Entry == ImmediateChildren {
+			for n := range 5 {
+				f.addTree(filepath.Join(root.Path, fmt.Sprintf("late-%d", n)), root.Entry)
+			}
+			break
+		}
+	}
+	mu.Lock()
+	next := f.readCount() + 1
+	sweepReads[next], sweepReads[next+1] = 97, 70.0
+	mu.Unlock()
+	at(97, "the sweep ended")
+	if got := len(f.reports()); got != len(before) {
+		t.Fatalf("the sweep that left the volume at 70.0%% sent %d reports, want none: it ended at the low mark", got-len(before))
+	}
+	at(70.2, "nothing to sweep")
+	at(78, "nothing to sweep")
+	at(86, "the sweep ended")
+
+	reports := f.reports()
+	if len(reports) != len(before)+1 {
+		t.Fatalf("the sweep from 86%% of the second fill sent %d reports, want one", len(reports)-len(before))
+	}
+	if refill := reports[len(reports)-1]; refill.Episode <= 2 || refill.RaisedBy != shimwire.VolumeEpisodeRecovery {
+		t.Errorf("the second fill's first report carries episode %d (%s), want a new episode raised by %q: the sweep before it left the volume at 70.0%%, at the low mark, and the episode it was in is over; the reports were %q",
+			refill.Episode, refill.RaisedBy, shimwire.VolumeEpisodeRecovery, reportsSeen(f))
+	}
+}
+
+// An interval reading exactly at the low mark after one at the high mark is a recovery, and one a
+// tenth above the mark is none: the boundary of the interval's reading is the sweep's, at or below
+// the low mark (episodeOf). Each side fills to 90%, where a sweep frees a point and a half and
+// reports in episode 1, reads the boundary's side between two intervals, and fills to 90% again,
+// whose sweep's report carries the episode that reading left: a new one raised by the recovery on
+// the mark, the first one still a tenth above it. At f01689f0, where the recovery asked for a
+// reading under the mark, the side on the mark failed.
+func TestAnIntervalReadingAtTheLowMarkIsARecoveryAndOneATenthAboveItIsNot(t *testing.T) {
+	for _, side := range []struct {
+		name    string
+		reading float64
+		want    reportEpisode
+	}{
+		{"exactly at the low mark", 70.0, reportEpisode{2, shimwire.VolumeEpisodeRecovery}},
+		{"a tenth above the low mark", 70.1, reportEpisode{1, shimwire.VolumeEpisodeFirst}},
+	} {
+		t.Run(side.name, func(t *testing.T) {
+			if percent := usageAt(side.reading).Percent(); (side.reading == 70 && percent != 70) || (side.reading != 70 && percent <= 70) {
+				t.Fatalf("the fixture reads %v%% as %v, which is not the side of the low mark 70 this case stands on", side.reading, percent)
+			}
+			f := newTrimFixture(t, 1)
+			root := f.roots[0]
+			added := 0
+			f.setOnRead(func(int) {
+				// One fresh entry per reading, so that every sweep has something to delete and
+				// the script stays in step: a sweep with no deletion takes no reading of its own.
+				added++
+				f.addTree(filepath.Join(root.Path, fmt.Sprintf("go-build7%08d", added)), root.Entry)
+			})
+			f.useVolume(script(
+				90, 88.5, // the first sweep: episode 1, first
+				side.reading,
+				90, 88.5, // the next fill's sweep, whose report carries the episode the reading left
+			))
+			f.setSettings(trimSettings())
+			f.start(f.trimmer())
+
+			for at, ends := range []string{"the sweep ended", "nothing to sweep", "the sweep ended"} {
+				f.tick(ends)
+				if t.Failed() {
+					t.Fatalf("the case stopped at interval %d", at+1)
+				}
+			}
+
+			assertReportEpisodes(t, f, []reportEpisode{{1, shimwire.VolumeEpisodeFirst}, side.want})
+			if recoveries := f.logged("(" + shimwire.VolumeEpisodeRecovery + ")"); recoveries != side.want.episode-1 {
+				t.Errorf("the reading of %.1f%% raised %d recoveries, want %d; the trimmer wrote %q",
+					side.reading, recoveries, side.want.episode-1, f.linesWritten())
+			}
+		})
 	}
 }
 

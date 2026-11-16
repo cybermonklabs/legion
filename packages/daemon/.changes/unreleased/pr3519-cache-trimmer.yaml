@@ -23,31 +23,37 @@ body: |-
   episode's anchor, never a reading inside a pause or below the high mark. The anchor is the
   lowest start of the episode's reported sweeps where no rise raised it, and the floor that
   raised it, which never moves, where one did, so a volume that keeps filling raises a new
-  episode at each five points its sweep starts climb, read one reported sweep after it first
-  stands there, and a peak that one start reads raises none; but a transient high, such as 97%,
-  that two reported starts in a row read raises a rise anchored there, after which a fill from
-  lower down raises none until two starts stand five points above it, and none at all where it
-  is above 95%, until a recovery starts a new chain. Until a recovery a chain whose anchor is A
-  at its first rise holds at most (100 − A) / 5 rises, rounded down, which is
+  episode at each five points its sweep starts climb, read one reported sweep after the first
+  that starts there, and a peak that one start reads raises none; but a transient high, such as
+  97%, that two reported starts in a row read raises a rise anchored there, after which a fill
+  from lower down raises none until two starts stand five points above it, and none at all where
+  it is above 95%, until a recovery starts a new chain. Until a recovery a chain whose anchor is
+  A at its first rise holds at most (100 − A) / 5 rises, rounded down, which is
   (100 − `high_percent`) / 5, three at the default, for a chain anchored at the high mark; an
   anchor above 95% can never be passed, and from one of 95% a rise needs two reported sweeps in a
-  row that start at exactly 100.0%. Each reading of the trimmer's own below the low mark, an
-  interval's or a sweep's last, after one at or above the high mark, starts a new chain of rises,
-  its anchor taken afresh; a fall while the trimmer is off (`enabled: false`, or settings it
-  refuses) is not read, and its episode and chain go on when it runs again, unless its first
-  reading then is below the low mark, which is a recovery. So a volume that cycles can be told
-  about each cycle: its recovery episode's reports wait for the hour, but a rise, raised in each
-  cycle where two reported sweeps in a row start five points or more above the lowest start of
-  that cycle's reported sweeps before them, is told without waiting, which costs one notice for
-  each report of the rise episode, up to its three, besides the recovery episode's reports, at
-  most one an hour. Measured for one pod over a day of 60-second intervals: with sweeps that
-  pause between three reported starts of 86%, 91% and 92% and a sweep then leaving 69.9%, 42
-  notices a day at a 35-minute cycle, the shortest that shape has, 41 at 71 minutes, 33 at 45 and
-  8 at six hours; with the fill going on to reported starts of 93% and 94% before that sweep, so
-  that the rise episode has three reports, 76 a day at a 57-minute cycle, the shortest that shape
-  has, and 49 at 90 minutes; with sweeps that each free a point and do not pause, more as the
-  cycle shortens, 48 a day at 62 minutes and 289 at 5. The switched-off notice is sent whatever
-  the bounds stand at. A rollback below this release has the operator delete the queued notices
+  row that start at exactly 100.0%. Each reading of the trimmer's own at or below the low mark,
+  an interval's or a sweep's last, after one at or above the high mark, starts a new chain of
+  rises, its anchor taken afresh, so a sweep that ends exactly at the low mark is a recovery and
+  sends no report; a fall while the trimmer is off (`enabled: false`, or settings it refuses) is
+  not read, and its episode and chain go on when it runs again, unless its first reading then is
+  at or below the low mark, which is a recovery. So a volume that cycles can be told about each
+  cycle: its recovery episode's reports wait for the hour, but a rise, raised in each cycle where
+  two reported sweeps in a row start five points or more above the lowest start of that cycle's
+  reported sweeps before them, is told without waiting. Each rise episode of a cycle, up to
+  (100 − A) / 5 of them for a cycle whose anchor is A at its first rise, costs up to three
+  notices that skip the hour, so a cycle costs at most nine such notices at the default high
+  mark, besides the recovery episode's reports, at most one an hour. Measured for one pod over a
+  day of 60-second intervals, sweeps taken as instant, with the least fill rate each cycle needs
+  on a 49 GiB volume: with sweeps that pause between reported starts of 86%, 91% and 92% and then
+  one leaving 69.9%, 42 notices a day at a 35-minute cycle (18.6 GiB an hour), 33 at 45 minutes
+  (14.4 GiB an hour) and 8 at six hours (1.8 GiB an hour); with that fill going on to 93% and
+  94%, 76 at 57 minutes (12.4 GiB an hour); with pauses and starts of 86%, 91% to 94% and 96% to
+  99%, two rise episodes a cycle, 86 at 101 minutes (8.5 GiB an hour); with no pause and starts
+  of 85%, three of 90%, three of 95% and four of 100%, three rise episodes a cycle, 999 at 13
+  minutes (90.7 GiB an hour). The shortest cycle of each of those fills needs the volume back
+  from 69.9% to the high mark or above within two minutes of the sweep that left it there, and
+  docs/kubernetes.md gives the rest of the figures. The switched-off notice is sent whatever the
+  bounds stand at. A rollback below this release has the operator delete the queued notices
   first, as docs/kubernetes.md says.
 
   A `worker-died` notice of the tree architect, and of a held phase, now names the pod's own end

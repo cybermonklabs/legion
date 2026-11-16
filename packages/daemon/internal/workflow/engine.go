@@ -1164,11 +1164,12 @@ func deathFirstLine(death string) string {
 // A filling pod can report every sweep, and the notice is a wake of the architect's session.
 // VolumeNoticeCap is the most an architect hears for one trimmer and one episode: three is
 // enough to show a trend — it is filling, the trimmer is not keeping up, here is what is in it —
-// and a fourth says nothing the third did not. VolumeNoticePodInterval
-// is the most often it hears about one pod at all, whatever trimmer or episode reported, so an
-// episode that ends and another that opens a minute later is still one notice an hour. Two
-// kinds of report pass a bound (volumeNoticeHeldBy): one whose episode a rise raised skips the
-// hour and not the cap, and the report that the trimmer switched itself off skips both.
+// and a fourth says nothing the third did not. Two kinds of report pass a bound
+// (volumeNoticeHeldBy): one whose episode a rise raised skips the hour below and not the cap, so
+// each rise episode costs up to three notices however recent the pod's last one was, and the
+// report that the trimmer switched itself off skips both. Every other report of one pod waits
+// VolumeNoticePodInterval from the pod's newest notice, whatever trimmer or episode wrote it, so
+// an episode that ends and another that opens a minute later is still one notice an hour.
 //
 // Both lines begin with VolumeNoticeLinePrefix and each names the issue, the pod, the trimmer,
 // the episode and the count, because the issue's production check reads them from the daemon's
