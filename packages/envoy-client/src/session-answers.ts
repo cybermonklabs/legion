@@ -6,7 +6,7 @@ import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
-import { messageFor } from "./errors";
+import { messageFor, withoutUserinfo } from "./errors";
 
 /**
  * People's answers on every model request: what people wrote in the last 72
@@ -518,7 +518,7 @@ export async function readSessionAnswers(
     current.noRouteReported = true;
     return {
       ...read,
-      notice: `Dispatch at ${url} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
+      notice: `Dispatch at ${withoutUserinfo(url)} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
     };
   };
   if ((state.noRouteUntil.get(url) ?? 0) > now()) return noRoute();

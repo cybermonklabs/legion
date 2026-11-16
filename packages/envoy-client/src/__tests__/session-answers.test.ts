@@ -713,6 +713,29 @@ describe("readSessionAnswers", () => {
     expect(read.text).toBeUndefined();
   });
 
+  // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
+  // user and a password without them; the read itself goes to the URL as configured.
+  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
+    const dispatch = {
+      ...dispatchAt(),
+      url: `http://${user}:${secret}@answers-userinfo-${dispatchCount}.test`,
+    };
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(calls.map((call) => call.url.username)).toEqual([user]);
+    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).not.toContain(user);
+    expect(read.notice).not.toContain(secret);
+  });
+
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
     // Twelve items of about 1,000 characters each: the cap leaves the oldest out.
     const items = Array.from({ length: 12 }, (_, index) =>
