@@ -751,6 +751,48 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 	}
 }
 
+// The daemon holds the operator's pod to the exchange identity's names, before its boot and for
+// `legion start --check-config`, only where runtime.kubernetes.agent_secrets names an
+// exchange_audience. With no agent_secrets block, or one that names no exchange_audience, an
+// operator's AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_TOKEN_FILE, a volume named
+// agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,
+// as they were before the key existed (R9); with one, the first of them is refused by name.
+func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *testing.T) {
+	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	pod := config.PodConfig{
+		Env: map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata", "AGENT_SECRETS_MACHINE_TOKEN_FILE": "/etc/operator/identity/token"},
+		Volumes: []corev1.Volume{
+			{Name: "agent-secrets-exchange", VolumeSource: emptyDir},
+			{Name: "operator-identity", VolumeSource: emptyDir},
+		},
+		VolumeMounts: []corev1.VolumeMount{{Name: "operator-identity", MountPath: "/var/run/legion/agent-secrets-exchange"}},
+	}
+	enrolled := func(exchange string) *config.AgentSecretsConfig {
+		return &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: exchange}
+	}
+	for name, tc := range map[string]struct {
+		agentSecrets *config.AgentSecretsConfig
+		want         string
+	}{
+		"no agent_secrets block":                  {nil, ""},
+		"agent_secrets with no exchange_audience": {enrolled(""), ""},
+		"exchange_audience set": {enrolled("legion-broker-exchange"),
+			"runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			cfg.Runtime.Kubernetes.AgentSecrets, cfg.Runtime.Kubernetes.Pod = tc.agentSecrets, pod
+			err := checkOperatorConfig(cfg, lookup(nil))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("checkOperatorConfig = %v, want the operator's pod accepted as it was before the key existed", err)
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("checkOperatorConfig = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // runtime.kubernetes.pod and provider_keys reach the runtime's Options, each piece of the pod
 // as configured and each provider key as its variable's Secret key: the manifests the runtime
 // builds from them are the sandbox package's to test, and this is the one place the daemon hands

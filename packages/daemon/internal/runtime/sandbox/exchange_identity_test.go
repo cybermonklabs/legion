@@ -180,3 +180,128 @@ func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
 		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
 	}
 }
+
+// exchangeDeployments are the three ways a deployment can stand to the exchange identity: no
+// agent_secrets block, a block that names no exchange_audience — every deployment before the key
+// existed is one of these two — and a block that names one. exchanges is whether the exchange
+// identity's names are Legion's: only in the third.
+var exchangeDeployments = []struct {
+	name         string
+	agentSecrets func() *AgentSecrets
+	exchanges    bool
+}{
+	{"no agent_secrets block", func() *AgentSecrets { return nil }, false},
+	{"agent_secrets with no exchange_audience", func() *AgentSecrets {
+		return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+	}, false},
+	{"exchange_audience set", exchangeEnrolled, true},
+}
+
+// The exchange identity's names — its two variables, its volume (agent-secrets-exchange) and the
+// directory its token is mounted at (/var/run/legion/agent-secrets-exchange) — are Legion's only
+// where the deployment names an exchange audience. A deployment that names none, with no
+// agent_secrets block or with a block that sets no exchange_audience, runs exactly as it did before
+// the key existed (R9): an operator's pod that takes one of them is accepted, and the pod a launch
+// builds carries it as the operator wrote it. A deployment that names an audience refuses that
+// pod, naming the piece of it that collides.
+func TestAnOperatorKeepsTheExchangeNamesWhileTheExchangeIsOff(t *testing.T) {
+	const operatorVolume = "operator-identity"
+	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	cases := []struct {
+		name    string
+		pod     Pod
+		carried func(pod corev1.PodSpec, worker corev1.Container) bool
+		refused string
+	}{
+		{
+			name: "its own machine identity",
+			pod:  Pod{Env: map[string]string{identityVariable: "metadata"}},
+			carried: func(_ corev1.PodSpec, worker corev1.Container) bool {
+				return envOf(worker)[identityVariable] == "metadata"
+			},
+			refused: "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience",
+		},
+		{
+			name: "its own machine token file",
+			pod:  Pod{Env: map[string]string{tokenFileVariable: "/etc/operator/identity/token"}},
+			carried: func(_ corev1.PodSpec, worker corev1.Container) bool {
+				return envOf(worker)[tokenFileVariable] == "/etc/operator/identity/token"
+			},
+			refused: "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_TOKEN_FILE, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience",
+		},
+		{
+			name: "a volume of the exchange identity's name",
+			pod:  Pod{Volumes: []corev1.Volume{{Name: agentSecretsExchangeVolume, VolumeSource: emptyDir}}},
+			carried: func(pod corev1.PodSpec, _ corev1.Container) bool {
+				return slices.ContainsFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == agentSecretsExchangeVolume && v.EmptyDir != nil })
+			},
+			refused: "runtime.kubernetes.pod.volumes[0].name agent-secrets-exchange is a volume Legion puts in every pod",
+		},
+		{
+			name: "a mount where the exchange identity's token is mounted",
+			pod: Pod{
+				Volumes:      []corev1.Volume{{Name: operatorVolume, VolumeSource: emptyDir}},
+				VolumeMounts: []corev1.VolumeMount{{Name: operatorVolume, MountPath: AgentSecretsExchangeDir}},
+			},
+			carried: func(_ corev1.PodSpec, worker corev1.Container) bool {
+				return slices.ContainsFunc(worker.VolumeMounts, func(m corev1.VolumeMount) bool {
+					return m.Name == operatorVolume && m.MountPath == AgentSecretsExchangeDir
+				})
+			},
+			refused: "runtime.kubernetes.pod.volume_mounts[0].mount_path /var/run/legion/agent-secrets-exchange overlaps /var/run/legion/agent-secrets-exchange, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's",
+		},
+	}
+	for _, deployment := range exchangeDeployments {
+		for _, tc := range cases {
+			t.Run(deployment.name+"/"+tc.name, func(t *testing.T) {
+				opts := testOptions()
+				opts.AgentSecrets, opts.Pod = deployment.agentSecrets(), tc.pod
+				r, err := configure(opts)
+				if deployment.exchanges {
+					if want := "sandbox runtime: " + tc.refused; err == nil || err.Error() != want {
+						t.Fatalf("configure = %v, want %q", err, want)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("configure = %v, want the operator's pod accepted as it was before the key existed", err)
+				}
+				spec := workerSpec(t)
+				if !tc.carried(podOf(t, r, spec), workerOf(t, r, spec)) {
+					t.Errorf("the pod a launch builds does not carry %s as the operator wrote it", tc.name)
+				}
+			})
+		}
+	}
+}
+
+// A launch spec may set the exchange identity's two variables where the deployment names no
+// exchange audience, as every spec could before the key existed (R9): the runtime tells no role
+// either, so the role is told the spec's value. Where it names one, the runtime tells each role
+// of an enrolled pod both, and a spec setting either is refused as one setting any variable the
+// runtime sets itself (runtime.ValidateSpawnSpec).
+func TestALaunchSpecMayNameTheExchangeVariablesWhileTheExchangeIsOff(t *testing.T) {
+	for _, deployment := range exchangeDeployments {
+		for name, value := range map[string]string{identityVariable: "metadata", tokenFileVariable: "/etc/operator/identity/token"} {
+			t.Run(deployment.name+"/"+name, func(t *testing.T) {
+				opts := testOptions()
+				opts.AgentSecrets = deployment.agentSecrets()
+				r, err := configure(opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				spec := workerSpec(t)
+				spec.Env[name] = value
+				if deployment.exchanges {
+					if _, err := r.prepare(spec); err == nil || !strings.Contains(err.Error(), "Env sets "+name+", which the runtime sets itself") {
+						t.Fatalf("prepare = %v, want the spec refused for setting %s", err, name)
+					}
+					return
+				}
+				if got := envOf(workerOf(t, r, spec))[name]; got != value {
+					t.Errorf("the role is told %s=%q, want the spec's %q", name, got, value)
+				}
+			})
+		}
+	}
+}
