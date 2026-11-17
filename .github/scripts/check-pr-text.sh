@@ -224,8 +224,9 @@ else
   # published no earlier, or the cutoff is refused as UNKNOWN. Which tags contain the marker is
   # git's answer, from a clone of the base branch's commits alone (--filter=tree:0: no tree, no
   # file), read anonymously, as the repository is public; the legion-v tags are lightweight tags on
-  # those commits, so their refs come from one ref listing, and only a tag whose commit the clone
-  # lacks makes the tags be fetched. So each run asks GitHub's API for a release or two, however
+  # those commits, so their refs come from one ref listing. A tag whose commit the clone lacks is
+  # fetched by update-ref itself, that one commit from the partial clone's own remote, and the tags
+  # are fetched only when that fails. So each run asks GitHub's API for a release or two, however
   # many releases there are; reading every release since the marker grew with each one.
   history="$work/history.git"
   remote="${GITHUB_SERVER_URL:-https://github.com}/$repository"
