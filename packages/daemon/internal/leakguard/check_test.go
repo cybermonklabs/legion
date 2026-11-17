@@ -270,6 +270,25 @@ func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
 	}
 }
 
+// A shared check a signal ended (the kernel's out-of-memory kill) is a setup failure that it could
+// not be run, with the signal and what the check printed before it beneath: the check may have said
+// why first. Read as a status, it was "exited -1, which it does not document", with that output.
+func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
+	killsItself := "cat >/dev/null\necho 'LEAK CHECK ERROR: out of memory reading the history' >&2\nkill -KILL $$\n"
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), killsItself), Public)
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     t.TempDir(),
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	})
+	failed := setupFailure(t, err)
+	says(t, failed, "the shared public leak check could not be run")
+	if want := "signal: killed\nLEAK CHECK ERROR: out of memory reading the history"; failed.Err == nil || failed.Err.Error() != want {
+		t.Errorf("the setup failure carries %v beneath it, want %q", failed.Err, want)
+	}
+}
+
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {

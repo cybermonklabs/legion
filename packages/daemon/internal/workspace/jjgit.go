@@ -99,8 +99,8 @@ func OutputLines(out string) []string {
 // exited on its own, procgroup.WaitDelay can hold the wait open past the budget for a child still
 // holding the command's pipes, and the command's own exit is then its answer. A command that
 // never started because an earlier one on the same budget spent it timed out too, while a command
-// the caller stopped by cancelling its context, rather than the budget ending it, reports its
-// exit, not a timeout.
+// the caller stopped by cancelling its context, rather than the budget ending it, reports the
+// signal its stop sent (procgroup.Err), not a timeout.
 //
 // The save (internal/shim) and the restore (internal/launcher) both run here: they run the same
 // two tools over the same workspace, and a restore wedged on a stale index.lock or on a git
@@ -133,15 +133,21 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	// inside the grace does.
 	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
 		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
-	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
-		return "", fmt.Errorf("run %s: %w", command, runErr)
-	}
-	if !timedOut && cmd.ProcessState.ExitCode() == 0 {
+	runErr := procgroup.Err(err)
+	if runErr == nil && !timedOut && cmd.ProcessState.ExitCode() == 0 {
 		return strings.TrimSpace(stdout.String()), nil
 	}
 	report := strings.TrimSpace(stderr.String())
 	if note := StaleGitLockNote(report, time.Now()); note != "" {
 		report += "\n" + note
+	}
+	if runErr != nil && !timedOut {
+		// A signal's death is such an error (procgroup.Err), and a git or jj killed after it said
+		// why it was failing keeps that report, as a failed exit does.
+		if report != "" {
+			return "", fmt.Errorf("run %s: %w\n%s", command, runErr, report)
+		}
+		return "", fmt.Errorf("run %s: %w", command, runErr)
 	}
 	if timedOut {
 		message := fmt.Sprintf("Command timed out after %s s (ran %.1f s): %s",

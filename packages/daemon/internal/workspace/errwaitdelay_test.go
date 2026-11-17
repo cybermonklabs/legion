@@ -178,6 +178,38 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 	}
 }
 
+// A git or jj a signal ended after it said why it was failing (the memory guard's kill, another
+// drain's SIGTERM) keeps that report: RunCommand's error names the signal and carries the stderr
+// and the stale-lock note, as a failed exit's does, and execRunner's error carries the stderr,
+// since its callers propagate the error and not the Result. Without the report, the save's and the
+// restore's notices would say only `signal: killed`.
+func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "index.lock")
+	if err := os.WriteFile(lock, []byte("held"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	said := "fatal: Unable to create '" + lock + "': File exists."
+	script := "echo \"fatal: Unable to create '$1': File exists.\" >&2; kill -KILL $$"
+	t.Run("RunCommand", func(t *testing.T) {
+		_, err := RunCommand(context.Background(), procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", lock})
+		if err == nil || !strings.Contains(err.Error(), ": signal: killed\n"+said+"\ngit lock "+lock+" was last written ") {
+			t.Errorf("RunCommand = %v, want the signal, then what the command said, then the stale-lock note", err)
+		}
+	})
+	t.Run("execRunner", func(t *testing.T) {
+		fakeGit := filepath.Join(t.TempDir(), "git")
+		if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
+			t.Fatalf("write the fake git: %v", err)
+		}
+		run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+		_, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute})
+		if err == nil || err.Error() != "signal: killed\n"+said {
+			t.Errorf("Run = %v, want the signal and what the command said beneath it", err)
+		}
+	})
+}
+
 // cancelOnceExists calls cancel once path exists, which the command under test creates once it
 // runs, so the cancel lands on a running command and never on one not yet started.
 func cancelOnceExists(ctx context.Context, cancel context.CancelFunc, path string) {

@@ -324,6 +324,11 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// could not be run rather than as the timeout it is.
 	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
 	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
+		// A signal's death is such an error (procgroup.Err): what the command printed on stderr
+		// before it goes under it, since every caller propagates the error and not the Result.
+		if report := strings.TrimSpace(result.Stderr); report != "" {
+			runErr = fmt.Errorf("%w\n%s", runErr, report)
+		}
 		return result, runErr
 	}
 	result.ExitCode = child.ProcessState.ExitCode()

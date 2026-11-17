@@ -102,8 +102,9 @@ func TestKilledIsWhetherTheContextsEndSignaledTheGroup(t *testing.T) {
 
 // A Cancel whose signal fails with anything but "already gone" still counts as the context's end
 // killing the command: exec then kills the process itself once WaitDelay has passed (watchCtx).
-// A killed that counted only a Cancel that succeeded would call a command its deadline ended an
-// exit of its own, exit -1, where the old reading of the deadline called it a timeout.
+// A killed that counted only a Cancel that succeeded would call a command its deadline ended one a
+// signal ended (`signal: killed`, procgroup.Err), where the old reading of the deadline called it a
+// timeout.
 func TestKilledCountsACancelWhoseSignalFailed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
