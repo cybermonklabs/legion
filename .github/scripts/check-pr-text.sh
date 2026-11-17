@@ -212,21 +212,39 @@ if [ -z "$skill_commit" ]; then
   echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
 else
   skill_date=$(jq -s -r '[.[][]] | last | .commit.committer.date' "$work/cutoff-commits")
-  # The releases route lists newest first, 100 a page: a page that comes back short is the last,
-  # and once a page reaches a release published before the marker commit, every later page is
-  # older still and none of it can contain that commit, so the paging stops there rather than
-  # reading every release the repository ever published (some thousands, at every run).
+  # The releases, 100 a page, in the one order that makes stopping early safe: GraphQL's, sorted
+  # by creation time, newest first. (The REST releases route is not in that order: it lists one day
+  # at a time and, within a day, one package after another, so a page can reach an early-morning
+  # release of another package before that day's later legion-v releases, and a stop there moved
+  # the cutoff from run to run.) A release is created before it is published, and one that
+  # contains the marker commit is created after that commit is, so once a page reaches a release
+  # created before the marker commit, no later page holds a candidate, and the paging stops there
+  # rather than reading every release the repository ever published (some thousands, at every run).
+  # shellcheck disable=SC2016 # $owner, $name and $cursor are GraphQL's variables, not the shell's
+  releases_query='query($owner: String!, $name: String!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      releases(first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+        nodes { tagName createdAt publishedAt isDraft }
+        pageInfo { endCursor hasNextPage }
+      }
+    }
+  }'
   : > "$work/releases"
-  release_page=1
+  release_cursor=''
   while :; do
-    gh api "repos/$repository/releases?per_page=100&page=$release_page" > "$work/releases-page"
-    cat "$work/releases-page" >> "$work/releases"
-    page_count=$(jq 'length' "$work/releases-page")
-    page_oldest=$(jq -r '[.[] | .published_at // empty] | min // empty' "$work/releases-page")
-    if [ "$page_count" -lt 100 ] || { [ -n "$page_oldest" ] && [[ $page_oldest < $skill_date ]]; }; then
+    cursor_args=()
+    if [ -n "$release_cursor" ]; then cursor_args=(-f cursor="$release_cursor"); fi
+    gh api graphql -f query="$releases_query" -f owner="${repository%%/*}" -f name="${repository#*/}" \
+      "${cursor_args[@]}" > "$work/releases-page"
+    jq '.data.repository.releases.nodes
+        | map({tag_name: .tagName, created_at: .createdAt, published_at: .publishedAt, draft: .isDraft})' \
+      "$work/releases-page" >> "$work/releases"
+    page_oldest=$(jq -r '[.data.repository.releases.nodes[].createdAt] | min // empty' "$work/releases-page")
+    more=$(jq -r '.data.repository.releases.pageInfo.hasNextPage' "$work/releases-page")
+    if [ "$more" != true ] || { [ -n "$page_oldest" ] && [[ $page_oldest < $skill_date ]]; }; then
       break
     fi
-    release_page=$((release_page + 1))
+    release_cursor=$(jq -r '.data.repository.releases.pageInfo.endCursor' "$work/releases-page")
   done
   jq -s -r --arg after "$skill_date" '[.[][] | select(.draft | not)
       | select(.tag_name | startswith("legion-v")) | select(.published_at >= $after)]
