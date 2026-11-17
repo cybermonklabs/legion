@@ -1535,9 +1535,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("outbox status write has empty status")
 		}
 		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
-		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
-		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
-		// carries out a move whose cause is already on the issue, so it posts none.
+		// move's that nothing else on Dispatch explains (workflow's moveReason: a head that
+		// conflicts with its base, and a worker's backward move). A hand-over, a re-assertion or a
+		// person's handover repeats or carries out a move whose cause is already on the issue, so it
+		// posts none.
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}

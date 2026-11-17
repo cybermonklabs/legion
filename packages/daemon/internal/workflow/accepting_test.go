@@ -159,6 +159,17 @@ func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *t
 			if err := pool.QueryRow(context.Background(), "select status from issues where key = 'LEGION-208'").Scan(&status); err != nil || status != tc.status {
 				t.Fatalf("status = %q, %v; want %s", status, err, tc.status)
 			}
+			// A backward move reaches the daemon's API and no Dispatch record, so its status write
+			// posts who asked and why on the issue before the status changes.
+			var posted string
+			if err := pool.QueryRow(context.Background(),
+				"select coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status' and issue = 'LEGION-208'").Scan(&posted); err != nil {
+				t.Fatalf("read the status write: %v", err)
+			}
+			if want := "Legion moved this issue from accepting back to " + string(tc.to) +
+				" at the architect's request: the evidence does not cover the migration."; posted != want {
+				t.Fatalf("the status write posts %q on the issue, want %q", posted, want)
+			}
 			task := startTask(t, pool, tc.role)
 			for _, want := range []string{"Phase: " + string(tc.to) + ".", "Reason: the evidence does not cover the migration.", "Pull request: #42."} {
 				if !strings.Contains(task, want) {

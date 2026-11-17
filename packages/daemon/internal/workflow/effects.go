@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchbody"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -181,14 +183,21 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
 // text the write posts on the issue before the status lands (record.StatusWrite.Reason), which
 // transition gives only for a move nothing else on Dispatch explains (moveReason), and is empty
-// for every other write. A status that reads as out of the workflow is the daemon's own close — the
+// for every other write. A move that writes no status, since its target phase shares the status
+// the issue already shows (implementing back to planning, both in_progress; accepting back to
+// reviewing; merging back to retro) or has none, still posts its reason, as a message of its own:
+// carried only on a status row, the reason would reach no issue, which would then show nothing of
+// the move at all. A status that reads as out of the workflow is the daemon's own close — the
 // done a merge writes — and it goes as a close row, fenced on the run it ends
 // (record.CloseStatusWrite): the ordinary rule drops a row whose issue has left the workflow, which
 // is every close, so a close judged by it would be lost on its first ISSUE_CHANGED and leave the
 // issue open in Dispatch for good.
 func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status, reason string) error {
 	if status == "" || issue.Status == status {
-		return nil
+		if reason == "" {
+			return nil
+		}
+		return e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: reason})
 	}
 	if record.OutOfWorkflow(status) {
 		return e.enqueue(ctx, tx, issue.Key, record.CloseStatusWrite(status, issue.Status, "", issue.Generation))
@@ -196,17 +205,23 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the one move the daemon makes on
-// its own: a head that conflicts with its base (TriggerConflict). Every other move is a worker's
-// act — a tester's verdict, a review, a hand-off, a backward move a worker asked for — and Dispatch
-// already holds that act, so it posts nothing: transition also carries a review's whole body and a
-// backward move's own reason, and neither goes on the issue a second time. A conflict's reason
-// reached the architect, the role whose phase ended and the implementer's task over Envoy only, and
-// the issue itself showed a bare status change that no person or census could read a cause from.
-// A person reads this text on the issue, so it is built from the pull request, not from the
-// conflict handler's sentence to the implementer.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest) string {
-	if trigger != TriggerConflict {
+// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
+// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
+// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
+// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
+// architect's send-back from accepting showed a bare status change, with its reason only in the
+// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
+// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
+// review's whole body, which does not go on the issue a second time.
+// A person reads this text on the issue, so a conflict's is built from the pull request, not from
+// the conflict handler's sentence to the implementer, and a backward move's names the role that
+// asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
+	switch trigger {
+	case TriggerConflict:
+	case TriggerBackward:
+		return backwardMoveReason(from, to, reason)
+	default:
 		return ""
 	}
 	what, base := "its pull request", "its base"
@@ -227,6 +242,40 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullReques
 	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
 		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
 		from, to, what, base, base)
+}
+
+// backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
+// it went to, the role that asked (the role running the phase left, which backward holds the
+// requester to) and that role's own words, or that it gave none.
+func backwardMoveReason(from, to phase.Phase, reason string) string {
+	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return asked + ", which gave no reason."
+	}
+	if strings.HasSuffix(reason, ".") || strings.HasSuffix(reason, "!") || strings.HasSuffix(reason, "?") {
+		return asked + ": " + reason
+	}
+	return asked + ": " + reason + "."
+}
+
+// backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch
+// would refuse, and two empty strings for one it takes. The move posts its reason on the issue
+// (moveReason), and Dispatch refuses a body past the bounds it publishes, or one that holds a
+// decision block, on every attempt: refused at the post, the reason would reach no issue and the
+// worker would never learn why. So backward refuses it before anything moves, as closeRoot does a
+// close's reason (api's closeRoot). The text measured is the post the outbox makes, this move's
+// sentence under its marker (record.LongestPost), read by the server's own reader
+// (dispatchbody.Check), so the daemon refuses exactly what Dispatch refuses.
+func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string) {
+	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, reason)))
+	if over == nil {
+		return "", ""
+	}
+	if dispatchbody.IsDecisionBlock(over) {
+		return "BACKWARD_REASON_DECISION_BLOCK", fmt.Sprintf("the reason holds a decision block, and the move posts the reason on the issue as a message, where nobody can answer one: %s; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question", over)
+	}
+	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
 }
 
 // notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
