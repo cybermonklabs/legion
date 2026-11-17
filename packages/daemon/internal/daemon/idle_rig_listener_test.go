@@ -25,9 +25,9 @@ import (
 // subject of a session that is gone, and reports both to the daemon on notifications.legion.wake.
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
-// checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
-// its own, waited on until /healthz says healthy — because that is the only configuration it
-// takes.
+// checkout's cmd/listener, on a server fixturebuckets gave the buckets a listener copies, then
+// PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of its own, waited on until
+// /healthz says healthy — because that is the only configuration it takes.
 type idleRigListener struct {
 	t      *testing.T
 	url    string
@@ -50,6 +50,7 @@ func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListene
 func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
+	provisionFixtureBuckets(t, natsURL)
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
 	// the log below.
 	home := testtmp.Dir(t, "listener.log")
@@ -64,7 +65,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	cmd.Dir = home
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "ENVOY_THROWAWAY_NATS=1", "NATS_URLS="+natsURL)
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL)
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -109,6 +110,18 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		return body.Status == "healthy"
 	})
 	return l
+}
+
+// provisionFixtureBuckets runs envoy's fixturebuckets command, built once per test process
+// (testbuild.EnvoyBinary), on the NATS server at natsURL. No listener creates a bucket it copies
+// (INFRA-4094), so the test's own server is given them before a listener starts on it; the
+// command leaves a server it already provisioned as it is.
+func provisionFixtureBuckets(t *testing.T, natsURL string) {
+	t.Helper()
+	binary := testbuild.EnvoyBinary(t, "./internal/testnats/cmd/fixturebuckets")
+	if output, err := exec.Command(binary, "-url", natsURL).CombinedOutput(); err != nil {
+		t.Fatalf("fixturebuckets could not provision %s with the buckets a listener copies: %v\n%s", natsURL, err, output)
+	}
 }
 
 // log is the listener's own output so far, which a failure names.

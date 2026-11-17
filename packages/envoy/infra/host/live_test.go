@@ -3,8 +3,6 @@
 package host_test
 
 import (
-	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -20,8 +18,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/infra/buckets"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -33,15 +31,15 @@ import (
 // TestMain removes the PULUMI_HOME the live tests share once they have run.
 func TestMain(m *testing.M) { os.Exit(pulumitest.Main(m)) }
 
-// firstDeployment creates the buckets a listener copies on the NATS at natsURL as a first
-// deployment does, with `envoy-infra buckets create --first-deployment` before any listener starts:
-// no deployment's listener creates one (packages/envoy/cmd/listener/missing_buckets.go).
-func firstDeployment(t *testing.T, natsURL string) {
+// provision creates the buckets a listener copies, and the marker that says the server is a
+// fixture's (bustest.Provision), on the test's own NATS at natsURL before any listener starts, as
+// `envoy-infra buckets` does for a deployment: no listener creates one
+// (packages/envoy/cmd/listener/missing_buckets.go).
+func provision(t *testing.T, natsURL string) {
 	t.Helper()
-	var out bytes.Buffer
-	if code := buckets.Command(context.Background(), []string{"create", "--nats", natsURL, "--first-deployment"}, &out, &out); code != 0 {
-		t.Fatalf("envoy-infra buckets create --first-deployment = %d:\n%s", code, out.String())
-	}
+	conn := testnats.Connect(t, natsURL)
+	defer conn.Close()
+	require.NoError(t, bustest.Provision(conn, 1), "provision %s with the buckets a listener copies", natsURL)
 }
 
 // healthWindow is how long a listener has to answer "healthy", and how long a negative control
@@ -141,7 +139,7 @@ func listener(properties map[string]any) map[string]any {
 func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
-	firstDeployment(t, natsURL)
+	provision(t, natsURL)
 	port := holdListenerPort(t)
 	name := containerName(t)
 
@@ -189,7 +187,7 @@ func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 func TestLiveAdoptionPreviewsClean(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
-	firstDeployment(t, natsURL)
+	provision(t, natsURL)
 	port := holdListenerPort(t)
 	name := containerName(t)
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)

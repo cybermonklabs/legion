@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -205,6 +206,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	if err != nil {
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 	logs := &lockedWriter{}
 	logged := logs.String
@@ -303,6 +305,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect as the user whose grant carries the bucket: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 
 	// The records a listener started before the grant finds waiting for it. Enough of them that
@@ -481,6 +484,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 	if err != nil {
 		t.Fatalf("connect as the user whose grant carries the bucket: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 	logs := &lockedWriter{}
 	options := append([]KnownSessionsOption{
@@ -773,6 +777,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	if err != nil {
 		t.Fatalf("connect as the user whose grant carries the bucket: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 
 	// The records the late open is to answer once the store is repaired.
@@ -896,6 +901,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 	if err != nil {
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
+	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
 	known, err := OpenKnownSessions(conn,
 		WithKnownSessionReplicas(1),

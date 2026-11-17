@@ -86,10 +86,11 @@ func ListenerBuckets() []string {
 
 // CopiedBuckets are the buckets a listener keeps a watcher-fed copy of (internal/kvwatch): the
 // interest and role-claim buckets (internal/store), the session registry and the known-session
-// store (internal/session), and the CI state bucket (internal/cistore). No listener creates one
-// (OpenExistingKeyValue): a write one of them acknowledged is lost when it is deleted and created
-// again, and its writer was told it landed, so the operator alone creates them, with `envoy-infra
-// buckets`, and only once every writer has ended (INFRA-4094). Each call returns a fresh slice.
+// store (internal/session), and the CI state bucket (internal/cistore). No program of a
+// deployment creates one (EnsureKeyValue, CreateCopiedBucketsOn): a write one of them acknowledged
+// is lost when it is deleted and created again, and its writer was told it landed, so the operator
+// alone creates them, with `envoy-infra buckets` (CreateCopiedBucket), only once every writer has
+// ended (INFRA-4094). Each call returns a fresh slice.
 func CopiedBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, CIStateBucket}
 }

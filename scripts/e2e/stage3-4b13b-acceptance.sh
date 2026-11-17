@@ -219,7 +219,7 @@ start_listener() {
   token=$(cat "$work/envoy-token")
   # shellcheck disable=SC2154 # require_app_inputs sets it; this file sources its libs as source=/dev/null
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="legion-accept4b13b-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS="nats://127.0.0.1:$port_nats" \
+    ENVOY_MACHINE_ID="legion-accept4b13b-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
@@ -617,7 +617,8 @@ nats_url='^([A-Za-z][A-Za-z0-9+.-]*://)?([^@/?#,[:space:]]+@)?[A-Za-z0-9_-]+(\.[
   printf 'ci' >"$work/postgres-password")
 chmod 0600 "$work"/*token "$work/envoy-auth-header" "$work/postgres-password"
 (cd "$root/packages/daemon" && go build -ldflags "-X main.revision=$head_commit" -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 {
   printf 'head under test %s\n' "$head_commit"
   printf 'legion version: %s\n' "$("$work/legion" version)"
@@ -638,6 +639,10 @@ start_process nats "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store"
 await_start nats "$nats_pid" 60 "NATS to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
   fail "the nats-server logged no client port; see $evidence/logs/nats.log"
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before the listener starts.
+"$work/fixturebuckets" -url "nats://127.0.0.1:$port_nats" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
+  fail "fixturebuckets could not provision the run's NATS server; see $evidence/logs/fixturebuckets.log"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "4b.13b acceptance $project" '{key:$key,name:$name}')" >/dev/null

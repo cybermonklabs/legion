@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -100,17 +101,28 @@ func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticate
 	if allowUnauthenticated {
 		env = append(env, "ENVOY_API_ALLOW_UNAUTHENTICATED=1")
 	}
-	// The test's server is a throwaway one, so the listener creates the buckets it copies, as no
-	// deployment's listener does (cmd/listener/missing_buckets.go); the pod renders no such setting.
-	return append(env, "ENVOY_THROWAWAY_NATS=1")
+	return env
 }
 
-// startLiveListener starts a listener of the pod's environment on a port drawn from ports and
-// waits for its /healthz to answer 200, so it returns a process that is serving. It returns the
-// process and the port it serves on, which is drawn again on each retry a taken port costs
-// (startBound).
+// provisionLiveHub creates, on the test's server at natsURL, the buckets a listener copies and the
+// marker that says the server is a fixture's (bustest.Provision), as `envoy-infra buckets` does
+// before a hub's first listener starts: no listener creates one, and one started without them
+// waits at its start, so the listener runs with the pod's environment and nothing else. It acts
+// once per server, so a second listener's start leaves the first one's buckets as they are.
+func provisionLiveHub(t *testing.T, natsURL string) {
+	t.Helper()
+	conn := testnats.Connect(t, natsURL)
+	defer conn.Close()
+	require.NoError(t, bustest.Provision(conn, 1), "provision %s with the buckets a listener copies", natsURL)
+}
+
+// startLiveListener starts a listener of the pod's environment on a port drawn from ports, on the
+// server at natsURL once it is provisioned (provisionLiveHub), and waits for its /healthz to answer
+// 200, so it returns a process that is serving. It returns the process and the port it serves on,
+// which is drawn again on each retry a taken port costs (startBound).
 func startLiveListener(t *testing.T, name, binary, natsURL string, ports *loopbackPorts) (*cmdtest.Process, int) {
 	t.Helper()
+	provisionLiveHub(t, natsURL)
 	var port int
 	process := startBound(t, name, func() *exec.Cmd {
 		port = ports.draw(t, 1)[0]

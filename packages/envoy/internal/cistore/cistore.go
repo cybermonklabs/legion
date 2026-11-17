@@ -320,7 +320,6 @@ type Store struct {
 type openOpts struct {
 	replicas int
 	ttl      time.Duration
-	existing bool
 }
 
 // Option configures Open.
@@ -347,17 +346,11 @@ func WithTTL(d time.Duration) Option {
 	}
 }
 
-// WithExistingBucket opens the CI state bucket only if it exists (bus.OpenExistingKeyValue): a
-// missing one is bus.ErrBucketMissing, and the store creates nothing. The listener passes it,
-// since no listener creates a bucket its watchers copy (bus.CopiedBuckets); without it, Open
-// creates a missing bucket, as a test's own server needs.
-func WithExistingBucket() Option {
-	return func(o *openOpts) { o.existing = true }
-}
-
-// Open connects (or, without WithExistingBucket, creates) the CI-state KV bucket and starts the
-// WatchAll cache. Mirrors store.Open: the cache is populated asynchronously by watch()
-// so Open never blocks on per-key Gets. The store and its cache watcher log through logger.
+// Open connects the CI-state KV bucket and starts the WatchAll cache. The bucket is one a
+// listener copies, which bus.EnsureKeyValue creates only through a test fixture's connection
+// (bus.CreateCopiedBucketsOn), and otherwise answers bus.ErrBucketMissing. Mirrors store.Open:
+// the cache is populated asynchronously by watch() so Open never blocks on per-key Gets. The store
+// and its cache watcher log through logger.
 func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
 	o := openOpts{replicas: 1, ttl: bus.CIStateBucketMaxAge}
 	for _, f := range opts {
@@ -367,11 +360,7 @@ func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error)
 	if err != nil {
 		return nil, err
 	}
-	open := bus.EnsureKeyValue
-	if o.existing {
-		open = bus.OpenExistingKeyValue
-	}
-	kv, err := open(nc, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(nc, js, &nats.KeyValueConfig{
 		Bucket:   bus.CIStateBucket,
 		Replicas: o.replicas,
 		Storage:  nats.FileStorage,

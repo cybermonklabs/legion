@@ -117,8 +117,10 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 	listener.Terminate(t)
 	listener.WaitExit(t, "SIGTERM")
 
-	// A start while the bucket is missing creates nothing: it waits at its starting gate.
-	restarted := startListenerProcess(t, binary, uri, "bucket-deleted-under", throwawayNATSEnv+"=0")
+	// A start while the bucket is missing creates nothing: it waits at its starting gate. The
+	// harness provisions a server once (bustest.Provision), so this start on the same server
+	// finds the deleted bucket still missing.
+	restarted := startListenerProcess(t, binary, uri, "bucket-deleted-under")
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the restarted listener's output:\n%s", restarted.Output.String())

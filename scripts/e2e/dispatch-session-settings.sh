@@ -181,8 +181,9 @@ note "keys: ANTHROPIC_API_KEY ${#anthropic_key} chars, OPENAI_API_KEY ${#openai_
 # ---- builds ------------------------------------------------------------------------------------------
 (cd "$root" && bun install --frozen-lockfile >"$evidence/logs/bun-install.log" 2>&1) || fail "bun install failed; see $evidence/logs/bun-install.log"
 (cd "$root/packages/contracts" && bun run build >"$evidence/logs/build-contracts.log" 2>&1) || fail "@legion/contracts did not build; see $evidence/logs/build-contracts.log"
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch) >"$evidence/logs/build-go.log" 2>&1 ||
-  fail "the listener or Dispatch did not build; see $evidence/logs/build-go.log"
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets) >"$evidence/logs/build-go.log" 2>&1 ||
+  fail "the listener, Dispatch or fixturebuckets did not build; see $evidence/logs/build-go.log"
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
 # This checkout's pi-envoy, packed as the release packs it (lib/pack-plugin.sh builds its dist) and
 # unpacked as the worker image unpacks it, so `--extension` loads what a Legion pane loads.
@@ -204,6 +205,10 @@ mkdir -p "$work/nats-store"
 nats_pid=$!
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before the listener starts.
+"$work/fixturebuckets" -url "$nats_url" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
+  fail "fixturebuckets could not provision $nats_url; see $evidence/logs/fixturebuckets.log"
 
 psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
@@ -218,7 +223,7 @@ dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
 # holding legion/envoy.json would hand Dispatch a production configuration.
 env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
-  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$nats_url" \
+  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"

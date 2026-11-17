@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
@@ -70,6 +71,18 @@ func TestSmoke(t *testing.T) {
 	testcontainers.CleanupContainer(t, natsC)
 	if err != nil {
 		t.Fatalf("start NATS: %v", err)
+	}
+	// The buckets the listener copies are there before it starts, as `envoy-infra buckets` leaves a
+	// deployment's: no listener creates one, and one started without them waits at its start.
+	natsURL, err := natsC.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("NATS connection string: %v", err)
+	}
+	provisioning := testnats.Connect(t, natsURL)
+	err = bustest.Provision(provisioning, 1)
+	provisioning.Close()
+	if err != nil {
+		t.Fatalf("provision NATS with the buckets the listener copies: %v", err)
 	}
 
 	listenerC, err := testcontainers.Run(ctx, image,

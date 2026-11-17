@@ -64,15 +64,6 @@ type openOpts struct {
 	now       func() time.Time
 	log       *slog.Logger
 	roleWatch []kvwatch.Option
-	existing  bool
-}
-
-// WithExistingBuckets opens the interest and role buckets only if they exist
-// (bus.OpenExistingKeyValue): a missing one is bus.ErrBucketMissing, and the registry creates
-// nothing. The listener passes it, since no listener creates a bucket its watchers copy
-// (bus.CopiedBuckets); without it, Open creates a missing bucket, as a test's own server needs.
-func WithExistingBuckets() OpenOption {
-	return func(o *openOpts) { o.existing = true }
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -120,15 +111,14 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	open := bus.EnsureKeyValue
-	if opts.existing {
-		open = bus.OpenExistingKeyValue
-	}
-	kv, err := open(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	// Each bucket is one a listener copies, which bus.EnsureKeyValue creates only through a test
+	// fixture's connection (bus.CreateCopiedBucketsOn), and otherwise answers
+	// bus.ErrBucketMissing.
+	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
 	if err != nil {
 		return nil, err
 	}
-	roleKV, err := open(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	roleKV, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
 	if err != nil {
 		return nil, err
 	}

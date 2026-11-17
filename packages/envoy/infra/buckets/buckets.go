@@ -218,8 +218,7 @@ func create(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext,
 			fmt.Fprintf(stderr, "envoy-infra buckets: read %s: %v\n", bucket, err)
 			return 1
 		}
-		config, _ := bus.CopiedBucketConfig(bucket, replicas)
-		if _, err := bus.EnsureKeyValue(conn, js, &config); err != nil {
+		if _, err := bus.CreateCopiedBucket(conn, js, bucket, replicas); err != nil {
 			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
 			return 1
 		}

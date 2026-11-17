@@ -149,19 +149,10 @@ type sessionRegistryOpts struct {
 	lastSeenRetention time.Duration
 	log               *slog.Logger
 	now               func() time.Time
-	existing          bool
 }
 
 func WithSessionReplicas(n int) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.replicas = n }
-}
-
-// WithExistingSessionBucket opens the session bucket only if it exists (bus.OpenExistingKeyValue):
-// a missing one is bus.ErrBucketMissing, and the registry creates nothing. The listener passes it,
-// since no listener creates a bucket its watchers copy (bus.CopiedBuckets); without it,
-// OpenSessionRegistry creates a missing bucket, as a test's own server needs.
-func WithExistingSessionBucket() SessionRegistryOption {
-	return func(o *sessionRegistryOpts) { o.existing = true }
 }
 
 // BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with, and
@@ -420,11 +411,10 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 	if err != nil {
 		return nil, err
 	}
-	open := bus.EnsureKeyValue
-	if opts.existing {
-		open = bus.OpenExistingKeyValue
-	}
-	kv, err := open(conn, js, &nats.KeyValueConfig{
+	// The session bucket is one a listener copies, which bus.EnsureKeyValue creates only through a
+	// test fixture's connection (bus.CreateCopiedBucketsOn), and otherwise answers
+	// bus.ErrBucketMissing.
+	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.SessionBucket,
 		TTL:      opts.ttl,
 		Replicas: opts.replicas,

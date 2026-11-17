@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -381,19 +382,23 @@ func startSplitServer(t *testing.T, image string) (string, natsServer, string) {
 
 // startSplitGrantServer runs image with two users: the listener's, holding grant with a seed, and
 // the session user, holding SessionPermissions with no seed, as the server's no_auth_user, as a
-// hub renders them. grant is the set the hub's user carries: ListenerPermissions for its own
-// listener, ListenerHostPermissions for a listener's own user elsewhere.
+// hub renders them, and the operator who provisions it (provisionAsOperator). grant is the set the
+// hub's user carries: ListenerPermissions for its own listener, ListenerHostPermissions for a
+// listener's own user elsewhere.
 func startSplitGrantServer(t *testing.T, image string, grant core.Permissions) (string, natsServer, string) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	_, sessionKey := testnats.User(t)
+	operatorSeed, operator := liveOperator(t)
 	session := core.SessionPermissions()
 	config, err := core.Authorization{Users: []core.User{
 		{Name: liveMachineID, NKey: public, Publish: &grant.Publish, Subscribe: &grant.Subscribe, HasSeed: true},
 		{Name: "example-sessions", NKey: sessionKey, Publish: &session.Publish, Subscribe: &session.Subscribe},
+		operator,
 	}, NoAuthUser: "example-sessions"}.Render(nil)
 	require.NoError(t, err)
 	server, uri := testnats.StartImageConfig(t, image, config, hubServerArgs, true)
+	provisionAsOperator(t, uri, operatorSeed)
 	return seed, server, uri
 }
 
@@ -404,21 +409,51 @@ func buildEnvoyCommand(t *testing.T, name string) string {
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-" + name, Dir: filepath.Join("..", "..", "cmd", name)})
 }
 
-// startGrantServer runs image with one nkey user holding grant as the server's whole authorization,
+// startGrantServer runs image with one nkey user holding grant as the server's whole authorization
+// a listener or a session connects as, beside the operator who provisions it (provisionAsOperator),
 // and returns the user's seed, the server and its client URL.
 func startGrantServer(t *testing.T, image string, grant core.Permissions) (string, natsServer, string) {
 	t.Helper()
 	seed, public := testnats.User(t)
+	operatorSeed, operator := liveOperator(t)
 	config, err := core.Authorization{Users: []core.User{{
 		Name:      liveMachineID,
 		NKey:      public,
 		Publish:   &grant.Publish,
 		Subscribe: &grant.Subscribe,
 		HasSeed:   true,
-	}}}.Render(nil)
+	}, operator}}.Render(nil)
 	require.NoError(t, err)
 	server, uri := testnats.StartImageConfig(t, image, config, hubServerArgs, false)
+	provisionAsOperator(t, uri, operatorSeed)
 	return seed, server, uri
+}
+
+// liveOperator is the operator of a test's hub: an nkey user granted everything, as the
+// credentials `envoy-infra buckets` runs with are, and its seed. No listener or session connects as
+// it.
+func liveOperator(t *testing.T) (string, core.User) {
+	t.Helper()
+	seed, public := testnats.User(t)
+	everything := core.Rules{Allow: []string{">"}}
+	return seed, core.User{Name: "example-operator", NKey: public, Publish: &everything, Subscribe: &everything, HasSeed: true}
+}
+
+// provisionAsOperator creates, on the test's hub at uri, the buckets a listener copies and the
+// marker that says the hub is a fixture's (bustest.Provision), as the operator, whose seed is seed,
+// does with `envoy-infra buckets` before a hub's first listener starts: no listener creates one,
+// and one started without them waits at its start. The listener then runs with the environment its
+// config renders, and nothing else.
+func provisionAsOperator(t *testing.T, uri, seed string) {
+	t.Helper()
+	conn, err := testnats.ConnectSeed(t, uri, seed)
+	require.NoError(t, err)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { _, err := js.AccountInfo(); return err == nil }, 30*time.Second, 100*time.Millisecond,
+		"JetStream did not answer the operator on %s", uri)
+	require.NoError(t, bustest.Provision(conn, 1), "provision %s with the buckets a listener copies", uri)
 }
 
 // startListener runs the listener binary as machine liveMachineID against uri, with the environment
@@ -442,9 +477,7 @@ func startListenerConfig(t *testing.T, binary, uri, seed string, held *cmdtest.H
 	env, err := config.Env([]string{uri})
 	require.NoError(t, err)
 	cmd := exec.Command(binary)
-	// The test's server is a throwaway one, so the listener creates the buckets it copies, as no
-	// deployment's listener does (cmd/listener/missing_buckets.go); config renders no such setting.
-	cmd.Env = append(env, core.EnvNATSSeed+"="+seed, "ENVOY_THROWAWAY_NATS=1")
+	cmd.Env = append(env, core.EnvNATSSeed+"="+seed)
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
 	return cmdtest.Start(t, "the listener", cmd)
 }

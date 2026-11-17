@@ -120,6 +120,7 @@ echo "== build the branch's binaries"
 cd "$root/packages/envoy"
 go build -o "$work/dispatch" ./cmd/dispatch
 go build -o "$work/listener" ./cmd/listener
+go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets
 
 echo "== read the staging cluster's OIDC issuer"
 issuer=$(kubectl --context "${VERIFIERS_E2E_KUBE_CONTEXT:-staging}" get --raw /.well-known/openid-configuration | jq -r .issuer)
@@ -155,6 +156,10 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 echo "  postgres 127.0.0.1:$pg_port, nats 127.0.0.1:$nats_port"
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before any listener boots.
+"$work/fixturebuckets" -url "nats://127.0.0.1:$nats_port" >/dev/null ||
+  fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"
 
 database_url="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch"
 shared_dispatch_token="dispatch-shared-$RANDOM$RANDOM"
@@ -176,7 +181,6 @@ dispatch_env=(
 listener_env=(
   env -i PATH="$PATH" HOME="$work/home"
   ENVOY_MACHINE_ID=verifiers-e2e
-  ENVOY_THROWAWAY_NATS=1
   NATS_URLS="nats://127.0.0.1:$nats_port"
   ENVOY_LISTEN_HOST=127.0.0.1
   ENVOY_API_TOKEN="$shared_listener_token"

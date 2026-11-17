@@ -121,7 +121,8 @@ mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # so legion.yaml and controller.yaml can name it before the daemon starts on a copy of its socket.
 keep_port daemon_keeper daemon_port
 (cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener &&
+  go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
@@ -137,9 +138,13 @@ dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/leg
 docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before the listener starts.
+"$work/fixturebuckets" -url "$nats_url" >/dev/null ||
+  fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
-ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS=$nats_url \
+ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" NATS_URLS=$nats_url \
   start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
 until_true 60 "the Envoy listener" curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/sessions"
 note "listener port $envoy_port"

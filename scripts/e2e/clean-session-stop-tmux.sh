@@ -677,6 +677,8 @@ go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener 
   fail "./cmd/listener did not build"
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
+go -C "$root/packages/envoy" build -o "$work/bin/fixturebuckets" ./internal/testnats/cmd/fixturebuckets ||
+  fail "./internal/testnats/cmd/fixturebuckets did not build"
 while IFS= read -r line; do note "$line"; done < <(
   bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/bin/legion" "$work/bin/envoy-listener"
 ) || fail "lib/built-from.sh could not say what the run built"
@@ -769,11 +771,15 @@ nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connect
   fail "natsd logged no client port; see $evidence/logs/natsd.log"
 nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before the listener starts.
+"$work/bin/fixturebuckets" -url "$nats_url" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
+  fail "fixturebuckets could not provision $nats_url; see $evidence/logs/fixturebuckets.log"
 
 keep_port listener_keeper listener_port
 start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
   ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-  ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
+  ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
   ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
   ENVOY_SESSION_REAP_INTERVAL="$reap_interval" "$work/bin/envoy-listener"
 await_start listener "$listener_pid" 60 "the Envoy listener to serve" serving "$listener_port"

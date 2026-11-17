@@ -32,13 +32,6 @@ import (
 // missingBucketLine is the ERROR a listener logs for each check that finds a copied bucket missing.
 const missingBucketLine = "listener KV bucket is missing"
 
-// throwawayNATSEnv, set to 1, says the NATS server is a throwaway one a test or a dev rig started
-// for this run: the listener then creates every copied bucket it finds missing at its start, as no
-// deployment's listener does. Nothing envoy-infra renders sets it, and a deployment must not: a
-// listener that restarts while a bucket is missing would create it again under the writers of the
-// deleted one. A running listener never creates a bucket, with it or without it.
-const throwawayNATSEnv = "ENVOY_THROWAWAY_NATS"
-
 // bucketWaitInterval is how often a start that found a copied bucket missing asks again, and
 // missingBucketLogInterval how often it logs missingBucketLine while one stays missing: as often
 // as the self-health monitor checks a serving listener, so the alarm reads one cadence.
@@ -181,23 +174,11 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 // awaitCopiedBuckets returns once every bucket of buckets exists, or ctx ends. A start runs it
 // before it opens a store, so a missing bucket holds the start at its gates, which answer every
 // route 503, while /healthz names the bucket (missing) and the log carries missingBucketLine every
-// missingBucketLogInterval. With throwaway (throwawayNATSEnv) it creates each missing bucket
-// instead, with the configuration bus.CopiedBucketConfig gives at replicas copies.
-func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, conn *nats.Conn, buckets []string, missing *missingBuckets, throwaway bool, replicas int) error {
+// missingBucketLogInterval. It creates nothing: only the operator's `envoy-infra buckets` does.
+func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
 		names, err := readMissingBuckets(js, buckets)
-		if throwaway && len(names) > 0 {
-			for _, bucket := range names {
-				config, _ := bus.CopiedBucketConfig(bucket, replicas)
-				if _, err := bus.EnsureKeyValue(conn, js, &config); err != nil {
-					return fmt.Errorf("create %s on the throwaway server (%s=1): %w", bucket, throwawayNATSEnv, err)
-				}
-				logger.Warn("listener created a missing KV bucket on a throwaway NATS server",
-					slog.String("bucket", bucket), slog.String("env", throwawayNATSEnv+"=1"))
-			}
-			continue
-		}
 		missing.record(names)
 		if len(names) == 0 && err == nil {
 			return nil

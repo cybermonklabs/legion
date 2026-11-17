@@ -728,7 +728,7 @@ services_env=$work/services/env
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
 start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag" ENVOY_THROWAWAY_NATS=1 NATS_URLS="nats://127.0.0.1:$nats_port" \
+    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
     curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
@@ -780,7 +780,12 @@ services_up() {
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
-  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
+  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener &&
+    go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
+  # No listener creates a bucket it copies (INFRA-4094): the batch provisions its own NATS with
+  # them before the listener starts.
+  "$S/fixturebuckets" -url "nats://127.0.0.1:$nats_port" >"$S/logs/fixturebuckets.log" 2>&1 ||
+    fail "fixturebuckets could not provision the batch's NATS; see $S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {

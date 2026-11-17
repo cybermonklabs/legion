@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -216,28 +218,47 @@ func namedRequest(request string, err error) error {
 // webhook redelivery sweep (redeliver.OpenState), which logs the failure and tries again on its
 // next pass. A caller that waits on a budget of its own, such as a request or a watcher's
 // repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
+//
+// A bucket a listener copies (CopiedBuckets) is never created here, but on a connection a test
+// fixture marked as its own (CreateCopiedBucketsOn): a missing one is ErrBucketMissing, named for
+// its stream (`KV_envoy_sessions STREAM.INFO: bucket is missing; ...`). A bucket deleted while one
+// of its writers runs must not come back while that writer runs, since a write the deleted bucket
+// acknowledged is in no bucket after it, and its writer was told it landed (INFRA-4094). The
+// operator creates such a bucket with `envoy-infra buckets` (CreateCopiedBucket). Every other
+// bucket is created when missing.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	return openKeyValue(conn, js, config, true)
+	_, fixture := fixtureConns.Load(conn)
+	return openKeyValue(conn, js, config, fixture || !slices.Contains(CopiedBuckets(), config.Bucket))
 }
 
-// ErrBucketMissing is a bucket an open that creates nothing found missing (OpenExistingKeyValue).
-// It wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
+// fixtureConns are the connections a test fixture marked as its own (CreateCopiedBucketsOn).
+var fixtureConns sync.Map
+
+// CreateCopiedBucketsOn marks conn as a test fixture's connection to a server of its own: an open
+// through it (EnsureKeyValue) creates a copied bucket it finds missing, with the caller's
+// configuration, as it creates every other bucket. Only a test's fixture calls it
+// (internal/bustest); no program of a deployment does, so no listener creates a bucket it copies.
+func CreateCopiedBucketsOn(conn *nats.Conn) {
+	fixtureConns.Store(conn, struct{}{})
+}
+
+// ErrBucketMissing is a bucket a listener copies that an open found missing (EnsureKeyValue). It
+// wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
 var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it, once every writer of it has ended: %w", nats.ErrBucketNotFound)
 
-// OpenExistingKeyValue opens the KV bucket config names as EnsureKeyValue does, with the same
-// lookup, raise of an existing bucket's copies and handle open, but it creates nothing: a bucket
-// the server says it does not hold is ErrBucketMissing, named for its stream
-// (`KV_envoy_sessions STREAM.INFO: bucket is missing; ...`). It is how a listener opens a bucket
-// its watcher copies (CopiedBuckets): a bucket deleted while one of its writers runs must not come
-// back while that writer runs, since a write the deleted bucket acknowledged is in no bucket after
-// it, and its writer was told it landed (INFRA-4094). The operator recreates such a bucket with
-// `envoy-infra buckets`, which refuses while any of its writers runs.
-func OpenExistingKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	return openKeyValue(conn, js, config, false)
+// CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
+// copies (CopiedBucketConfig), or opens it as it is when it exists: the operator's creation,
+// `envoy-infra buckets`, and a test fixture's (internal/bustest), on a server of its own.
+func CreateCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
+	config, ok := CopiedBucketConfig(bucket, replicas)
+	if !ok {
+		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
+	}
+	return openKeyValue(conn, js, &config, true)
 }
 
-// openKeyValue is EnsureKeyValue, which creates a missing bucket, and OpenExistingKeyValue, which
-// does not (creates).
+// openKeyValue is EnsureKeyValue and CreateCopiedBucket: creates says whether a bucket the server
+// does not hold is created or is ErrBucketMissing.
 func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, creates bool) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"

@@ -1,7 +1,9 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables named below are the caller's to set or read
 # local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: free ports below
-# the kernel's ephemeral range, and natsd (packages/envoy/internal/testnats/cmd/natsd) and the
-# listener (packages/envoy/cmd/listener) built from a checkout with `go build`.
+# the kernel's ephemeral range, and natsd (packages/envoy/internal/testnats/cmd/natsd), the
+# fixturebuckets command that gives it the buckets a listener copies
+# (packages/envoy/internal/testnats/cmd/fixturebuckets) and the listener (packages/envoy/cmd/listener)
+# built from a checkout with `go build`.
 # smoke-role-takeover.sh and smoke-registration-stall.sh (--local-stack) source it, so what those
 # two know about the stack is written once; packages/envoy-client/test/envoy-stack.ts is the same
 # stack for the TypeScript suite.
@@ -75,6 +77,19 @@ build_listener() {
   (cd -- "$1" && go build -o "$2" ./cmd/listener)
 }
 
+# build_fixturebuckets SOURCE OUT: the fixturebuckets command built from SOURCE, the same way.
+build_fixturebuckets() {
+  (cd -- "$1" && go build -o "$2" ./internal/testnats/cmd/fixturebuckets)
+}
+
+# provision_natsd BIN NATS_URL LOG: BIN, a fixturebuckets build, gives natsd at NATS_URL the
+# buckets a listener copies, which no listener creates (INFRA-4094), its output in LOG. A caller
+# runs it once natsd serves and before the listener starts; non-zero when it failed, so the
+# caller refuses in its own words.
+provision_natsd() {
+  env -i PATH="$PATH" "$1" -url "$2" >"$3" 2>&1
+}
+
 # set_natsd_argv BIN PORT MONITOR_PORT STORE_DIR: sets the array `natsd_argv` to natsd serving
 # 127.0.0.1:PORT with JetStream stored under STORE_DIR, monitoring on MONITOR_PORT unless it is
 # empty. The caller runs it under its own environment isolation and redirection.
@@ -88,7 +103,7 @@ set_natsd_argv() {
 # listener is run with, to serve 127.0.0.1:PORT against NATS_URL as MACHINE_ID. HOME is the
 # caller's to add: each run gives the listener a scratch home of its own.
 set_listener_env() {
-  listener_env=(PORT="$1" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="$3" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$2")
+  listener_env=(PORT="$1" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="$3" NATS_URLS="$2")
 }
 
 # natsd_serving LOG: natsd's log says it is serving.

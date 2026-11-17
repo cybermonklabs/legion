@@ -1238,9 +1238,10 @@ func main() {
 	// 503 and /healthz naming the bucket, until the operator's `envoy-infra buckets` creates it.
 	// Each store below opens through openExisting, which waits here again for a bucket deleted
 	// between this wait and its open, rather than ending the start.
+	// No configuration makes the listener create one: a test or a dev rig provisions its own
+	// server before it starts the listener (internal/bustest, the fixturebuckets command).
 	awaitBuckets := func() error {
-		return awaitCopiedBuckets(context.Background(), logger, client.JS(), client.Conn,
-			startCopiedBuckets(webhookCfg.GitHub != nil), missing, os.Getenv(throwawayNATSEnv) == "1", cfg.NATSReplicas)
+		return awaitCopiedBuckets(context.Background(), logger, client.JS(), startCopiedBuckets(webhookCfg.GitHub != nil), missing)
 	}
 	if err := awaitBuckets(); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)
@@ -1259,7 +1260,7 @@ func main() {
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore, err = openExisting(awaitBuckets, func() (*cistore.Store, error) {
-			return cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge), cistore.WithExistingBucket())
+			return cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge))
 		})
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
@@ -1280,7 +1281,7 @@ func main() {
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
 	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
 	registry, err := openExisting(awaitBuckets, func() (*store.Registry, error) {
-		return store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithExistingBuckets())
+		return store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()))
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -1361,7 +1362,6 @@ func main() {
 			session.WithSessionMaxAge(cfg.SessionMaxAge),
 			session.WithSessionLiveWindow(sessionLiveWindow),
 			session.WithSessionGoneHorizon(sessionGoneHorizon),
-			session.WithExistingSessionBucket(),
 		)
 	})
 	if err != nil {
@@ -1410,17 +1410,10 @@ func main() {
 	// (session.OpenKnownSessions), so a grant applied after this start is picked up with no
 	// restart. This line is the one failure that leaves no store at all, a connection that gives
 	// no JetStream context, which answers as an empty store does.
-	knownOptions := []session.KnownSessionsOption{
+	known, knownErr := session.OpenKnownSessions(client.Conn,
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),
-	}
-	// No listener creates the bucket (missing_buckets.go), but one on a throwaway server
-	// (ENVOY_THROWAWAY_NATS=1), whose store creates it in the background as a start creates the
-	// others, since the start does not wait for this one (startCopiedBuckets).
-	if os.Getenv(throwawayNATSEnv) != "1" {
-		knownOptions = append(knownOptions, session.WithExistingKnownSessionBucket())
-	}
-	known, knownErr := session.OpenKnownSessions(client.Conn, knownOptions...)
+	)
 	if knownErr != nil {
 		logger.Error("the known-session store was not built; no session's 30-day record is written or read for the life of this listener",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", knownErr.Error()))

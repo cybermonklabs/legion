@@ -24,7 +24,8 @@
 # to make safe — and asserts that: (a) every process of a run is started and the port the banner
 # names for it is the one that process reported; (b) the Dispatch port keeper's held port is what
 # the broker's machine-login URL and Dispatch's own server URL name, which is why a keeper is
-# there at all, and the broker binds its metrics on a port the kernel picks; (c) "dev-stack:
+# there at all, and the broker binds its metrics on a port the kernel picks, and fixturebuckets
+# provisioned natsd's own server, by the port natsd reported; (c) "dev-stack:
 # ready." is printed exactly once, with the export block after it;
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
@@ -285,6 +286,17 @@ CLIENT
       chmod +x "$target"
       continue
       ;;
+    # fixturebuckets runs once and exits: its stub says what it was given, into the log
+    # dev-stack.sh keeps of it.
+    fixturebuckets)
+      cat >"$target" <<'FIXTUREBUCKETS'
+#!/usr/bin/env bash
+echo "fake fixturebuckets: $*" >&2
+exit 0
+FIXTUREBUCKETS
+      chmod +x "$target"
+      continue
+      ;;
     *)
       echo "fake go: unhandled build target $package" >&2
       exit 1
@@ -435,6 +447,10 @@ assert_instance_ready() {
   # of two stacks on a machine could hold.
   grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
     fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
+  # No listener creates a bucket it copies (INFRA-4094), so fixturebuckets provisioned the run's
+  # own natsd, by the port natsd reported, before the listener started.
+  grep -qxF "fake fixturebuckets: -url nats://127.0.0.1:${process_port[natsd]}" "${work_dir}/logs/fixturebuckets.log" ||
+    fail "$label: fixturebuckets did not provision natsd's own server: $(cat "${work_dir}/logs/fixturebuckets.log" 2>/dev/null)"
 
   # (c) One "ready." line, and the exports after it, each naming the port its own process reported.
   local ready_lines
@@ -727,7 +743,7 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's packages; the binary names the copy check reads come from it.
 prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./internal/testnats/cmd/fixturebuckets)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"

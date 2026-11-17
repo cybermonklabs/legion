@@ -5,7 +5,9 @@
 # active-sessions sample, while it cannot stand behind that copy (INFRA-261).
 #
 # Builds and starts a NATS server of its own (internal/testnats/cmd/natsd, its file store under the
-# output directory) and the listener, as e2e-local.sh does, and drives them with refillrig
+# output directory), gives each new store the buckets a listener copies with fixturebuckets
+# (internal/testnats/cmd/fixturebuckets), since no listener creates one (INFRA-4094), and starts
+# the listener, as e2e-local.sh does, and drives them with refillrig
 # (internal/testnats/cmd/refillrig): it seeds the session and interest buckets, through the
 # listener's registration route and straight into the buckets, deletes and recreates a bucket,
 # polls GET /v1/sessions, GET /v1/interests/ and /metrics as fast as they answer, and judges each
@@ -169,6 +171,7 @@ readonly bin_dir="${out_dir}/bin"
 readonly nats_store_dir="${out_dir}/nats-store"
 readonly lock_file="${out_dir}/run.lock"
 readonly rig="${bin_dir}/refillrig"
+readonly fixturebuckets="${bin_dir}/fixturebuckets"
 
 nats_pid=""
 listener_pid=""
@@ -224,10 +227,11 @@ rm -rf "$bin_dir" "$nats_store_dir" "${out_dir}/reread" "${out_dir}/interrupt-st
   "${out_dir}/interrupt-restart" "${out_dir}/refuse" "${out_dir}/recreate-live"
 mkdir -p "$bin_dir"
 
-say "building refillrig, and the listener and natsd unless given"
+say "building refillrig and fixturebuckets, and the listener and natsd unless given"
 (
   cd "$envoy_dir"
   go build -o "$rig" ./internal/testnats/cmd/refillrig
+  go build -o "$fixturebuckets" ./internal/testnats/cmd/fixturebuckets
   [[ -n "$listener_bin" ]] || go build -o "${bin_dir}/listener" ./cmd/listener
   [[ -n "$natsd_bin" ]] || go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
 )
@@ -278,6 +282,17 @@ stop_nats() {
   nats_pid=""
 }
 
+# provision gives this run's NATS the buckets a listener copies and the fixture's marker stream
+# (fixturebuckets): no listener creates one of those buckets (INFRA-4094), and refillrig's
+# seed -create and recreate act only on a server a fixture provisioned. Every start on an emptied
+# store runs it before the listener starts.
+provision() {
+  if ! "$fixturebuckets" -url "$nats_url" >>"${run_dir}/fixturebuckets.log" 2>&1; then
+    say "ERR: fixturebuckets could not provision ${nats_url}; see ${run_dir}/fixturebuckets.log"
+    return 1
+  fi
+}
+
 # start_listener starts the listener on the rig's NATS. Every start of a scenario appends to the
 # scenario's one listener.log, so it records where its own lines begin (listener_start_offset). It
 # runs in a session of its own, as NATS does (start_nats), since the reread and interrupt scenarios
@@ -288,7 +303,6 @@ start_listener() {
   listener_start_offset="$(stat -c %s "$listener_log")"
   PORT="$listener_port" \
     ENVOY_MACHINE_ID=e2e-refill \
-    ENVOY_THROWAWAY_NATS=1 \
     NATS_URLS="$nats_url" \
     setsid "$listener_binary" >>"$listener_log" 2>&1 &
   listener_pid=$!
@@ -344,7 +358,8 @@ stop_listener() {
   listener_pid=""
 }
 
-# fresh stops whatever runs, empties the store, and starts NATS for the scenario directory name.
+# fresh stops whatever runs, empties the store, and starts NATS for the scenario directory name,
+# provisioned.
 fresh() {
   stop_listener
   stop_nats
@@ -353,6 +368,7 @@ fresh() {
   mkdir -p "$run_dir"
   nats_starts=0
   start_nats
+  provision
 }
 
 # poll_start polls one list (sessions, interests or metrics) into <run_dir>/<name>-<list>.jsonl
@@ -711,6 +727,7 @@ run_refuse() {
   stop_nats
   rm -rf "$nats_store_dir"
   start_nats
+  provision
   start_listener
   wait_ready
   sets="bulk=${outage_count},api=${outage_api_count}"
@@ -752,6 +769,7 @@ run_refuse() {
   stop_nats
   rm -rf "$nats_store_dir"
   start_nats
+  provision
   start_listener
   wait_ready
   if ! wait_whole sessions 0 60 || ! wait_whole interests 0 60; then

@@ -207,12 +207,14 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
 }
 
 /**
- * Starts natsd (JetStream on) and the listener on free loopback ports, and resolves once the
- * listener's /healthz answers healthy and natsd holds the `ENVOY_NOTIFICATIONS` stream. Throws,
- * naming why, when `go` is missing, a build fails or either process does not come up. The NATS
- * server runs with no authorization at all, so every client may do anything, and the listener
- * holds the grant this checkout's `infra/core.ListenerPermissions` renders, which answers every
- * registration `consumer`.
+ * Starts natsd (JetStream on), provisions it with the buckets a listener copies (the
+ * fixturebuckets command; no listener creates one, INFRA-4094) and starts the listener on free
+ * loopback ports, and resolves once the listener's /healthz answers healthy and natsd holds the
+ * `ENVOY_NOTIFICATIONS` stream. Throws, naming why, when `go` is missing, a build fails, the
+ * provisioning fails or either process does not come up. The NATS server runs with no
+ * authorization at all, so every client may do anything, and the listener holds the grant this
+ * checkout's `infra/core.ListenerPermissions` renders, which answers every registration
+ * `consumer`.
  *
  * `options.listenerEnv` is merged over the listener's own environment, which is how a caller
  * shortens the session windows the session states are judged by.
@@ -232,9 +234,13 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     const bin = path.join(work, "bin");
     await buildGoBinaries({
       bin,
-      packages: ["./internal/testnats/cmd/natsd", "./cmd/listener"],
+      packages: [
+        "./internal/testnats/cmd/natsd",
+        "./internal/testnats/cmd/fixturebuckets",
+        "./cmd/listener",
+      ],
       stack: "Envoy",
-      binaries: "natsd and the listener",
+      binaries: "natsd, fixturebuckets and the listener",
     });
     const [natsPort, monitorPort, listenerPort] = await freePorts(3);
     const natsHome = path.join(work, "nats-home");
@@ -256,7 +262,6 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       PORT: String(listenerPort),
       ENVOY_LISTEN_HOST: "127.0.0.1",
       ENVOY_MACHINE_ID: machineID,
-      ENVOY_THROWAWAY_NATS: "1",
       NATS_URLS: `nats://127.0.0.1:${natsPort}`,
     };
     const natsLog = path.join(work, "natsd.log");
@@ -279,6 +284,18 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
 
     const natsHostPort = `127.0.0.1:${natsPort}`;
     const natsUrl = `nats://${natsHostPort}`;
+    const provision = Bun.spawn([path.join(bin, "fixturebuckets"), "-url", natsUrl], {
+      env: { PATH },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const [provisionError, provisionCode] = await Promise.all([
+      new Response(provision.stderr).text(),
+      provision.exited,
+    ]);
+    if (provisionCode !== 0) {
+      throw new Error(`fixturebuckets -url ${natsUrl} exited ${provisionCode}: ${provisionError}`);
+    }
     const envoyUrl = `http://127.0.0.1:${listenerPort}`;
     const listenerLog = path.join(work, "listener.log");
     const listenerOut = openSync(listenerLog, "a");

@@ -638,7 +638,9 @@ go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener 
   fail "./cmd/listener did not build"
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
-note "built the listener and natsd from this checkout"
+go -C "$root/packages/envoy" build -o "$work/bin/fixturebuckets" ./internal/testnats/cmd/fixturebuckets ||
+  fail "./internal/testnats/cmd/fixturebuckets did not build"
+note "built the listener, natsd and fixturebuckets from this checkout"
 if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
@@ -700,6 +702,10 @@ nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connect
   fail "natsd logged no client port; see $evidence/logs/natsd.log"
 nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before the listeners start. The store keeps them across the outage check's restart of natsd.
+"$work/bin/fixturebuckets" -url "$nats_url" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
+  fail "fixturebuckets could not provision $nats_url; see $evidence/logs/fixturebuckets.log"
 
 # start_listener NAME KEEPER starts one of the two running listeners on the port its keeper holds,
 # so a listener stopped and started again comes back on the same port and nothing can take it in
@@ -710,7 +716,7 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 start_listener() {
   start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
+    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
     ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
     ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "$work/bin/envoy-listener"
@@ -734,7 +740,7 @@ set_max_age() {
   rm -f "$work/maxage.port"
   start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
   await_start maxage "$maxage_pid" 60 "the maximum-age listener to serve" serving "$maxage_port"
   stop_pid "$maxage_pid"
@@ -1592,7 +1598,7 @@ check_gone_only_past_the_horizon() {
   rm -f "$work/shortlistener.port"
   start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \
     ENVOY_SESSION_REAP_INTERVAL=10s ENVOY_ROLE_CLAIM_REAP_INTERVAL=10s "$work/bin/envoy-listener"
   await_start shortlistener "$shortlistener_pid" 60 "the short-horizon listener to serve" serving "$short_port"

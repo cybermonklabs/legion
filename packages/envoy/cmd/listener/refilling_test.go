@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -164,6 +165,7 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {

@@ -46,7 +46,7 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 	logger := logging.NewWithWriter("test-machine", logs)
 	missing := &missingBuckets{}
 	wait := func() error {
-		return awaitCopiedBuckets(context.Background(), logger, js, conn, []string{bus.SessionBucket}, missing, false, 1)
+		return awaitCopiedBuckets(context.Background(), logger, js, []string{bus.SessionBucket}, missing)
 	}
 	if err := wait(); err != nil {
 		t.Fatalf("the start's wait with the bucket there: %v", err)
@@ -63,7 +63,7 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 	done := make(chan opened, 1)
 	go func() {
 		sessions, err := openExisting(wait, func() (*session.SessionRegistry, error) {
-			return session.OpenSessionRegistry(conn, session.WithSessionReplicas(1), session.WithExistingSessionBucket())
+			return session.OpenSessionRegistry(conn, session.WithSessionReplicas(1))
 		})
 		done <- opened{sessions, err}
 	}()

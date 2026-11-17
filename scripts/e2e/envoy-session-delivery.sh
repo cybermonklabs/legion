@@ -529,11 +529,12 @@ if [[ -n "$plugins_from" ]]; then
   plugins_label="$rev (git archive into $plugins_tree)"
 fi
 readonly plugins_tree
-note "listener and the bridge from ${tree_label}; pi-envoy and claude-envoy from ${plugins_label}; natsd and Dispatch from this checkout"
+note "listener and the bridge from ${tree_label}; pi-envoy and claude-envoy from ${plugins_label}; natsd, fixturebuckets and Dispatch from this checkout"
 (cd "$repo_root/packages/envoy" &&
   go build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd &&
+  go build -o "$work/bin/fixturebuckets" ./internal/testnats/cmd/fixturebuckets &&
   go build -o "$work/bin/envoy-dispatch" ./cmd/dispatch) >"$work/logs/build-head.log" 2>&1 ||
-  fail "natsd or Dispatch did not build; see $work/logs/build-head.log"
+  fail "natsd, fixturebuckets or Dispatch did not build; see $work/logs/build-head.log"
 (cd "$tree/packages/envoy" && go build -o "$work/bin/envoy-listener" ./cmd/listener &&
   cd "$tree/packages/daemon" && go build -o "$work/bin/legion" ./cmd/legion) >"$work/logs/build-tree.log" 2>&1 ||
   fail "the listener or legion did not build from $tree; see $work/logs/build-tree.log"
@@ -648,6 +649,10 @@ nats_url="nats://127.0.0.1:${nats_port}"
 nats_monitor="http://127.0.0.1:${monitor_port}"
 nats_ready() { curl -fsS --max-time 2 "${nats_monitor}/healthz" | jq -e '.status == "ok"'; }
 await natsd "$work/logs/natsd.log" 30 nats_ready
+# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# before the listeners start.
+"$work/bin/fixturebuckets" -url "$nats_url" >"$work/logs/fixturebuckets.log" 2>&1 ||
+  fail "fixturebuckets could not provision $nats_url; see $work/logs/fixturebuckets.log"
 
 # Each listener, Dispatch and each proxy restarts in a window, and the sessions' envoy.json and
 # Dispatch's environment name their ports before they first start: each serves on a keeper's port.
@@ -673,7 +678,7 @@ start_listener() {
     serve=(python3 "$held_port" exec --from "$work/ports/keep-listener-$name.sock" --fd-env ENVOY_LISTEN_FD -- "${serve[@]}")
   fi
   (isolated_exec "" HOME="$work/listener-$name-home" PORT="${listener_port[$name]}" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$name" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$nats_url" -- "${serve[@]}") \
+    ENVOY_MACHINE_ID="$name" NATS_URLS="$nats_url" -- "${serve[@]}") \
     >>"$work/logs/listener-$name.log" 2>&1 &
   pid[listener-$name]=$!
   await "listener-$name" "$work/logs/listener-$name.log" 90 listener_ready "$name"

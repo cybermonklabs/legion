@@ -246,10 +246,11 @@ nats_port=""
 if ((local_stack == 1)); then
   port_range
   mkdir -p "${scratch}/bin"
-  note "building natsd and the listener from ${repo_root}/packages/envoy"
+  note "building natsd, fixturebuckets and the listener from ${repo_root}/packages/envoy"
   build_natsd "${repo_root}/packages/envoy" "${scratch}/bin/natsd" &&
+    build_fixturebuckets "${repo_root}/packages/envoy" "${scratch}/bin/fixturebuckets" &&
     build_listener "${repo_root}/packages/envoy" "${scratch}/bin/listener" ||
-    refuse "go build of natsd or the listener failed (the reason is above)"
+    refuse "go build of natsd, fixturebuckets or the listener failed (the reason is above)"
   pick_port nats_port
   pick_port listener_port
   set_natsd_argv "${scratch}/bin/natsd" "$nats_port" "" "${scratch}/nats-store"
@@ -258,6 +259,8 @@ if ((local_stack == 1)); then
   nats_pid=$!
   poll_until 30 0.2 natsd_serving "${scratch}/natsd.log" ||
     refuse "natsd did not start: $(tail -n 5 "${scratch}/natsd.log")"
+  provision_natsd "${scratch}/bin/fixturebuckets" "nats://127.0.0.1:${nats_port}" "${scratch}/fixturebuckets.log" ||
+    refuse "fixturebuckets could not provision natsd: $(tail -n 5 "${scratch}/fixturebuckets.log")"
   envoy_url="http://127.0.0.1:${listener_port}"
   set_listener_env "$listener_port" "nats://127.0.0.1:${nats_port}" "smoke-registration-stall-$$"
   env -i PATH="$PATH" HOME="${scratch}/listener-home" "${listener_env[@]}" \

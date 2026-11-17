@@ -20,6 +20,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -329,6 +330,9 @@ func TestPublishHandler_RejectsInvalidSource(t *testing.T) {
 	}
 }
 
+// setupPublishTestClient is a bus client on the test's own account of the package's shared server,
+// on a fixture's connection (bustest.Fixture): a store opened through it creates the bucket it
+// finds missing.
 func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
 	options = append([]bus.ConnectOption{bus.WithReplicas(1)}, options...)
@@ -336,6 +340,7 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	return client
 }
@@ -1419,6 +1424,7 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -1493,6 +1499,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -1596,6 +1603,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	rowsWritten := time.Now().Add(-3 * time.Minute)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return rowsWritten }))
@@ -1721,6 +1729,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -1866,6 +1875,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -2472,7 +2482,9 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 // retry, or the interest and session cache warm-ups (30 s each), would take the replacement for
 // healthy and stop the task it replaces. The refusal therefore comes right after the NATS connect:
 // on a NATS that holds no KV bucket yet, a refused listener exits without having opened one, the CI
-// bucket included, which a listener mounting the GitHub route opens first.
+// bucket included, which a listener mounting the GitHub route opens first. The server is left
+// unprovisioned (startListenerProcessAsIs), so a listener whose refusal came after its wait for the
+// buckets it copies (awaitCopiedBuckets) would wait there and never exit.
 func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	client := setupTestNATS(t)
 	t.Cleanup(client.Close)
@@ -2484,7 +2496,7 @@ func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 		t.Fatalf("add a durable with a heartbeat: %v", err)
 	}
 
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "refused-durable-startup", githubWebhookEnv...)
+	listener := startListenerProcessAsIs(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "refused-durable-startup", githubWebhookEnv...)
 	listener.WaitExit(t, "meeting a refused durable")
 	output := listener.Output
 	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
@@ -2811,6 +2823,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -3816,6 +3829,8 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 // own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
 func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
+	// The stores below create the buckets they find missing, on a fixture's connection.
+	bustest.Fixture(client.Conn)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
@@ -4541,7 +4556,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if err != nil {
 		t.Fatalf("connect registry: %v", err)
 	}
-	registry, err := store.Open(registryConn, store.WithReplicas(1))
+	registry, err := store.Open(bustest.Fixture(registryConn), store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -4600,7 +4615,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 		t.Fatalf("connect watcher: %v", err)
 	}
 	sessions, err := session.OpenSessionRegistry(
-		watcherConn,
+		bustest.Fixture(watcherConn),
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Minute),
 	)
@@ -4957,7 +4972,9 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 	<-done
 }
 
-// setupTestNATS starts a NATS server dedicated to this test, which ends with it.
+// setupTestNATS starts a NATS server dedicated to this test, which ends with it, and connects a bus
+// client to it on a fixture's connection (bustest.Fixture): a store opened through it creates the
+// bucket it finds missing.
 func setupTestNATS(t *testing.T) *bus.Client {
 	t.Helper()
 	_, uri := testnats.Start(t)
@@ -4965,6 +4982,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	return client
 }
 

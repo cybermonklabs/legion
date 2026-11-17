@@ -95,9 +95,14 @@ nats_port="$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "
 readonly nats_port
 [[ -n "$nats_port" ]] || fail "nats-server logged no client port: $(cat "${workdir}/nats.log")"
 
-(cd "${repo_root}/packages/envoy" && go build -o "${workdir}/envoy-listener" ./cmd/listener) ||
-  fail "the Envoy listener did not build"
-env PORT=0 ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=session-title-smoke ENVOY_THROWAWAY_NATS=1 \
+(cd "${repo_root}/packages/envoy" && go build -o "${workdir}/envoy-listener" ./cmd/listener &&
+  go build -o "${workdir}/fixturebuckets" ./internal/testnats/cmd/fixturebuckets) ||
+  fail "the Envoy listener or fixturebuckets did not build"
+# No listener creates a bucket it copies (INFRA-4094): the smoke provisions its own server with
+# them before the listener starts.
+"${workdir}/fixturebuckets" -url "nats://127.0.0.1:${nats_port}" >"${workdir}/fixturebuckets.log" 2>&1 ||
+  fail "fixturebuckets could not provision the smoke's nats-server: $(cat "${workdir}/fixturebuckets.log")"
+env PORT=0 ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=session-title-smoke \
   NATS_URLS="nats://127.0.0.1:${nats_port}" \
   "${workdir}/envoy-listener" >"${workdir}/listener.log" 2>&1 &
 listener_pid=$!
