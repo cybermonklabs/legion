@@ -299,13 +299,16 @@ func TestASuspendOverADeadProcessAfterARestartLandsOnceTheReadFindsItGone(t *tes
 // or a restart forgot the one that did. No death was judged then (died), so the suspension that
 // lands over the process does died's work for it (suspendOverADeadProcess): it sends the clean
 // stop of the dead process's Envoy session (sessionGone), and it takes the dead turn's task back
-// with the note of the end the read found (goneOutOfMemory). A pod that ran out of memory is the
-// commonest end of a process in that window, so both verdicts of gone are asked, in both windows.
+// with the note of the end the read found (goneOutOfMemory). It records that end as the death it
+// is (recordEnd, endDied), so the task goes back behind the record's sentence naming the death. A
+// pod that ran out of memory is the commonest end of a process in that window, so both verdicts
+// of gone are asked, in both windows.
 //
 // The negative controls are the stop dropped from the suspension, where the listener would keep
-// the dead session's role and issue claims while the fresh session forgets its id, and the
-// verdict's OutOfMemory not recorded, where the out-of-memory row would send the task back
-// without its note.
+// the dead session's role and issue claims while the fresh session forgets its id; the verdict's
+// OutOfMemory not recorded, where the out-of-memory row would send the task back without its
+// note; and the end left to the stop's let-go, which records it as a suspension, where the task
+// would be sent again saying a suspension ended a process that had died.
 func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsNote(t *testing.T) {
 	for _, window := range []struct {
 		name    string
@@ -358,11 +361,16 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 				if c := h.claim().LastDeathCause; c != cause {
 					t.Errorf("the claim records its last death as %q, want the read's own account %q", c, cause)
 				}
-				want := interruptedTask(cause) + held.Task
-				if verdict.outOfMemory {
-					want = interruptedTask(cause) + outOfMemoryTask + held.Task
+				ended := h.claim().EndedWork
+				if ended.Cause != endDied(cause) || !ended.Turn || !ended.TaskTurn || !ended.Tells() {
+					t.Errorf("the claim records the let-go's end as %+v, want the read's death %q, with the dead turn and its task, untold",
+						ended, endDied(cause))
 				}
-				if got := p.message(h.claim()); got != want {
+				want := relaunchSentence(ended, true) + "\n\n" + held.Task
+				if verdict.outOfMemory {
+					want = relaunchSentence(ended, true) + "\n\n" + outOfMemoryTask + held.Task
+				}
+				if got, _ := p.message(h.claim()); got != want {
 					t.Errorf("the task taken back is sent as %q, want %q", got, want)
 				}
 				if stored := h.store.load(testToken).Pending; stored == nil || stored.OutOfMemory != verdict.outOfMemory {

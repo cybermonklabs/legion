@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -145,10 +146,16 @@ const feedSubPath = "feed"
 // AgentSecretsKeyDir is the memory-backed directory a role's agent-secrets key and enrollment id
 // live in, and AgentSecretsTokenDir where the pod's projected token for the broker's audience is
 // mounted, as AgentSecretsTokenFile. The key directory is each role's own; the token is shared.
+// AgentSecretsExchangeDir is where an enrolled pod's projected token for the exchange's audience
+// (AgentSecrets.ExchangeAudience) is mounted, as AgentSecretsExchangeFile, beside the broker's
+// token: the identity every role of the pod is told of as AGENT_SECRETS_MACHINE_TOKEN_FILE, shared
+// as the broker's token is.
 const (
-	AgentSecretsKeyDir    = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
-	AgentSecretsTokenDir  = launcher.FixedRoot + "/agent-secrets-token"
-	AgentSecretsTokenFile = "token"
+	AgentSecretsKeyDir       = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
+	AgentSecretsTokenDir     = launcher.FixedRoot + "/agent-secrets-token"
+	AgentSecretsTokenFile    = "token"
+	AgentSecretsExchangeDir  = launcher.FixedRoot + "/agent-secrets-exchange"
+	AgentSecretsExchangeFile = "token"
 )
 
 // The image's own paths (packages/daemon/docker/worker.Dockerfile: ENV and the COPY lines).
@@ -454,8 +461,21 @@ func generationDir(generation uint64) string {
 	return LauncherPrivateDir + "/" + shimwire.GenerationDir(generation)
 }
 
-// claudeMCPFile is the one file a Claude launch adds to its generation's credentials
-// (launcherCommand's Files): the MCP document its agent command reads as `--mcp-config`
+// claudeMCPFile is the one file a Claude launch adds to its generation's credentials beyond every
+// launch's (launcherCommand's Files): the MCP document its agent command reads as `--mcp-config`
 // (claudelaunch.MCPConfig), written 0600 into generationDir beside the boot token and removed
 // with it when the generation ends.
 const claudeMCPFile = "claude-mcp.json"
+
+// systemPromptPath is where a generation's agent reads the launch's system prompt:
+// runtime.SystemPromptFile in generationDir, which the launcher writes 0600, with every entry of
+// the start command's Files (launcherCommand), into the 0700 directory it makes for the generation,
+// before the child starts, and removes with the rest of that directory when the generation ends
+// (internal/launcher's writeFiles). The agent's argv names this path as the value of Oh My Pi's
+// `--append-system-prompt` or Claude Code's `--append-system-prompt-file` (agentArgv, claudeArgv;
+// runtime.SystemPromptFile says why it is a file). The directory is on the role's own
+// memory-backed private volume, which in an issue pod only that role's namespace binds back at
+// LauncherPrivateDir (RolesDir, role-init), so no other role's process can read or change the file.
+func systemPromptPath(generation uint64) string {
+	return generationDir(generation) + "/" + runtime.SystemPromptFile
+}

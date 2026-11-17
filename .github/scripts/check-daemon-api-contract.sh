@@ -18,23 +18,42 @@
 # group's tree carries both changes at that number, which is above the base's, and that tree is
 # the pair that ships.
 #
-# "Touches the file" is this checkout's copy differing from the copy the commit this checkout was
-# built on carries, which is not always the base: a merge group is the base with the group's
-# entries on top, so there the two are one commit, but a pull request is checked out as the merge
-# ref GitHub built when the event fired, and a re-run reuses that ref. Main moves on under it, so
-# a comparison with the tip of the base branch read a pull request that had left the file alone
-# as one that had touched it, and refused it for declaring the number its own base carries. What
-# the tree was built on is that merge ref's first parent, which a depth-1 checkout carries in
-# HEAD's parent line (built_on). The number is still compared with the base's, so a change that
-# does touch the file and declares a number the base has reached since is refused as before. A
-# base, a commit this checkout was built on, or a tree this check cannot read refuses the change
-# and names the read that failed: a check that passes when it cannot read proves nothing.
+# "Touches the file" is this checkout's copy of the contract's history and declaration differing
+# from the copy the commit this checkout was built on carries. That part runs from the file's
+# first history entry (the first line that starts `// <number>:`) to its end: the history and
+# the `const` line. A collision shows there, as a second entry at one number or in the `const`
+# line. The doc comment above the first entry holds no number, and an edit of it alone needs no
+# contract bump: a bump relaunches every registered claim in every deployment onto the new
+# plugin, and a comment is not worth that. What this gives up: an edit of that header alone is
+# no longer refused, even one that adds a surface to what the contract names. A copy with no
+# history entry is compared whole.
+#
+# The commit this checkout was built on is not always the base: a merge group is the base with
+# the group's entries on top, so there the two are one commit, but a pull request is checked out
+# as the merge ref GitHub built when the event fired, and a re-run reuses that ref. Main moves on
+# under it, so a comparison with the tip of the base branch read a pull request that had left
+# the file alone as one that had touched it, and refused it for declaring the number its own
+# base carries. What the tree was built on is that merge ref's first parent, which a depth-1
+# checkout carries in HEAD's parent line (built_on). The number is still compared with the
+# base's, so a change that does touch the file and declares a number the base has reached since
+# is refused as before. A base, a commit this checkout was built on, or a tree this check cannot
+# read refuses the change and names the read that failed: a check that passes when it cannot
+# read proves nothing.
 #
 # What it does not check: whether a bump is owed. A change to a surface this contract names that
 # leaves version.go alone passes here — that file's own bump rule and the review say when a bump
-# is owed, and this check only keeps two changes from claiming one number. It does not read the
-# number out of the other three files either: packages/daemon's golden test holds the fixture to
-# the constant, and the plugins' tests hold their manifests to the fixture.
+# is owed, and this check only keeps two changes from claiming one number.
+#
+# It does check that the files that hold the number agree. Each file after version.go must hold
+# the number version.go declares, as an integer: the fixture
+# packages/contracts/fixtures/daemon-api/version.json at daemonApiVersion, the fixture
+# packages/contracts/fixtures/daemon-api/state.json at both contract.daemon and contract.caller,
+# and the manifests packages/pi-legion/package.json and packages/claude-envoy/package.json at
+# legion.daemonApiVersion. A file this check cannot read there is refused as a read that failed.
+# This rule runs before the pass for a number above the base's, because a bump is where a file
+# is left behind: INFRA-3621's bump forgot state.json, and that pass would have let it through.
+# It reads only this checkout, so its refusal reads no open pull request and names no free
+# number: the files disagree, and the number is not what is wrong.
 #
 # Every GitHub read goes through `gh api`, and the base is read over the API rather than out of
 # git: the checkout in CI is one commit deep and fetches no origin/main. The one git read is of
@@ -66,14 +85,22 @@ from urllib.parse import quote
 
 DECLARATION = "packages/daemon/internal/api/version.go"
 WORKFLOW = ".github/workflows/ci.yaml"
-# Every file that holds the number. They move together, so a refusal names all of them.
-SITES = (
-    DECLARATION,
-    "packages/contracts/fixtures/daemon-api/version.json",
-    "packages/pi-legion/package.json",
-    "packages/claude-envoy/package.json",
-)
+# Where each file after version.go holds the number, which held_in reads: dotted key paths into
+# its JSON, each an integer. state.json holds it twice, since TestStateGolden writes the number as
+# both the daemon's and the caller's. version.go's reader is number_in.
+FIELDS = {
+    "packages/contracts/fixtures/daemon-api/version.json": ("daemonApiVersion",),
+    "packages/contracts/fixtures/daemon-api/state.json": ("contract.daemon", "contract.caller"),
+    "packages/pi-legion/package.json": ("legion.daemonApiVersion",),
+    "packages/claude-envoy/package.json": ("legion.daemonApiVersion",),
+}
+# Every file that holds the number: version.go, then the files of FIELDS in their order. They move
+# together, so a refusal names all of them, and each file after version.go must hold the number
+# version.go declares.
+SITES = (DECLARATION, *FIELDS)
 DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
+# version.go's first history entry: the first line that starts `// <number>:`.
+HISTORY = re.compile(r"^// \d+:", re.M)
 # One page of the open pull requests, each with its number, its draft mark, its head commit and
 # the paths it changes. Drafts are counted: a draft holds the number it declares as firmly as any
 # other open pull request, and one of the collisions this check exists for was a draft's.
@@ -187,6 +214,48 @@ def number_in(text: str, what: str, advice: Callable[[], str] | None = None) -> 
             f"{advice() if advice else ''}",
         )
     return int(match.group(1)), text.count("\n", 0, match.start()) + 1
+
+
+def held_in(site: str) -> dict[str, int]:
+    """The number site, a file of FIELDS, holds at each of the fields FIELDS names for it. A file
+    that is missing, is not JSON, lacks a field or holds anything but an integer there is refused
+    by name, as a read that failed: a check that passes when it cannot read proves nothing."""
+    what = f"{site} in this checkout"
+    try:
+        document = json.loads(Path(site).read_bytes().decode("utf-8"))
+    except FileNotFoundError:
+        fatal(site, f"could not read {what}: it is missing")
+    except (OSError, UnicodeDecodeError) as error:
+        fatal(site, f"could not read {what}: {one_line(error)}")
+    except json.JSONDecodeError as error:
+        fatal(site, f"could not read {what}: it is not JSON ({one_line(error)})")
+    held: dict[str, int] = {}
+    for field in FIELDS[site]:
+        value: object = document
+        for key in field.split("."):
+            if not isinstance(value, dict) or key not in value:
+                fatal(site, f"could not read {what}: it holds no {field}")
+            value = value[key]  # type: ignore[index]
+        # JSON's true is a Python bool, which is an int, and 8.0 equals 8: neither is a contract
+        # number, so neither is held to the declared one.
+        if isinstance(value, bool) or not isinstance(value, int):
+            fatal(
+                site,
+                f"could not read {what}: its {field} is {one_line(json.dumps(value))[:200]}, "
+                f"not an integer",
+            )
+        held[field] = value
+    return held
+
+
+def history_and_declaration(text: str) -> str:
+    """The contract's history and declaration in a copy of version.go: the text from its first
+    history entry to its end, trailing newlines normalised, since the API's body and the file on
+    disk differ only there when nothing changed the file. The doc comment above the first entry
+    holds no number, so an edit of it alone touches no contract. A copy with no history entry is
+    returned whole."""
+    entry = HISTORY.search(text)
+    return text[entry.start() if entry else 0 :].rstrip("\n")
 
 
 def payload_field(payload: dict, *path: str) -> str:
@@ -331,6 +400,20 @@ tree_number, line = number_in(
     lambda: f"; the base, {base_is}, carries {base_number}. {renumber(repository, base_number)}",
 )
 
+# The agreement rule of the header: it runs before the pass for a number above the base's.
+for site in FIELDS:
+    held = held_in(site)
+    if any(number != tree_number for number in held.values()):
+        holds = " and ".join(f"{number} at {field}" for field, number in held.items())
+        fatal(
+            site,
+            f"{site} holds daemon API contract {holds}, and {DECLARATION} declares {tree_number}. "
+            f"The {len(SITES)} files that hold the number must agree on it: {', '.join(SITES)}. "
+            f"`go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' "
+            f"-update`, run in packages/daemon, writes the fixtures, and the manifests take the "
+            f"number in legion.daemonApiVersion.",
+        )
+
 if tree_number > base_number:
     print(
         f"daemon API contract {tree_number} is above the {base_number} the base carries "
@@ -348,12 +431,11 @@ else:
     built_is = f"the commit GitHub built this pull request's merge ref on ({parent})"
     built_text = read_at(repository, parent, f"{DECLARATION} on {built_is}")
 
-# Trailing newlines are normalised: the API's body and the file on disk differ only there when
-# nothing changed the file.
-if tree_text.rstrip("\n") == built_text.rstrip("\n"):
+# Only the history and the declaration are compared (history_and_declaration).
+if history_and_declaration(tree_text) == history_and_declaration(built_text):
     print(
-        f"this change leaves {DECLARATION} as {built_is} has it (contract {tree_number}), so it "
-        f"declares no daemon API contract of its own"
+        f"this change leaves the history and the declaration in {DECLARATION} as {built_is} has "
+        f"them (contract {tree_number}), so it declares no daemon API contract of its own"
     )
     raise SystemExit(0)
 

@@ -8,7 +8,7 @@ import {
   gatedWrite,
   operandPath,
 } from "./askgate-marker";
-import { newAsks } from "./askgate-new-asks";
+import { newAskCount } from "./askgate-new-asks";
 import {
   commandHelp,
   commandName,
@@ -187,7 +187,7 @@ export function fitOutput(
  * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
  * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
  * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
- * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696).
+ * writes to `CLAUDE_ENV_FILE` (Claude Code issue 46696).
  *
  * The envoy.json it reads is the one its session's plugin chose: with `DISPATCH_HOST` set, the file
  * `ENVOY_CONFIG_FILE` names (each plugin sets the two together), else its host's own rule
@@ -384,17 +384,20 @@ export async function runDispatchCli(
         // The asks this write would open for a person, counted from the write's own text: the
         // one number pi-envoy's record of an unmarked write carries, so a session holding a
         // Dispatch token alone can count the asks that went out, or were refused, unreviewed.
-        // The ledger carries the count and never the ask text. An upload's asks are in its file,
-        // whose bytes are already read above, and which the dry run's arguments name only by
-        // path. A re-upload's blocks are counted again: the write carries them.
+        // Each ask the call opens counts one; a `replace`'s `with`, which `newAsks` reads as
+        // every string the server might parse it as, counts as the most asks any one of those
+        // readings opens (`newAskCount`). The ledger carries the count and never the ask text.
+        // An upload's asks are in its file, whose bytes are already read above, and which the dry
+        // run's arguments name only by path. A re-upload's blocks are counted again: the write
+        // carries them.
         const asksCarried = spent.ok
           ? 0
-          : newAsks(
+          : newAskCount(
               parsed.tool,
               uploadBytes === undefined
                 ? parsed.args
                 : { ...parsed.args, content: new TextDecoder().decode(uploadBytes) }
-            ).length;
+            );
         if (!spent.ok && gate.mode === "block") {
           return refuse(
             spent.changed === undefined

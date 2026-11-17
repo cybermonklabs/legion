@@ -86,6 +86,32 @@ func (x *subjectIndex) match(machineID, subject string, visit func(key string)) 
 	}
 }
 
+// matchAllMachines calls visit with each key, on whatever machine, whose patterns match subject;
+// a key with several matching patterns is visited once per pattern. A key belongs to one machine's
+// tree, so no key is visited from two of them.
+func (x *subjectIndex) matchAllMachines(subject string, visit func(key string)) {
+	for _, root := range x.roots {
+		root.match(subject, false, visit)
+	}
+}
+
+// oncePerKey wraps visit so that each key reaches it once, however many times the index visits
+// that key: match and matchAllMachines visit a key once per matching pattern. The set of keys
+// seen is made on the first visit, so a walk that matches nothing allocates nothing.
+func oncePerKey(visit func(key string)) func(key string) {
+	var seen map[string]struct{}
+	return func(key string) {
+		if _, dup := seen[key]; dup {
+			return
+		}
+		if seen == nil {
+			seen = map[string]struct{}{}
+		}
+		seen[key] = struct{}{}
+		visit(key)
+	}
+}
+
 func (n *subjectNode) insert(key, pattern string) {
 	node := n
 	for token := range strings.SplitSeq(pattern, ".") {

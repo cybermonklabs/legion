@@ -21,7 +21,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"cloud.google.com/go/iam/apiv1/iampb"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"golang.org/x/oauth2"
@@ -32,6 +34,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -52,10 +55,11 @@ func gcpTestSettings() Settings {
 	}
 }
 
-// fakeSecret is one secret fakeSecretManager holds.
+// fakeSecret is one secret fakeSecretManager holds: payloads[i] is versions[i]'s value.
 type fakeSecret struct {
 	secret      *secretmanagerpb.Secret
 	versions    []*secretmanagerpb.SecretVersion
+	payloads    [][]byte
 	etagCounter int
 }
 
@@ -78,9 +82,29 @@ type fakeSecretManager struct {
 	// refuse, when set, is an authorization every call carrying it is refused with
 	// PermissionDenied, as IAM refuses an identity it grants no role on the secrets.
 	refuse string
+	// refuseMethods is, for each method it names (CreateSecret, AddSecretVersion, DeleteSecret,
+	// ...), the code every call of that method is refused with, as IAM refuses an identity one
+	// permission it does not grant while granting it the others.
+	refuseMethods map[string]codes.Code
+	// answerAfter is, for each method it names, the code every call of that method is answered
+	// with once the fake has applied it, as a call the server carried out and whose answer was lost
+	// (DeadlineExceeded, Unavailable) reaches the caller. beforeCall, when set, runs with each
+	// call's method before the fake answers it, outside f.mu.
+	answerAfter map[string]codes.Code
+	beforeCall  func(method string)
+	afterCall   func(method string)
 	// authorizations is the authorization metadata each call carried, in order: the sign-in it
-	// ran under (recordAuthorization).
+	// ran under (recordAuthorization). methods is the method each call named, in the same order.
 	authorizations []string
+	methods        []string
+	// refuseAccess, when not OK, is the code every AccessSecretVersion answers: PERMISSION_DENIED
+	// as IAM answers a sign-in without secretmanager.versions.access, or any other failure;
+	// accesses counts the AccessSecretVersion calls, answered or refused.
+	refuseAccess codes.Code
+	accesses     int
+	// withheld are the permissions TestIamPermissions answers the caller does not hold, of those
+	// it asks about; it answers every other one held, as IAM does for a sign-in that holds them.
+	withheld []string
 }
 
 // raceOnce runs f.race on entry once, on a call after the first GetSecret.
@@ -91,19 +115,44 @@ func (f *fakeSecretManager) raceOnce(entry *fakeSecret) {
 	}
 }
 
-// recordAuthorization notes the authorization metadata each call carries before the fake answers
-// it, as the real API reads the caller's sign-in from it, and refuses a call carrying f.refuse.
+// recordAuthorization notes the authorization metadata and the method of each call before the
+// fake answers it, as the real API reads the caller's sign-in from it, runs f.beforeCall, refuses
+// a call carrying f.refuse, or naming a method f.refuseMethods refuses, and answers a call naming
+// a method f.answerAfter names with that code once it has applied it.
 func (f *fakeSecretManager) recordAuthorization(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
 	authorization := strings.Join(md.Get("authorization"), ",")
+	method := info.FullMethod[strings.LastIndex(info.FullMethod, "/")+1:]
 	f.mu.Lock()
 	f.authorizations = append(f.authorizations, authorization)
+	f.methods = append(f.methods, method)
 	refused := f.refuse != "" && authorization == f.refuse
+	code, after, before := f.refuseMethods[method], f.answerAfter[method], f.beforeCall
 	f.mu.Unlock()
+	if before != nil {
+		before(method)
+	}
 	if refused {
 		return nil, status.Errorf(codes.PermissionDenied, "Permission denied on %s for the caller", info.FullMethod)
 	}
-	return handler(ctx, req)
+	if code != codes.OK {
+		return nil, status.Errorf(code, "the fake refuses %s", info.FullMethod)
+	}
+	resp, err := handler(ctx, req)
+	if f.afterCall != nil {
+		f.afterCall(method)
+	}
+	if err == nil && after != codes.OK {
+		return nil, status.Errorf(after, "the fake applied %s and answers it failed", info.FullMethod)
+	}
+	return resp, err
+}
+
+// called is the method of every call so far, in order, refused ones included.
+func (f *fakeSecretManager) called() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.methods)
 }
 
 // calledUnder is the authorization every call so far carried, and how many calls there were; ""
@@ -214,7 +263,45 @@ func (f *fakeSecretManager) AddSecretVersion(_ context.Context, req *secretmanag
 	name := req.GetParent() + "/versions/" + strconv.Itoa(number)
 	version := &secretmanagerpb.SecretVersion{Name: name, State: secretmanagerpb.SecretVersion_ENABLED}
 	entry.versions = append(entry.versions, version)
+	entry.payloads = append(entry.payloads, req.GetPayload().GetData())
 	return version, nil
+}
+
+// DeleteSecret deletes the secret outright, with every version it holds, as the real API does.
+func (f *fakeSecretManager) DeleteSecret(_ context.Context, req *secretmanagerpb.DeleteSecretRequest) (*emptypb.Empty, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entry, ok := f.secrets[req.GetName()]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	if etag := req.GetEtag(); etag != "" && etag != entry.secret.GetEtag() {
+		return nil, status.Error(codes.FailedPrecondition, "etag mismatch")
+	}
+	delete(f.secrets, req.GetName())
+	return &emptypb.Empty{}, nil
+}
+
+// AccessSecretVersion answers versions/latest, the one version name the forms access, with the
+// payload AddSecretVersion stored for the newest version, or refuseAccess when that is set.
+func (f *fakeSecretManager) AccessSecretVersion(_ context.Context, req *secretmanagerpb.AccessSecretVersionRequest) (*secretmanagerpb.AccessSecretVersionResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accesses++
+	if f.refuseAccess != codes.OK {
+		return nil, status.Error(f.refuseAccess, "the fake refuses access to "+req.GetName())
+	}
+	parent, latest := strings.CutSuffix(req.GetName(), "/versions/latest")
+	entry, ok := f.secrets[parent]
+	if !latest || !ok || len(entry.versions) == 0 {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	newest := len(entry.versions) - 1
+	var data []byte
+	if newest < len(entry.payloads) {
+		data = entry.payloads[newest]
+	}
+	return &secretmanagerpb.AccessSecretVersionResponse{Name: entry.versions[newest].GetName(), Payload: &secretmanagerpb.SecretPayload{Data: data}}, nil
 }
 
 func (f *fakeSecretManager) GetSecretVersion(_ context.Context, req *secretmanagerpb.GetSecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {
@@ -244,6 +331,19 @@ func (f *fakeSecretManager) ListSecretVersions(_ context.Context, req *secretman
 		return nil, status.Error(codes.NotFound, "not found")
 	}
 	return &secretmanagerpb.ListSecretVersionsResponse{Versions: entry.versions}, nil
+}
+
+// TestIamPermissions answers, of the permissions asked about on the secret, every one f does not
+// withhold, as IAM answers a sign-in the permissions its roles grant on that resource. It refuses a
+// secret it does not hold NotFound.
+func (f *fakeSecretManager) TestIamPermissions(_ context.Context, req *iampb.TestIamPermissionsRequest) (*iampb.TestIamPermissionsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.secrets[req.GetResource()]; !ok {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	held := slices.DeleteFunc(slices.Clone(req.GetPermissions()), func(p string) bool { return slices.Contains(f.withheld, p) })
+	return &iampb.TestIamPermissionsResponse{Permissions: held}, nil
 }
 
 // startFakeSecretManager serves f over a real gRPC server on loopback for the rest of t, and
@@ -293,7 +393,9 @@ func (bearerOf) RequireTransportSecurity() bool { return false }
 // gcpServedBy answers a reread as the broker would from what f holds: absent for a secret it does
 // not hold, or one scheduled for deletion (expire_time set, whether or not it has passed - a
 // broker reread treats a scheduled deletion as absent the moment it is scheduled, as AWS's
-// DeletedDate does), no-current-value for one with no version, served otherwise.
+// DeletedDate does), pending-value for one with no version that carries the create label (a
+// create waiting for its value: the fake makes every secret now, so it is always young enough),
+// no-current-value for any other with no version, served otherwise.
 func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Reread {
 	return func(name string) Reread {
 		slug, err := policy.NameToSlug(name)
@@ -308,6 +410,8 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 			return Reread{Name: name, Reason: policy.ReasonAbsent}
 		case entry.secret.GetExpireTime() != nil:
 			return Reread{Name: name, Reason: policy.ReasonAbsent}
+		case len(entry.versions) == 0 && entry.secret.GetLabels()[createLabel] != "":
+			return Reread{Name: name, Reason: policy.ReasonPendingValue}
 		case len(entry.versions) == 0:
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
@@ -316,14 +420,18 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 }
 
 // useGCPIdentity makes gcpCredentials and gcpUserinfo answer kind/email for the rest of t, with no
-// network call, and clears CLOUDSDK_AUTH_ACCESS_TOKEN, which would outrank them. kind is the ADC
-// JSON's "type" ("authorized_user" for a person's sign-in, "service_account" for a key file, whose
+// network call, and clears CLOUDSDK_AUTH_ACCESS_TOKEN, which would outrank them, and the variables
+// a developer's own shell could set to choose a sign-in (GOOGLE_APPLICATION_CREDENTIALS,
+// CLOUDSDK_CORE_ACCOUNT), which the commands a form prints carry. kind is the ADC JSON's "type"
+// ("authorized_user" for a person's sign-in, "service_account" for a key file, whose
 // client_email is email, "external_account" for a workload identity federation credential such as
 // a dev box's, which impersonates email); "" leaves the JSON empty, as a GCE/GKE metadata-server
 // identity carries none.
 func useGCPIdentity(t *testing.T, kind, email string) {
 	t.Helper()
 	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	restoreCreds, restoreUserinfo := gcpCredentials, gcpUserinfo
 	gcpCredentials = func(context.Context) (*google.Credentials, error) {
 		var creds google.Credentials
@@ -1048,16 +1156,45 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 			useNoADC(t)
 			useGcloud(t, row.accounts...)
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", row.named)
-			broker := startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			useTerminal(t)
-			readHidden = func(int, func(), func()) ([]byte, error) { return nil, errMoreThanOneLine }
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errMoreThanOneLine }
 
 			_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
 			if code != exitUsageError || !strings.Contains(stderr, row.want) {
 				t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, row.want)
 			}
-			requireNothingWritten(t, fake, broker)
+			requireNothingLeft(t, fake, broker, "SCRATCH_TEST")
 		})
+	}
+}
+
+// TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline: an expired gcloud token is
+// refreshed through gcloudToken.Token, which runs `gcloud auth print-access-token`. A gcloud that
+// never answers - here a script whose child holds its output open, as the real gcloud's Python does
+// under its shell wrapper - ends at the deadline on each store call (storeCallDeadline), so a stalled
+// refresh cannot outlast the store call it serves; the error names the account and the deadline.
+func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
+	useStoreCallDeadline(t, 300*time.Millisecond)
+	dir := t.TempDir()
+	gcloud := filepath.Join(dir, "gcloud")
+	if err := os.WriteFile(gcloud, []byte("#!/bin/sh\nsleep 3600\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
+	source := oauth2.ReuseTokenSource(expired, gcloudToken{ctx: context.Background(), gcloud: gcloud, account: "ada@example.com"})
+	done := make(chan error, 1)
+	go func() {
+		_, err := source.Token()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
+			t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refresh of an expired token was still waiting on gcloud 10s on, past the 300ms deadline")
 	}
 }
 

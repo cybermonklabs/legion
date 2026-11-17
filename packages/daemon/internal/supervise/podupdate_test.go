@@ -432,7 +432,9 @@ func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
 // posts of the round revive nothing and hand the task to nobody. The resume relaunches the claim,
 // and at ready the older daemon's task is dropped and never sent, though it names the round the
 // claim is still in (dispatch://INFRA-2981 R1). The role gets the round's Envoy ask instead, which
-// the sweep publishes and this machine does not.
+// the sweep publishes and this machine does not. The one prompt the resume sends is the daemon's
+// own delivery of what the operator's suspension ended (dispatch://INFRA-3276 R3): the drop leaves
+// the claim holding nothing while that record tells (relaunchAfterDrop).
 //
 // The negative control is sendPending's drop narrowed to the rule before this one, an ask of a
 // round the claim is not in now or has left (`asks && (round != m.claim.UpdateRound ||
@@ -460,17 +462,20 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 	h.must(RequestResume{Claim: h.token})
 	h.relaunched()
 
-	for _, p := range h.prompts() {
+	prompts := h.wantPrompts(sent + 1)
+	for _, p := range prompts {
 		if carriesAsk(p, ask) {
 			t.Fatalf("prompt %+v carries the older daemon's ask %s, want it dropped at the resume and never sent", p, ask.ID)
 		}
 	}
-	h.wantPrompts(sent)
+	if told := prompts[sent]; !relaunchTask(told.DeliveryID) {
+		t.Fatalf("the prompt at the resume is %+v, want the daemon's own delivery of what the suspension ended", told)
+	}
 	c := h.wantRound(testRound)
-	if c.Pending != nil {
+	if HoldsTask(c.Pending) {
 		t.Fatalf("pending = %+v after the resume, want the older daemon's ask dropped", c.Pending)
 	}
-	if d, held := h.store.delivery(h.token); held {
+	if d, held := h.store.delivery(h.token); held && HoldsTask(&d) {
 		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
 }
@@ -1093,8 +1098,16 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 				h.relaunched()
 			}
 
-			if got := h.wantPrompts(sent + 2)[sent+1]; got.Message != next {
-				t.Fatalf("the prompt after the end is %+v, want the task %q the round held back", got, next)
+			// The suspension let a process go that had run a turn and left no report the daemon
+			// took (its plugin is stale here), so the resumed claim's task carries the sentence
+			// of what it may have ended (dispatch://INFRA-3276 R3); the live claim's process was
+			// never let go, and its task goes as it was queued.
+			want := next
+			if tc.suspend {
+				want = relaunchSentence(h.claim().EndedWork, true) + "\n\n" + next
+			}
+			if got := h.wantPrompts(sent + 2)[sent+1]; got.Message != want {
+				t.Fatalf("the prompt after the end is %+v, want the task %q the round held back", got, want)
 			}
 		})
 	}
@@ -1272,7 +1285,9 @@ func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 // words to the worker again. The death is the path a restored claim meets: the older daemon's
 // prompt started the turn, and the claim's process dies in it. The relaunch comes up in the
 // round's own pod, so the claim is still in the round, and its ready drops the ask rather than
-// send it.
+// send it. The one prompt the ready sends is the daemon's own delivery of what the death ended
+// (dispatch://INFRA-3276 R3): the drop leaves the claim holding nothing while that record tells
+// (relaunchAfterDrop).
 func TestPodUpdateAnAskKeepsItsRoundWhenItsIdRotates(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.inPod(testRoundPod)
@@ -1303,15 +1318,19 @@ func TestPodUpdateAnAskKeepsItsRoundWhenItsIdRotates(t *testing.T) {
 	if c := h.claim(); c.UpdateLeftRound != "" {
 		t.Fatalf("the claim left %q, want it still in the round: its process came up in the round's own pod", c.UpdateLeftRound)
 	}
-	for _, p := range h.wantPrompts(sent) {
+	prompts := h.wantPrompts(sent + 1)
+	for _, p := range prompts {
 		if p.DeliveryID == rotated.ID {
 			t.Fatalf("prompt %+v carries the rotated ask, want it dropped and never sent", p)
 		}
 	}
-	if p := h.claim().Pending; p != nil {
+	if told := prompts[sent]; !relaunchTask(told.DeliveryID) {
+		t.Fatalf("the prompt at the relaunch's ready is %+v, want the daemon's own delivery of what the death ended", told)
+	}
+	if p := h.claim().Pending; HoldsTask(p) {
 		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped", p)
 	}
-	if d, held := h.store.delivery(h.token); held {
+	if d, held := h.store.delivery(h.token); held && HoldsTask(&d) {
 		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
 }

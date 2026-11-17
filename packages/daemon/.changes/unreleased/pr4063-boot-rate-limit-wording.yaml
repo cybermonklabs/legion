@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A correction to legion-v20.19.2's notes, which mentioned only the backfill of records from before
+  the record carried its repository: the backfill of records from before the record carried
+  GitHub's spelling of its repository also waits out GitHub's rate limit, or a read GitHub does not
+  answer, and reads again until GitHub answers, so the boot waits rather than exits.

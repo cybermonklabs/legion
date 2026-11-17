@@ -64,6 +64,7 @@ import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
+import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
   envoyPluginInterface,
@@ -550,6 +551,7 @@ restoreEnvironment([
   "ENVOY_MACHINE_ID",
   "AGENTBOX_HOST",
   "ENVOY_TMUX_PLACE_CACHE_MS",
+  "ENVOY_SESSION_ROLE",
 ]);
 // The directory this process was started in. A row that chdirs elsewhere is put back in
 // `afterEach`, which a row aborted at Bun's own timeout reaches where its own `finally` does not.
@@ -599,12 +601,17 @@ let configDirectory = "";
 // cannot be static, as the entry reads `@oh-my-pi/pi-coding-agent` and so must load below the
 // stand-ins for it; it carries a query of its own so no row's instance is this one; and it sits
 // below the `original*` captures because loading the entry sets `PATH`, `DISPATCH_HOST` and
-// `ENVOY_CONFIG_FILE` as every row's own load does, which `afterEach` puts back to what was
-// captured. Loading it here writes those three names whether or not a row of this file runs, so
-// the capture below puts them back as soon as the entry is loaded; every row's own load writes
-// them again.
-const restoreEntryLoad = captureEnvironment(["PATH", "DISPATCH_HOST", "ENVOY_CONFIG_FILE"]);
-const { resetNatsConnectForTests, setNatsConnectForTests } = await import(
+// `ENVOY_CONFIG_FILE` and takes `ENVOY_SESSION_ROLE` out, as every row's own load does, which
+// `afterEach` puts back to what was captured. Loading it here changes those four names whether or
+// not a row of this file runs, so the capture below puts them back as soon as the entry is loaded;
+// every row's own load changes them again.
+const restoreEntryLoad = captureEnvironment([
+  "PATH",
+  "DISPATCH_HOST",
+  "ENVOY_CONFIG_FILE",
+  "ENVOY_SESSION_ROLE",
+]);
+const { resetNatsConnectForTests, resetSessionRoleForTests, setNatsConnectForTests } = await import(
   "./envoy.ts?nats-stand-in"
 );
 restoreEntryLoad();
@@ -634,6 +641,11 @@ beforeEach(() => {
   delete process.env.DISPATCH_TOKEN;
   delete process.env.DISPATCH_TOKEN_FILE;
   delete process.env.ENVOY_MACHINE_ID;
+  // The role a session pod's launch names, which every pass of an instance created under it
+  // claims: a suite run inside a session pod must not claim that pod's role for every fixture.
+  // A load takes the variable into a slot every later load reads, so the slot goes too.
+  delete process.env.ENVOY_SESSION_ROLE;
+  resetSessionRoleForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
@@ -1466,6 +1478,68 @@ function roleClaimRecord(role: string, session: string): unknown {
  *  `previous_session_id`): every claim names the process making it (INFRA-783). */
 function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
   return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
+}
+
+/**
+ * A fresh session in a session pod whose launch named `sessionRole` in `ENVOY_SESSION_ROLE`
+ * (agent-infra's sessions workload); with no `sessionRole` the environment is left as it is. Every
+ * registration and every role claim the listener is sent lands in `seen`, in the order sent; a
+ * role lookup names `sessionID` as the holder. `heartbeat` runs one heartbeat pass and lets it
+ * settle, and `records` reads the role claim records the session's transcript holds.
+ */
+async function bootSessionPod(query: string, sessionID: string, sessionRole?: string) {
+  if (sessionRole !== undefined) process.env.ENVOY_SESSION_ROLE = sessionRole;
+  const seen: unknown[] = [];
+  let registrations = 0;
+  globalThis.fetch = async (input, init) => {
+    const { pathname } = new URL(input.toString());
+    const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+    if (pathname === "/v1/interests/subscribe") {
+      registrations += 1;
+      seen.push({ registered: body.session_id });
+    }
+    if (pathname === "/v1/roles/set") {
+      seen.push({ claimed: body });
+      return response({
+        session_id: body.session_id,
+        machine_id: "test",
+        dir: "/tmp/envoy-omp-test",
+        topics: [`notifications.role.${body.role}`],
+      });
+    }
+    if (pathname.startsWith("/v1/roles/")) {
+      return response({
+        role: pathname.slice("/v1/roles/".length),
+        holder: sessionID,
+        last_seen: 1,
+      });
+    }
+    return responseWithRegistration(input, init, {});
+  };
+  // Each caller's own query loads an instance of its own, so the specifier cannot be static.
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const fixture = createPi();
+  const intervals: (() => void)[] = [];
+  const base = sessionContext(sessionID);
+  const context: SessionContext = {
+    ...base,
+    sessionManager: { ...base.sessionManager, getBranch: () => fixture.entries },
+    setInterval: (callback) => intervals.push(callback),
+  };
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  return {
+    seen,
+    fixture,
+    records: () => fixture.entries.filter((entry) => entry.customType === "envoy-role-claim"),
+    heartbeat: async () => {
+      const before = registrations;
+      intervals[0]?.();
+      await until(() => registrations > before, "the heartbeat's registration");
+      await settle();
+    },
+    shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
+  };
 }
 
 function responseWithRegistration(
@@ -2644,7 +2718,8 @@ describe("envoy OMP extension", () => {
       lazySessionID: true,
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
-    expect(process.env.DISPATCH_SESSION_ID).toBeUndefined();
+    // A session with no id names none: the variable is "", which every reader takes as unset.
+    expect(process.env.DISPATCH_SESSION_ID).toBe("");
     procmgr.refreshShellConfigCache();
 
     await session.userTurn();
@@ -3769,51 +3844,133 @@ describe("envoy OMP extension", () => {
     ]);
   });
 
-  test("renders a kept role publish as a success that says no session holds the role yet", async () => {
-    // Nobody holds the role, so the listener kept the message and answered 202 (INFRA-839).
-    // The tool must not read that as a failure: the message reaches whoever claims the role.
+  // No live session holds the role, so the listener kept the message for one hour and answered
+  // 202 with kept_until, the end of that hour. The tool must not read that as a failure, and it
+  // tells the sender until when the copy waits and what comes if no session takes it: a message
+  // to the publish's source session (dispatch://INFRA-2846, R3). A subagent whose parent this
+  // process cannot resolve publishes from no session, so no such message comes to it.
+  test("a kept publish says until when it is kept", async () => {
+    const keptUntil = Date.UTC(2026, 10, 15, 10, 30);
+    const until = "2026-11-15T10:30:00.000Z";
+    const lastSeen = Date.UTC(2026, 10, 15, 9, 20);
+    // What the listener answers for each role, read from the topic a publish names.
+    const answers: Record<string, Record<string, unknown>> = {
+      "notifications.role.legion-architect": { kept_reason: "unclaimed", kept_until: keptUntil },
+      "notifications.role.reviewer": {
+        kept_reason: "holder_lapsed",
+        kept_until: keptUntil,
+        holder: "ses_reviewer",
+        holder_state: "unresponsive",
+        last_seen: lastSeen,
+      },
+      // A listener of an earlier release: kept, and no time named.
+      "notifications.role.controller": { kept_reason: "unclaimed" },
+    };
+    const published: Record<string, unknown>[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname !== "/v1/messages/publish") {
         return responseWithRegistration(input, init, {});
       }
       const body = JSON.parse(init?.body?.toString() ?? "{}") as { readonly topic: string };
+      published.push(body);
       return new Response(
         JSON.stringify({
           event_id: "evt_kept",
           source: "agent",
           source_event_id: "evt_kept",
-          source_session: "ses_omp",
           topic: body.topic,
           dedupe_key: "dedupe_kept",
           issued_at: 1,
           payload_summary: "broadcast",
           trace_id: "trace_kept",
           kept: true,
-          kept_reason: "unclaimed",
+          ...answers[body.topic],
         }),
         { status: 202 }
       );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?publish-kept");
-    const fixture = createPi();
-    envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const fixture = transcriptFixture();
+    try {
+      // A process whose first top-level session has no id yet, a subagent of it, which therefore
+      // resolves no address, and a top-level session with an id of its own.
+      const host = await subagentProcess("publish-kept", "", fixture.transcript);
+      const child = await host.boot(
+        "ses_child",
+        fixture.transcript("2026-09-23T00-00-00-000Z_/Scout.jsonl")
+      );
+      const named = await host.boot(
+        "ses_named",
+        fixture.transcript("2026-09-23T00-02-00-000Z_ses_named.jsonl")
+      );
+      const publish = (session: typeof named, topic: string) =>
+        session.tools
+          .find((tool) => tool.name === "envoy_publish")
+          ?.execute(
+            "call-publish",
+            { topic, message: "broadcast" },
+            undefined,
+            undefined,
+            session.context
+          );
 
-    const kept = await fixture.tools
-      .find((tool) => tool.name === "envoy_publish")
-      ?.execute("", { topic: "notifications.role.legion-architect", message: "broadcast" });
+      // The tool's description names the hour, kept_until and the message that follows it.
+      const description = named.tools.find((tool) => tool.name === "envoy_publish")?.description;
+      expect(description).toContain("The listener then keeps the message for one hour.");
+      expect(description).toContain("its kept_until is the time that hour ends");
+      expect(description).toContain(
+        "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late."
+      );
 
-    expect(kept?.isError).toBeFalsy();
-    expect(kept?.content[0]?.text).toBe(
-      "published evt_kept. Envoy kept it for the role: no session holds it yet, and the message waits for the session that claims it next."
-    );
-    expect(kept?.details).toMatchObject({
-      event_id: "evt_kept",
-      topic: "notifications.role.legion-architect",
-      kept: true,
-      kept_reason: "unclaimed",
-    });
+      const unclaimed = await publish(named, "notifications.role.legion-architect");
+      expect(published[0]).toMatchObject({ source_session: "ses_named" });
+      expect(unclaimed?.isError).toBeFalsy();
+      expect(unclaimed?.content[0]?.text).toBe(
+        `published evt_kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`
+      );
+      expect(unclaimed?.details).toEqual({
+        event_id: "evt_kept",
+        topic: "notifications.role.legion-architect",
+        kept: true,
+        kept_reason: "unclaimed",
+        kept_until: keptUntil,
+      });
+
+      // A holder that is unresponsive: named with its state, with the warning that such a holder
+      // is not dead and that the sender starts no replacement for it.
+      const unresponsive = await publish(named, "notifications.role.reviewer");
+      expect(unresponsive?.content[0]?.text).toBe(
+        `published evt_kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late. ${UNRESPONSIVE_RULE}`
+      );
+      expect(unresponsive?.content[0]?.text).toContain("Start no replacement for it");
+      expect(unresponsive?.details).toEqual({
+        event_id: "evt_kept",
+        topic: "notifications.role.reviewer",
+        holder: "ses_reviewer",
+        holder_state: "unresponsive",
+        last_seen: lastSeen,
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: keptUntil,
+      });
+
+      // A listener of an earlier release names no time, and the line says kept with no time.
+      const earlier = await publish(named, "notifications.role.controller");
+      expect(earlier?.content[0]?.text).toBe(
+        "published evt_kept. Envoy kept it for the role: no live session holds the role now. Envoy did not say until when it keeps it."
+      );
+      expect(earlier?.details).not.toHaveProperty("kept_until");
+
+      // The subagent's publish names no session, so its line promises no message.
+      const unnamed = await publish(child, "notifications.role.legion-architect");
+      expect(published[3]).not.toHaveProperty("source_session");
+      expect(unnamed?.content[0]?.text).toBe(
+        `published evt_kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it.`
+      );
+      expect(unnamed?.details).toMatchObject({ kept: true, kept_until: keptUntil });
+    } finally {
+      fixture.remove();
+    }
   });
 
   test("builds every tool parameter schema through the injected pi.zod, never the bundled zod", async () => {
@@ -4446,6 +4603,70 @@ describe("envoy OMP extension", () => {
       sessionContext("ses_dispatch_env_new")
     );
     expect(process.env.DISPATCH_SESSION_ID).toBe("ses_dispatch_env_new");
+  });
+
+  // A session with no id yet (a fresh TUI's) names no session for the `dispatch` command, even in
+  // a process started from another session's shell, which inherits that session's id. A delete
+  // would reach `process.env` alone: the C environment the process started with keeps the value,
+  // and a child Oh My Pi starts in a PTY begins from it with the variables built from `Bun.env`
+  // laid over it, so the child would act as the other session. "" lies over the value there, and
+  // every reader takes "" as unset. The process here starts with the variable, loads the entry
+  // (with the host package stood in by the role takeover smoke's preload), runs its session_start
+  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`.
+  test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", () => {
+    const marker = "dispatch-session-report ";
+    const script = `
+      const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
+      const { default: envoyExtension } = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const { handlers, pi } = createStandInHost();
+      envoyExtension(pi);
+      await handlers.get("session_start")?.({}, {
+        cwd: process.cwd(),
+        hasUI: true,
+        sessionManager: {
+          getSessionId: () => "",
+          getSessionName: () => undefined,
+          getBranch: () => [],
+          getEntries: () => [],
+          getSessionFile: () => undefined,
+          ensureOnDisk: async () => undefined,
+        },
+        setInterval: () => undefined,
+        setTimeout: () => undefined,
+        ui: { notify: () => undefined, onTerminalInput: () => () => undefined, getEditorText: () => "" },
+      });
+      const overrides = Object.entries(process.env)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => name + "=" + value);
+      const line = Bun.spawnSync(["env", ...overrides, "env"])
+        .stdout.toString()
+        .split("\\n")
+        .find((entry) => entry.startsWith("DISPATCH_SESSION_ID="));
+      console.log(${JSON.stringify(marker)} + JSON.stringify({
+        processEnv: process.env.DISPATCH_SESSION_ID ?? null,
+        pty: line === undefined ? null : line.slice("DISPATCH_SESSION_ID=".length),
+      }));
+      process.exit(0);
+    `;
+    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
+    const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
+    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+      cwd: import.meta.dir,
+      env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+    });
+    const report = run.stdout
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith(marker));
+    if (run.exitCode !== 0 || report === undefined) {
+      throw new Error(
+        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+      );
+    }
+    expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
   });
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
@@ -11144,6 +11365,127 @@ console.log(JSON.stringify(args));
     });
   });
 
+  // A session pod's launch names the Envoy role its session holds (`ENVOY_SESSION_ROLE`), and the
+  // session claims it itself, under its own credential, at its first registration and at every
+  // one a heartbeat makes after it. Each claim is outright, so a role an evicted pod's session
+  // still holds comes to the live one at once. Only the first writes a transcript record: each
+  // later one is a claim the newest record already names. Without the variable a fresh session
+  // claims nothing.
+  test("claims ENVOY_SESSION_ROLE for its own session", async () => {
+    const pod = await bootSessionPod("session-role", "ses_pod", "fan-cloud");
+    await pod.heartbeat();
+    await pod.heartbeat();
+    await pod.shutdown();
+    const registered = { registered: "ses_pod" };
+    const claimed = { claimed: roleClaimBody("ses_pod", "fan-cloud") };
+    expect(pod.seen).toEqual([registered, claimed, registered, claimed, registered, claimed]);
+    expect(pod.records()).toEqual([roleClaimRecord("fan-cloud", "ses_pod")]);
+
+    delete process.env.ENVOY_SESSION_ROLE;
+    resetSessionRoleForTests();
+    const unset = await bootSessionPod("session-role-unset", "ses_pod_unset");
+    await unset.heartbeat();
+    await unset.heartbeat();
+    await unset.shutdown();
+    const unsetRegistered = { registered: "ses_pod_unset" };
+    expect(unset.seen).toEqual([unsetRegistered, unsetRegistered, unsetRegistered]);
+    expect(unset.records()).toEqual([]);
+  });
+
+  // The launch's role is the session's until the session records another: a move the model makes
+  // with envoy_role_set is the session's newest record, and no heartbeat undoes it.
+  test("a session that moves off its ENVOY_SESSION_ROLE keeps the role it moved to", async () => {
+    const pod = await bootSessionPod("session-role-moved", "ses_pod_moved", "fan-cloud");
+    const roleTool = pod.fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+    await roleTool.execute("", { role: "librarian" });
+    await pod.heartbeat();
+    await pod.shutdown();
+    const registered = { registered: "ses_pod_moved" };
+    expect(pod.seen).toEqual([
+      registered,
+      { claimed: roleClaimBody("ses_pod_moved", "fan-cloud") },
+      { claimed: roleClaimBody("ses_pod_moved", "librarian") },
+      registered,
+    ]);
+  });
+
+  // The variable is the launch's word to this process alone: an `omp` an agent starts inside the
+  // pod must not get its value, or that session would take the pod's role from the pod's session
+  // at each of its registrations. The load leaves it set to "", which names no role, so every
+  // environment built from this process's carries "" over whatever the process started with.
+  // Every extension instance of the process still reads the role: a second one, loaded after the
+  // first took it out of the environment, claims it too.
+  test("no process the session starts gets the ENVOY_SESSION_ROLE value, and every instance of the process claims it", async () => {
+    const first = await bootSessionPod("session-role-first", "ses_pod_first", "fan-cloud");
+    expect(first.seen).toEqual([
+      { registered: "ses_pod_first" },
+      { claimed: roleClaimBody("ses_pod_first", "fan-cloud") },
+    ]);
+    expect(process.env.ENVOY_SESSION_ROLE).toBe("");
+
+    // Handed the live environment, as Oh My Pi's shell is (`procmgr.refreshShellConfigCache`
+    // captures `Bun.env`). What a child does with the environment the process started with is the
+    // next test's: this process set the variable after it started.
+    const child = Bun.spawnSync(["env"], { env: process.env, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(0);
+    const inherited = child.stdout
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("ENVOY_SESSION_ROLE="));
+    expect(inherited).toEqual(["ENVOY_SESSION_ROLE="]);
+
+    const second = await bootSessionPod("session-role-second", "ses_pod_second");
+    expect(second.seen).toEqual([
+      { registered: "ses_pod_second" },
+      { claimed: roleClaimBody("ses_pod_second", "fan-cloud") },
+    ]);
+    await first.shutdown();
+    await second.shutdown();
+  });
+
+  // A deleted variable stays in the C environment the process started with, and a child Oh My Pi
+  // starts in a PTY (its bash tool's `pty: true`) begins from that environment, with the variables
+  // built from `Bun.env` laid over it. So the load must leave "" over it rather than nothing. The
+  // process here starts with the variable, as a session pod's `omp` does, loads the entry (with
+  // the host package stood in by the role takeover smoke's preload), and starts `env` the PTY's
+  // way: `env K=V … env`, its own environment being the inherited one.
+  test("a process started with ENVOY_SESSION_ROLE hands a child built over its native environment no role", () => {
+    const marker = "session-role-report ";
+    const script = `
+      await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const overrides = Object.entries(process.env)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => name + "=" + value);
+      const line = Bun.spawnSync(["env", ...overrides, "env"])
+        .stdout.toString()
+        .split("\\n")
+        .find((entry) => entry.startsWith("ENVOY_SESSION_ROLE="));
+      console.log(${JSON.stringify(marker)} + JSON.stringify({
+        processEnv: process.env.ENVOY_SESSION_ROLE ?? null,
+        pty: line === undefined ? null : line.slice("ENVOY_SESSION_ROLE=".length),
+      }));
+    `;
+    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
+    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+      cwd: import.meta.dir,
+      env: { ...process.env, ENVOY_SESSION_ROLE: "fan-cloud" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+    });
+    const report = run.stdout
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith(marker));
+    if (run.exitCode !== 0 || report === undefined) {
+      throw new Error(
+        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+      );
+    }
+    expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
+  });
+
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
     const role = "librarian";
     const roleTopic = `notifications.role.${role}`;
@@ -17830,6 +18172,88 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  // A failed read that gives the cached list with the same items keeps the bytes placed before,
+  // which do not say that the read failed, so the log says it: on the first such request, and
+  // then not until a read has answered again, so a lasting failure is one line. A read that
+  // answers logs nothing: what it gives reaches the model, or is what the model has.
+  test("a failed read whose cached list keeps the placed bytes logs why once, and again only after a read has answered", async () => {
+    answeringDispatch("Go the second way.");
+    const answering = rowFetch();
+    let failing = false;
+    globalThis.fetch = async (input, init) =>
+      failing && new URL(input.toString()).host === "dispatch.test"
+        ? Response.json({ unexpected: true })
+        : answering(input, init);
+    const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = sessionContext("ses_answers_kept_failure");
+    await fixture.handlers.get("session_start")?.({}, context);
+    const prompt = {
+      role: "user",
+      content: [{ type: "text", text: "Fix the bug." }],
+      timestamp: 1,
+    };
+    /** Tool round `n` of the conversation: a read call and its result. */
+    const round = (n: number) => [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: `call-${n}`, name: "read", arguments: { path: "x.ts" } }],
+        timestamp: 2 * n,
+      },
+      {
+        role: "toolResult",
+        toolCallId: `call-${n}`,
+        toolName: "read",
+        content: [{ type: "text", text: "export {};" }],
+        isError: false,
+        timestamp: 2 * n + 1,
+      },
+    ];
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    const unshown = () => warnings.filter((warning) => warning.includes("could not be read"));
+    const failure =
+      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not name this read's failure";
+    try {
+      const first = contextMessages(
+        await fixture.handlers.get("context")?.({ messages: [prompt] }, context)
+      );
+      const placed = first.at(-1);
+      expect(JSON.stringify(placed)).toContain("Go the second way.");
+      expect(unshown()).toEqual([]);
+      const rounds = [1, 2, 3, 4, 5].map(round);
+      /** Sends the request after `n` tool rounds, and checks that it keeps the placed bytes where
+       *  the first request put them. */
+      const keeps = async (n: number) => {
+        const conversation = [prompt, ...rounds.slice(0, n).flat()];
+        const messages = contextMessages(
+          await fixture.handlers.get("context")?.({ messages: conversation }, context)
+        );
+        expect(messages.slice(1)).toEqual([prompt, placed, ...conversation.slice(1)]);
+      };
+
+      // Three failed reads keep the placed bytes, and only the first logs.
+      failing = true;
+      for (const n of [1, 2, 3]) {
+        await keeps(n);
+        expect(unshown()).toEqual([failure]);
+      }
+      // Dispatch answers again, with the same item: the placed bytes stay, and nothing is logged.
+      failing = false;
+      await keeps(4);
+      expect(unshown()).toEqual([failure]);
+      // The first failed read after that logs again.
+      failing = true;
+      await keeps(5);
+      expect(unshown()).toEqual([failure, failure]);
+    } finally {
+      stopSink();
+    }
+  });
+
   test("a task subagent's context handler reads its parent's list", async () => {
     const fixture = transcriptFixture();
     try {
@@ -20732,6 +21156,82 @@ describe("consumer delivery", () => {
     expect(session.subscriptions()).toEqual([`agentstream.${SESSION}.control`, RELAY]);
   });
 
+  // The listener's connection check (INFRA-626) is a core request on the session's own relay
+  // subject that carries `Envoy-Probe: 1` and nothing else: an answer, or a second of silence,
+  // reads connected, and the no-responders a server gives a subject nothing subscribes reads
+  // stopped. The probe is no frame, so it reaches no card and moves no resume point, and the
+  // session holds no subscription for it beyond the relay subject the set above pins.
+  test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?connection-probe");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    let inboxes = 0;
+    /** Probes `controls` as the listener does; answers what the session replied on the inbox. */
+    const probe = async (
+      controls: SubscriptionControls | undefined
+    ): Promise<readonly string[]> => {
+      if (controls === undefined) throw new Error("that relay subject was never subscribed");
+      inboxes += 1;
+      const inbox = `_INBOX.probe.${inboxes}`;
+      controls.push("", inbox, { [RelayHeader.probe]: "1" });
+      await settle();
+      return natsState.published
+        .filter((published) => published.subject === inbox)
+        .map((published) => new TextDecoder().decode(published.data));
+    };
+    const consumerStates = () =>
+      JSON.stringify(
+        fixture.entries.filter((entry) => entry.customType === "envoy-consumer-state")
+      );
+    const cards = () =>
+      fixture.deliveries.filter((delivery) => delivery.customType === "envoy-message");
+    const first = "ses_probe_first";
+    const next = "ses_probe_next";
+    const firstContext = sessionContext(first);
+
+    await fixture.handlers.get("session_start")?.({}, firstContext);
+    await until(
+      () => natsState.controls.get(deliverSubject(first))?.active() === true,
+      "the first session's relay subject"
+    );
+    const firstRelay = natsState.controls.get(deliverSubject(first));
+    const states = consumerStates();
+    expect(await probe(firstRelay)).toEqual(["done"]);
+    expect(cards()).toEqual([]);
+    expect(consumerStates()).toBe(states);
+
+    // A switch moves the relay subject to the new id: a probe of the id left behind meets no
+    // subscriber, which a server answers no-responders, and the new id is answered.
+    await fixture.handlers.get("session_switch")?.({}, sessionContext(next));
+    await until(
+      () => natsState.controls.get(deliverSubject(next))?.active() === true,
+      "the new session's relay subject"
+    );
+    // The switch tells the session its id changed; that notice is the one card it is shown.
+    const shown = cards().length;
+    expect(firstRelay?.active()).toBe(false);
+    const nextRelay = natsState.controls.get(deliverSubject(next));
+    expect(await probe(nextRelay)).toEqual(["done"]);
+
+    // The connection drops: nats.js ends the subscription.
+    nextRelay?.end();
+    await settle();
+    // The session subscribes its relay subject again, and is answered again.
+    await until(
+      () => natsState.controls.get(deliverSubject(next)) !== nextRelay,
+      "the relay subject subscribed again"
+    );
+    const reopened = natsState.controls.get(deliverSubject(next));
+    expect(await probe(reopened)).toEqual(["done"]);
+
+    // The session shuts down: its relay subject closes with its connection.
+    await fixture.handlers.get("session_shutdown")?.({}, sessionContext(next));
+    expect(reopened?.active()).toBe(false);
+    expect(cards()).toHaveLength(shown);
+  });
+
   // A refusal is the whole of a session's inbound: nothing else reaches it, so the session must
   // say so and keep asking rather than run on quietly deaf.
   for (const refusal of [
@@ -21449,4 +21949,125 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
       else process.env.ENVOY_HEARTBEAT_MS = originalHeartbeat;
     }
   }, 120_000);
+});
+
+// What the envoy_send and envoy_publish tools tell the model about where a message went
+// (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the
+// other sessions it reaches, or says it reaches none.
+describe("the send and publish answers", () => {
+  const SESSION = "ses_answers";
+
+  /** One envelope, as the listener echoes it back to a send or a publish. */
+  const envelope = (topic: string) => ({
+    event_id: "evt_text",
+    source: "agent",
+    source_event_id: "evt_text",
+    topic,
+    dedupe_key: "dedupe_text",
+    issued_at: 1,
+    payload_summary: "message",
+    trace_id: "trace_text",
+  });
+
+  /** Boots a session whose listener answers every send and publish with `answer`. */
+  async function bootTool(query: string, answer: unknown) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+      responseWithRegistration(input, init, answer)) as typeof fetch;
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = sessionContext(SESSION);
+    await fixture.handlers.get("session_start")?.({}, context);
+    return { fixture, stop: () => fixture.handlers.get("session_shutdown")?.({}, context) };
+  }
+
+  test("tells a model its message was queued, never sent, when the target is stopped", async () => {
+    const lastSeen = Date.UTC(2026, 10, 2, 9, 15, 0);
+    const session = await bootTool("answers-send-stopped", {
+      ...envelope("notifications.agent.ses_target"),
+      recipient: "ses_target",
+      // A session with no entry but a record: the registry's state stays one of its three.
+      recipient_state: "gone",
+      state: "stopped",
+      last_seen: lastSeen,
+    });
+
+    try {
+      const result = await session.fixture.tools
+        .find((tool) => tool.name === "envoy_send")
+        ?.execute("", { session_id: "ses_target", message: "direct" });
+
+      expect(result?.content[0]?.text).toBe(
+        "queued evt_text for ses_target: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
+      );
+      expect(result?.details).toMatchObject({
+        recipient_state: "gone",
+        state: "stopped",
+        last_seen: lastSeen,
+      });
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("names a connected target's registry state, as before the state existed", async () => {
+    const session = await bootTool("answers-send-connected", {
+      ...envelope("notifications.agent.ses_target"),
+      recipient: "ses_target",
+      recipient_state: "live",
+      state: "connected",
+    });
+
+    try {
+      const result = await session.fixture.tools
+        .find((tool) => tool.name === "envoy_send")
+        ?.execute("", { session_id: "ses_target", message: "direct" });
+
+      expect(result?.content[0]?.text).toBe("sent evt_text to ses_target (live)");
+      expect(result?.details).toMatchObject({ recipient_state: "live", state: "connected" });
+    } finally {
+      await session.stop();
+    }
+  });
+
+  for (const published of [
+    {
+      counts: { recipients: 0, recipients_connected: 0 },
+      label: "no other session subscribes",
+      text: "published evt_text; no other session subscribes to notifications.team.test, so no other session gets it",
+    },
+    {
+      counts: { recipients: 3, recipients_connected: 2 },
+      label: "three other sessions get it",
+      text: "published evt_text to 3 other sessions (2 running now)",
+    },
+    {
+      counts: {},
+      label: "a listener that counts nobody",
+      text: "published evt_text.",
+    },
+  ]) {
+    test(`renders a publish the listener answered with ${published.label}`, async () => {
+      const session = await bootTool(`answers-publish-${published.label.replaceAll(" ", "-")}`, {
+        ...envelope("notifications.team.test"),
+        ...published.counts,
+      });
+
+      try {
+        const result = await session.fixture.tools
+          .find((tool) => tool.name === "envoy_publish")
+          ?.execute("", { topic: "notifications.team.test", message: "broadcast" });
+
+        expect(result?.content[0]?.text).toBe(published.text);
+        // Strict, so a count the listener did not send is no key of the details at all.
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_text",
+          topic: "notifications.team.test",
+          ...published.counts,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
 });

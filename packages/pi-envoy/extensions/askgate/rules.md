@@ -156,13 +156,13 @@ report of the answer, not an ask. A recommendation with reasons is not this — 
 one, and neither is a choice the text leaves genuinely open on taste, risk or
 cost once its facts are in.
 
-### Phone-readability failures (`concern`)
+### Self-contained failures (`concern`)
 
-The person answers from their phone. Only these shapes fail:
+An ask is short and self-contained: the person answers it with no other reading. Only these shapes fail:
 
 1. **Not written in sentences**: telegraphic fragments, or numbered
    semicolon-chained spec deltas with no prose around them. The person
-   reads on a phone and needs full sentences to answer.
+   needs full sentences to answer.
 2. **The text they are asked to approve exists only on the agent's machine**:
    a draft reply or announcement referenced by a filesystem path (a temp
    file, a path under a checkout) and nowhere they can open it. The person
@@ -264,7 +264,7 @@ without complaint. Each is silence:
 
 - **Names the reader already has**: a product, repository, tool, command,
   person, team or model name, and any label the person used themselves in the
-  transcript. Whether any other label is explained is phone-readability 3.
+  transcript. Whether any other label is explained is self-contained 3.
 - **The `title` field** (it is the issue's).
 - **No recommendation.** Preferred, not required; they answered every such ask.
 - **A recommendation being present**, or the ask's reasoning supporting it.
@@ -349,12 +349,12 @@ failure it shows.
   formats… Should the report leave them out?" → authority 6. The decision the
   ask links already answers it.
 - "Import: dup ids = skip, or fail…? March file: 3 dup rows vs 0 allowed…"
-  → phone-readability 1. Fragments, not sentences.
+  → self-contained 1. Fragments, not sentences.
 - "A customer asked when the fix ships… The reply is drafted at [a
-  temp-file path on the agent's machine]. Send it?" → phone-readability 2.
+  temp-file path on the agent's machine]. Send it?" → self-contained 2.
   The person cannot open the draft.
 - "Ship the change behind the amber switch, or wait for the next release?"
-  with no gloss of "the amber switch" → phone-readability 3. The ask never
+  with no gloss of "the amber switch" → self-contained 3. The ask never
   says what the label is.
 - "I cannot reach the billing service without a key, so you have to run
   the refund… [no check shown of the access this session or a peer holds]"

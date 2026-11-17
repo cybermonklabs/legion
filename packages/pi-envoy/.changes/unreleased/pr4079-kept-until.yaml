@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The `envoy_publish` result line says until when Envoy keeps a role message no live session holds,
+  names a holder that is not live with its state, and says that your session gets a message if no
+  session takes the copy by then, when the publish named your session and unless Envoy drops it more
+  than an hour late. The tool result's details carry `kept_until` and `last_seen`.

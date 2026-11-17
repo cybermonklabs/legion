@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  `dispatch read` names the document and the version of each review that it prints. The line of an
+  `artifact.approved` or `artifact.changes_requested` event, in an issue read and in a read of
+  `dispatch://KEY/log`, ends with `<document> v<version> approved` or
+  `<document> v<version> changes requested`. Then comes ` by plan review` or ` by a person` where
+  Dispatch recorded who gave the review, then the reason. Before, that line ended after its time,
+  so a plan review read like an approval of a spec. A plan's `Approval:` line names the plan review
+  as `by plan review (<session id>)`. Dispatch refuses a request for a person's approval of every
+  issue's plan, whoever approved it. So when a later version makes a plan's approval stale, its
+  `Approval:` line says that a plan review of the new version records a new approval with
+  `dispatch plan-approve`, and a `dispatch doc-edit` or `dispatch artifact` write that makes it
+  stale names `dispatch plan-approve --issue <KEY> --version <n>`. Before, both told the agent to
+  request approval again. A project document named `plan.md` is no plan, so its advice names a
+  request for approval. A stale approval of a closed issue's document names no command, because
+  Dispatch records no approval on a closed issue.

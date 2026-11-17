@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -105,7 +106,9 @@ func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("machine login revocation relayed", "caller", callerName, "approver", body.Approver, "credential", id)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("machine login revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "credential", id})...)
 	s.revokeCredentialAs(w, r, s.deps.Enroll.RevokeCredential, id, body.Approver, record.HumanActor(body.Approver))
 }
 

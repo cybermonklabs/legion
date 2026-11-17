@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  Dispatch names each download. Every version route of an image or a file now answers
+  `Content-Disposition: attachment` with the artifact's stored name, as `filename` (an ASCII form)
+  and as `filename*` (the UTF-8 name). An older version adds `-v<number>` before the extension of
+  the name (`report-v2.pdf`). A path separator, a control character or a bidirectional control
+  character in the name is written as `_`. The version routes take `?download=true`, the download
+  address that the web app's Download links use. There every kind answers `attachment` with
+  `Cache-Control: private, no-cache`, and a document answers its Markdown as
+  `text/markdown; charset=utf-8`, with `.md` added to a name that has no Markdown extension.
+  Without the parameter a document version answers the same JSON as before.

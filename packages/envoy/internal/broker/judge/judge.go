@@ -432,14 +432,14 @@ func (v verdictRow) detail(modelID string) map[string]any {
 		detail["raw_answer"] = v.raw
 	}
 	if v.err != nil {
-		detail["error"] = sanitize(v.err.Error(), maxRawAnswer)
+		detail["error"] = record.Sanitize(v.err.Error(), maxRawAnswer)
 	}
 	if v.notPending != "" {
 		detail["not_pending"] = v.notPending
 	}
 	if v.notApplied != nil {
 		detail["applied"] = false
-		detail["not_applied"] = sanitize(v.notApplied.Error(), maxRawAnswer)
+		detail["not_applied"] = record.Sanitize(v.notApplied.Error(), maxRawAnswer)
 	}
 	return detail
 }

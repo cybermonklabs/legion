@@ -110,6 +110,9 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 		o.IgnoreAuthErrorAbort = true
 		connectedCB, reconnectedCB, report := o.ConnectedCB, o.ReconnectedCB, o.AsyncErrorCB
 		o.ConnectedCB = func(nc *nats.Conn) {
+			if gate := firstConnectGate.Load(); gate != nil {
+				<-*gate
+			}
 			refusals.reset()
 			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 			if connectedCB != nil {

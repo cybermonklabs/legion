@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  The approval page and `GET /v1/pending` list an approver's pending requests when one was signed for another `BROKER_PUBLIC_URL`, as after the public URL changed or with a second broker on the same database: that request is left out and logged once with its record id and the reason, also while it waits past its expiry for the sweeper, where every request of that approver answered 503 until it expired.
+  `agent-secrets-helper` ends a drain by itself a minute after it began if no restart came, and logs `drain ended by itself`; `agent-secrets-helper install` bounds its restart at 30 s, reads the unit's main process before and after it, and sends `undrain` when the restart did not replace the helper it drained and systemd holds no job for the unit, exiting with an error that says which.

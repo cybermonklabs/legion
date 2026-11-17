@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A project document named `plan.md` is a plain document again. Its slug `plan-md` gave it the
+  plan's role. So `POST /api/v1/artifacts/{id}/approval-requests` refused it with
+  `409 PLAN_APPROVED_BY_REVIEW`, and `POST /api/v1/artifacts/{id}/plan-reviews` recorded a plan
+  review's approval of it, although `dispatch plan-approve` takes only an issue's plan. A role
+  belongs to an issue's documents, so the slug now names a plan on an issue alone: a request for a
+  person's approval of a project `plan.md` opens its ask, and a plan review of it is refused
+  `409 NOT_PLAN_DOCUMENT`. An approval request on a closed issue's document now answers
+  `409 ISSUE_CLOSED` before any other 409 refusal, so a closed issue's plan no longer names
+  `dispatch plan-approve`, which a closed issue refuses too.

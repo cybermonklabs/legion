@@ -87,6 +87,11 @@ type GoogleServiceAccount struct {
 	// alone may not choose the account a broker with Token Creator on it impersonates.
 	Accounts map[string]string
 
+	// Retry is the policy the generateAccessToken call is retried under, and the process-wide
+	// budget it draws from, as GitHubApp's is; nil makes one attempt. The broker's own
+	// credential's token (Source) is not this minter's call and is not retried here.
+	Retry *Retry
+
 	// mu guards resolved: two releases can mint at once, and only one of them resolves.
 	mu sync.Mutex
 	// resolved is the application default credentials as the first mint that needed them found
@@ -121,10 +126,6 @@ func (m *GoogleServiceAccount) ownSource(ctx context.Context) (oauth2.TokenSourc
 	return source, nil
 }
 
-type googleServiceAccountSecret struct {
-	ServiceAccount string `json:"service_account"`
-}
-
 type googleServiceAccountToken struct {
 	AccessToken string `json:"accessToken"`
 	// ExpireTime is RFC 3339, as Google's generateAccessToken answers it.
@@ -156,15 +157,11 @@ type googleServiceAccountRequest struct {
 // them on it (ownSource), which a copy would throw away.
 func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	const what = "mint Google service account token"
-	var secret googleServiceAccountSecret
-	// encoding/json's syntax errors quote the offending byte, so the decode's own error is
-	// dropped: the stored value is a credential.
-	if json.Unmarshal([]byte(req.Value), &secret) != nil {
-		return Minted{}, fmt.Errorf("%w: decode Google service account secret: not a JSON object of its fields", ErrMintStoredValue)
+	parsed, err := ParseValue(kindGoogleServiceAccount, req.Value)
+	if err != nil {
+		return Minted{}, err
 	}
-	if !googleServiceAccountEmail.MatchString(secret.ServiceAccount) {
-		return Minted{}, fmt.Errorf("%w: Google service account secret must name one <id>@<project>.iam.gserviceaccount.com account in service_account", ErrMintStoredValue)
-	}
+	secret := parsed.GoogleServiceAccount
 	// The binding is checked before the broker's own credential is resolved and before any call
 	// is made: whoever may create a secret may store any account in it, and the broker holds
 	// Token Creator on every account it is bound to, so the deployment's binding, not the stored
@@ -208,7 +205,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
-	payload, err := mintCall(m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
 	if err != nil {
 		return Minted{}, err
 	}

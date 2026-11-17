@@ -66,11 +66,12 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 //     latest issue.closed whose status is not done;
 //   - a closed issue one of whose documents owes a settlement marked after markedSince (any, when
 //     it is nil) - a write a room stored after the close's sweep, before its process heard of the
-//     close, or a room of a process of an older build, which never hears of it, leaves one, and no
-//     settlement runs while the issue is closed - gets the close's final sweep: its
-//     resolved block asks' blocks and copies, and its answered block asks' copies, the answer left
-//     out, are written again from their rows, and every readable ask block with no ask row and no
-//     source is marked resolved, each one logged, attributed to its latest closer.
+//     close, or a room of a process of an older build, which never hears of it, leaves one - gets
+//     the close's final sweep: its resolved block asks' blocks and copies, and its answered block
+//     asks' copies, the answer left out, are written again from their rows, and every readable ask
+//     block with no ask row and no source is marked resolved, each one logged, attributed to its
+//     latest closer. The sweep's write arms the document's settlement, which saves what the sweep
+//     wrote whether or not the issue is closed.
 //
 // A closed issue's repair writes each of its documents once, the withdrawn asks' blocks beside
 // the sweep's, and counts every unindexed block it marks resolved as swept.
@@ -96,20 +97,21 @@ func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (Is
 // it are dropped. A pass that fails or runs out of time is logged, and the next interval's pass
 // repairs what it left. The boot runs its own pass before this starts (cmd/dispatch).
 //
-// The sweeps are bounded the same way: a closed issue's document keeps owing the settlement its
-// close's own write left for as long as the issue stays closed, so a pass that swept every such
-// document would read every closed issue's documents each interval, for good. After its first
-// pass, which sweeps them all, each pass sweeps only the documents marked owing since the last
-// pass that listed its candidates began, less one interval, so a write whose transaction began
-// before that pass and committed after it is still swept, and the issues that pass did not
-// repair: each one whose repair failed and each one it did not reach before its time ran out. The
-// window moves with every pass that listed its candidates, so one issue that fails every pass
-// costs each pass that issue alone rather than a sweep of every closed issue owing a settlement;
-// a pass that could not list them moves nothing and carries what the pass before it carried. The
-// window and the carried issues live in this call, in the one process that runs it: when the lease
-// moves, another process's pass starts from its own window and carried issues (no window on its
-// first interval pass, so it sweeps every closed issue whose documents owe a settlement) and never
-// sees these.
+// The sweeps are bounded the same way. A closed issue's document settles as an open one's does,
+// so it owes its settlement only until the resumption arms it
+// (docs.Service.RunSettlementResumption), but one whose settlement fails every time keeps owing
+// it, and a pass that swept every closed issue owing a settlement would read such documents each
+// interval, for good. After its first pass, which sweeps them all, each pass sweeps only the
+// documents marked owing since the last pass that listed its candidates began, less one interval,
+// so a write whose transaction began before that pass and committed after it is still swept, and
+// the issues that pass did not repair: each one whose repair failed and each one it did not reach
+// before its time ran out. The window moves with every pass that listed its candidates, so one
+// issue that fails every pass costs each pass that issue alone rather than a sweep of every closed
+// issue owing a settlement; a pass that could not list them moves nothing and carries what the
+// pass before it carried. The window and the carried issues live in this call, in the one process
+// that runs it: when the lease moves, another process's pass starts from its own window and
+// carried issues (no window on its first interval pass, so it sweeps every closed issue whose
+// documents owe a settlement) and never sees these.
 func RunIssueAskRepair(ctx context.Context, deps Deps, leases duty.Leases) {
 	s := &server{deps: deps}
 	var markedSince *time.Time

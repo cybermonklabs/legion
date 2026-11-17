@@ -1,0 +1,2 @@
+kind: Changed
+body: 'The controller''s Slack reference says the Slack bot token is a shared agent secret (owner `shared`, tier `agent`), and tells the operator to store it that way when the broker refuses it. Only the daemon-launched controller hears a project''s Slack channels, because the daemon names them to that controller alone.'

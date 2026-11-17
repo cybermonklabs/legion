@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -149,27 +150,28 @@ type Tokens interface {
 	// repository its lease is cached under, and a call naming none is a caller's mistake.
 	Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, Actions and metadata read. It reaches every repository the owner's installation
-	// holds, as Token's does, and repos — repository names alone, as a caller names them inside
-	// one installation — key the lease alone. A pane holds one for every owner of the project but
-	// the one its issue's repository is under (a configured rename's two owners count as that
-	// one, GitHubCredential), one more for each other repository that owner serves, each cached
-	// under that repository alone, a controller holds one for every owner it has, and the
+	// requests, issues, Actions and metadata read. It reaches every repository the owner's
+	// installation holds, as Token's does, and repos — repository names alone, as a caller names
+	// them inside one installation — key the lease alone. A pane holds one for every owner of the
+	// project but the one its issue's repository is under (a configured rename's two owners count
+	// as that one, GitHubCredential), one more for each other repository that owner serves, each
+	// cached under that repository alone, a controller holds one for every owner it has, and the
 	// Kubernetes runtime's provisioning token is one of the implement App for the issue's own
 	// owner cached under the one repository its pod clones, which every issue pod's
 	// workspace-fetch and every repository cache clones with (implementTokens, internal/daemon).
-	// An App on token_command gets what its command's read-only release
-	// holds instead, which the command decides: the secrets broker's is the same four (its
-	// readOnlyPermissions). With a key of its own the mint asks for what the installation is
-	// granted of those four and leaves the rest out (exchangeGranted), so an installation whose
-	// account has not granted the App Actions gets the other three rather than nothing. A call
-	// naming no repository is refused before anything is minted, as Token's is.
+	// An App on token_command gets what its command's read-only release holds instead, which the
+	// command decides: the secrets broker's holds the same reads less issues (its
+	// readOnlyPermissions), so such a lease reads no issue. With a key of its own the mint asks
+	// for what the installation is granted of those five and leaves the rest out
+	// (exchangeGranted), so an installation whose account has not granted the App Actions gets
+	// the other four rather than nothing. A call naming no repository is refused before anything
+	// is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string, repos []string) (Lease, error)
 }
 
 // readPermissions narrows an installation token to reading a repository's contents, its pull
-// requests, its Actions runs and its metadata: what a role needs of every repository of the
-// project but its own issue's, what a controller needs of every one of them, and what the
+// requests, its issues, its Actions runs and its metadata: what a role needs of every repository
+// of the project but its own issue's, what a controller needs of every one of them, and what the
 // provisioning token takes of the issue's own repository, which a clone, a fetch and a
 // repository cache only read (implementTokens, internal/daemon). A mint asks for what the
 // installation is granted of this set, at the access it is granted (exchangeGranted), and
@@ -187,19 +189,28 @@ type Tokens interface {
 // dispatch a workflow, and reaches no Actions secret or variable, which are permissions of their
 // own.
 //
+// issues:read is here because an issue is where a work's context is often written, and a role or
+// a controller reads the issues of every repository its project serves. Measured on 2026-11-10,
+// and again on 2026-11-15, from roles of both Apps on a private repository: with no issues
+// permission in the request, reading an issue answered 403 "Resource not accessible by
+// integration" while the same token read that repository's contents and pull requests. It stays
+// a read: issues:read cannot open, edit, close or comment on an issue.
+//
 // The set is the most a read lease holds, and the only thing that holds it: the lease reaches
 // every repository its installation holds, as every token this package mints does, so what
-// keeps a reading lease from writing is these four permissions and nothing beside them. A
+// keeps a reading lease from writing is these five permissions and nothing beside them. A
 // permission the installation is granted none of is left out of the request rather than minted.
-var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
+var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "issues": "read", "actions": "read", "metadata": "read"}
 
 // Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
-// the wall clock, and the daemon's own stderr for what a token_command writes there.
+// the wall clock, the daemon's own stderr for what a token_command writes there, and
+// slog.Default for what the manager logs: a grant shortfall, at warn (sayShortfalls).
 type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Now        func() time.Time
 	Stderr     io.Writer
+	Log        *slog.Logger
 }
 
 // Manager caches installation tokens by App and owner, and bot identities by App id. An App
@@ -211,6 +222,7 @@ type Manager struct {
 	client  *http.Client
 	now     func() time.Time
 	stderr  io.Writer
+	log     *slog.Logger
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -228,9 +240,9 @@ type Manager struct {
 	// Forget of its owner.
 	refusals map[scope]refusedNarrowingAt
 
-	// saidShortfalls holds every shortfall already said on stderr, each by the App role, the
-	// owner whose installation is granted less than the role's set asks for, and the shortfall
-	// itself (shortfallMessage).
+	// saidShortfalls holds every shortfall already logged, each by the App role, the owner whose
+	// installation is granted less than the role's set asks for, and the shortfall itself
+	// (sayShortfalls).
 	saidShortfalls map[saidShortfall]bool
 
 	// root ends every token_command run on Close (stop), runs counts the runs still going, and
@@ -290,6 +302,10 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
+	log := options.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	root, stop := context.WithCancel(context.Background())
 	return &Manager{
 		root:              root,
@@ -299,6 +315,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		client:            client,
 		now:               now,
 		stderr:            stderr,
+		log:               log,
 		leases:            map[scope]Lease{},
 		pending:           map[scope]*pendingLease{},
 		installations:     map[AppRole]map[string]string{},
@@ -328,14 +345,14 @@ func (m *Manager) Token(ctx context.Context, role AppRole, repo ghrepo.Repositor
 
 // ReadToken is Token for a token narrowed to readPermissions on owner, cached under repos in a
 // scope of its own, so an owner's write and read tokens never stand in for each other. Each of
-// those four permissions is asked for at what the installation is granted of it, and one it is
+// those five permissions is asked for at what the installation is granted of it, and one it is
 // granted none of is left out (exchangeGranted). In token mode it is the command's read-only
 // release (TokenCommandReadOnly) instead, which the command decides; the secrets broker's is
-// readPermissions' own set. A write request of the same owner is a run of its own either way:
-// it asks for no read-only release, so the two never stand in for each other. The lease reaches
-// every repository the owner's installation holds, as Token's does, and repos reach GitHub not
-// at all. A call that names no repository is a caller's mistake: it is refused, and nothing is
-// minted.
+// readPermissions less its issues read, so a role reads no issue through it. A write request of
+// the same owner is a run of its own either way: it asks for no read-only release, so the two
+// never stand in for each other. The lease reaches every repository the owner's installation
+// holds, as Token's does, and repos reach GitHub not at all. A call that names no repository is a
+// caller's mistake: it is refused, and nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string, repos []string) (Lease, error) {
 	if len(repos) == 0 {
 		return Lease{}, fmt.Errorf("the %s App's read-only token for %s names no repository to read", role, owner)

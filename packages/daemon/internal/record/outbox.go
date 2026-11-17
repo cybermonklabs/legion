@@ -361,11 +361,15 @@ type Notice struct {
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect was told each of these by a `worker-silent` or
-	// `worker-background-stalled` notice of its own, judged by the same rules, though a handler
-	// also refuses a fact of another generation of the issue, which the tick never reads; the
-	// controller is the second reader, because that architect may be failed or gone, so its
-	// notice reaches nobody, and the controller holds `fresh_session` and reads the whole project.
+	// carries none. The issue's architect is told of each of these by a `worker-silent` or
+	// `worker-background-stalled` notice of its own, judged by the same rules, with the two
+	// differences admit.Admission.silentWorkers sets out: a handler also refuses a fact whose run
+	// is not the issue's current generation, a term the tick does not weigh, since it reads the
+	// worker's claim by its token alone and that claim carries no serving run; and the sweep that
+	// writes those notices runs once a minute, so a tick can name a worker up to a minute before
+	// its architect is told. The controller is the second reader, because that architect may be
+	// failed or gone, so its notice reaches nobody, and the controller holds `fresh_session` and
+	// reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -648,18 +652,89 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
+//
+// An architect-stalled notice names a root whose own architect has stalled, in one of the three
+// readings ArchitectStallArm names below. Its Role is the architect, and its
+// Reason names the arm, the root and what the record says. One root raises one notice per arm,
+// per run of its tree (Store.TellArchitectsStalled, admit's architectStalls), so a root that
+// two arms read raises two and neither hides the other. Nobody inside the tree is told: the
+// architect is the role that would be, and each arm is a reading that it did not take, cannot be
+// reached, or has not moved (dispatch://INFRA-2614).
 const (
-	TriageNotice         NoticeKind = "triage"
-	SlotFreeNotice       NoticeKind = "slot-free"
-	TodoNotice           NoticeKind = "todo"
-	TickNotice           NoticeKind = "tick"
-	UnslottedNotice      NoticeKind = "unslotted"
-	AwaitingPersonNotice NoticeKind = "awaiting-person"
-	ParkedDecisionNotice NoticeKind = "parked-decision"
-	UpdateStalledNotice  NoticeKind = "update-stalled"
-	ProviderErrorsNotice NoticeKind = "provider-errors"
-	TreeStalledNotice    NoticeKind = "tree-stalled"
+	TriageNotice           NoticeKind = "triage"
+	SlotFreeNotice         NoticeKind = "slot-free"
+	TodoNotice             NoticeKind = "todo"
+	TickNotice             NoticeKind = "tick"
+	UnslottedNotice        NoticeKind = "unslotted"
+	AwaitingPersonNotice   NoticeKind = "awaiting-person"
+	ParkedDecisionNotice   NoticeKind = "parked-decision"
+	UpdateStalledNotice    NoticeKind = "update-stalled"
+	ProviderErrorsNotice   NoticeKind = "provider-errors"
+	TreeStalledNotice      NoticeKind = "tree-stalled"
+	ArchitectStalledNotice NoticeKind = "architect-stalled"
 )
+
+// ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
+// mark that keeps one wake to one root, one run and one arm (ArchitectStall,
+// Store.TellArchitectsStalled), and the first words of the notice's reason, so a controller that
+// reads two wakes of one root reads two different facts:
+//
+//   - ArchitectTookNothing: the task of the entry the architect's phases row names was first
+//     queued to its claim more than workflow.StrandedReleaseWake ago and no turn of that claim
+//     confirmed it. It is counted from the first queueing of that entry, which the claim's
+//     handshake keeps (supervise.Claim.Handshake), however many times the daemon queued that
+//     entry's task again. A task a let-go of the claim's process took back from a turn is counted
+//     only while the claim is ready, working or idle, from the later of that first queueing and
+//     the relaunched agent's ready. The daemon writes no second start of that entry while its task
+//     stands (workflow.OwedEntry), so the wake is the one thing left. A task the root's own record
+//     has superseded — one that carries an entry, of a run before its generation or of an entry
+//     the row has moved past — is no such task: the sweep writes the start of the row's entry and
+//     that start's task takes its place (workflow.ArchitectStartPending,
+//     supervise.Delivery.SupersededBy). Nor is a task of no entry, such as a wake's: no start takes
+//     its place, and the sweep holds the entry's start back until a turn takes it.
+//   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
+//     architect claim at all and the work of its entry has stood that same bound, and in either
+//     case no start of the root's run is the daemon's next move for it, which
+//     workflow.ArchitectRelaunchOf decides. A root waiting on a person is read as any root is,
+//     since the daemon queues the next start of its architect only when that wait is answered.
+//   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
+//     registered 90 minutes after it was admitted, or after its architect's entry was last
+//     raised, whichever is later.
+type ArchitectStallArm string
+
+const (
+	ArchitectTookNothing      ArchitectStallArm = "took-nothing"
+	ArchitectClaimUnreachable ArchitectStallArm = "claim-unreachable"
+	ArchitectSlowBeforeGate   ArchitectStallArm = "slow-before-gate"
+)
+
+// Words is the arm in the words an architect-stalled notice's reason begins with, before what
+// the record says (admit's architectStalls). The words and the mark's arm are written from
+// one value, so the wake a controller reads and the row that keeps it to one cannot name two
+// different readings. An arm nothing here names reads as its own value, which no caller writes.
+func (a ArchitectStallArm) Words() string {
+	switch a {
+	case ArchitectTookNothing:
+		return "the architect took nothing"
+	case ArchitectClaimUnreachable:
+		return "the architect's claim cannot be reached"
+	case ArchitectSlowBeforeGate:
+		return "the root is slow before its gate"
+	}
+	return string(a)
+}
+
+// ArchitectStall is one arm an admission pass read over one root's own architect: the root, the
+// tree it stands in, the generation of that tree's run, the arm, and the moment the pass read it.
+// The first four are the key of the mark that keeps one wake to one root, one run and one arm
+// (Store.TellArchitectsStalled), and At is kept on the mark for a reader of the table alone.
+type ArchitectStall struct {
+	Issue      string
+	Tree       string
+	Generation uint64
+	Arm        ArchitectStallArm
+	At         time.Time
+}
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
 // issue and the role that names it — rather than one per project
@@ -723,23 +798,29 @@ type SuperviseRequest struct {
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
 	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
 	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
-	// alone, whose value every phase entry of one run shares. Two starts raise the entry they
-	// carry: a transition's start of the phase the issue has moved into, and the promotion's
-	// start of a mid-phase worker a re-admitted tree brings back (workflow's start and
-	// StartPromotedWorker). Two more carry the entry the role's row already names without raising
-	// it: the send of an owed entry (workflow's SendOwedEntry) and the held phase's retry, which
-	// marks it with ResendEntry below. It is zero for every other operation, and for every start
-	// that hands no entry's work at all. Those starts, in full, so that no other comment need
-	// list them: the tree architect's start (admit's promotion, workflow's
-	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
-	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
-	// boot's one-time start of a merger the `awaiting_merge` cutover left released (workflow's
-	// cutoverMergerRepair), the phase's resume task a ready worker level with the entry its
-	// phases row names is given (workflow's readyWorkerTask), the silence repair's resume task to
-	// a silent worker level with that entry (workflow's workerSilent), a production check's look
-	// (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a cancelled
-	// idle release (the daemon's outbox). Each hands its role work it was already on, or work no
-	// phase entry numbers at all.
+	// alone, whose value every phase entry of one run shares. Three starts raise the entry they
+	// carry: a transition's start of the phase the issue has moved into, the promotion's start of
+	// a mid-phase worker a re-admitted tree brings back (workflow's start and
+	// StartPromotedWorker), and a root architect's start that hands it work it was not on —
+	// admission's promotion of its root and the sweep's raise for an architect whose row names no
+	// entry, where the derivation serves it a task (workflow.Engine.StartArchitect), and the
+	// resume of a root a person answered (workflow.Engine.ResumeAwaitedRoot). The
+	// architect's start names no phase (Phase above), so the outbox holds it to the generation
+	// and the claim's given entry alone. Three more carry the entry the role's row already names
+	// without raising it: the send of an owed entry (workflow's SendOwedEntry), the sweep's start
+	// of a root architect behind its entry (workflow's SendArchitectStart) and the held phase's
+	// retry, which marks it with ResendEntry below. It is zero for every other
+	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
+	// that no other comment need list them: the promotion's architect start of a root the
+	// derivation serves no task (admit's promotion), the roles admission brings back beside a
+	// re-admitted member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
+	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
+	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
+	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
+	// check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a
+	// cancelled idle release (the daemon's outbox). Each hands its role work it was already on, or
+	// work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -1517,6 +1598,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
+			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
 			return fmt.Errorf("unknown supervise operation %q", value.Op)
@@ -1747,7 +1831,7 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice:
 		return true
 	default:
 		return false

@@ -403,8 +403,10 @@ func notGone(state session.State) bool { return state != session.Gone }
 // asks it of internal/roles, which reads the holder's state itself (roles.ResolveHolder):
 // what says a role reached its holder is the stream's acknowledgement that it stored the forward
 // on that holder's agent subject, which the holder reads from its session consumer
-// (forwardAndWait), so a role whose holder stopped answering is refused 404 holder_lapsed with
-// nothing stored for it and its claim kept, rather than stored for a session nobody waits on.
+// (forwardAndWait), so a role whose holder stopped answering is forwarded nothing. Its message is
+// kept on the role's kept lane instead, for the next session that holds the role live within the
+// hour - that holder answering again, or a successor - and its claim is kept (roleKeepable); a
+// publish with keep: false is refused 404 holder_lapsed with nothing stored.
 func sessionIsLive(state session.State) bool { return state == session.Live }
 
 // roleHolderReadTimeout bounds each of the role paths' session-bucket reads, well inside the

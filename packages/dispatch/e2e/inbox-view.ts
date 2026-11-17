@@ -88,7 +88,7 @@ export async function seedEveryField(): Promise<{
   await createProject({ key: "CORE", name: "Core" });
   // MIRROR names carol, which is how she is a person who has signed in and so a person an
   // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
-  await createProject({ key: "MIRROR", name: "Mirror" }, "carol");
+  await createProject({ key: "MIRROR", name: "Mirror" }, { login: "carol" });
   const rows: ViewRow[] = [];
 
   const question = async (

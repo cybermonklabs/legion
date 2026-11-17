@@ -15,6 +15,7 @@ import { actorText } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
+import { withoutUserinfo } from "../errors";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { edgeLine, graphSectionLines } from "./render-graph";
@@ -178,7 +179,11 @@ function openAskLine(ask: OpenAsk, baseUrl: string): string {
   return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
+/** `dispatch open-asks` as text, each ask linked against `baseUrl`, which a caller outside the
+ *  command (the Claude Code session hook) may give as the configured Dispatch URL: the links
+ *  name it without the user and password that URL may carry. */
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
+  const linkBase = withoutUserinfo(baseUrl);
   const scope = "active open asks you authored on open issues and project documents";
   if (response.count === 0) {
     return ["There are no unanswered asks for this session.", `Scope: ${scope}.`].join("\n");
@@ -189,10 +194,10 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
     `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"} you authored on active issues and project documents.`,
     "",
     `Waiting on human (${waitingOnHuman.length}):`,
-    ...waitingOnHuman.map((ask) => openAskLine(ask, baseUrl)),
+    ...waitingOnHuman.map((ask) => openAskLine(ask, linkBase)),
     "",
     `Waiting on agent (${waitingOnAgent.length}):`,
-    ...waitingOnAgent.map((ask) => openAskLine(ask, baseUrl)),
+    ...waitingOnAgent.map((ask) => openAskLine(ask, linkBase)),
   ].join("\n");
 }
 export function commentSummary(

@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -163,6 +162,13 @@ runtime:
       refresh_minutes: 15
       retain_hours: 48
       resources: {cpu: 500m, memory: 1Gi}
+    memory_guard:
+      issue_pods:
+        enabled: true
+        act_percent: 80
+        floor_percent: 15
+        wait_seconds: 8
+        interval_milliseconds: 250
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a
@@ -216,6 +222,11 @@ func populatedState(t *testing.T) State {
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
 	// false rather than leaving it out, which is what the pointer behind that field is for.
 	heldSlot, noSlot := true, false
+	// LEGION-208's architect's handshake, which is the pair of times a tree's own root carries in
+	// every phase it stands in (internal/projection): the task of the architect's last entry was
+	// queued to its claim, and a turn of it confirmed that task.
+	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
+	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
@@ -412,11 +423,23 @@ func populatedState(t *testing.T) State {
 				},
 				// The implementer holds the work its phases row names: the two numbers are equal,
 				// which is every role the daemon has reached, as LEGION-218's and LEGION-219's
-				// reviewers are too. LEGION-211 below is the other case, and LEGION-210, LEGION-212
-				// and LEGION-207 carry neither number, since no phase worker role works held,
-				// awaiting_person or done.
-				PhaseEntry: 4,
-				GivenEntry: 4,
+				// reviewers are too; LEGION-211 below is the other case. The two times beside them
+				// are not the implementer's: a tree's own root carries its architect's handshake in
+				// every phase it stands in (internal/projection), so they say when the task of the
+				// architect's last entry was queued to its claim and when a turn of it confirmed it.
+				// LEGION-210, LEGION-212 and LEGION-207 carry none of the four. The projection writes
+				// neither number because no role works held, awaiting_person or done (phase.RoleFor).
+				// It writes neither time because the times are an architect claim's, which it shows
+				// as the issue's `architect`, and none of the three carries one. The fixture gives an
+				// architect claim to LEGION-208 alone: LEGION-210 and LEGION-211 hold none in the
+				// record they stand for, as their own comments say, and any architect claim another
+				// root would hold is left out on purpose, since a second architect claim would add no
+				// key this file does not already hold. That is also why LEGION-211 and the two
+				// reviewing roots carry no times.
+				PhaseEntry:       4,
+				GivenEntry:       4,
+				EntryQueuedAt:    &entryQueued,
+				EntryConfirmedAt: &entryConfirmed,
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
 					Number:         1247,
@@ -490,6 +513,12 @@ func populatedState(t *testing.T) State {
 					State:  WhyClaimStopped,
 					Reason: "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it.",
 				},
+				// No architect claim of this root stands in the record, so the view carries no
+				// `architect`, and the work of its architect's entry has waited past the bound with
+				// no start of one queued: the daemon's reading of the second arm holds for it, and the
+				// state serves that arm whether or not the controller was told of it
+				// (admit.Admission.ArchitectStallArms).
+				ArchitectStalls: []record.ArchitectStallArm{record.ArchitectClaimUnreachable},
 			},
 			// LEGION-211 is a root another tree handed over, carrying the phase it ran there and
 			// that run's suspended implementer, whose own tree has not been opened: it holds no
@@ -524,8 +553,10 @@ func populatedState(t *testing.T) State {
 				Ancestry: []string{"LEGION-209", "LEGION-208"},
 				// Its implementer was given the work of entry 1 and the transition that sent its
 				// work back raised the row to 2, so the two numbers differ: this is the role the
-				// daemon has still to send that entry's work to, and the line `legion state`
-				// prints names it.
+				// daemon has still to send that entry's work to. It carries neither time, since the
+				// times are its architect's handshake and its architect has no claim yet: its own
+				// tree has not been opened, and the promotion that opens it is what starts that
+				// architect (workflow.StartArchitect).
 				PhaseEntry: 2,
 				GivenEntry: 1,
 				// Its spec stands approved at the version Dispatch holds, which is how its work
@@ -559,7 +590,9 @@ func populatedState(t *testing.T) State {
 			// LEGION-212's architect asked a person a question and handed the turn back, and the
 			// person has answered it: the root keeps the slot it took when the daemon started it
 			// (record.KeepsSlot) and stands in the line as well, where its promotion resumes the
-			// same architect and takes no second slot.
+			// same architect and takes no second slot. That architect's claim is left out of the
+			// fixture on purpose, as every root's but LEGION-208's is (the comment on LEGION-208's
+			// entry numbers says why), so this root carries no `architect` and no entry times.
 			"LEGION-212": {
 				Key:           "LEGION-212",
 				Generation:    1,
@@ -790,14 +823,20 @@ func populatedState(t *testing.T) State {
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
 		// two and a half minutes ago and waits behind it (record.Store.HeldRows).
 		HeldOutboxRows: []HeldOutboxRow{{ID: 802, Kind: "supervise", Issue: "LEGION-208", WaitedSeconds: 150, WaitsOn: 801}},
-		// LEGION-210's implementer failed while implementing: its issue is held from that phase,
-		// and nothing retries the claim until its architect retries the phase. LEGION-211's
-		// implementer is the other kind, a released pod whose wake never brought it back: who
-		// suspended it is read on the operator claim routes, and the entry here carries the same
-		// three keys as every other, which is what a session on the contract before this one
-		// parses. LEGION-212's tester is the third, a worker that retired while its issue stood in
-		// its phase: only a start of that phase brings it back, so it is a claim nothing will wake
-		// until its architect's retry_or_escalate or a transition queues one.
+		// The daemon computes this list (workflow.Stranded over the record, which internal/daemon's
+		// source.State serves as `strandedClaims`); this fixture holds no record, so the list is
+		// written here by hand. It carries one entry of each state the rule names a claim in —
+		// failed, suspended and retired — with the same three keys each, which is what a session on
+		// the contract before this one parses; who suspended a claim is read on the operator claim
+		// routes. LEGION-210's entry is one workflow.Stranded writes for the record this state
+		// describes: its implementer failed while implementing, its issue is held from that phase,
+		// and nothing retries the claim until its architect retries the phase. The other two stand
+		// here for their states and are not entries the rule would write: LEGION-211's released
+		// implementer, whose wake never brought its pod back, is on a root whose own tree has not
+		// been opened, which runs nothing (record.TreeRuns), and LEGION-212's retired tester is on
+		// a root that waits on a person, whose answer resumes its architect; workflow.Stranded
+		// passes over every claim of both. The `why` of LEGION-211 and LEGION-212 is the
+		// projection's reading of this list.
 		StrandedClaims: []StrandedClaim{
 			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
 			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
@@ -882,12 +921,29 @@ func populatedState(t *testing.T) State {
 	}
 	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
 	// that tree, both show the draw as internal/projection fills them, while every other issue of
-	// the fixture belongs to a tree no draw has reached.
+	// the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
+	// that name (config.Project.ExperimentsDeclared), and the three memory fields are that one
+	// assignment spelled out as the readers of contract 49 have always read it.
+	//
+	// Beside it the fixture carries the shapes an assignment has: a tree experiment, which every
+	// issue of the tree shows; an issue experiment, `plan-length`, drawn for each issue of that
+	// tree on its own, so a root and its child stand in different arms of one experiment; and,
+	// on the root LEGION-210, a row a hand-over settled at no arm at all — an empty variant, an
+	// empty mode and no instant — which is how a reader tells a unit settled at no arm from a
+	// unit never drawn, which carries no row.
+	memoryDrawn := AssignmentView{Experiment: "memory", Variant: "memory", Mode: string(config.ExperimentRandom), DrawnAt: &memoryDrawnAt}
 	root := state.Issues["LEGION-208"]
-	root.MemoryGroup = string(memorygroup.GroupMemory)
-	root.MemoryDrawMode = string(config.MemoryRandom)
+	root.Assignments = []AssignmentView{
+		memoryDrawn,
+		{Experiment: "plan-length", Variant: "short", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+	}
+	root.MemoryGroup = "memory"
+	root.MemoryDrawMode = string(config.ExperimentRandom)
 	root.MemoryDrawnAt = &memoryDrawnAt
 	state.Issues["LEGION-208"] = root
+	settled := state.Issues["LEGION-210"]
+	settled.Assignments = []AssignmentView{{Experiment: "plan-length"}}
+	state.Issues["LEGION-210"] = settled
 	state.Issues["LEGION-209"] = Issue{
 		Key:           "LEGION-209",
 		Generation:    1,
@@ -896,6 +952,10 @@ func populatedState(t *testing.T) State {
 		Repo:          "acme/widgets",
 		DefaultBranch: "main",
 		Workers:       map[claim.Role]PhaseView{},
+		Assignments: []AssignmentView{
+			memoryDrawn,
+			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+		},
 		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
 		// links `admission.blocked` names are what hold it where it stands, which is the
 		// rendered answer it carries (`why`, api.WhyBlocked).
@@ -903,8 +963,8 @@ func populatedState(t *testing.T) State {
 			State:  WhyBlocked,
 			Reason: "It waits on LEGION-210 and LEGION-213, which are not done.",
 		},
-		MemoryGroup:    string(memorygroup.GroupMemory),
-		MemoryDrawMode: string(config.MemoryRandom),
+		MemoryGroup:    "memory",
+		MemoryDrawMode: string(config.ExperimentRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,

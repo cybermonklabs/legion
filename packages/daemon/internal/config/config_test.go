@@ -514,13 +514,14 @@ func slackChannelsFile(channels string, daemon, enrolled bool) string {
 	return body
 }
 
-// Only the controller the daemon launches, enrolled with the secrets broker, is granted the Slack
-// bot token (LEGION_SLACK_BOT_TOKEN, owned by the Legion daemon's service): the broker grants a
-// service's secret to that service's own pods and no one else. So a project names Slack channels
-// only where both hold, and anywhere else the loader refuses them, naming why, rather than start a
-// controller that hears mentions it can never answer. An empty list names no channel.
+// The controller the daemon launches answers a project's Slack mentions once it is enrolled with
+// the secrets broker: its enrollment gives it a broker identity, and the broker grants the Slack
+// bot token (LEGION_SLACK_BOT_TOKEN, a shared agent secret) to a session with one. So a project
+// names Slack channels only where both hold, and anywhere else the loader refuses them, naming
+// why, rather than start a controller that hears mentions it can never answer. An empty list
+// names no channel.
 func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T) {
-	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants the Slack bot token (LEGION_SLACK_BOT_TOKEN) only to the Legion daemon service's own pods"
+	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
 	for _, tc := range []struct {
 		name, body, want string
 	}{

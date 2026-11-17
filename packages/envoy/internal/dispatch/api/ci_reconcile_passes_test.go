@@ -148,9 +148,16 @@ func TestCIReconcilePassesAnswersTheLastDayNewestFirst(t *testing.T) {
 // runs a pass holds it, and gives it back when the test ends. It returns once the lease is held.
 func holdCIReconcileLease(t *testing.T, database *store.Store) {
 	t.Helper()
-	leases, err := database.Pool.Leases()
+	// The lease pool is handed out as reservations, one per caller that can be inside a lease
+	// statement at the same moment (`store.LeaseCallers`), so this hold takes a name of its own
+	// as the server's CI reconcile loop does.
+	callers, err := database.Pool.Leases()
 	if err != nil {
 		t.Fatalf("the lease pool: %v", err)
+	}
+	leases, err := callers.For("CI reconcile test hold")
+	if err != nil {
+		t.Fatalf("reserve a caller of the lease pool: %v", err)
 	}
 	held := make(chan struct{})
 	let := make(chan struct{})

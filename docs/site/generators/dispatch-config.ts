@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // Writes <content dir>/dispatch/reference/configuration.md from Dispatch's settings table
 // (packages/envoy/cmd/dispatch/settings.go), read through `envoy-dispatch settings`, which prints
-// every Dispatch setting. Contract: scripts/generate.ts; lib/envoy-dispatch.ts runs the binary.
-import { readEnvoyDispatch } from "./lib/envoy-dispatch.ts";
+// every Dispatch setting. Contract: scripts/generate.ts; lib/reference.ts runs the binary.
 import { inline, writePage } from "./lib/markdown.ts";
+import { capitalized, REQUIRED, readTable } from "./lib/reference.ts";
 
 interface Setting {
   name: string;
@@ -14,23 +14,24 @@ interface Setting {
 }
 
 function readSettings(): Setting[] {
-  return readEnvoyDispatch("settings", "settings", ["name", "required", "description"]).map(
-    (setting) => {
-      for (const field of ["file", "default"]) {
-        if (setting[field] !== null && typeof setting[field] !== "string") {
-          throw new Error(`setting ${setting.name} has a ${field} that is neither text nor null`);
-        }
+  return readTable("envoy-dispatch", ["settings"], "settings", [
+    "name",
+    "required",
+    "description",
+  ]).map((setting) => {
+    for (const field of ["file", "default"]) {
+      if (setting[field] !== null && typeof setting[field] !== "string") {
+        throw new Error(`setting ${setting.name} has a ${field} that is neither text nor null`);
       }
-      if (!/^(yes|no|when .+)$/.test(setting.required as string)) {
-        throw new Error(`setting ${setting.name} has required ${JSON.stringify(setting.required)}`);
-      }
-      return setting as unknown as Setting;
     }
-  );
+    if (!REQUIRED.test(setting.required as string)) {
+      throw new Error(`setting ${setting.name} has required ${JSON.stringify(setting.required)}`);
+    }
+    return setting as unknown as Setting;
+  });
 }
 
 function render(settings: Setting[]): string {
-  const capitalized = (text: string) => inline(text.replace(/^./, (first) => first.toUpperCase()));
   const lines = [
     `Dispatch's server, \`envoy-dispatch\`, and its subcommands take the ${settings.length} Dispatch settings below from the environment. \`envoy-dispatch settings\` prints the same table from the binary you run.`,
     "",

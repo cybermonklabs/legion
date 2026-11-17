@@ -89,35 +89,44 @@ type Runtime struct {
 	tools                          Tools
 	pod                            Pod
 	roleConfigFiles                map[claim.Role][]string
-	memoryConfigFiles              []string
-	providerKeys                   map[string]string
-	providersSecrets               []string
-	natsUser                       string
-	sessionStore                   ompsessions.Store
-	agentSecrets                   *AgentSecrets
-	controllerSlackChannels        []string
-	agent                          []string
-	setup                          []string
-	skills                         ghrepo.Repository
-	testPostgres                   bool
-	bootTimeout                    time.Duration
-	registrationIntervals          int
-	busyBackoff                    time.Duration
-	provisionBound                 time.Duration
-	launchBound                    time.Duration
-	terminationGrace               time.Duration
-	probeInterval                  time.Duration
-	adoptTimeout                   time.Duration
-	tokens                         ProvisionTokens
-	gitHubCredential               runtime.GitHubCredential
-	controllerCredential           runtime.ControllerCredential
-	gitHubDirs                     func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                          Store
-	conns                          runtime.Conns
-	launchers                      *launchers
-	launcherAuth                   launcherCredentials
-	now                            func() time.Time
-	log                            *slog.Logger
+	// experimentVariants are every arm of every experiment the project declares
+	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
+	// same order: the union every reader that holds a pod or the deployment and no tree takes,
+	// since any unit may be drawn into any arm (movedRoleOverlays, heldRoleOverlays).
+	experimentVariants      []runtime.Variant
+	variantFiles            []string
+	providerKeys            map[string]string
+	providersSecrets        []string
+	natsUser                string
+	sessionStore            ompsessions.Store
+	agentSecrets            *AgentSecrets
+	controllerSlackChannels []string
+	agent                   []string
+	setup                   []string
+	skills                  ghrepo.Repository
+	testPostgres            bool
+	bootTimeout             time.Duration
+	registrationIntervals   int
+	busyBackoff             time.Duration
+	provisionBound          time.Duration
+	launchBound             time.Duration
+	terminationGrace        time.Duration
+	probeInterval           time.Duration
+	adoptTimeout            time.Duration
+	tokens                  ProvisionTokens
+	gitHubCredential        runtime.GitHubCredential
+	controllerCredential    runtime.ControllerCredential
+	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                   Store
+	conns                   runtime.Conns
+	launchers               *launchers
+	launcherAuth            launcherCredentials
+	now                     func() time.Time
+	log                     *slog.Logger
+	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
+	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
+	// guard off.
+	memoryGuard *shimwire.LauncherMemoryGuard
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -156,6 +165,12 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
+	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
+	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
+	// with the watch's record when the process is let go or the claim's next launch begins
+	// (forget, forgetIf). Memory only; a restarted daemon answers none.
+	sessions map[claim.Token]launchedSession
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -329,9 +344,12 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: no token audience")
 		case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
+		case a.ExchangeAudience == a.Audience:
+			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
+	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -349,9 +367,11 @@ func configureProber(opts Options) (*Runtime, error) {
 			}
 		}
 	}
-	for _, file := range opts.MemoryConfigFiles {
-		if !filepath.IsAbs(file) || strings.Contains(file, ":") {
-			return refuse("the memory overlay %q is not an absolute path PI_CONFIG_FILES can name", file)
+	for _, variant := range opts.ExperimentVariants {
+		for _, file := range variant.ConfigFiles {
+			if !filepath.IsAbs(file) || strings.Contains(file, ":") {
+				return refuse("the overlay %q of experiment %s variant %s is not an absolute path PI_CONFIG_FILES can name", file, variant.Experiment, variant.Name)
+			}
 		}
 	}
 	r := &Runtime{
@@ -359,18 +379,20 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, memoryConfigFiles: opts.MemoryConfigFiles,
+		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository,
+		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -384,9 +406,9 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, and log what they could not carry, so they are built once the
-	// runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
+	// before any of its roles start, take its memory guard's kill reports, and log what they could
+	// not carry or record, so they are built once the runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}

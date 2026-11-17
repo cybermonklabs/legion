@@ -289,9 +289,10 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // here rather than in a reviewer's eye.
 //
 // A text names this field's contract when `contract <N>`, or the bare `below <N>` a sentence
-// writes once the passage has already said "contract", stands within 220 bytes of
-// WaitingLineField, and that window names neither the retired stranded state nor the stranded
-// report, which is the other contract these same files discuss; the window is where the
+// writes once the passage has already said "contract", on one line or wrapped onto the next
+// (contractNumbers), stands within 220 bytes of WaitingLineField, and that window names neither
+// the retired stranded state nor the stranded report, which is the other contract these same
+// files discuss; the window is where the
 // sentences that state the boundary fall. Both forms are read because a passage commonly writes
 // the number twice — a headline "Daemon API contract 58:" and then "a caller from a pod below
 // 58 is served the state without the field" — and a reader of the first form alone passes a
@@ -311,6 +312,16 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // read as one about the waiting line's first contract and refused for saying the wrong number,
 // which is the refusal wanted. A second marker is not the answer when that happens; the
 // sentence naming the member it is about is.
+//
+// The texts of packages/daemon are read here; every other text is read out of
+// waiting_line_contract_extract.txt, the copy of their windows committed beside this package.
+// It is read there and never in the text itself: a test that reads a shipped text puts that
+// text in this job's filter — a declared read applies to every compiled source file of a run —
+// and an edit of a guide page or a changelog fragment would then start the whole daemon Go
+// lane. The copy holds those windows in their own bytes, so the scan below reads a section as
+// it read the file, and internal/textcheck's
+// TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts is what keeps the copy the
+// texts', in the job whose subject is a file's words (INFRA-1413).
 //
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
@@ -340,13 +351,8 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 			"packages/daemon/internal/api/state.go",
 			"packages/daemon/internal/projection/project.go",
 			"packages/daemon/internal/projection/project_test.go",
-			"packages/contracts/src/legion-api.ts",
-			"packages/pi-legion/AGENTS.md",
-			"docs/site/src/content/docs/legion/running-legion.md",
-			"docs/site/src/content/docs/legion/troubleshooting.md",
-			"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-			"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-			"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+			// The windows of every shipped text outside packages/daemon, in their own bytes.
+			"packages/daemon/internal/api/waiting_line_contract_extract.txt",
 		},
 	}, func(name, said, near string, want int) {
 		t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added what the sentence states: %q",
@@ -397,10 +403,15 @@ type contractDeclaration struct{ file, declares string }
 
 // contractNumbers finds a contract number in the two forms the scanner reads one in: `contract
 // <N>`, and the bare `below <N>` a sentence writes once the passage has already said "contract".
-// It is the scanner's one regex, for its windows and its declarations' comments alike, and a test
-// that renumbers a comment in memory finds the numbers to change by it, so that the numbers it
-// changes are the ones the scanner reads.
-var contractNumbers = regexp.MustCompile(`(?:contract|below) (\d+)`)
+// Either may be wrapped: the word and its number stand apart by spaces, or by the one line break
+// a wrap puts between them, with the indent and the one `//`, `*` or `#` comment marker the next
+// line opens with, since the repository's semantic line breaks let a sentence break there, in a
+// comment as in prose (INFRA-4004); a blank line between the two is a paragraph break, and no
+// mention. It is the scanner's one regex, for its windows and its declarations' comments alike,
+// and a test that renumbers a comment in memory finds the numbers to change by it, so that the
+// numbers it changes are the ones the scanner reads. internal/textcheck's waitingLineNamed is this
+// same pattern, written again there for the windows it recomputes the copy from.
+var contractNumbers = regexp.MustCompile(`(?:contract|below)(?:[ \t]+|[ \t]*\n[ \t]*(?:(?://|\*|#)[ \t]*)?)(\d+)`)
 
 // scanContractTexts reads each file the scan names and holds two readings of it to the scan's
 // contract: every window of this field, and the whole comment above each of its declarations. It
@@ -562,4 +573,52 @@ func declarationComment(text, declares string) (start, end int, err error) {
 			declaration+1, declares)
 	}
 	return offsets[first], offsets[declaration], nil
+}
+
+// A number wrapped onto the line after its word is held as one on the same line is. The scanner
+// reads the windows the copy carries in the shipped texts' own bytes, and the comments of
+// packages/daemon in theirs, and the repository's semantic line breaks let a sentence break
+// between "contract" and its number; a scanner that read only a space between the two passed
+// every such mention over without a word, whatever number it said (INFRA-4004). Each case is a
+// shape the scanned texts are written in, names the field beside a number wrapped onto the line
+// after its word, and says a contract that is not the field's, so the scanner must refuse that
+// phrase; a blank line between the word and a number is a paragraph break, and is read as no
+// number at all.
+//
+// What it proves: that contractNumbers reads a wrapped number in Markdown, in a Go or
+// TypeScript comment and in a YAML scalar, and that the scanner holds it. What it does not: that
+// the copy carries every wrapped window of the shipped texts, which internal/textcheck's
+// TestAContractNumberWrappedOntoTheNextLineYieldsItsWindow and its check of the copy hold.
+func TestTheContractScanHoldsANumberWrappedOntoTheNextLine(t *testing.T) {
+	stale := waitingLineContract - 1
+	for _, wrapped := range []struct {
+		shape, text string
+		refused     []string
+	}{
+		{"a Markdown sentence", fmt.Sprintf("`handoff_complete` takes no `ready`), after contract\n%d's `why` and the\n`waitingLine` fields beside it\n", stale),
+			[]string{fmt.Sprintf("contract\n%d", stale)}},
+		{"a Go line comment", fmt.Sprintf("\t// The waitingLine of an issue the line names, served from contract\n\t// %d on.\n", stale),
+			[]string{fmt.Sprintf("contract\n\t// %d", stale)}},
+		{"a TypeScript block comment", fmt.Sprintf("  /** Where the issue stands in `admission.waiting` (contract\n   * %d). */\n  waitingLine: legionWaitingLineView.optional(),\n", stale),
+			[]string{fmt.Sprintf("contract\n   * %d", stale)}},
+		{"a YAML scalar", fmt.Sprintf("body: 'Adds `waitingLine`, and a caller from a pod below\n  %d is served the state without it.'\n", stale),
+			[]string{fmt.Sprintf("below\n  %d", stale)}},
+		{"a paragraph break", fmt.Sprintf("The `waitingLine` passage ends on the word contract\n\n%d opens the next paragraph.\n", stale),
+			nil},
+	} {
+		scan := contractScan{
+			fields:   []string{WaitingLineField},
+			without:  []string{"retired", "stranded"},
+			contract: waitingLineContract,
+			files:    []string{wrapped.shape},
+		}
+		var refused []string
+		checked, _ := scanContractTextsIn(t, scan, map[string]string{wrapped.shape: wrapped.text}, func(_, said, _ string, _ int) {
+			refused = append(refused, said)
+		})
+		if checked != len(wrapped.refused) || !slices.Equal(refused, wrapped.refused) {
+			t.Errorf("%s: the scanner held %d numbers and refused %q, want %d held and %q refused: %q",
+				wrapped.shape, checked, refused, len(wrapped.refused), wrapped.refused, wrapped.text)
+		}
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -305,7 +306,8 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, reads)
 }
 
-// createArtifactReviewInput is the body of POST /api/v1/artifacts/{id}/reviews.
+// createArtifactReviewInput is the body of both review routes, POST /api/v1/artifacts/{id}/reviews
+// and POST /api/v1/artifacts/{id}/versions/{number}/reviews.
 type createArtifactReviewInput struct {
 	State  string  `json:"state" required:"true"`
 	Reason *string `json:"reason"`
@@ -313,6 +315,31 @@ type createArtifactReviewInput struct {
 
 // POST /api/v1/artifacts/{id}/reviews  {state, reason?}  (the person and approve scopes)
 func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
+	s.recordArtifactReview(w, r, false)
+}
+
+// POST /api/v1/artifacts/{id}/versions/{number}/reviews  {state, reason?}  (the person and approve scopes)
+//
+// The review a caller sends when the version it read is a guard: {number} is that version, and a
+// review that would record any other version of this document is refused with nothing written.
+// The guard is a route of its own rather than a member of the body above, because a route
+// ignores a member it does not declare (decodeJSON): a build without this route answers no
+// route, where a build that ignored a version member would record the review in the person's
+// name at whichever version it would record. recordArtifactReview reads {number}, once the
+// credential is known to be a person's.
+func (s *server) createArtifactVersionReview(w http.ResponseWriter, r *http.Request) {
+	s.recordArtifactReview(w, r, true)
+}
+
+// recordArtifactReview is the handler both review routes share: it records the calling person's
+// review of the document {id} names, and answers the approval request open on it when one is.
+// versioned is whether the route names the version the caller read, as POST
+// /api/v1/artifacts/{id}/versions/{number}/reviews does in its {number}. That number is read once
+// the credential is known to be a person's, so a caller without one is refused for that first, as
+// on the route without a number; a number that is not a whole number of 1 or more is 400
+// INVALID_REVIEW, before any document is read or anything is written. Without a number, the
+// review records whichever version it would record, as the document header's does.
+func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, versioned bool) {
 	var input createArtifactReviewInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -321,6 +348,15 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
+	}
+	var readVersion *int
+	if versioned {
+		number, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil || number < 1 {
+			writeError(w, "INVALID_REVIEW", http.StatusBadRequest, "version must name a version of the document, 1 or more")
+			return
+		}
+		readVersion = &number
 	}
 	state := strings.TrimSpace(input.State)
 	if state != "approved" && state != "changes_requested" {
@@ -372,19 +408,42 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NO_VERSION", http.StatusConflict, "the document has no settled version to review yet")
 		return
 	}
-	// A moved approval ask names this latest version and is answered by the header action, keeping
-	// its thread as the review's provenance.
+	// A moved approval ask names this latest version and is answered by this review, keeping its
+	// thread as the review's provenance.
 	open, err := docs.OpenApprovalAsk(r.Context(), tx, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Without a request open, this reviews the document at its latest settled version; with one,
+	// it answers that request, so it reviews every document the request named, each at the
+	// version the request named, and the request is answered once for both.
+	approval := &model.AskApproval{Documents: []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}}
+	if open != nil {
+		approval = open.Approval
+	}
+	// The version this review records for the document is approval's entry for it: the one the
+	// open request names for it (OpenApprovalAsk finds only a request that names it, so a request
+	// with no entry for it is a fault of this server's, answered 500 before anything is written),
+	// else the latest settled version. A caller that names the version it read (readVersion) is
+	// refused here when that is not it, before the request is answered or anything is written, so
+	// no review records in a person's name a version of this document that person did not name.
+	// With a request open, every other document the request names is reviewed at the version the
+	// request names for it, which the caller does not name and this check does not compare.
+	entry := approval.Document(artifact.ID)
+	if entry == nil {
+		s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
+		return
+	}
+	recorded := entry.Version
+	if readVersion != nil && *readVersion != recorded {
+		writeError(w, "REVIEW_VERSION_MOVED", http.StatusConflict, fmt.Sprintf(
+			"the review would record version %d of %s, not version %d: read version %d and review it",
+			recorded, artifact.Name, *readVersion, recorded))
+		return
+	}
 	events := []model.Event{}
 	var askID *string
-	// Without a request open, the header reviews this document at its latest settled version;
-	// with one, it answers that request, so it reviews every document the request named, each at
-	// the version the request named, and the request is answered once for both.
-	reviewed := []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}
 	if open != nil {
 		selected := docs.ApprovalOptionApprove
 		if state == "changes_requested" {
@@ -397,9 +456,8 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, answeredEvents...)
 		askID = &answered.ID
-		reviewed = open.Approval.Documents
 	}
-	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, reviewed, state, actor, reason, askID)
+	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, approval.Documents, state, actor, reason, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -526,6 +584,14 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only documents can be approved")
 		return
 	}
+	// A closed owner takes no approval of any kind, a plan review included (createArtifactPlanReview),
+	// so it is refused before the refusals that name another route: the answer names the real
+	// blocker rather than a command that would be refused too.
+	owner := ownerForArtifact(artifact)
+	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if documentPlays(artifact, model.ArtifactRolePlan) {
 		writeError(w, "PLAN_APPROVED_BY_REVIEW", http.StatusConflict,
 			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)")
@@ -538,11 +604,6 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if input.IncludeVerification && !isSpecDocument(artifact) {
 		writeError(w, "NOT_SPEC_DOCUMENT", http.StatusConflict,
 			"include_verification asks for the issue's spec and its Verification document together, and this document is not the issue's spec: request approval of it alone")
-		return
-	}
-	owner := ownerForArtifact(artifact)
-	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
-		s.writeHandlerError(w, err)
 		return
 	}
 	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)

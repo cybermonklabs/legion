@@ -25,6 +25,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine := &Machine{
+		Policy:  policytest.Current(t, local),
 		Secrets: policytest.Store(local),
 		Minters: map[string]Minter{policy.KindAzureLogin: (secrets.AzureLogin{TokenFile: file}).Mint},
 	}
@@ -86,6 +87,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 				}
 			}
 			machine := &Machine{
+				Policy:  policytest.Current(t, local, fixtureService),
 				Secrets: policytest.Store(local),
 				Minters: map[string]Minter{policy.KindAzureLogin: (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint},
 			}

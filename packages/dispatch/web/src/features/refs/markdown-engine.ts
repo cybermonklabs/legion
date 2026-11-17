@@ -9,10 +9,10 @@ import type {
 } from "prosemirror-model";
 import { useLayoutEffect, useState } from "react";
 
-import type { BlockSchema, DisplayTree } from "../../api/types";
-import { loadBlockSchema } from "../doc/schema";
+import type { DisplayTree } from "../../api/types";
+import { compiledBlockSchema } from "../doc/schema";
 import { renderAskBlockShell, renderTypedBlock } from "../doc/typed-block-drawing";
-import type { ParsedBody, ParseRequest, ParseSchema } from "./markdown-parse.worker";
+import type { ParsedBody, ParseRequest } from "./markdown-parse.worker";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
 import { referenceSpans } from "./reference-spans";
 import { parseDispatchReference, shortForm } from "./routes";
@@ -46,10 +46,6 @@ export type RenderSpecWithAttrs = (
  * engine's life, and every render on the page would otherwise rebuild the same serializer.
  */
 export interface MarkdownEngine {
-  /** The block schema it was built from, which the parse worker is built from too, so a long
-   *  body reads the same above and below the threshold. Its version names a body's parse in the
-   *  answer cache. */
-  readonly blockSchema: BlockSchema;
   readonly serializer: DOMSerializer;
   /** `DOMSerializer.renderSpec`, which opens one node where the serializer would write it whole,
    *  for the painter that fills an element a batch at a time (`MarkdownBody`,
@@ -105,16 +101,18 @@ export interface MarkdownEngine {
 type HeadlessModule = typeof import("@legion/proof-editor/headless");
 
 let headlessModule: Promise<HeadlessModule> | undefined;
-const engines = new Map<number, Promise<MarkdownEngine>>();
+/** The one engine this page builds, since the manifest it builds from is this build's own
+ *  (`compiledBlockSchema`) and cannot change under a page: main kept these by schema version,
+ *  when the page fetched a schema from whichever server answered and two versions could meet. */
+let loadingEngine: Promise<MarkdownEngine> | undefined;
 /** The engine the newest resolved load produced: what a body renders with synchronously. The
  *  engine serves every soft-break policy (the policy is a parse argument), and a parse that
  *  throws no longer evicts it - the headless editor drops only its own refused parser. */
 let readyEngine: MarkdownEngine | undefined;
 
-function loadEngine(blockSchema: BlockSchema): Promise<MarkdownEngine> {
-  const cached = engines.get(blockSchema.version);
-  if (cached !== undefined) {
-    return cached;
+function loadEngine(): Promise<MarkdownEngine> {
+  if (loadingEngine !== undefined) {
+    return loadingEngine;
   }
   headlessModule ??= import("@legion/proof-editor/headless");
   // The serializer travels with the headless editor rather than with this module: it is written
@@ -124,26 +122,26 @@ function loadEngine(blockSchema: BlockSchema): Promise<MarkdownEngine> {
     .then(async ([{ createHeadlessProof }, { buildEngine }]) =>
       buildEngine(
         await createHeadlessProof({
-          blockSchema,
+          blockSchema: compiledBlockSchema,
           readOnly: true,
           renderBlock: (node, type) =>
             type.name === "ask" ? renderAskBlockShell(node) : renderTypedBlock(node, type),
-        }),
-        blockSchema
+        })
       )
     )
     .then((engine) => {
       readyEngine = engine;
       return engine;
     });
-  engines.set(blockSchema.version, created);
+  loadingEngine = created;
   return created;
 }
 
-/** Loads the schema and headless Proof chunk before Markdown-bearing UI needs to render. The
- *  parse worker is not one of them: a page that draws no long body downloads none of it. */
+/** Loads the headless Proof chunk before Markdown-bearing UI needs to render; it reads no schema
+ *  from a server, since the manifest is this build's own. The parse worker is not loaded here: a
+ *  page that draws no long body downloads none of it. */
 export async function warmMarkdownRenderer(): Promise<void> {
-  await loadEngine(await loadBlockSchema());
+  await loadEngine();
 }
 
 /** How long the worker may hold one body before the page parses it itself. It runs from the
@@ -277,12 +275,11 @@ const parseQueue = new WorkerQueue<SentBody, ParsedBody, ParsedAnswer>({
     rememberUpTo(answers, ANSWER_LIMIT, body.key, answer);
     return answer;
   },
-  createWorker(first) {
-    const worker = (createParseWorker ?? newParseWorker)();
-    // The page loads one schema version per session (`doc/schema.ts`), so the worker is built
-    // from the schema of the first long body it is sent and parses every later one the same way.
-    worker.postMessage({ blockSchema: first.engine.blockSchema } satisfies ParseSchema);
-    return worker;
+  createWorker() {
+    // The worker builds its engine from the manifest this build compiled in
+    // (`compiledBlockSchema`, which it imports itself), so the page sends it no schema: both
+    // sides read the same manifest whatever a server of another build would answer.
+    return (createParseWorker ?? newParseWorker)();
   },
   limitMs() {
     return deadlineMs;
@@ -368,10 +365,11 @@ function renderLoaded(
     });
     return () => undefined;
   }
-  // The schema version, the soft-break policy and the source are all a parse reads, so one
-  // answer serves every later render of the same three: a new decision card, paint or decorate
-  // pass repaints the body it already has rather than asking for it again.
-  const key = `${engine.blockSchema.version}\u0000${softBreaks}\u0000${markdown}`;
+  // The soft-break policy and the source are what a parse reads - the manifest is this build's
+  // own and cannot change under a page (`compiledBlockSchema`) - so one answer serves every
+  // later render of the same two: a new decision card, paint or decorate pass repaints the body
+  // it already has rather than asking for it again.
+  const key = `${softBreaks}\u0000${markdown}`;
   const cached = answers.get(key);
   if (cached !== undefined) {
     // Reading an answer keeps it: what the cache drops is the body read longest ago, never one
@@ -423,9 +421,9 @@ function withEngine(use: (engine: MarkdownEngine | undefined) => void): () => vo
   void (async () => {
     let engine: MarkdownEngine | undefined;
     try {
-      engine = await loadEngine(await loadBlockSchema());
+      engine = await loadEngine();
     } catch (error) {
-      console.error("Rendering literal Markdown, the block schema is unavailable", error);
+      console.error("Rendering literal Markdown, the Markdown engine is unavailable", error);
     }
     if (!cancelled) {
       use(engine);

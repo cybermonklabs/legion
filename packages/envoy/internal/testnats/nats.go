@@ -417,6 +417,44 @@ func (s *Server) Restart(t testing.TB, config string) {
 // server was started with -DV.
 func (s *Server) Log() string { return s.log.String() }
 
+// CutStream makes stream lose data as nats-server's own
+// TestJetStreamConsumerReconcileConsumerAfterStreamDataLoss makes its stream lose it
+// (server/jetstream_consumer_test.go v2.15.1): it stops the server, truncates the stream's first
+// message block (jetstream/$G/streams/<stream>/msgs/1.blk in the store) to the size keep returns
+// for the block's size, removes the stream's index (msgs/index.db beside it), and starts the
+// server again, which rebuilds the stream from what the block still holds. A keep that returns 0
+// cuts every message the block held, and one that returns half the size plus one byte cuts the end
+// of them. It returns the block's size before the cut and after it, for the test's log, and fails
+// the test when the block or the index is not there.
+//
+// It works for a server whose streams are in the global account ($G), which is where the streams
+// of a server one Start made are: the shared server (URL) keeps each test's streams in the
+// directory of that test's account instead. The store survives the cut as it survives every Stop
+// and Start (Stop), so the restarted server recovers the stream and its consumers from what the
+// cut left of them.
+func (s *Server) CutStream(t testing.TB, stream string, keep func(size int64) int64) (before, after int64) {
+	t.Helper()
+	s.Stop(t)
+	messages := filepath.Join(s.store, "jetstream", "$G", "streams", stream, "msgs")
+	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
+	stat, err := os.Stat(block)
+	if err != nil {
+		t.Fatalf("the stream's first message block: %v", err)
+	}
+	if _, err := os.Stat(index); err != nil {
+		t.Fatalf("the stream's index: %v", err)
+	}
+	before, after = stat.Size(), keep(stat.Size())
+	if err := os.Truncate(block, after); err != nil {
+		t.Fatalf("cut the stream's first message block: %v", err)
+	}
+	if err := os.Remove(index); err != nil {
+		t.Fatalf("remove the stream's index: %v", err)
+	}
+	s.Start(t)
+	return before, after
+}
+
 // address is where the server listens for clients at this moment, which the relay dials. A stopped
 // server has none, and the relay ends the connection as a refused dial would.
 func (s *Server) address() (string, error) {

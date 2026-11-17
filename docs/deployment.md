@@ -70,11 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, the same set a
-configured key asks for, and the first three alone where the App's installation has not been
-granted Actions.
-A configured key reads what the installation is granted before each mint and asks for the set
-cut down to it, so the two end at the same place by different routes.
+`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
+alone where the App's installation has not been granted Actions.
+A configured key asks for that set and `issues: read` besides, so a role reads an issue through a
+key-minted read-only token and not through the broker's.
+A configured key reads what the installation is granted before each mint and asks for its set
+cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
 so `agent-secrets`' line naming the pending request appears in the daemon's log while the review
 App waits for its grant.
@@ -104,11 +105,11 @@ daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-to
 pane — in two directories, the issue's recorded owner's and the one named for the owner whose
 installation serves that repository now, which are one directory unless a rename moved the issue's
 repository, the role's App token for the issue's repository and no other, and in every
-other directory that App's token narrowed to reading contents, pull requests, Actions and metadata
+other directory that App's token narrowed to reading contents, pull requests, issues, Actions and metadata
 over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
 its own name resolves to (each token asks for what the App's installation on
-that owner is granted of the set, and a permission it is granted none of is left out, named on
-the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
+that owner is granted of the set, and a permission it is granted none of is left out, named in
+a warn record of the daemon's log) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
 empty so nothing outranks the files, and rewrites each directory's `hosts.yml` in place every
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
@@ -140,7 +141,15 @@ gh acts on another's, or a workspace whose remotes name two), one naming an owne
 holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
-and send nothing. The real gh runs with `GH_PATH`
+and send nothing.
+Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
+the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
+the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
+the exact `gh api rate_limit`;
+and `gh auth git-credential`, which answers from the bundle.
+The guard's reads use the caller's token because a push made with the token writes the repository they read,
+and the bundle may hold no directory for that repository's owner.
+The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
@@ -448,9 +457,23 @@ provider_keys:
   every launch of that role fail. `docs/kubernetes.md` ("Operator configuration") has the rest of
   the key's rules. Every pane runs as the daemon's Unix user, so each role can read every role's
   overlay file; only loading is per role, so never put a secret in one.
-- **`projects.<KEY>.memory`**, the project's own block, is the second thing that appends to a
+- **A role's system prompt is a file.** Each launch's composed system prompt — the role's prompt
+  files, the sentence that says which claim it is, the deployment's `instructions`, then each drawn
+  arm's — is written to `<state_dir>/secrets/<claim token>-system-prompt.md`, kept beside the
+  claim's other secret files and pruned with them, and Oh My Pi is passed that file's path as
+  `--append-system-prompt <path>`, Claude Code as `--append-system-prompt-file <path>`, so no
+  prompt travels as one argument and none is bounded by the 131,072 bytes Linux allows one.
+- **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`
   (`memory: {mode: random, config_files: [/etc/legion-memory/memory.yml], instructions: /etc/legion-daemon/memory-instructions.md}`).
+  The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon
+  reads it as an experiment of unit `tree` whose arms are `memory`, carrying the block's
+  `config_files` and `instructions`, and `none`, carrying neither, at equal weight, with
+  `on_variant: memory`.
+  A project writes the block **or** `experiments.memory`, never both: the two are one experiment
+  spelled twice, and a project that writes both is refused.
+  The block itself is accepted and refused in no new way, so a file that passed before passes
+  now, unchanged: every rule below is the rule it has always had.
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with
   no block gets, `on` gives every new tree one, and `random` draws a fair coin for each new tree.
   `config_files` are the Oh My Pi overlays a memory-group tree's panes name, and `instructions` the
@@ -465,9 +488,10 @@ provider_keys:
   it later, and a change of mode reaches only the trees opened after it.
   A child out of a tree the daemon never opened has run under nothing and the hand-over gives it
   nothing, so its own first open draws it like any other new tree.
-  Every role of a memory-group tree names the memory overlays last in `PI_CONFIG_FILES`, after
-  `pi_config_files` and the role's own, and ends its one `--append-system-prompt` value with the
-  memory instructions, after the deployment's own.
+  Every role of a memory-group tree names the memory overlays after `pi_config_files` and the
+  role's own, and before any other experiment's arms, since the block's experiment comes first
+  among the project's declared experiments, and ends its system prompt with the memory
+  instructions, after the deployment's own.
   The controller and every role of a no-memory tree get neither, and a block with no
   `instructions` appends nothing.
   The launch follows the record, not the mode:
@@ -486,6 +510,54 @@ provider_keys:
   `legion start --check-config` makes every one of these refusals and starts nothing.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`.
+- **`projects.<KEY>.experiments`**, the project's own mapping, declares the experiments it draws
+  its trees and its issues into, by the name each draw records
+  (`experiments: {plan-length: {mode: random, unit: issue, variants: [{name: long, config_files: [/etc/legion-experiments/plan-length.yml]}, {name: control}]}}`).
+  An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
+  once.
+  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
+  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
+  same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
+  issue role where the block names none; a pane of a role the list leaves out loads none of this
+  experiment's overlays or instructions while its unit keeps the arm it drew.
+  `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
+  since a draw among one arm measures nothing.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
+  number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a pane
+  of a unit drawn into it names, and `instructions`, one markdown file the daemon reads at boot
+  and appends to that pane's prompt.
+  Both file keys are absolute paths, and neither is required: the arm that names no file at all is
+  the control the others are measured against.
+  **The order a pane's `PI_CONFIG_FILES` names them in** is the operator's files
+  (`runtime.tmux.pi_config_files`), then the pane's own role's (`role_config_files`), then the
+  files of each arm the pane's unit was drawn into, in the order the project's file declares the
+  experiments, so an arm's file outranks both.
+  The `memory` block's own arm comes first among them, since the block's experiment comes before
+  the `experiments` mapping's own.
+  The system prompt ends with each such arm's `instructions` in that same order, after the
+  deployment's own.
+  The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
+  created, an issue's when the daemon first records that issue — and is recorded with the arm, the
+  mode in force and the instant.
+  The launch follows the record, not the mode: a unit drawn into an arm keeps that arm's files
+  while the project's file still names the arm, whatever the mode is now, and taking the files
+  away is taking the arm out of the file.
+  The controller runs in no tree and no issue, so it is in no experiment and gets no arm's files.
+  The loader refuses a `mode` that is no word of the three, a `unit` that is neither word, a block
+  that lists no variant, a mode other than `off` over one variant, a `mode: on` that names no
+  `on_variant`, an `on_variant` that is no arm of its experiment, a name or an arm name outside
+  those characters, a name or an arm name written twice, a `weight` that is not a whole number
+  above zero, and an arm that names `config_files` while `worker_backends` puts an issue role on
+  Claude Code, which reads no `PI_CONFIG_FILES`.
+  Boot refuses an arm's overlay no pane could read and an arm's `instructions` file it cannot read
+  or that holds nothing.
+  `legion start --check-config` makes every one of these refusals and starts nothing.
+  `legion config-reference --json` prints every key of the block with its default and what it
+  does.
+  `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
+  kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).

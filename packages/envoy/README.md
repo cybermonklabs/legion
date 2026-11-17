@@ -61,6 +61,11 @@ The secrets broker (`cmd/broker`) supports these kinds for `agent-secrets secret
 
 Without a kind, the broker releases the stored value unchanged.
 
+One decoder reads each kind's stored value, `secrets.ParseValue`, which the minters, the broker's policy load and `agent-secrets secret` all call.
+`secret create --kind`, `secret set` on a kind secret, and a `secret retag` that changes the kind, or the shape of a secret that keeps a kind, refuse a value that kind's minter would refuse and write nothing.
+A retag whose read of the value the store refuses as access denied writes the tags without the check and says so on standard error.
+The broker reads each kind secret's value once for each new version, kind or shape, and refuses a secret whose value the decoder refuses as `value-malformed`.
+
 ## Layout
 
 - `internal/contracts/generated.go` — generated Go contract output from `packages/contracts/scripts/gen-go.ts`
@@ -90,8 +95,10 @@ submits signed public GitHub fixtures plus a three-paragraph direct agent
 message to a stand-in session that takes every delivery from its own NATS
 consumer. The driver asserts the one-warning response for a never-seen GitHub
 repository, refuses a registration naming a port, keeps an unheld role's
-publish and hands it to the stand-in session that claims that role, refuses a
-`keep: false` publish to an unheld role, validates settled pull-request checks,
+publish and hands it to the stand-in session that claims that role, keeps a
+publish to a role whose holder is gone and hands it to that session when it
+claims the role again, refuses a `keep: false` publish to an unheld role,
+validates settled pull-request checks,
 lifecycle and comment topics, PR-less workflow and Actions-job behavior,
 obsolete-topic absence, and the direct-message summary/body contract
 `renderInbound` prints.

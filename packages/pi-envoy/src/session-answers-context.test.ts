@@ -2,40 +2,31 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SessionAnswer } from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
   readSessionAnswers,
   SESSION_ANSWERS_MARKER,
   sessionAnswersFailureLine,
+  sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
 import {
-  type CarriedAnswers,
-  type SessionAnswersRequest,
-  withSessionAnswers,
-} from "./session-answers-context";
+  ask,
+  branchOf,
+  grepCall,
+  grepResult,
+  ITEM,
+  LIST,
+  noBranch,
+  readCall,
+  readResult,
+  requestOf,
+  skill,
+} from "../test/session-answers-requests";
+import { type CarriedAnswers, withSessionAnswers } from "./session-answers-context";
 
 // Message shapes as Oh My Pi hands them to a `context` handler.
-const LIST = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
 const list = { role: "user", content: [{ type: "text", text: LIST }], timestamp: 0 };
-const skill = {
-  role: "user",
-  content: [{ type: "text", text: "<dispatch-first-skill>\nSearch Dispatch first." }],
-  timestamp: 0,
-};
-const ask = { role: "user", content: [{ type: "text", text: "Fix the bug." }], timestamp: 1 };
-const readCall = {
-  role: "assistant",
-  content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "x.ts" } }],
-  timestamp: 2,
-};
-const readResult = {
-  role: "toolResult",
-  toolCallId: "call-1",
-  toolName: "read",
-  content: [{ type: "text", text: LIST }],
-  isError: false,
-  timestamp: 3,
-};
 const reply = {
   role: "assistant",
   content: [{ type: "text", text: "Fixed." }],
@@ -114,28 +105,24 @@ const branchSummary = {
   timestamp: new Date(SUMMARIZED_AT).getTime(),
 };
 
-/** The session's branch entries for `items`, as `sessionManager.getBranch` lists them: a message
- *  in a message entry of its own, an entry (it has a `type`) as it is. */
-function branchOf(...items: readonly unknown[]): () => readonly unknown[] {
-  return () =>
-    items.map((item, index) =>
-      typeof item === "object" && item !== null && "type" in item
-        ? item
-        : { type: "message", id: `e${index}`, message: item }
-    );
-}
+/** Where the fixtures' reads start their 72-hour window: every fixture item is inside it. */
+const SINCE = "2026-10-24T12:00:00.000Z";
 
-const noBranch = branchOf();
-
-/** What `readSessionAnswers` gives with `text`: the text, and what the people wrote in it (each
- *  item's head and words, as `sessionAnswersWords` keys them), none for the failure line. */
-function carry(text: string | undefined): CarriedAnswers | undefined {
+/** What `readSessionAnswers` gives with `text`: the text, what the people wrote in each item it
+ *  names (its time, its head and its words, keyed as `sessionAnswersWords` keys them), and where
+ *  the read's window starts. The failure line names no item. */
+function carry(text: string | undefined, since = SINCE): CarriedAnswers | undefined {
   if (text === undefined) return undefined;
-  const words = Array.from(
-    text.matchAll(/^\d{4}-\S+ · (.+)\n(.+)$/gm),
-    (match) => `${match[1]}: ${match[2]}`
+  const items = Array.from(
+    text.matchAll(/^(\d{4}-\S+) · (.+)\n(.+)$/gm),
+    (match): SessionAnswer => ({
+      ...ITEM,
+      at: match[1] ?? "",
+      id: match[2] ?? "",
+      text: match[3] ?? "",
+    })
   );
-  return { text, words };
+  return { text, words: sessionAnswersWords(items), since };
 }
 
 /** A read that records each call and answers `text`. */
@@ -151,17 +138,6 @@ function reading(text: string | undefined): {
     },
     calls: () => calls,
   };
-}
-
-/** A request of `session` (a session of its own unless given), not compacting unless told. */
-function requestOf(
-  read: () => Promise<CarriedAnswers | undefined>,
-  branch: () => readonly unknown[],
-  session: object = {},
-  compacting = false,
-  id = "ses_a"
-): SessionAnswersRequest {
-  return { read, branch, session, id, compacting: () => compacting };
 }
 
 test("the list goes after the request's last message, as a message of its own", async () => {
@@ -187,24 +163,17 @@ test("after a tool round the list follows the tool result, which keeps its own c
 // requests after it, so the model never reads a list with nothing new in it as the newest turn.
 const LATER = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
 const later = { role: "user", content: [{ type: "text", text: LATER }], timestamp: 0 };
-const grepCall = {
-  role: "assistant",
-  content: [{ type: "toolCall", id: "call-2", name: "grep", arguments: { pattern: "bug" } }],
-  timestamp: 5,
-};
-const grepResult = {
-  role: "toolResult",
-  toolCallId: "call-2",
-  toolName: "grep",
-  content: [{ type: "text", text: "x.ts:3: the bug" }],
-  isError: false,
-  timestamp: 6,
-};
 
-/** A read that answers each of `texts` in turn, then the last one again. */
-function readingEach(...texts: string[]): () => Promise<CarriedAnswers | undefined> {
+/** A read that answers each of `reads` in turn (a text as `carry` gives it; undefined: no text
+ *  and no words), then the last one again. */
+function readingEach(
+  ...reads: (string | CarriedAnswers | undefined)[]
+): () => Promise<CarriedAnswers | undefined> {
   let call = 0;
-  return async () => carry(texts[Math.min(call++, texts.length - 1)]);
+  return async () => {
+    const next = reads[Math.min(call++, reads.length - 1)];
+    return typeof next === "string" ? carry(next) : next;
+  };
 }
 
 test("a list with no new item stays where it first went: the request still ends with its own last message", async () => {
@@ -238,10 +207,52 @@ test("a new item goes after the request's last message, and stays there on the r
   ).toEqual([...turn, later, grepCall, grepResult]);
 });
 
-test("a list that only lost items, or changed its header, keeps its place with the new text", async () => {
+// Every byte of a request before its last cache breakpoint has to repeat, or the provider writes
+// the whole conversation behind the changed byte to its cache again. The list's header names the
+// read that produced it ("As read at …; this read failed: …"), which differs from one request to
+// the next whenever a read crosses its 800 ms deadline, so a kept place keeps its bytes too. An
+// item the 72-hour window has left behind is no change either.
+const BOB = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.`;
+/** A window that has left alice's answer (10:00) behind and still holds bob's message (11:00). */
+const PAST_ALICE = "2026-10-27T10:30:00.000Z";
+
+test("a list that only lost items to the window, or changed its header, keeps its place and its bytes", async () => {
   const session = {};
-  const cached = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
-  const read = readingEach(LATER, LIST, cached);
+  const cached = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.`;
+  const read = readingEach(LATER, carry(BOB, PAST_ALICE), carry(cached, PAST_ALICE));
+  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
+    skill,
+    ask,
+    later,
+    readCall,
+    readResult,
+  ]);
+  expect(
+    await withSessionAnswers([...turn, grepCall, grepResult], requestOf(read, noBranch, session))
+  ).toEqual([skill, ask, later, readCall, readResult, grepCall, grepResult]);
+});
+
+// An item gone from the read while the window still holds its time was retracted, or removed by
+// Dispatch: a kept list must not go on showing it as current.
+test("an item gone from the read while its time is inside the window moves the list", async () => {
+  const session = {};
+  const read = readingEach(LATER, LIST);
+  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
+    ...turn,
+    list,
+  ]);
+});
+
+// The one change that does move the list also re-renders it, so a new item is never hidden behind
+// the bytes a kept place holds.
+test("an item written after a kept place moves the list, with the text of that read", async () => {
+  const session = {};
+  const stale = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
+  const read = readingEach(LIST, stale, LATER);
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
@@ -253,14 +264,121 @@ test("a list that only lost items, or changed its header, keeps its place with t
   ]);
   expect(
     await withSessionAnswers([...turn, grepCall, grepResult], requestOf(read, noBranch, session))
-  ).toEqual([
+  ).toEqual([...turn, grepCall, grepResult, later]);
+});
+
+// A read gives no text and no words when a server with no answers route has nothing cached, or
+// when Dispatch is off. Taking the placed list out of the conversation changes the request from
+// its place on, as changing its bytes would, and the next read that answers from the cache puts it
+// back: the pair alternates, and every request pays for it.
+test("a read with no text and no words leaves a placed list where it is", async () => {
+  const session = {};
+  const read = readingEach(LIST, undefined, LIST);
+  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
     skill,
     ask,
-    { role: "user", content: [{ type: "text", text: cached }], timestamp: 0 },
+    list,
+    readCall,
+    readResult,
+  ]);
+  expect(
+    await withSessionAnswers([...turn, grepCall, grepResult], requestOf(read, noBranch, session))
+  ).toEqual([skill, ask, list, readCall, readResult, grepCall, grepResult]);
+});
+
+// While a compaction may be converting the conversation, a list before its cut would push a
+// message out of what the compaction keeps, so a read with no text keeps no list there either.
+test("a read with no text while the session compacts, or right after a compaction's cut, carries no list", async () => {
+  const session = {};
+  const read = readingEach(LIST, undefined);
+  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(
+    await withSessionAnswers([...turn], requestOf(read, noBranch, session, true))
+  ).toBeUndefined();
+  // A remote compaction's cut, then its whole conversion, with the session not reading as
+  // compacting: the request right after the cut keeps no list either.
+  const branch = branchOf(ask, readCall, readResult, grepCall, grepResult);
+  const whole = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, branch, session))).toBeUndefined();
+  expect(await withSessionAnswers([...whole], requestOf(read, branch, session))).toBeUndefined();
+  // After that, the list is back where it went first.
+  expect(await withSessionAnswers([...whole], requestOf(read, branch, session))).toEqual([
+    skill,
+    ask,
+    list,
     readCall,
     readResult,
     grepCall,
     grepResult,
+  ]);
+});
+
+const FAILURE = sessionAnswersFailureLine("Dispatch did not answer within 800 ms");
+const failureLine = { role: "user", content: [{ type: "text", text: FAILURE }], timestamp: 0 };
+
+// The failure line says the list could not be read. The bytes of a placed list standing in for it
+// would read as a read that answered, so a failed read, whatever made it fail, is a change: it
+// goes after the last message, and the list goes there again once a read gives it.
+test("the failure line where a list is placed goes after the last message, and so does the list after it", async () => {
+  const session = {};
+  const read = readingEach(LIST, FAILURE, LIST);
+  await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
+    ...turn,
+    failureLine,
+  ]);
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toEqual([
+    ...tools,
+    list,
+  ]);
+});
+
+// Two failure lines both say the list could not be read and differ only in why, as two reads'
+// notes on one list do, so the first keeps its place and its bytes.
+test("a failure line after a placed failure line keeps that one's place and bytes", async () => {
+  const session = {};
+  const read = readingEach(
+    FAILURE,
+    sessionAnswersFailureLine("an earlier read is still waiting on Dispatch")
+  );
+  expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
+    skill,
+    ask,
+    failureLine,
+  ]);
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
+    skill,
+    ask,
+    failureLine,
+    readCall,
+    readResult,
+  ]);
+});
+
+// A read that gives no text did not fail: Dispatch answered, with nothing for the session. A placed
+// failure line would go on telling the model that reads fail, so it goes, and its place with it.
+test("a read with no text takes a placed failure line out, and its place with it", async () => {
+  const session = {};
+  const read = readingEach(FAILURE, undefined, undefined, FAILURE);
+  expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
+    skill,
+    ask,
+    failureLine,
+  ]);
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toBeUndefined();
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toBeUndefined();
+  // The next failed read goes after the last message, not back where the first one sat.
+  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toEqual([
+    ...tools,
+    failureLine,
   ]);
 });
 
@@ -419,6 +537,219 @@ test("a request an older copy already gave the list gets no second one and no re
     failure,
   ]);
   expect(calls()).toBe(0);
+});
+
+// A list an older copy placed carries no item fingerprints, so only its text is left to compare,
+// and every difference but the line naming the read counts as something new. Here the read note's
+// own length pushed an item past the reader's character cap, so the list is re-rendered after the
+// last message: a prompt-cache miss, and never a person's words held back. Reading that text more
+// closely to spare the miss swallowed an item twice (see `showsNew`).
+const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`;
+const cappedList = { role: "user", content: [{ type: "text", text: CAPPED }], timestamp: 0 };
+
+// The list `LIST` as a copy renders it from its cache when a read fails, and the same list for a
+// read that failed for another reason.
+const CACHED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
+const cachedList = { role: "user", content: [{ type: "text", text: CACHED }], timestamp: 0 };
+const WAITING = CACHED.replace(
+  "Dispatch did not answer within 800 ms.",
+  "an earlier read is still waiting on Dispatch."
+);
+const waitingList = {
+  role: "user",
+  content: [{ type: "text", text: WAITING }],
+  timestamp: 0,
+};
+
+test("an older copy's list the cap shortened is re-rendered, not kept", async () => {
+  const session = {};
+  const fresh = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it.`;
+  const freshList = { role: "user", content: [{ type: "text", text: fresh }], timestamp: 0 };
+  // No read of this copy's own: the older copy's list is what gets placed.
+  const { read, calls } = reading(LIST);
+  await withSessionAnswers([skill, ask, freshList], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(
+    await withSessionAnswers([...turn, cappedList], requestOf(read, noBranch, session))
+  ).toEqual([...turn, cappedList]);
+  expect(calls()).toBe(0);
+});
+
+// The one difference an older copy's list may show and keep its place and bytes: the line naming
+// the read (`withoutReadLine`).
+test("an older copy's list that differs only in the line naming its read keeps its place and bytes", async () => {
+  const session = {};
+  const { read, calls } = reading(LIST);
+  await withSessionAnswers([skill, ask, cappedList], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  const sameItems = {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: CAPPED.replace("2026-10-27T11:00:00.000Z;", "2026-10-27T11:05:00.000Z;"),
+      },
+    ],
+    timestamp: 0,
+  };
+  expect(
+    await withSessionAnswers([...turn, sameItems], requestOf(read, noBranch, session))
+  ).toEqual([skill, ask, cappedList, readCall, readResult]);
+  expect(calls()).toBe(0);
+});
+
+// A list an older copy placed has no words, so a read whose window holds no item cannot tell its
+// aged-out items from a retracted one. Kept, a retracted only answer would stay in every request
+// while an older copy runs beside this one, so such a read takes that list out (`keptWithoutText`).
+test("a read with no text that gives words takes out a list an older copy placed", async () => {
+  const session = {};
+  const read = readingEach({ text: undefined, words: [], since: SINCE });
+  // No read of this copy's own: the older copy's list is what gets placed.
+  expect(await withSessionAnswers([skill, ask, list], requestOf(read, noBranch, session))).toEqual([
+    skill,
+    ask,
+    list,
+  ]);
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toBeUndefined();
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toBeUndefined();
+});
+
+// An older copy's list rendered from its cache names the read that failed. Kept behind placed
+// bytes that differ, that line leaves the request, and the failure it names is told to
+// `unshownFailure` instead, once, as this copy's own failed reads are. An older copy's list with
+// no read line names no failure and tells nothing. An older copy's failure line comes from a read
+// that failed, so unlike a list with no read line it lets no failure be told again.
+test("an older copy's list naming a failed read, kept behind the placed bytes, tells that failure once", async () => {
+  const session = {};
+  const told: string[] = [];
+  const request = {
+    ...requestOf(readingEach(LIST), noBranch, session),
+    unshownFailure: (reason: string) => {
+      told.push(reason);
+    },
+  };
+  // The request carries the placed list's own failure, so nothing is told.
+  expect(await withSessionAnswers([skill, ask, waitingList], request)).toEqual([
+    skill,
+    ask,
+    waitingList,
+  ]);
+  const turn = [skill, ask, readCall, readResult];
+  const kept = [skill, ask, waitingList, readCall, readResult];
+  // Kept, as it differs from the placed bytes only in their read line, and names no failure.
+  expect(await withSessionAnswers([...turn, list], request)).toEqual(kept);
+  expect(told).toStrictEqual([]);
+  expect(await withSessionAnswers([...turn, cachedList], request)).toEqual(kept);
+  expect(told).toStrictEqual(["Dispatch did not answer within 800 ms."]);
+  // The failure line moves, the cached list after it moves, and a failure kept behind that list
+  // is not told: no read has answered since the first was told.
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools, failureLine], request)).toEqual([
+    ...tools,
+    failureLine,
+  ]);
+  const tail = [...tools, reply];
+  expect(await withSessionAnswers([...tail, cachedList], request)).toEqual([...tail, cachedList]);
+  expect(await withSessionAnswers([...tail, waitingList], request)).toEqual([...tail, cachedList]);
+  expect(told).toStrictEqual(["Dispatch did not answer within 800 ms."]);
+});
+
+// Every renderer writes a list with no read line only for a read Dispatch answered, so an older
+// copy's list with no read line is an answered read: when an older copy decides every request of
+// a session, the next failure after it is told too.
+test("an older copy's list with no read line lets the next failure it names be told again", async () => {
+  const session = {};
+  const told: string[] = [];
+  const request = {
+    ...requestOf(readingEach(LIST), noBranch, session),
+    unshownFailure: (reason: string) => {
+      told.push(reason);
+    },
+  };
+  expect(await withSessionAnswers([skill, ask, list], request)).toEqual([skill, ask, list]);
+  const turn = [skill, ask, readCall, readResult];
+  const tools = [...turn, grepCall, grepResult];
+  for (const older of [cachedList, list, waitingList]) {
+    await withSessionAnswers([...turn, older], request);
+  }
+  expect(await withSessionAnswers([...tools, list], request)).toEqual([
+    skill,
+    ask,
+    list,
+    ...tools.slice(2),
+  ]);
+  expect(told).toEqual([
+    "Dispatch did not answer within 800 ms.",
+    "an earlier read is still waiting on Dispatch.",
+  ]);
+});
+
+// A list placed from a cached read names that read's failure. A later read that fails the same
+// way renders the same text, and the request then carries this read's failure itself, so nothing
+// is told; a read that fails for another reason is told once.
+test("a cached list placed with this read's own text tells nothing; another failure after it is told once", async () => {
+  const session = {};
+  const told: string[] = [];
+  // `CACHED` and `WAITING` show the items of `LIST`, so their reads give its words.
+  const words = carry(LIST)?.words;
+  const timedOut = {
+    text: CACHED,
+    words,
+    since: SINCE,
+    reason: "Dispatch did not answer within 800 ms",
+  };
+  const waiting = {
+    text: WAITING,
+    words,
+    since: SINCE,
+    reason: "an earlier read is still waiting on Dispatch",
+  };
+  const request = {
+    ...requestOf(readingEach(timedOut, timedOut, waiting), noBranch, session),
+    unshownFailure: (reason: string) => {
+      told.push(reason);
+    },
+  };
+  expect(await withSessionAnswers([skill, ask], request)).toEqual([skill, ask, cachedList]);
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], request)).toEqual([
+    skill,
+    ask,
+    cachedList,
+    readCall,
+    readResult,
+  ]);
+  expect(told).toEqual([]);
+  const tools = [...turn, grepCall, grepResult];
+  for (let call = 0; call < 2; call += 1) {
+    expect(await withSessionAnswers([...tools], request)).toEqual([
+      skill,
+      ask,
+      cachedList,
+      ...tools.slice(2),
+    ]);
+  }
+  expect(told).toEqual(["an earlier read is still waiting on Dispatch"]);
+});
+
+// A person's own paragraph can read like the line the renderer writes when the cap dropped older
+// items. It must not be taken for that line: an item whose only unseen words sit in such a
+// paragraph would be swallowed, and the model would never read what that person wrote.
+test("a person's paragraph that reads like the cap's own line still counts as a new item", async () => {
+  const session = {};
+  const quoting = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user u-alice · answered your ask\nDirect message a1, on no issue\nShip it.`;
+  const withNew = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T11:00:00.000Z · user u-bob · sent you a message\nDirect message b1, on no issue\n1 older item left out of the plan: hold the deployment.\n\n2026-10-27T10:00:00.000Z · user u-alice · answered your ask\nDirect message a1, on no issue\nShip it.`;
+  const quotingList = { role: "user", content: [{ type: "text", text: quoting }], timestamp: 0 };
+  const newList = { role: "user", content: [{ type: "text", text: withNew }], timestamp: 0 };
+  const { read } = reading(LIST);
+  await withSessionAnswers([skill, ask, quotingList], requestOf(read, noBranch, session));
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn, newList], requestOf(read, noBranch, session))).toEqual([
+    ...turn,
+    newList,
+  ]);
 });
 
 test("a person's own last message quoting the list's marker is never moved", async () => {

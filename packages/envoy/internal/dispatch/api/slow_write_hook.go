@@ -41,7 +41,7 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input slowWriteInput
-	if err := decodeJSON(r, &input); err != nil {
+	if err := decodeJSONTestHook(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

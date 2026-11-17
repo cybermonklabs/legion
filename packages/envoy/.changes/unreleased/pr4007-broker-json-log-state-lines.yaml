@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The secrets broker writes its log as one JSON object per line, with `time`, `severity`
+  (`INFO`, `WARNING` or `ERROR`) and `message`, and each attribute as a field of its own; a
+  duration is a string such as `1m30s`. A reader of the old text shape (`<date> <time> LEVEL
+  message key=value`) must read the fields instead.
+  A standing condition now writes a line when it starts and when it ends, not at every pass: the
+  policy writes `agent secret policy refused` when a secret becomes unservable or changes reason
+  (`first_load` marks a pod's first load) and `agent secret policy no longer refused` when it
+  becomes servable or leaves the listing; the five-minute reload, each of the request sweeper's
+  seven sweeps and the hourly sign-in client check each write one line when they start to fail
+  and one when they succeed again.
+  `agent-secrets secret retag` reads the stored value when it changes the kind or the shape tag,
+  and refuses a value the decoder refuses. When the store refuses that read for a missing
+  permission, it writes the tags and says on stderr that the value was not checked.

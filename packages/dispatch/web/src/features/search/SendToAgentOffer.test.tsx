@@ -199,6 +199,31 @@ test("approving sends one message naming the issue and the words, and the bar sa
   }
 });
 
+// INFRA-626. A session that stopped between the bar's read and the send has the words stored for
+// it rather than refused: the bar says so in the words every queued attempt reads, and offers no
+// second press, which would store a second copy.
+test("a send the listener queued for a session that has stopped says so, and is not offered again", async () => {
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  bar.createAgentMessage.mockResolvedValue({
+    deliveries: [{ delivery: "aside", state: "queued" }],
+  } as Message);
+  try {
+    await typeWords(user);
+    await user.click(await waitFor(() => screen.getByText(offerLabel)));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("search-send-to-agent-said").textContent).toMatch(
+        /^Queued: .+ is stopped; it gets the message if it runs again within 72 hours$/
+      )
+    );
+    expect(screen.queryByText(offerLabel)).toBeNull();
+    expect(bar.createAgentMessage).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
+  }
+});
+
 test("the row is absent with no claim, a person's claim, a holder that stopped, or no registry", async () => {
   const user = userEvent.setup();
   const absent: [string, IssueClaim | null, IssueClaimHolderState | null][] = [

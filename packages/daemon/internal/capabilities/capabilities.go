@@ -356,38 +356,66 @@ const heldSequence = `\x{FFFE}|\x{FDD0}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // also ran across one would let one run hold a start after each opener in it.
 const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 
+// labeledWord is the value of the API-key and bare bearer rules: the word after the label up to
+// the next space or quote, held markers included, whatever its shape, except a trailing run of
+// backslashes, closing brackets (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted value
+// ends) and the punctuation `,;:.!?`: such a run stays outside the word where only a space, a
+// quote or the line's end follows it. So a quoted value keeps its closing quote, escaped or not
+// (`\"x-api-key\":\"***\"`), a word keeps the punctuation of the sentence after it
+// (`Bearer ***, retrying`, `api-key: ***: why`), a header the Authorization rule masked keeps its
+// closing bracket and the text after it where only that punctuation or a space follows the bracket
+// (`): 401`, `), retrying`), and a word made only of such characters is not masked. A run that any
+// other character follows is masked with the word, as a URL's `://` and `:8080/`, an IPv6 host's
+// `]:8080`, `ab).x` and `ab).)x` are. That includes a masked header's bracket glued to anything
+// else (`)\n401`, `)/retry`, an escape sequence): the word takes `***)` and what follows, the next
+// pass masks that header's value to the line's end, and the tail is lost. Where the word's end is
+// in doubt the rule masks too much and never too little (dispatch://INFRA-3557, the architect's
+// decision of round 5). Only the run's alternative takes a character of the run, and the run
+// shares no character with the one that must follow it, so the word reads each run once, from the
+// character that starts it: in the plugin's JavaScriptCore, which backtracks, an alternative that
+// could start inside a run would read that run once per start.
+const labeledWord = `(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])+`
+
 // credentialRules are the credential shapes redactCredentials replaces, each keeping what names
-// the credential and replacing the secret with `***`; the shared fixture names each with an
-// example, in this order. They run on cleanDetail's line, where a space is the only whitespace and
-// held or c1Introducer stands for a control rune: a value class runs across a heldSequence, and a
-// separator takes a space or either marker. A quote may follow a backslash, as it does in JSON that
-// was escaped again. Order matters: the Authorization header runs before the bare bearer rule, so a
-// header under any scheme loses its whole value and keeps a listed scheme's label, and the GitHub
-// rule before the JWT rule, so a stateless installation token (`ghs_<app id>_<JWT>`) reads
-// `ghs_***`. The JWT rule starts nowhere its first segment's class could have run on from: not
-// after held, a C1 introducer or a value character, and not after a held `[` and its parameters,
-// followed by any final byte or by a `\uXXXX` escape whose backslash is that final byte. The plugin
-// says so with a lookbehind; here the rule's last alternative matches that held prefix with `eyJ`
-// and redactJWT gives it back unchanged. It may start after an opener, which its first segment does
-// not run across, and right after a percent or `\u` escape that no held sequence closes. A JWT may
-// also start right after held when its first segment crosses no held character and no opener, only
-// a C1 introducer, so a JWT right after a replacement character is masked in the first pass, before
-// the fourth reading would split it at a control inside it. And it may start right after a held
-// `[`, its parameters and an optional final byte or `\uXXXX` when its first segment holds a C1
-// introducer and crosses nothing else held, since reading 2 would turn that introducer into an
-// opener its first segment can't cross. A JWT with no C1 introducer in its first segment is left to
-// the later readings there, where its later segments cross what the first pass would stop at. These
-// segments stop at the next held character, and a first segment ends at its one dot, so no start
-// reads another's run: in the plugin's JavaScriptCore, which backtracks, a start inside a run its
-// first segment reads through would read that run once per start. An Authorization value opened by
-// an escaped quote ends at the next backslash or quote; one opened by a quote runs over escaped
-// characters to an unescaped quote; one with neither runs to a closing bracket or the end of the
-// line, since an AWS signature or a Digest credential carries commas, semicolons and quotes of its
-// own. The API-key rule has no left anchor, so `api-key` also covers `x-api-key`, `x-goog-api-key`
-// and Datadog's `dd-api-key`, and `application-key` covers `dd-application-key`. A rule whose value
-// may be short takes `*` in its value class, and a quoted connection-string password keeps its
-// quotes, so a value already redacted is matched whole and left as it is; the others need more than
-// `***` to match at all.
+// the credential and replacing the secret with `***`. The shared fixture is the fixed list of the
+// shapes they cover, each with an example, in this order; a secret that no named pattern marks,
+// such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not masked. They run on
+// cleanDetail's line, where a space is the only whitespace and held or c1Introducer stands for a
+// control rune: a value class runs across a heldSequence, and a separator takes a space or either
+// marker. A quote may follow a backslash, as it does in JSON that was escaped again. Order matters:
+// the Authorization header runs before the bare bearer rule, so a header under any scheme loses its
+// whole value and keeps a listed scheme's label, and the GitHub rule before the JWT rule, so a
+// stateless installation token (`ghs_<app id>_<JWT>`) reads `ghs_***`. After an API-key label or a
+// bare `Bearer`, the word up to the next space or quote is masked (labeledWord, which says what it
+// leaves outside): what stands there is the credential, whatever its shape, so a URL there reads
+// `Bearer ***` with or without a userinfo. A userinfo the
+// Authorization rule opens takes a second pass: where a control rune parts a userinfo from its `@`
+// (`http://u:pw`, a control rune, an Authorization value that runs across spaces to a `)` before
+// the `@`), the Authorization rule masks what stood between them on the first pass and the
+// userinfo rule reaches its `@` on the next. The JWT rule starts nowhere its first segment's class
+// could have run on from: not after held, a C1 introducer or a value character, and not after a
+// held `[` and its parameters, followed by any final byte or by a `\uXXXX` escape whose backslash
+// is that final byte. The plugin says so with a lookbehind; here the rule's last alternative
+// matches that held prefix with `eyJ` and redactJWT gives it back unchanged. It may start after an
+// opener, which its first segment does not run across, and right after a percent or `\u` escape
+// that no held sequence closes. A JWT may also start right after held when its first segment
+// crosses no held character and no opener, only a C1 introducer, so a JWT right after a replacement
+// character is masked in the first pass, before the fourth reading would split it at a control
+// inside it. And it may start right after a held `[`, its parameters and an optional final byte or
+// `\uXXXX` when its first segment holds a C1 introducer and crosses nothing else held, since
+// reading 2 would turn that introducer into an opener its first segment can't cross. A JWT with no
+// C1 introducer in its first segment is left to the later readings there, where its later segments
+// cross what the first pass would stop at. These segments stop at the next held character, and a
+// first segment ends at its one dot, so no start reads another's run: in the plugin's
+// JavaScriptCore, which backtracks, a start inside a run its first segment reads through would read
+// that run once per start. An Authorization value opened by an escaped quote ends at the next
+// backslash or quote; one opened by a quote runs over escaped characters to an unescaped quote; one
+// with neither runs to a closing bracket or the end of the line, since an AWS signature or a Digest
+// credential carries commas, semicolons and quotes of its own. The API-key rule has no left anchor,
+// so `api-key` also covers `x-api-key`, `x-goog-api-key` and Datadog's `dd-api-key`, and
+// `application-key` covers `dd-application-key`. A rule whose value may be short takes `*` in its
+// value class, and a quoted connection-string password keeps its quotes, so a value already
+// redacted is matched whole and left as it is; the others need more than `***` to match at all.
 var credentialRules = []struct {
 	pattern *regexp.Regexp
 	// replacement expands the match; replace, when set, computes it instead.
@@ -398,9 +426,9 @@ var credentialRules = []struct {
 	{pattern: regexp.MustCompile(`(?i)([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)\b(password[ \x{FFFE}\x{FFFF}]*=[ \x{FFFE}\x{FFFF}]*)(?:(')(?:[^'\\]|\\.)*('?)|[^ &#"'<>]+)`), replacement: "${1}${2}***${3}"},
 	{pattern: regexp.MustCompile(`(?i)(authorization\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*)(?:(\\["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^"'\\]+|(["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)(?:[^"'\\]|\\.)+|(\[?(?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^)\]}>]+)`), replacement: "${1}${2}${3}${4}***"},
-	{pattern: regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)(?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+`), replacement: "${1}***"},
+	{pattern: regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)` + labeledWord), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)(\\?["'](?:api_key|access_token)\\?["'][ \x{FFFE}\x{FFFF}]*:[ \x{FFFE}\x{FFFF}]*\\?["'])[^"'\\]+`), replacement: "${1}***"},
-	{pattern: regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)(?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+`), replacement: "${1}***"},
+	{pattern: regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)` + labeledWord), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|` + heldSequence + `){20,}`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?:\x{FFFF}eyJ(?:[A-Za-z0-9_-]|\x{FFFE}){8,}|\x{FFFF}\[[0-?]*(?:[@-~]|\\u[0-9A-Fa-f]{4})?eyJ[A-Za-z0-9_-]*\x{FFFE}(?:[A-Za-z0-9_-]|\x{FFFE})*|(?:^|[^A-Za-z0-9_\x{FFFE}\x{FFFF}-]|%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4})eyJ(?:[A-Za-z0-9_-]|` + jwtFirstHeldSequence + `){8,})\.(?:[A-Za-z0-9_-]|` + heldSequence + `){8,}\.(?:[A-Za-z0-9_-]|` + heldSequence + `)*|\x{FFFF}\[[0-?]*(?:[@-~]?|\\u[0-9A-Fa-f]{4})eyJ`), replace: redactJWT},
 	{pattern: regexp.MustCompile(`\b(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\.|xox[a-z]-|glpat-|npm_)(?:[A-Za-z0-9_-]|` + heldSequence + `){20,}`), replacement: "${1}***"},

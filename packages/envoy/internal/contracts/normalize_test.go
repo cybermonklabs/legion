@@ -3622,6 +3622,28 @@ func TestGhostWisprPayload(t *testing.T) {
 			},
 			wantSummaryLen: 2048,
 		},
+		{
+			name:      "summary ready from a unit that sends no text carries where the text is",
+			eventType: "summary_ready",
+			body: map[string]any{
+				"created_at": "2026-11-15T09:42:11Z",
+				"payload": map[string]any{
+					"session_id": "session-links", "type": "summary_ready", "version": float64(3),
+					"started_at": "2026-11-15T09:00:00Z", "ended_at": "2026-11-15T09:42:10Z",
+					"drive_folder_url": "https://drive.google.com/drive/folders/example-folder-id",
+					"session_url":      "https://ghost-wispr.example-tailnet.ts.net/api/sessions/session-links",
+					"summary_preset":   "default", "summary_model": "example-model",
+				},
+			},
+			want: map[string]string{
+				"event_type": "summary_ready", "session_id": "session-links", "version": "3",
+				"started_at": "2026-11-15T09:00:00Z", "ended_at": "2026-11-15T09:42:10Z",
+				"drive_folder_url": "https://drive.google.com/drive/folders/example-folder-id",
+				"session_url":      "https://ghost-wispr.example-tailnet.ts.net/api/sessions/session-links",
+				"summary_preset":   "default", "summary_model": "example-model",
+			},
+			omitted: []string{"title", "summary", "body_truncated"},
+		},
 	}
 
 	for _, tt := range tests {

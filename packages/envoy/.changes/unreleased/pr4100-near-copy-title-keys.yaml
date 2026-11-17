@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Dispatch's near-copy check no longer refuses an issue whose title names other issues than a
+  candidate's: "Review ACME-15 against its verification.md" was refused as a copy of "Review
+  ACME-12 against its verification.md", since the check scores no issue key. The scored check now
+  leaves a candidate out when both titles name issue keys and the new title names neither the
+  candidate's own key nor any key the candidate's title names. A word shaped like a key, such as
+  `SHA-256`, reads as one. A copy whose title names the issue it copies is still refused, and a key
+  in a spec still does not count.

@@ -27,7 +27,7 @@ export function deliverSubject(sessionID: string): string {
   return `${DELIVER_SUBJECT_PREFIX}${sessionID}`;
 }
 
-/** The headers of a relay frame. */
+/** The headers of a relay frame, and of the listener's connection probe. */
 export const RelayHeader = {
   /** The subject the stream stored the message on. */
   subject: "Envoy-Subject",
@@ -41,6 +41,14 @@ export const RelayHeader = {
   storedAt: "Envoy-Stored-At",
   /** `true` only on the first frame after the relay restarted below the stream's first sequence. */
   gap: "Envoy-Gap",
+  /**
+   * `1` on the listener's connection probe, which is no frame: a core request on this session's
+   * relay subject with this header alone and no body, sent when someone sends to the session. Any
+   * answer, or none within the listener's second, reads connected; NATS no-responders reads
+   * stopped. It never carries a frame header, so it can never decode as a frame and move the
+   * resume point (`receive` answers it before the decode).
+   */
+  probe: "Envoy-Probe",
 } as const;
 
 /**
@@ -602,6 +610,13 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   }
 
   const receive = (message: RelayMessage) => {
+    // The listener's connection probe asks only whether this subscription is here, and the
+    // answer says so. It reaches no host, ledger, dedupe cache or resume point, and is logged by
+    // nobody: a session that is sent to often would otherwise log every send to it.
+    if (message.headers?.get(RelayHeader.probe) === "1") {
+      if (message.reply !== undefined && message.reply !== "") send(message.reply, "done");
+      return;
+    }
     const decoded = decodeRelayFrame(message);
     if ("error" in decoded) {
       // Redelivery cannot fix a frame that does not decode, so it is acked away.

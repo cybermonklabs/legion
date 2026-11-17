@@ -241,6 +241,126 @@ func TestLocalWritesFollowTheFile(t *testing.T) {
 	}
 }
 
+// TestLocalNumbersAValueAnewWhenItsBytesChange: a Local secret's one version, as List and Describe
+// answer it through the AWS store, gets a new id when, and only when, the bytes of its value
+// change, whichever write changed them: PutSecretValue and Put alike, as CreateSecret's answer
+// names it. A tag write, a delete and its restore, and a write of the bytes it already holds keep
+// the id. Each id is a count, never derived from the value.
+func TestLocalNumbersAValueAnewWhenItsBytesChange(t *testing.T) {
+	ctx := context.Background()
+	const name = "dev/agent-secrets/key"
+	l := NewLocal()
+	created, err := l.CreateSecret(ctx, &secretsmanager.CreateSecretInput{Name: aws.String(name), SecretString: aws.String("value-a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := AWS{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}
+	version := func(step string) string {
+		t.Helper()
+		described, err := store.Describe(ctx, name)
+		if err != nil {
+			t.Fatalf("%s: Describe: %v", step, err)
+		}
+		listed, err := store.List(ctx, "dev/")
+		if err != nil || len(listed) != 1 || listed[0].Version != described.Version {
+			t.Fatalf("%s: List = %+v, %v; want the version Describe names, %q", step, listed, err, described.Version)
+		}
+		if described.Version == "" || strings.Contains(described.Version, "value") {
+			t.Fatalf("%s: version %q; want a count that names no value", step, described.Version)
+		}
+		return described.Version
+	}
+	put := func(value string) {
+		t.Helper()
+		if _, err := l.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{SecretId: aws.String(name), SecretString: aws.String(value)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := version("create")
+	if aws.ToString(created.VersionId) != first {
+		t.Fatalf("CreateSecret answered version %q, the listing %q", aws.ToString(created.VersionId), first)
+	}
+	seen := map[string]bool{first: true}
+	for _, step := range []struct {
+		name  string
+		write func()
+		moves bool
+	}{
+		{"a tag write", func() {
+			if _, err := l.TagResource(ctx, &secretsmanager.TagResourceInput{SecretId: aws.String(name), Tags: []types.Tag{tag("tier", "agent")}}); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a PutSecretValue of the bytes held", func() { put("value-a") }, false},
+		{"a PutSecretValue of other bytes", func() { put("value-b") }, true},
+		{"a Put of the bytes held, with other tags", func() {
+			l.Put(LocalSecret{Name: name, Tags: map[string]string{"owner": "shared"}, Value: "value-b"})
+		}, false},
+		{"a Put of other bytes", func() { l.Put(LocalSecret{Name: name, Value: "value-c"}) }, true},
+		{"a delete and its restore", func() {
+			if _, err := l.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{SecretId: aws.String(name)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := l.RestoreSecret(ctx, &secretsmanager.RestoreSecretInput{SecretId: aws.String(name)}); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a PutSecretValue back to the first bytes", func() { put("value-a") }, true},
+	} {
+		before := version(step.name + " (before)")
+		step.write()
+		after := version(step.name)
+		if moved := after != before; moved != step.moves {
+			t.Fatalf("%s moved the version from %q to %q: %t, want %t", step.name, before, after, moved, step.moves)
+		}
+		if step.moves && seen[after] {
+			t.Fatalf("%s answered version %q, which an earlier value had", step.name, after)
+		}
+		seen[after] = true
+	}
+}
+
+// TestLocalFromFileNumbersAnEditedValueAnew: an edit of the followed file is a write as
+// PutSecretValue is: the secret whose value it changes gets a new version id, and one whose value
+// it leaves alone, its tags edited or not, keeps its id.
+func TestLocalFromFileNumbersAnEditedValueAnew(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	write := func(edited, kept string) {
+		t.Helper()
+		content := `{"secrets": [{"name": "dev/agent-secrets/edited", "tags": {"tier": "agent"}, "value": "` + edited + `"}, {"name": "dev/agent-secrets/kept", "tags": {"tier": "` + kept + `"}, "value": "same"}]}`
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+	write("value-a", "agent")
+	l, err := LocalFromFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := func() map[string]string {
+		t.Helper()
+		listed, err := (AWS{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}).List(ctx, "dev/agent-secrets/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, ls := range listed {
+			got[strings.TrimPrefix(ls.ID, "dev/agent-secrets/")] = ls.Version
+		}
+		return got
+	}
+	before := versions()
+	write("value-b", "human")
+	after := versions()
+	if after["edited"] == before["edited"] || after["edited"] == "" {
+		t.Fatalf("edited's version went from %q to %q across an edit of its value; want a new one", before["edited"], after["edited"])
+	}
+	if after["kept"] != before["kept"] {
+		t.Fatalf("kept's version went from %q to %q across an edit of its tags alone; want it kept", before["kept"], after["kept"])
+	}
+}
+
 // second is the error of a call answering (output, error).
 func second[T any](_ T, err error) error { return err }
 

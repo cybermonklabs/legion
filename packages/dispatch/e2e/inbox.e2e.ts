@@ -1269,7 +1269,7 @@ test("the Inbox opens on the reader's own questions, every visit, and ?assignee=
 }, testInfo) => {
   // CORE names carol, a third person: creating it as her is how the server takes a default, and
   // it keeps every question nobody was handed out of the two lists this row reads.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   // Nothing here is Alice's: Bob's own issue (a human's issue is assigned to its creator), an
   // issue the shared token created (which falls to CORE's default), and a project-document ask
   // (a document has no assignee, so its question falls to the same person).
@@ -1346,7 +1346,7 @@ test("an agent's issue reaches the Inbox of the person its own project names, an
   // Two projects, each naming a different person: every project names one, so there is no
   // project whose issue reaches nobody and the other project's person is the control.
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   await putProjectDefaultAssignee("CORE", { assignee: "alice" }, { as: "user", login: "alice" });
   await putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "bob" });
 
@@ -1386,7 +1386,7 @@ test("the assignee filter takes several people and Unassigned, narrows its rows,
 }) => {
   // CORE names carol: the question on an issue nobody holds and the document's both reach her,
   // as the server's last step resolves them, so each of the three people here holds one row.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   const hers = await createIssue({ project: "CORE", title: "Alice's issue" });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
   const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
@@ -1474,7 +1474,7 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
 }) => {
   // CORE names carol, so the question on the issue nobody holds and the document's both reach
   // her rather than the reader.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   const hers = await createIssue({ project: "CORE", title: "Alice's issue" });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
   const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
@@ -1541,7 +1541,7 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
   await setLiveSessions([{ session_id: session.actor.id, title: "e2e-session-title" }]);
   // CORE names carol: a person's own new issue is still theirs, and the agent's falls to her,
   // so neither of the two counts below is moved by a question the reader does not hold.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   const first = await createIssue({ project: "CORE", title: "Alice's first" });
   await createAsk(first.key, { question: "First decision" }, session);
   const second = await createIssue({ project: "CORE", title: "Alice's second" });

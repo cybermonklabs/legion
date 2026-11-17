@@ -194,6 +194,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): " +
 			"an artifact is made the issue's spec at issue creation and never by an upload",
 	}},
+	// createBroadcast refuses `idempotency_key` whenever the body carries one (broadcasts.go):
+	// the key is the Idempotency-Key header. The field is described so a client reading the
+	// document knows what the bytes would have to be, never because one may send them.
+	{reflect.TypeOf(createBroadcastInput{}), "idempotency_key"}: rawField{Fragment: map[string]any{
+		"type": "string",
+		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
+			"key is the Idempotency-Key header and never a body member",
+	}},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.

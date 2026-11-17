@@ -2,6 +2,7 @@ import { beforeEach, expect, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -16,10 +17,18 @@ import {
 import { ApiError, api } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
 import { openPendingEdits } from "./pending-edits";
+import { compiledSchemaCreatable } from "./schema";
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
 // admission's own `/text` read, a socket the server refuses as outside the Proof schema, the repair
 // and rebuild it offers, and a transport or editor that fails to load.
+
+// The messages the server answers `409 DOC_SCHEMA` and `409 DOCUMENT_UNLOADABLE` with
+// (`docs.ErrDocOutsideSchema`, `docs.ErrDocumentUnloadable`).
+const SCHEMA_REFUSAL =
+  "document is outside the Proof schema. A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document";
+const UNLOADABLE_REFUSAL =
+  "the document's stored history cannot load. A rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document";
 
 async function pendingEditCount(artifactId: string): Promise<number> {
   const store = await openPendingEdits(artifactId, -1);
@@ -45,11 +54,7 @@ beforeEach(() => {
 test("ProofDocument repairs a document outside the schema by an upload under its own name", async () => {
   const user = userEvent.setup();
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
-    new ApiError(409, {
-      code: "DOC_SCHEMA",
-      error:
-        "document is outside the Proof schema; replace the document from markdown to repair it",
-    })
+    new ApiError(409, { code: "DOC_SCHEMA", error: SCHEMA_REFUSAL })
   );
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
     artifact,
@@ -64,11 +69,7 @@ test("ProofDocument repairs a document outside the schema by an upload under its
   try {
     const { connections, view } = renderProofDocument();
 
-    expect(
-      await screen.findByText(
-        "document is outside the Proof schema; replace the document from markdown to repair it"
-      )
-    ).not.toBeNull();
+    expect(await screen.findByText(SCHEMA_REFUSAL)).not.toBeNull();
     expect(connections).toHaveLength(0);
     const picked = new File(["repaired\n"], "spec (1).md", { type: "text/markdown" });
     await user.upload(screen.getByLabelText("Upload artifact"), picked);
@@ -233,19 +234,11 @@ test("ProofDocument closes a refused socket and shows the repair a fresh read na
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
     spyOn(api, "getArtifactText").mockRejectedValue(
-      new ApiError(409, {
-        code: "DOC_SCHEMA",
-        error:
-          "document is outside the Proof schema; replace the document from markdown to repair it",
-      })
+      new ApiError(409, { code: "DOC_SCHEMA", error: SCHEMA_REFUSAL })
     );
     act(() => refuse());
 
-    expect(
-      await screen.findByText(
-        "document is outside the Proof schema; replace the document from markdown to repair it"
-      )
-    ).not.toBeNull();
+    expect(await screen.findByText(SCHEMA_REFUSAL)).not.toBeNull();
     expect(connections).toHaveLength(1);
     expect(connections[0]?.destroyed).toBe(true);
     expect(editors[0]?.destroyed).toBe(true);
@@ -352,10 +345,7 @@ test("ProofDocument starts the refusal backoff again once a socket syncs", async
 test("ProofDocument offers a rebuild for a history that cannot load and reconnects after it", async () => {
   const user = userEvent.setup();
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
-    new ApiError(409, {
-      code: "DOCUMENT_UNLOADABLE",
-      error: "the document's stored history cannot load; rebuild it from its latest saved version",
-    })
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
   );
   const rebuildArtifact = spyOn(api, "rebuildArtifact").mockResolvedValue({
     head: 1,
@@ -368,11 +358,7 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const { connections, view } = renderProofDocument();
   try {
-    expect(
-      await screen.findByText(
-        "the document's stored history cannot load; rebuild it from its latest saved version"
-      )
-    ).not.toBeNull();
+    expect(await screen.findByText(UNLOADABLE_REFUSAL)).not.toBeNull();
     expect(connections).toHaveLength(0);
     getArtifactText.mockResolvedValue({
       markdown: "The live document",
@@ -420,14 +406,54 @@ test("ProofDocument offers no rebuild for a document service that is unavailable
   }
 });
 
+// A document holding content this build of Dispatch cannot read was written by a newer build
+// during a release. Nothing on this page repairs it, and a replacement would delete that content,
+// so the page offers no upload or rebuild: it says the document reloads, reads the text again on
+// the refusal schedule, and connects once a read succeeds.
+test("ProofDocument shows content this build cannot show yet without a replace drop zone, and reloads", async () => {
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, {
+      code: "DOC_NEWER_CONTENT",
+      error:
+        "this Dispatch process's build cannot read an element of this document. Try again in one minute.",
+    })
+  );
+  const { connections, view } = renderProofDocument();
+  try {
+    expect(
+      await within(view.container).findByText(
+        "This document holds content this version of Dispatch cannot show yet. It reloads in a minute."
+      )
+    ).not.toBeNull();
+    expect(connections).toHaveLength(0);
+    expect(screen.queryByLabelText("Upload artifact")).toBeNull();
+    expect(screen.queryByText("Upload markdown to replace and repair this document.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rebuild from the latest version" })).toBeNull();
+    expect(within(view.container).queryByText(/This document could not load/)).toBeNull();
+    await waitFor(() => expect(getArtifactText.mock.calls.length).toBeGreaterThan(1));
+
+    getArtifactText.mockResolvedValue({
+      markdown: "The live document",
+      token: "sha256:live-document",
+      version: 1,
+    });
+    await waitFor(() => expect(connections).toHaveLength(1), { timeout: 3_000 });
+    expect(
+      within(view.container).queryByText(
+        "This document holds content this version of Dispatch cannot show yet. It reloads in a minute."
+      )
+    ).toBeNull();
+  } finally {
+    view.unmount();
+    getArtifactText.mockRestore();
+  }
+});
+
 // A reading column (the Inbox's) is not the document's page: it offers no repair and no rebuild,
 // because a reader beside a list of questions has not come to mend a document. Each blocked
 // admission is reported to the host instead, which shows the question's own card in its place.
 test("a pane draws neither prompt for a blocked admission and reports it to its host", async () => {
-  const repair = new ApiError(409, {
-    code: "DOC_SCHEMA",
-    error: "document is outside the Proof schema; replace the document from markdown to repair it",
-  });
+  const repair = new ApiError(409, { code: "DOC_SCHEMA", error: SCHEMA_REFUSAL });
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(repair);
   const reported: string[] = [];
   const schema = renderProofDocument({
@@ -435,11 +461,7 @@ test("a pane draws neither prompt for a blocked admission and reports it to its 
     surface: "pane",
   });
   try {
-    await waitFor(() =>
-      expect(reported).toEqual([
-        "document is outside the Proof schema; replace the document from markdown to repair it",
-      ])
-    );
+    await waitFor(() => expect(reported).toEqual([SCHEMA_REFUSAL]));
     expect(
       screen.queryByText("Upload markdown to replace and repair this document.")
     ).not.toBeInTheDocument();
@@ -450,10 +472,7 @@ test("a pane draws neither prompt for a blocked admission and reports it to its 
   }
 
   getArtifactText.mockRejectedValue(
-    new ApiError(409, {
-      code: "DOCUMENT_UNLOADABLE",
-      error: "the document's stored history cannot load; rebuild it from its latest saved version",
-    })
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
   );
   const history = renderProofDocument({
     onUnavailable: (reason) => reported.push(reason),
@@ -461,9 +480,7 @@ test("a pane draws neither prompt for a blocked admission and reports it to its 
   });
   try {
     await waitFor(() => expect(reported).toHaveLength(2));
-    expect(reported[1]).toBe(
-      "the document's stored history cannot load; rebuild it from its latest saved version"
-    );
+    expect(reported[1]).toBe(UNLOADABLE_REFUSAL);
     expect(
       screen.queryByRole("button", { name: "Rebuild from the latest version" })
     ).not.toBeInTheDocument();
@@ -615,6 +632,34 @@ test("ProofDocument names a reload again for a schema's admission when a close a
     expect(reloadLine()).not.toBeNull();
   } finally {
     view.unmount();
+  }
+});
+
+// During a release the process that answers the page can be of the other build, and its schema
+// route names that build's manifest, not the one this page's editor builds. So the page presents
+// the manifest it was built with: its version, and the highest version that reads every element
+// it creates (`compiledSchemaCreatable`), and it asks no server for a schema.
+test("ProofDocument connects with the schema it was built with and reads none from the server", async () => {
+  const realFetch = globalThis.fetch;
+  const schemaReads: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = input.toString();
+    if (path.startsWith("/api/v1/schema/blocks")) {
+      schemaReads.push(path);
+      return Response.json({ ...manifest, version: manifest.version + 1 });
+    }
+    return realFetch(input, init);
+  }) as unknown as typeof fetch;
+  const { callbacks, connections, view } = renderProofDocument();
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(callbacks[0]?.schemaVersion).toBe(manifest.version);
+    expect(callbacks[0]?.schemaCreatable).toBe(compiledSchemaCreatable);
+    expect(schemaReads).toEqual([]);
+  } finally {
+    view.unmount();
+    globalThis.fetch = realFetch;
   }
 });
 

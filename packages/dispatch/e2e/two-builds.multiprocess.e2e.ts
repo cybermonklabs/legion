@@ -1,6 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
@@ -25,7 +24,14 @@ import {
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { type DispatchProcess, processPinCookie, processPinHeader } from "./harness-processes";
+import {
+  type DispatchProcess,
+  entryChunkOf,
+  processPinCookie,
+  processPinHeader,
+  webDistOf,
+} from "./harness-processes";
+import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -41,15 +47,10 @@ import { signIn } from "./users";
  * stylesheet its build emitted. Then every file of both builds is fetched from both processes.
  */
 
-const envoyDirectory = fileURLToPath(new URL("../../envoy/", import.meta.url));
-
-/** Each process's web dist, read as e2e/run-server.sh hands it to the server: a path from
- *  packages/envoy, A's always `../dispatch/web/dist`, B's `DISPATCH_E2E_WEB_DIST_B` when set
- *  (e2e/harness-listeners.ts). */
-const webDists: Record<DispatchProcess, string> = {
-  a: resolve(envoyDirectory, "../dispatch/web/dist"),
-  b: resolve(envoyDirectory, process.env.DISPATCH_E2E_WEB_DIST_B || "../dispatch/web/dist"),
-};
+/** Each process's web dist, as e2e/run-server.sh serves it, and the entry chunk that dist's
+ *  `index.html` names: both from e2e/harness-processes.ts, so this spec and
+ *  e2e/cross-build.multiprocess.e2e.ts read one answer rather than two. */
+const webDists: Record<DispatchProcess, string> = { a: webDistOf("a"), b: webDistOf("b") };
 
 interface Build {
   readonly dist: string;
@@ -60,16 +61,11 @@ interface Build {
 }
 
 function readBuild(dist: string): Build {
-  const page = readFileSync(join(dist, "index.html"), "utf8");
-  const entry = /<script type="module" crossorigin src="(\/assets\/[^"]+\.js)"><\/script>/.exec(
-    page
-  )?.[1];
-  if (entry === undefined) throw new Error(`${dist}/index.html names no entry chunk`);
   const assets = readdirSync(join(dist, "assets"), { withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .sort();
-  return { assets, dist, entry };
+  return { assets, dist, entry: entryChunkOf(dist) };
 }
 
 let builds: Record<DispatchProcess, Build>;
@@ -309,6 +305,8 @@ interface Visit {
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
   readonly loads?: readonly LazyPiece[];
+  /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
+  readonly prepare?: (page: Page) => Promise<void>;
 }
 
 function heading(page: Page, name: string): Locator {
@@ -544,6 +542,19 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
+    {
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
+      // no visit above loads it. This visit is last because the init script stays on the walk's
+      // one context: an issue visit after it would draw the new page rather than today's.
+      prepare: (page) => withIssuePage(page.context(), "alice"),
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+      ],
+      url: issue,
+    },
   ];
 }
 
@@ -637,6 +648,7 @@ async function walk(
       problems = [];
       const shows = visit.shows(page);
       try {
+        await visit.prepare?.(page);
         awaitingCommit = true;
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would

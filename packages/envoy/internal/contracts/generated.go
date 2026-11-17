@@ -369,6 +369,23 @@ const ProjectNameMax = 80
 const DocumentSchemaCloseCode = 4409
 const DocumentSchemaCloseReason = "DOC_SCHEMA"
 
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = 4425
+const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
+// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
+// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentAdmissionRevokedCloseCode = 4412
+const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
+
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
 // its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
 // the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
@@ -457,6 +474,13 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
+
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()

@@ -510,6 +510,12 @@ func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.C
 	if err != nil {
 		t.Fatalf("read the claims: %v", err)
 	}
+	return storedOf(t, claims, token)
+}
+
+// storedOf is token's claim among the stored claims.
+func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervise.Claim {
+	t.Helper()
 	for _, c := range claims {
 		if c.Token == token {
 			return c

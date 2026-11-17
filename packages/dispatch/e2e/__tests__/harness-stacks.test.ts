@@ -14,6 +14,7 @@ import {
   stackValue,
   withoutHarnessPort,
 } from "../harness-ports";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const psqlModule = fileURLToPath(new URL("../psql.ts", import.meta.url));
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -29,8 +30,10 @@ const manifest = JSON.stringify([
   { DATABASE_URL: "postgres://stack-1", FAKE_ENVOY_PORT: "9101", PLAIN_HTTP_PORT: "9301" },
 ]);
 
-async function run(argv: string[], env: Record<string, string>) {
-  const child = Bun.spawn(argv, {
+function run(argv: string[], env: Record<string, string>) {
+  return runBounded({
+    argv,
+    bound: "short",
     cwd: dispatchPackage,
     env: {
       PATH: process.env.PATH ?? "",
@@ -40,15 +43,8 @@ async function run(argv: string[], env: Record<string, string>) {
       TMPDIR: tmpdir(),
       ...env,
     },
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
-  return { code, stderr, stdout };
 }
 
 test("a worker reads the manifest record its own index selects", () => {
@@ -200,36 +196,44 @@ if (withoutDatabase) {
   );
 }
 
-test.skipIf(withoutDatabase)("psql reads its own stack's database", async () => {
-  // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
-  // resolves the database once, when it starts its psql.
-  const resolve = [
-    "bun",
-    "-e",
-    `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
-  ];
-  const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
-  const stacks = JSON.stringify([{ DATABASE_URL: dead }, { DATABASE_URL: live }]);
-  // Stack 1's database answers; the plain name, which stack 1 must not read, is a dead port.
-  const stack = await run(resolve, {
-    DATABASE_URL: dead,
-    [stacksVariable]: stacks,
-    TEST_PARALLEL_INDEX: "1",
-  });
-  expect(`${stack.stderr}${stack.stdout}`).toBe("");
-  expect(stack.code).toBe(0);
-  // The same environment without the worker's index is stack 0, whose record names the dead one.
-  const plain = await run(resolve, { DATABASE_URL: live, [stacksVariable]: stacks });
-  expect(plain.code).not.toBe(0);
-});
+test.skipIf(withoutDatabase)(
+  "psql reads its own stack's database",
+  async () => {
+    // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
+    // resolves the database once, when it starts its psql.
+    const resolve = [
+      "bun",
+      "-e",
+      `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
+    ];
+    const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
+    const stacks = JSON.stringify([{ DATABASE_URL: dead }, { DATABASE_URL: live }]);
+    // Stack 1's database answers; the plain name, which stack 1 must not read, is a dead port.
+    const stack = await run(resolve, {
+      DATABASE_URL: dead,
+      [stacksVariable]: stacks,
+      TEST_PARALLEL_INDEX: "1",
+    });
+    expect(`${stack.stderr}${stack.stdout}`).toBe("");
+    expect(stack.code).toBe(0);
+    // The same environment without the worker's index is stack 0, whose record names the dead one.
+    const plain = await run(resolve, { DATABASE_URL: live, [stacksVariable]: stacks });
+    expect(plain.code).not.toBe(0);
+  },
+  rowLimit("short", "short")
+);
 
-test("psql names both variables when neither its stack nor the plain name has a database", async () => {
-  const refused = await run(
-    ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
-    { [stacksVariable]: JSON.stringify([{}, {}]), TEST_PARALLEL_INDEX: "1" }
-  );
-  expect(refused.code).not.toBe(0);
-  expect(`${refused.stderr}${refused.stdout}`).toContain(
-    "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
-  );
-});
+test(
+  "psql names both variables when neither its stack nor the plain name has a database",
+  async () => {
+    const refused = await run(
+      ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
+      { [stacksVariable]: JSON.stringify([{}, {}]), TEST_PARALLEL_INDEX: "1" }
+    );
+    expect(refused.code).not.toBe(0);
+    expect(`${refused.stderr}${refused.stdout}`).toContain(
+      "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
+    );
+  },
+  rowLimit("short")
+);

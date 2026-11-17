@@ -302,7 +302,8 @@ export function issueSummary(
   const links = issue.external_links ?? [];
   const members = typeof references === "string" ? [] : (references.members ?? []);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
-  const specApproval = spec === undefined ? undefined : approvalLine(spec);
+  const specApproval =
+    spec === undefined ? undefined : approvalLine(spec, typeof issue.closed_at === "string");
   if (issue.priority === undefined) throw new Error("Dispatch issue is missing priority");
   if (issue.assignee === undefined) throw new Error("Dispatch issue is missing assignee");
   if (issue.components === undefined) throw new Error("Dispatch issue is missing components");
@@ -406,6 +407,16 @@ function eventHead(event: DispatchEvent): string | undefined {
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`
       );
+    case "artifact.approved":
+    case "artifact.changes_requested": {
+      const { name, version, kind, reason } = event.payload;
+      const verb = event.type === "artifact.approved" ? "approved" : "changes requested";
+      // A Dispatch older than review kinds writes none, and a newer one may write a kind this
+      // build does not know: neither names who reviewed.
+      const reviewer =
+        kind === "plan_review" ? " by plan review" : kind === "person" ? " by a person" : "";
+      return textHead(`${name} v${version} ${verb}${reviewer}${reason ? `: ${reason}` : ""}`);
+    }
     case "artifact.human_edited":
       return textHead(humanEditHead(event.payload));
     case "issue.created": {

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -148,8 +149,10 @@ func TestAReconcileOnTheClusterKeepsTheCopiesTheByteLimitTheIDAndTheLimitsItDoes
 						t.Errorf("stream subjects = %v, want %s among them", got.Subjects, subject)
 					}
 				}
-				if !maps.Equal(got.Metadata, before.Metadata) {
-					t.Errorf("stream metadata = %v, want the deployed %v", got.Metadata, before.Metadata)
+				want := maps.Clone(before.Metadata)
+				want[streamGenerationKey] = strconv.Itoa(streamConfigGeneration)
+				if !maps.Equal(got.Metadata, want) {
+					t.Errorf("stream metadata = %v, want the deployed %v with this build's generation", got.Metadata, before.Metadata)
 				}
 				if got.MaxMsgsPerSubject != before.MaxMsgsPerSubject || got.MaxMsgSize != before.MaxMsgSize {
 					t.Errorf("stream MaxMsgsPerSubject = %d and MaxMsgSize = %d, want the deployed %d and %d", got.MaxMsgsPerSubject, got.MaxMsgSize, before.MaxMsgsPerSubject, before.MaxMsgSize)
@@ -291,7 +294,7 @@ func TestTheStreamTakesTheDeploymentsByteLimitAndKeepsADeployedOne(t *testing.T)
 
 	counting := &countingJetStream{JetStreamContext: js}
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3), WithStreamMaxBytes(testStreamMaxBytes)}).streamConfig()
-	if err := ensureStreamWithConfig(counting, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(counting, &cfg, capsAnUnsetStream); err != nil {
 		t.Fatalf("start setting %d: %v", testStreamMaxBytes, err)
 	}
 	if writes := counting.written(); len(writes) != 0 {
@@ -529,7 +532,7 @@ func TestOneServerStoppedAStartOfAThreeCopyDeploymentWritesNothing(t *testing.T)
 	startOnCluster(t, cluster, WithReplicas(3))
 	counting := &countingJetStream{JetStreamContext: js}
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3), WithStreamMaxBytes(testStreamMaxBytes)}).streamConfig()
-	if err := ensureStreamWithConfig(counting, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(counting, &cfg, capsAnUnsetStream); err != nil {
 		t.Fatalf("ensure the stream with one server stopped: %v", err)
 	}
 	if _, err := EnsureKeyValue(clusterConn(t, cluster), counting, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
@@ -593,6 +596,12 @@ func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t
 // its value, and wraps the server's error (single server). A single nats-server v2.15.1 refuses a
 // create at more than one copy but takes an update to more, recording the count while it holds one
 // copy, so a refused raise is TestARefusedRaiseNamesTheReplicaSetting's, on a cluster.
+//
+// Each row runs on a server of its own whose JetStream may keep at most boundedFileStore on disk
+// (boundedStoreConfig), so tooLarge is a byte limit it cannot reserve on any machine. The shared
+// server keeps the default, 75% of the free space of its store's filesystem, and gVisor reports
+// about 2^63 bytes free on / and /tmp: a test whose temporary directory is there saw the server
+// reserve tooLarge and take the stream.
 func TestARefusedStreamNamesTheSettingsItCarried(t *testing.T) {
 	const tooLarge = int64(1) << 60
 	for _, row := range []struct {
@@ -607,7 +616,7 @@ func TestARefusedStreamNamesTheSettingsItCarried(t *testing.T) {
 		{"an update to a byte limit the server cannot reserve", true, []ConnectOption{WithStreamMaxBytes(tooLarge)}, fmt.Sprintf("%s=%d: ", StreamMaxBytesEnvVar, tooLarge)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			uri := testnats.URL(t)
+			_, uri := testnats.StartConfig(t, boundedStoreConfig, []string{"-js"}, true)
 			if row.deploy {
 				client, err := ConnectOwningStream([]string{uri})
 				if err != nil {
@@ -628,6 +637,13 @@ func TestARefusedStreamNamesTheSettingsItCarried(t *testing.T) {
 	}
 }
 
+// boundedFileStore is the most a boundedStoreConfig server's JetStream keeps on disk.
+const boundedFileStore = 1 << 30
+
+// boundedStoreConfig is a server whose JetStream keeps at most boundedFileStore on disk, whatever
+// free space the machine reports, and admits a client with no credential.
+var boundedStoreConfig = fmt.Sprintf("jetstream {\n  max_file_store: %d\n  max_memory_store: %d\n}\n", boundedFileStore, 64<<20)
+
 // On a single server with the default settings, a start after the one that created the stream and
 // a bucket writes nothing to either.
 func TestASecondStartOnASingleServerWritesNothing(t *testing.T) {
@@ -643,7 +659,7 @@ func TestASecondStartOnASingleServerWritesNothing(t *testing.T) {
 	}
 	counting := &countingJetStream{JetStreamContext: client.JS()}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-	if err := ensureStreamWithConfig(counting, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(counting, &cfg, capsAnUnsetStream); err != nil {
 		t.Fatalf("second start: %v", err)
 	}
 	if _, err := EnsureKeyValue(client.Conn, counting, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {

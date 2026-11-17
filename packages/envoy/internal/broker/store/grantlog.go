@@ -218,10 +218,10 @@ func ReadGrantLog(ctx context.Context, pool *pgxpool.Pool, q GrantLogQuery) ([]G
 }
 
 // GrantLogMessage opens the one line the broker logs, at INFO, for each request decision and each
-// grant end (LogGrantEvent). The deployment's log pipeline collects it and keeps it, so that the
-// decisions of a period can be read without the database, and so it does not change — as
-// policy.RefusedMessage and requests.MintFailedMessage do not, for the alarms that filter on
-// them.
+// grant end (LogGrantEvent). A deployment's log pipeline can collect it and keep it, so that the
+// decisions of a period can be read without the database, and so its text changes only with the
+// operate guide that documents it, as policy.RefusedMessage's and requests.MintFailedMessage's
+// do: a reader of the broker's log filters on each.
 const GrantLogMessage = "broker: grant log"
 
 // LogGrantEvent writes ev as the broker's one grant-log line: the event's own fields, each as its
@@ -231,8 +231,10 @@ const GrantLogMessage = "broker: grant log"
 // constructions against each other.
 //
 // The line holds no secret value and no token: a GrantLogEvent holds none, because every field it
-// carries is a name, a login, an id, a state or a decision, and Raw is an audit row's detail,
-// which the broker writes with no value in it.
+// carries is a name, a login, an id, a state or a decision, and Raw is the detail of a decision,
+// a judge's verdict or a grant's end, which the broker writes with no value in it. A grant.used
+// row, which writes no such line, is the one row whose detail holds a session's own words, its
+// command and its call's reason, which ReadGrantLog answers as stored.
 //
 // A line is lost if the process dies between the transaction's commit and this call. That is the
 // right way round: the audit row is the record the review reads, and the line is the copy the log

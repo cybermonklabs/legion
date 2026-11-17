@@ -95,6 +95,30 @@ export async function setSessionRecord(sessionID: string, record: SessionRecord)
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", { record });
 }
 
+/** Stops a seeded session, or starts it again. A stopped session is one the listener knows only
+ *  by its known-session record: it holds no registry entry, so it is out of the live list, a
+ *  registry read that does not ask for `stopped` in its `include=` list gets the 404, and a send
+ *  to it is stored for it and answered `state: "stopped"` with `recipient_state: "gone"`, which
+ *  Dispatch records as a queued attempt. */
+export async function setSessionStopped(sessionID: string, stopped: boolean): Promise<void> {
+  await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
+    stopped,
+  });
+}
+
+/** What a send to this session answers its connection was, whatever a registry read of it shows:
+ *  `stopped` without stopping it is the session whose registry entry was still in place when
+ *  Dispatch resolved it and whose process had gone by the send, which the listener's probe finds
+ *  and answers with `recipient_state` still that entry's own. */
+export async function setSessionSendState(
+  sessionID: string,
+  sendState: "connected" | "stopped"
+): Promise<void> {
+  await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
+    send_state: sendState,
+  });
+}
+
 /** The state the fake listener's record puts a seeded session in. `gone` is not one of them: a
  *  session the listener holds no record of at all is `setSessionRecord(id, "absent")`. */
 export type SessionState = "live" | "unresponsive";

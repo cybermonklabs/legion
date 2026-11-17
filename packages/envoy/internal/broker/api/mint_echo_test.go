@@ -2,10 +2,12 @@ package api_test
 
 import (
 	"bufio"
+	"context"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -17,7 +19,8 @@ import (
 // TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog: the real Google login
 // minter, against a token endpoint that echoes the refresh token in a status line Go's HTTP client
 // refuses, answers the session 502 MINT_FAILED, and neither that answer nor the broker's mint
-// failure line quotes the refresh token.
+// failure line quotes the refresh token. The minter retries as the broker's does, waiting no real
+// time, so the error that reaches both is the last of its three attempts'.
 func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *testing.T) {
 	const canary = "refresh-token-canary-77d2"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -42,9 +45,11 @@ func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *
 		}
 	}()
 	logged := policytest.CaptureLog(t)
+	// retry waits no real time: the row is about what the failure quotes, not the backoff.
+	retry := &secrets.Retry{Sleep: func(context.Context, time.Duration) error { return nil }}
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGoogleLogin: secrets.GoogleLogin{TokenURL: "http://" + listener.Addr().String()}.Mint,
+			policy.KindGoogleLogin: secrets.GoogleLogin{TokenURL: "http://" + listener.Addr().String(), Retry: retry}.Mint,
 		}
 	})
 	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"` + canary + `"}`

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { MessageWithTrees } from "./dispatch-api.generated";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
-import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
+import {
+  DELIVERY_ATTEMPT_STATES,
+  DELIVERY_CAPABILITIES,
+  SETTLED_DELIVERY_STATES,
+} from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   type ReplyBlock,
@@ -32,13 +36,14 @@ export const messageDeliveryFields = {
    */
   duplicate: z.boolean().optional(),
   /**
-   * `pending` is an attempt Dispatch has committed but not yet sent, or whose send it never
-   * learned the outcome of: the row is written before the listener call and settled by a
-   * second transaction after it, so no Envoy send holds a database connection. A retry
-   * resumes a pending attempt no live sender still holds, under its original idempotency key,
-   * so the listener deduplicates a send that did land.
+   * What became of this attempt (`DeliveryAttemptState`). `pending` is an attempt Dispatch has
+   * committed but not yet sent, or whose send it never learned the outcome of: the row is
+   * written before the listener call and settled by a second transaction after it, so no Envoy
+   * send holds a database connection. A retry resumes a pending attempt no live sender still
+   * holds, under its original idempotency key, so the listener deduplicates a send that did
+   * land.
    */
-  state: z.enum(["pending", "sent", "failed"]),
+  state: z.enum(DELIVERY_ATTEMPT_STATES),
   error: z.string().nullable(),
   reply_id: z.string().nullable(),
   created_at: z.string(),
@@ -138,7 +143,7 @@ export const messageDeliveryEventPayloadFields = {
   session_id: z.string(),
   target: z.string().optional(),
   title: z.string(),
-  state: z.enum(["sent", "failed"]),
+  state: z.enum(SETTLED_DELIVERY_STATES),
   /** The stream already held this message: an earlier attempt landed, so this one is recognised as
    *  a repeat and not handed to the recipient again (`DELIVERY_DUPLICATE_WINDOW_MS`). Absent means
    *  false. */

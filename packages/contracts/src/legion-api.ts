@@ -661,6 +661,18 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 141): the name the
+ * project declares the experiment under, the arm the draw gave the unit, the mode in force at
+ * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
+ * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
+ * daemon adds must be read rather than refuse the whole state. */
+const legionAssignment = z.object({
+  experiment: nonEmptyString,
+  variant: z.string(),
+  mode: z.string(),
+  drawnAt: timestamp.optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -740,11 +752,16 @@ const legionIssue = z.object({
    * takes it as optional. */
   mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
-   * memory overlays and instructions, `none` for one that runs without them, with the project's
-   * `memory.mode` in force when the group was drawn and the instant of that draw. The three are
-   * absent together while nothing has drawn for the tree — a tree first opened before the setting
-   * existed — and every issue of a tree carries its root's, since the draw is made once, on the
-   * root, when the tree's lifecycle row is first created (contract 49). */
+   * memory overlays and instructions, `none` for one that runs without them, with the mode in
+   * force when the group was drawn and the instant of that draw. The three are the answer of the
+   * experiment named `memory` in `assignments` below, read only where that row records a draw
+   * and spelled out as this key has read it since contract 49: the arm `memory` is the group
+   * `memory` and every other arm — the control `none` and the empty arm an experiment at mode
+   * off draws — is `none`. They are absent together while no `memory` answer applies to the
+   * issue — a tree first opened before the setting existed — and while its only `memory` answer
+   * records no draw, which is a hand-over settling the tree at no arm and which answered none
+   * of the three before contract 141 as well. Every issue of a tree carries its tree's, since
+   * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
@@ -752,14 +769,58 @@ const legionIssue = z.object({
    * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
-   * has still to reach. Both are absent together for an issue whose current phase names no phase
-   * worker role — a root writing its design — and each is absent where it is 0, which is a role
-   * no entry has been raised for and one the daemon holds no claim row of; a daemon before
-   * contract 94 writes neither, and a caller in a pod whose plugin declares a contract below 94
-   * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
-   * takes both as optional. */
+   * has still to reach. A root carries them as a child does, since the architect is the role
+   * that works `admitted` (contract 146); both are absent together for a phase no role works —
+   * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
+   * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
+   * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
+   * the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader takes both
+   * as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
+  /** The two times of a claim's handshake of the last entry it was queued a task of (contract
+   * 146): when a task of that entry was first queued to the claim, and when a turn of that
+   * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
+   * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
+   * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
+   * a phase role works, where `phaseEntry` and `givenEntry` are that role's — and any other issue
+   * the handshake of the role of its current phase. Both are absent where no entry was queued to
+   * that claim in the issue's current generation — a role the daemon holds no claim row of, a
+   * re-admitted root whose new architect entry is not queued yet, and a root of the release
+   * before contract 146, which carries the two numbers and no handshake — and `entryConfirmedAt`
+   * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
+   * 146 writes neither, and a caller in a pod whose plugin declares a contract below 146 is
+   * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
+   * both as optional. */
+  entryQueuedAt: timestamp.optional(),
+  entryConfirmedAt: timestamp.optional(),
+  /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
+   * architect at this read, in the order the controller is told them (contract 146):
+   * `took-nothing`, the task of the entry its `phases` row names was first queued to its claim more
+   * than ten minutes ago and no turn confirmed it, counted from that first queueing however many
+   * times the daemon sent that entry's task again, where a task whose turn ended with the claim's
+   * process (a death, or a replacement the daemon made) counts only while the claim is ready,
+   * working or idle, and from the relaunched agent's ready where that is later, and where a task
+   * the root's own record has superseded — one that carries an entry, of a run before its
+   * generation or of an entry the row has moved past — raises the arm not at all, nor does a task
+   * of no entry, such as a wake's; `claim-unreachable`, the claim is failed or
+   * retired and no start of the root's run is the daemon's next move for it (a start the outbox is
+   * running is, and so is a start queued in the last ten minutes unless it has already run against
+   * the claim and left it failed or retired, after which the outbox only runs it again on its
+   * backoff), or no architect claim stands, no start of one was queued in the last ten minutes,
+   * and the work of its entry has waited the same ten minutes, which holds of a root waiting on a
+   * person as of any root, since the daemon queues the next start of such a root's architect only
+   * when that wait is answered; `slow-before-gate`, it stands at `admitted` with no design-gate
+   * step registered 90 minutes after the later of its admission and its architect's last raised
+   * entry. The daemon reads the arms by the predicates its own `architect-stalled` wake uses and
+   * serves them whether or not the controller was told, and `legion state`'s plain line prints
+   * them and names a root for nothing else. Absent for a root no arm holds for and for every issue
+   * that is not a tree's root; a daemon before contract 146 writes none, and a caller in a pod
+   * whose plugin declares a contract below 146 is served the state without it (the daemon's
+   * `withoutEntryTimes`), which is why a reader takes it as optional. */
+  architectStalls: z
+    .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))
+    .optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
    * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which
@@ -772,6 +833,20 @@ const legionIssue = z.object({
    * over, which is why the bound here is `nonnegative` and no ceiling. */
   treeMovedAt: timestamp.optional(),
   quietHours: z.number().nonnegative().optional(),
+  /** Every experiment answer that applies to the issue (contract 141): its tree's, for an
+   * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
+   * order the project's file declares the experiments. That is the `memory` block's experiment
+   * first (`settings.projects.<KEY>.memory`, which every project declares, at mode `off` where its
+   * file writes no block), unless `settings.projects.<KEY>.experiments` names `memory` itself;
+   * then the experiments `settings.projects.<KEY>.experiments` names, in its order; then any
+   * experiment the file no longer names, in the order of their names. `variant` and `mode` ride
+   * whatever they hold, the empty string included, and `drawnAt` is absent where the row holds
+   * no instant: that row — no arm, no mode, no instant — is a hand-over settling a unit at no arm
+   * for an experiment the tree it left held no row for, which is how a reader tells a unit
+   * settled at no arm from a unit never drawn, which carries no row at all. The key is absent
+   * from an issue no experiment holds an answer for, and from every issue of the body the route
+   * serves a caller before 141, so a reader takes it as optional. */
+  assignments: z.array(legionAssignment).optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */

@@ -140,6 +140,51 @@ func operatorOverlays(cfg Config) everyRoleOverlays {
 	return everyRoleOverlays{}
 }
 
+// checkDeclaredOverlays refuses the overlays one declaration names that no role of a unit drawn
+// into it could load as named, once the rest of the file is settled: overlays while
+// worker_backends puts an issue role the declaration reaches on a harness other than Oh My Pi,
+// which reads no PI_CONFIG_FILES; and, under runtime kubernetes, an overlay outside every
+// runtime.kubernetes.pod mount (checkRoleConfigMount), since a pod sees only the image and the
+// operator's mounts, and a file the image ships is no operator's. A declaration that names no
+// overlay is refused nothing here. roles is the issue roles the declaration reaches, an
+// experiment's `roles` (Experiment.Roles), nil for every issue role: a role it leaves out never
+// starts on its overlays, so that role's harness is no concern of it, while the mount check
+// stays whole, since every issue pod mounts every declared arm's files.
+//
+// field is the `config_files` key the overlays stand under, whole, which a declared arm carries
+// (Variant.ConfigFilesField) and the `memory` block names beside its own refusals; owner is what
+// an operator takes the overlays out of — `the block` for a project's `memory`, `the variant`
+// for one arm of one declared experiment — which closes the first refusal. That first refusal
+// is about the key having overlays at all, so it names the mapping they stand in rather than the
+// key itself. checkMemory and checkExperiments are the two callers, so the two keys are refused
+// alike and the block keeps the texts the documentation's refusal table quotes.
+func checkDeclaredOverlays(cfg Config, field, owner string, files []string, roles []claim.Role) error {
+	if len(files) == 0 {
+		return nil
+	}
+	fix := "put every issue role on " + string(runtime.BackendOmp)
+	if roles != nil {
+		fix = "put every role its roles names on " + string(runtime.BackendOmp)
+	}
+	for _, role := range claim.Roles {
+		if roles != nil && !slices.Contains(roles, role) {
+			continue
+		}
+		if backend := cfg.BackendFor(role); backend != runtime.BackendOmp {
+			return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: %s, or take the overlays out of %s",
+				strings.TrimSuffix(field, ".config_files"), role, backend, fix, owner)
+		}
+	}
+	if k := cfg.Runtime.Kubernetes; k != nil {
+		for _, file := range files {
+			if err := checkRoleConfigMount(k.Pod, field, file); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // checkRoleConfigMount refuses file, an overlay of role_config_files' field, unless a mount of the
 // operator's pod block (runtime.kubernetes.pod.volume_mounts), which every role's pod and the
 // image probe's carry, holds it: the deepest mount at or above it, as the kernel resolves the

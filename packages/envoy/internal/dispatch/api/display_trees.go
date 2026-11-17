@@ -496,6 +496,10 @@ func (n *graphNodeRead) shape(reader *displayTreeReader) {
 type graphReferencesRead struct {
 	Node  graphNodeRead     `json:"node"`
 	Edges []model.GraphEdge `json:"edges"`
+	// UnknownKinds is model.GraphReferences' own member, kept here because this shape answers
+	// that route now: the edge kinds this build does not know, which a newer build wrote while
+	// two builds serve one database.
+	UnknownKinds []string `json:"unknown_kinds,omitempty"`
 }
 
 // architectureComponentRead is one component of the model with the tree of the prose its

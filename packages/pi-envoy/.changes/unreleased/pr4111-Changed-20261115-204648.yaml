@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The Envoy skill this plugin ships names the Ghost Wispr payload's `started_at`, `ended_at`,
+  `drive_folder_url`, `session_url` and `summary_model`, and says that a current recorder sends no
+  title or summary text, so a session reads the current text from those two links, and reads
+  `session_url` with `GET` only, since the same path renames and deletes the session.
+time: 2026-11-15T20:46:48Z
+custom:
+    Issue: pr4111

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,7 +181,14 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 // acknowledge admits the connection's hello and reads the launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
-	g.send(shimwire.LauncherHelloAck{})
+	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
+}
+
+// acknowledgeWith admits the connection's hello with ack, whatever memory guard settings it
+// carries, and reads the launcher's first state on it.
+func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
+	g.t.Helper()
+	g.send(ack)
 	state, ok := g.next().(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
@@ -586,6 +594,17 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // leak-check directory) besides the fields every fleet's launcher is given.
 func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
+	f := launchFleet(t, cfg, roles...)
+	for _, conn := range f.conns {
+		conn.acknowledge()
+	}
+	return f
+}
+
+// launchFleet is newFleetOf up to every role's hello, which it leaves unacknowledged, for a test
+// whose acknowledgements carry something of their own.
+func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
@@ -640,9 +659,6 @@ func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 			t.Fatalf("role %s opened two connections", conn.hello.Role)
 		}
 		f.conns[conn.hello.Role] = conn
-	}
-	for _, conn := range f.conns {
-		conn.acknowledge()
 	}
 	return f
 }
@@ -999,20 +1015,26 @@ const testInstance = "example-project:us-central1:example-instance"
 // testDatabase is the session database a launcher under test proxies its generations to.
 var testDatabase = ompsessions.Database{Instance: testInstance, Name: "legion_sessions", User: "legion-sessions@example-project.iam"}
 
+// testServiceAccount is the Google service account a test's session database may name for the
+// proxy to impersonate; testDatabase's User is its IAM login.
+const testServiceAccount = "legion-sessions@example-project.iam.gserviceaccount.com"
+
 // sessionDialer stands in for the Cloud SQL connector: every connection is a fresh dial of addr,
 // which the test owns, and check is the credential work the connector does before each of them, so
 // a test can refuse one dial and allow the next. While stalling (stallAt), every dial reaches a
 // silent upstream instead and stalls in a real TLS handshake, which, like the connector's own, ends
 // only when the dial's context does. Every dial records when it began and its context's deadline,
 // and a stalled one when it ended (bounds), so a test reads the bound a dial was given from the
-// dial itself, and times only what the launcher did after it.
+// dial itself, and times only what the launcher did after it. Every build records the account the
+// launcher asked the connector to sign in as (accounts), "" for the pod itself.
 type sessionDialer struct {
 	addr  string
 	check func() error
 
-	mu     sync.Mutex
-	bounds []dialBound
-	silent string
+	mu       sync.Mutex
+	bounds   []dialBound
+	silent   string
+	accounts []string
 }
 
 // dialBound is what one Dial was given: the time it was entered and its context's deadline, if
@@ -1058,8 +1080,21 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake.
-func (d *sessionDialer) build(context.Context) (sessionproxy.Dialer, error) { return d, nil }
+// this very fake, and each build records the account it was given. A pod's roles start their
+// generations concurrently, so the record is held under mu.
+func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.accounts = append(d.accounts, account)
+	return d, nil
+}
+
+// built answers the account of every build so far, in the order they were made.
+func (d *sessionDialer) built() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.accounts)
+}
 
 // stalledDial opens a real connection to addr, a silent upstream, and runs a real TLS handshake
 // over it, which nothing ever answers, so it ends only when ctx does.
@@ -1144,6 +1179,12 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 			"launcher: the session database is named in part: no --session-user"},
 		"no instance": {ompsessions.Database{Name: testDatabase.Name, User: testDatabase.User},
 			"launcher: the session database is named in part: no --session-instance"},
+		// A service account to impersonate names a database too, so it is not the other stores:
+		// with it, each of the three it leaves out is missing.
+		"the account alone": {ompsessions.Database{ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"the account and the instance": {ompsessions.Database{Instance: testInstance, ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-database, no --session-user"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The connect address is one nothing listens on: a refused configuration must answer
@@ -1173,6 +1214,36 @@ func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
 		t.Fatalf("the child found its session socket %s, want it already bound", seen.socket)
 	}
 	g.stop(4)
+}
+
+// A generation's proxy is built for the service account the launcher is told its session database
+// names, and for none when it is told none: the account the dialer factory is given is the one the
+// Cloud SQL connector impersonates and signs in as, so a launcher that dropped it would sign every
+// generation in as the pod itself, which the database's login does not name.
+func TestAGenerationsProxyIsBuiltForTheServiceAccountTheLauncherIsTold(t *testing.T) {
+	impersonating := testDatabase
+	impersonating.ImpersonateServiceAccount = testServiceAccount
+	for name, tc := range map[string]struct {
+		database ompsessions.Database
+		want     string
+	}{
+		"impersonating " + testServiceAccount: {impersonating, testServiceAccount},
+		"as the pod itself":                   {testDatabase, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dialer := &sessionDialer{addr: idleUpstream(t)}
+			g := newSessionRig(t, Config{SessionDatabase: tc.database, SessionDialer: dialer.build})
+			marker := filepath.Join(t.TempDir(), "marker")
+			if got := g.start(g.childStart(2, marker, nil)); !got.OK {
+				t.Fatalf("start result = %#v", got)
+			}
+			if got := dialer.built(); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("the generation's dialer factory was given %q, want %q once", got, tc.want)
+			}
+			publishedAll(t, marker)
+			g.stop(2)
+		})
+	}
 }
 
 // A generation whose session database cannot be reached fails loudly rather than running an agent

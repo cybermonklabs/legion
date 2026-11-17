@@ -7,7 +7,12 @@ import {
   anchorPositionFields,
   InboundActorSchema,
 } from "./dispatch-api-core";
-import { ASK_TURNS, DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
+import {
+  ASK_TURNS,
+  DELIVERY_ATTEMPT_STATES,
+  DELIVERY_CAPABILITIES,
+  SETTLED_DELIVERY_STATES,
+} from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   ReplyBlockSchema,
@@ -44,7 +49,9 @@ export const commentDeliveryFields = {
    *  (`DELIVERY_DUPLICATE_WINDOW_MS` states where, and the limits). `envelope_id` is then null.
    *  Absent on a row written before the field existed, which reads as false. */
   duplicate: z.boolean().optional(),
-  state: z.enum(["pending", "sent", "failed"]),
+  /** What became of this attempt (`DeliveryAttemptState`); `queued` is stored for a session
+   *  that is not running, which gets it when it runs again. */
+  state: z.enum(DELIVERY_ATTEMPT_STATES),
   error: z.string().nullable(),
   resolve_error: z.string().nullable(),
   reply_id: z.string().nullable(),
@@ -198,7 +205,7 @@ export const CommentDeliveryEventPayloadSchema = z
     /** A receipt is only ever appended with a settled outcome: the sender that records it holds
      *  the attempt's claim, and both reply handlers settle the row in the statement that appends
      *  theirs. The attempt row itself reads `pending` between its commit and that outcome. */
-    state: z.enum(["sent", "failed"]),
+    state: z.enum(SETTLED_DELIVERY_STATES),
     /** The stream already held this message: an earlier attempt landed, so this one is recognised
      *  as a repeat and not handed to the mentioned session again
      *  (`DELIVERY_DUPLICATE_WINDOW_MS`). Absent means false. */

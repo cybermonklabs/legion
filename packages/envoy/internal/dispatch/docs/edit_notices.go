@@ -28,8 +28,9 @@ const defaultEditNoticeQuiet = 30 * time.Second
 // quiet time from the moment this statement runs. That moment is clock_timestamp(), never now():
 // now() is the transaction's start, before the owner and advisory locks a busy document makes the
 // writer wait on, so a window counted from it could already be over when the notice commits.
-// It and holdEditNotice are the settlement side's two writers of the table, and the sweep's
-// delete (dueEditNotice) is the third.
+// It and holdEditNotice are the two writes a version makes to the table (recordEditNotice). The
+// others are deletes: the sweep's (dueEditNotice), and that of a closed issue's settlement, which
+// deletes the document's row when it writes a version (dropEditNotice).
 const openEditNotice = `
 	insert into document_edit_notices (artifact_id, from_version, to_version, editors, last_editor, due_at)
 	values ($1, $2 - 1, $2, $3, $4, clock_timestamp() + $5::interval)
@@ -46,9 +47,11 @@ const openEditNotice = `
 // editor, gains this version and its people, and when it names someone it moves its due time as
 // any later person's version does; a held row stays held. The next version that names a person
 // (openEditNotice) keeps the row's from_version, so its notice covers this version too. A held
-// row is the one row the sweep never claims, so a document whose issue closes while it is held,
-// or that never gets another named version, keeps it until the document is deleted, which takes
-// it (on delete cascade). It is one row per document and nothing reads it but the next version.
+// row is the one row the sweep never claims. A document whose issue closes while it is held keeps
+// it until a settlement writes a version while the issue is closed, which deletes it
+// (dropEditNotice), and one that never gets another named version keeps it until the
+// document is deleted, which takes it (on delete cascade). It is one row per document and nothing
+// reads it but the next version.
 const holdEditNotice = `
 	insert into document_edit_notices (artifact_id, from_version, to_version, editors, last_editor, due_at)
 	values ($1, $2 - 1, $2, $3, null, null)
@@ -68,8 +71,11 @@ const holdEditNotice = `
 // second; the sweep (sendEditNotice) takes the two in the same order. Those writers are the
 // settlement, NamedVersion, SnapshotVersion and a person's rebuild (RebuildDocument): a person's
 // edit an agent's version captures before the settlement runs is in that version, and the
-// settlement then has nothing of it to version. An upload writes its version through no room and
-// lists its uploader alone; it opens no window, and the plan leaves it out on purpose.
+// settlement then has nothing of it to version. A settlement of a closed issue's document is the
+// one writer that does not call it: it records no notice, and when it writes a version it deletes
+// the document's row (dropEditNotice), in the same lock order. An upload writes its
+// version through no room and lists its uploader alone; it opens no window, and the plan leaves it
+// out on purpose.
 //
 // The notice's last editor is latest, the sender of the document's latest edit as that version's
 // own capture read it (authorCapture.latest, latestEditSource), never a name chosen out of the
@@ -152,6 +158,13 @@ const dueEditNotices = `
 const dueEditNotice = `
 	delete from document_edit_notices where artifact_id = $1 and due_at <= now()
 	returning from_version, to_version, editors, last_editor`
+
+// dropEditNotice deletes a document's edit notice, due or held. A closed issue's settlement runs it
+// in the transaction that writes its version, after the owner lock (settlement.commitVersion), so
+// neither a reopen inside the notice's quiet time nor the first notice after the reopen, which
+// would start from the row's from_version (openEditNotice), carries the edits that version saves.
+const dropEditNotice = `
+	delete from document_edit_notices where artifact_id = $1`
 
 // nextEditNoticeDue is how long until the earliest due time of any notice, in microseconds on the
 // database's clock - the clock dueEditNotices judges by, so a skew between this host's clock and

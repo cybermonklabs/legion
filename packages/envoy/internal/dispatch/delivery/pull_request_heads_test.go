@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1398,7 +1399,9 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 }
 
 // withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
-// the way a write fails, and puts it back afterwards.
+// the way a write fails, and puts it back afterwards. It answers that repair, for the row that
+// needs the table back while it still runs; the cleanup makes it for every other row, and the
+// two are one call, so a row that repairs the table itself does not repair it twice.
 //
 // The run ending does not contain the drop. The database DISPATCH_TEST_DATABASE_URL names is
 // the server's own and outlives the run (deliveryTestPool), and a test binary `go test
@@ -1412,12 +1415,12 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 // It is the harness's own repair that it runs, rather than a second copy of it: the repair
 // forgets the migration's recorded version, and the Migrate here makes the table again from
 // that migration.
-func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
+func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
 		t.Fatalf("drop branch_commits: %v", err)
 	}
-	t.Cleanup(func() {
+	restore = sync.OnceFunc(func() {
 		// The test's own context is cancelled before its cleanups run, so the repair takes one
 		// that is not (context.WithoutCancel).
 		repair := context.WithoutCancel(ctx)
@@ -1426,6 +1429,8 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 			t.Fatalf("put branch_commits back: %v", err)
 		}
 	})
+	t.Cleanup(restore)
+	return restore
 }
 
 // A merge whose branch seed cannot be written stores no head row and says so. The seed is the

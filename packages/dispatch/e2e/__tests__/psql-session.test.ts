@@ -4,6 +4,7 @@ import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 
 import { sql, sqlAt } from "../psql";
+import { bounds, eventually, rowLimit } from "./bounded-subprocess";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
  *  names it, and the `dispatch` CI job has no Postgres at all, so these cases skip there. The
@@ -44,30 +45,42 @@ const databaseUrl = (): string => {
 /** Puts back what the environment held before this file pointed `sql` at its own database. */
 let restoreNames: (() => void) | undefined;
 
-beforeAll(async () => {
-  if (!live) return;
-  await sqlAt(server, [`create database ${database}`]);
-  // `sql` resolves its database from the environment when it starts its psql, so this is where
-  // the run's own database replaces whatever the caller's environment named. A deployed URL wins
-  // over DATABASE_URL in that resolution, so both names of that pair go.
-  restoreNames = captureEnvironment([
-    "DATABASE_URL",
-    "PLAYWRIGHT_BASE_URL",
-    "PLAYWRIGHT_DATABASE_URL",
-  ]);
-  process.env.DATABASE_URL = databaseUrl();
-  delete process.env.PLAYWRIGHT_BASE_URL;
-  delete process.env.PLAYWRIGHT_DATABASE_URL;
-}, 60_000);
+beforeAll(
+  async () => {
+    if (!live) return;
+    await sqlAt(server, [`create database ${database}`]);
+    // `sql` resolves its database from the environment when it starts its psql, so this is where
+    // the run's own database replaces whatever the caller's environment named. A deployed URL wins
+    // over DATABASE_URL in that resolution, so both names of that pair go.
+    restoreNames = captureEnvironment([
+      "DATABASE_URL",
+      "PLAYWRIGHT_BASE_URL",
+      "PLAYWRIGHT_DATABASE_URL",
+    ]);
+    process.env.DATABASE_URL = databaseUrl();
+    delete process.env.PLAYWRIGHT_BASE_URL;
+    delete process.env.PLAYWRIGHT_DATABASE_URL;
+  },
+  // This hook makes the run's own database with `sqlAt`, whose psql e2e/psql.ts starts for
+  // e2e/harness-postgres.ts and e2e/local-instance.ts as well, so that child is bounded nowhere
+  // and the minute here is what stops a create that hangs.
+  60_000
+);
 
-afterAll(async () => {
-  restoreNames?.();
-  if (!live) return;
-  // FORCE because this process's own psql still holds a connection to the database: it is killed
-  // by the `exit` handler e2e/psql.ts installs, which runs after this one. The connection is the
-  // test role's own, which that role may terminate.
-  await sqlAt(server, [`drop database if exists ${database} with (force)`]);
-}, 60_000);
+afterAll(
+  async () => {
+    restoreNames?.();
+    if (!live) return;
+    // FORCE because this process's own psql still holds a connection to the database: it is killed
+    // by the `exit` handler e2e/psql.ts installs, which runs after this one. The connection is the
+    // test role's own, which that role may terminate.
+    await sqlAt(server, [`drop database if exists ${database} with (force)`]);
+  },
+  // This hook drops that database through the same shared helper, which two modules outside this
+  // directory call too, so bounding its psql would reach past this file. The minute here is what
+  // stops a drop that waits forever on a connection.
+  60_000
+);
 
 // First in the file on purpose: `sql` resolves the database when it starts its psql, and once a
 // later case has started one, no call reaches that refusal again. It is the refusal of this
@@ -144,14 +157,49 @@ test.skipIf(!live)("keeps each caller's statements together when two calls overl
 // e2e/keyed-writes.e2e.ts holds a row locked in one call while it watches pg_stat_activity for
 // that wait in another, so an overlapping call must reach the database beside the session's
 // transaction rather than behind it.
-test.skipIf(!live)("runs a call that overlaps another on a second connection", async () => {
-  const holding = sql("BEGIN", "SELECT pg_sleep(3)", "COMMIT");
-  const sleeping = await sql(
-    "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(3)%'"
-  );
-  await holding;
-  expect(sleeping).toBe("1");
-});
+test.skipIf(!live)(
+  "runs a call that overlaps another on a second connection",
+  async () => {
+    await sql("CREATE TABLE overlap_release (released int)");
+    // The held statement runs until a row of `overlap_release` is committed, which only a call
+    // that runs beside it can write. Once the short bound has passed it stops waiting and fails,
+    // naming the table, so a call queued behind it fails this row by name rather than hanging.
+    const opening = "DO $$ BEGIN WHILE NOT EXISTS (SELECT FROM overlap_release)";
+    const held =
+      `${opening} LOOP IF clock_timestamp() > statement_timestamp() + interval '${bounds.short} ms' ` +
+      "THEN RAISE EXCEPTION 'no overlapping call wrote overlap_release'; END IF; " +
+      "PERFORM pg_sleep(0.01); END LOOP; END $$";
+    const holding = sql("BEGIN", held, "COMMIT");
+    // The session's statement reaches the server in its own time, which raises no event here, so
+    // the overlapping call is made until it sees that statement running. It reads this run's
+    // database alone, since other runs' statements share the server's activity view.
+    try {
+      await eventually(
+        "an overlapping call to see the session's held statement running",
+        async () => {
+          const running = await sql(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() " +
+              `AND state = 'active' AND query LIKE '${opening}%'`
+          );
+          return running === "1";
+        }
+      );
+      await sql("INSERT INTO overlap_release VALUES (1)");
+    } catch (error) {
+      // The held statement gives up once the short bound has passed since it reached the
+      // server. It is awaited here so that neither its rejection nor its connection reaches a
+      // later row, and this row reports its own failure.
+      await holding.catch(() => {});
+      throw error;
+    }
+    await holding;
+  },
+  // The one wait this row ends at a bound itself: the overlapping call seeing the session's
+  // statement, which the short bound of `eventually` ends. The held statement gives up once that
+  // same bound has passed since it reached the server, a moment after that wait began and well
+  // inside the 30 000 ms the limit adds, so the row fails on its error and not on this clock.
+  rowLimit("short")
+);
 
 // A NOTICE and a WARNING go to the same pipe an error does, so what a statement wrote there is
 // not what it is judged by: e2e/failed-room.e2e.ts drops a trigger that is not there between its

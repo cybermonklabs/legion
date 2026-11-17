@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { SettledDeliveryState } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
@@ -116,7 +117,7 @@ test("a project's default assignee names the person it moved to; a retained clea
 });
 
 function commentDelivery(receipt: {
-  state: "sent" | "failed";
+  state: SettledDeliveryState;
   duplicate?: boolean;
 }): DispatchEvent {
   return {
@@ -147,10 +148,49 @@ test("a mention receipt says whether the mention reached its target", () => {
   expect(activityDescription(commentDelivery({ state: "failed" }))).toEqual([
     "could not deliver a comment mention to session:planner",
   ]);
+  // INFRA-626: the listener holds a queued mention for a session that is not running, which is
+  // neither a delivery nor a refusal, and the line says so as every queued attempt does.
+  expect(activityDescription(commentDelivery({ state: "queued" }))).toEqual([
+    "queued a comment mention for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
   // A repeat the stream already held reached nobody new, which the line says rather than
   // counting it as a second delivery.
   expect(activityDescription(commentDelivery({ duplicate: true, state: "sent" }))).toEqual([
     "already delivered a comment mention to session:planner",
+  ]);
+  // A queued repeat still waits for a session that is not running, so it reads as queued rather
+  // than as delivered.
+  expect(activityDescription(commentDelivery({ duplicate: true, state: "queued" }))).toEqual([
+    "queued a comment mention for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+function messageDelivery(state: SettledDeliveryState): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 2,
+    issue_key: null,
+    notify: false,
+    payload: {
+      attempt: 1,
+      delivery: "steer",
+      message_id: "message-1",
+      session_id: "planner",
+      state,
+      target: "session:planner",
+      title: "planner",
+    },
+    seq: 2,
+    type: "message.delivery",
+  };
+}
+
+// A message the listener holds for a session that is not running has not reached that session.
+test("a message receipt says a queued message waits for the stopped session", () => {
+  expect(activityDescription(messageDelivery("sent"))).toEqual(["delivered a message"]);
+  expect(activityDescription(messageDelivery("queued"))).toEqual([
+    "queued a message for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
   ]);
 });
 

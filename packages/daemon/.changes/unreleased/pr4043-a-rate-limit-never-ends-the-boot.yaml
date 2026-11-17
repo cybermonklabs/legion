@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A daemon whose boot meets GitHub's rate limit on the read of a repository's default branch no
+  longer exits at the `appauth` stage. A repository it holds a default branch for, from a record of
+  an issue on it, is served on that branch at once and read again after the limit's reset; every
+  later read of it GitHub's limit refuses, during the boot or after it, is answered from the branch
+  last read or held. One it holds none for is waited out for as long as GitHub asks (the
+  `Retry-After` it names, else until the reset when no call is left, at most an hour, else a
+  minute), with one log line naming the repository, the limit's headers as GitHub sent them and
+  the time it waits until, and is then read once more; if GitHub still does not answer, only that
+  repository is left out for now and read again, as one whose installation read failed is. A later
+  read of the mapping applies the same rule without waiting. The backfill of records from before
+  the record carried its repository waits a limit, or a read GitHub does not answer, out and reads
+  again until GitHub answers, so the boot waits rather than exits. A 404 still refuses the boot, and
+  a 5xx is still retried. An event whose preparation meets the limit on a repository the daemon
+  holds no read of is delivered again after GitHub's wait rather than every second.
+
+  The read of a default branch reads a 403 whose body says `API rate limit exceeded` as GitHub's
+  rate limit whatever its headers say, waited a minute; no other GitHub call changes its reading.

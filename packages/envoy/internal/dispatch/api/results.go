@@ -361,6 +361,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
 	}
+	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
 	WriteJSON(w, http.StatusOK, body)
 }

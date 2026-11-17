@@ -37,7 +37,7 @@
 #     tagged an administrator's that the rules give the judge 900 seconds of all the same, which
 #     the judge must refuse because the tag says a person approves every release of it.
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
-#     each on two ports of its own (--one-broker starts one).
+#     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
 #     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,
@@ -342,6 +342,10 @@ await "dev-broker.sh" 300 "$DEV_BROKER_LOG" '^dev-broker: ready\.$' "$DEV_BROKER
 # `|| true`: under pipefail a grep that finds nothing would end the whole run before the
 # caller's own check could say what was missing.
 first_match() { grep -oEm1 "$1" "$2" 2>/dev/null | head -n1 || true; }
+# logged_addr is the addr field of the first line of a broker's log whose message is the one
+# named. The broker logs one JSON object per line, and a line still being written parses as
+# nothing, so half an address is never read as the whole one.
+logged_addr() { jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" 2>/dev/null || true; }
 
 BASE_DIR="$(first_match 'export DEV_BROKER_DIR=[^[:space:]]+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
@@ -564,9 +568,9 @@ API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
 PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 
 # --- The brokers. Both read one database, one rules file and one fake store, and each binds an
-# API port and a proxy port the system picks (BROKER_*_LISTEN_ADDR of port 0), so two of them
-# never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default exists
-# to outlast a Kubernetes EndpointSlice propagation nothing here has.
+# API port, a proxy port and a metrics port the system picks (BROKER_*_LISTEN_ADDR of port 0), so
+# two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
+# exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
 #
 # Each also gets the model judge: the six BROKER_JUDGE_* settings, which are all-or-none, and
 # GCE_METADATA_HOST. The credential the judge presents to its model endpoint is the broker's
@@ -580,6 +584,7 @@ start_broker() {
   BROKER_DATABASE_URL="$POSTGRES_URL" \
   BROKER_PUBLIC_URL="$API_FRONT_URL" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="http://127.0.0.1/credentials/machine" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
   BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
@@ -631,9 +636,9 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   start_broker "$n" "$log"
 done
 for n in $(seq 1 "$BROKER_COUNT"); do
-  await "broker $n" 120 "${BROKER_LOGS[n]}" 'airlock proxy listening addr=' "${BROKER_PIDS[n]}"
-  BROKER_API_ADDRS[n]="$(first_match 'broker listening addr=[^[:space:]]+' "${BROKER_LOGS[n]}" | cut -d= -f2-)"
-  BROKER_PROXY_ADDRS[n]="$(first_match 'airlock proxy listening addr=[^[:space:]]+' "${BROKER_LOGS[n]}" | cut -d= -f2-)"
+  await "broker $n" 120 "${BROKER_LOGS[n]}" '"message":"airlock proxy listening"' "${BROKER_PIDS[n]}"
+  BROKER_API_ADDRS[n]="$(logged_addr 'broker listening' "${BROKER_LOGS[n]}")"
+  BROKER_PROXY_ADDRS[n]="$(logged_addr 'airlock proxy listening' "${BROKER_LOGS[n]}")"
   if [ -z "${BROKER_API_ADDRS[n]}" ] || [ -z "${BROKER_PROXY_ADDRS[n]}" ]; then
     echo "dev-airlock: broker $n logged no API or proxy address" >&2
     exit 1

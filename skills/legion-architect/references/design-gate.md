@@ -28,6 +28,17 @@ reviewer approves only once a pass stands for every `before_merge` check at the 
 check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
 pass recorded under an older wording of the check or a retracted one.
 
+A check proves only the clauses that something drove, so each clause of its `negative_control`
+names the test row or the run that drives it. A check of a requirement over every member of a
+class iterates that class's list as data, never a sample of it: a sample passes while a member it
+left out is broken.
+
+Where a real recorded input exists for the work (a stored record, a captured log, an answer the
+real service gave), the Verification document holds at least one read-only check against it,
+because a fixture written for the test proves only what its author expected; where no such check
+can be written, a decision block says why. A requirement of the form "try X and see" is an
+experiment, and its acceptance is a real run that someone observed.
+
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's
 sources are the words a person wrote in it, and its `Filed for` line with what that line cites: the
@@ -42,19 +53,27 @@ at the head, and the check takes no `run`. Its `when` is `before_merge`, and it 
 `negative_control`. No role runs it or records a result for it. `dispatch results` derives its
 one result from the named run (`skill://legion-worker/references/ci-checks.md`). Where a CI job
 that runs on an ordinary pull request already makes a check's proof, write that check as
-`ci_check` rather than as a command. Write such a check by three rules:
+`ci_check` rather than as a command. A check that a whole test suite proves names the CI job that
+runs that suite as its `ci_check`, and a check's `run` that names tests names specific tests or
+files, never a package path, a `./...` pattern or a package's whole `test` script: CI proves a
+suite on the pull request and the merge queue on the merged tree, and a suite run in a pod repeats
+that work slower. Any other `run` is the procedure a role drives on the check's surface.
+Write a `ci_check` check by three rules:
 
 1. Name the check run of the job that runs the proof, never a roll-up run that stands for other
    jobs. A roll-up run can pass at a head where the job of the check did not run.
-2. Name no job that the repository holds back from an ordinary pull request. Such a job gives no
-   pass at any head the reviewer reads, so its proof stays a check with a `run`.
+2. Name a job that the repository holds back from an ordinary pull request too, because a `run` in
+   its place leaves the pod as the only place its proof runs. The worker adds the label that runs
+   the held-back jobs at the head, and the tester takes the result from that run. Without the
+   label such a job reads `skipped`, so the label stays on for as long as a check of the issue
+   names a held-back job, and each later head gets its own run.
 3. Write in `negative_control` the case inside that job that fails when the property breaks. A
    job's conclusion is not the property: a step with `continue-on-error` keeps its job green,
    and a test deleted from a suite takes its failure with it.
 
 On cybermonklabs/legion: `ci-ok` passes when the jobs it did not select were skipped
-(`.github/scripts/ci-ok.sh`), so never name `ci-ok`. Eight slow suites and the full browser lane
-run only in the merge queue or under `full-ci`.
+(`.github/scripts/ci-ok.sh`), so never name `ci-ok`. The slow suites and the full browser lane
+run only in the merge queue or under `full-ci`, the label of rule 2 (`AGENTS.md`).
 
 ## Show the surface before you ask
 

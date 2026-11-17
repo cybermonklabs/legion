@@ -99,9 +99,16 @@ func passOf(t *testing.T, passes []PassRecord, id int64) PassRecord {
 // test standing for a session the database has not reaped wants.
 func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (release func(), taken, finished <-chan struct{}) {
 	t.Helper()
-	leases, err := pool.Leases()
+	// The lease pool is handed out as reservations, one per caller that can be inside a lease
+	// statement at the same moment (`store.LeaseCallers`), so this hold takes a name of its own
+	// as the server's CI reconcile loop does.
+	callers, err := pool.Leases()
 	if err != nil {
 		t.Fatalf("the lease pool: %v", err)
+	}
+	leases, err := callers.For("CI reconcile test hold")
+	if err != nil {
+		t.Fatalf("reserve a caller of the lease pool: %v", err)
 	}
 	held := make(chan struct{})
 	ran := make(chan struct{})

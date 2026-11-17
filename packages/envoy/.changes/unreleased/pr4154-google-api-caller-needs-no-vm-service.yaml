@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The secrets broker starts with `BROKER_GOOGLE_OIDC_AUDIENCE`, a `google:` caller in
+  `BROKER_API_ACCOUNTS` and no `BROKER_VM_SERVICES`: a Google API caller needs no VM service, so
+  its account need no longer be listed as one, which gave it a machine login. A Google audience with
+  neither a `google:` API caller nor a VM service is refused at boot, naming both. A person's
+  device sign-in, `BROKER_SIGNIN_DEVICE_AUDIENCE`, still needs `BROKER_VM_SERVICES`, since the
+  machine's actor token is held to a listed VM service, and is refused at boot without it.
+time: 2026-11-16T13:37:19Z
+custom:
+    Issue: pr4154

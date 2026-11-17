@@ -1,4 +1,10 @@
-import type { Artifact, CreateCommentInput, MessageDeliveryMode } from "@legion/contracts";
+import {
+  type Artifact,
+  type CreateCommentInput,
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
+  type MessageDelivery,
+  type MessageDeliveryMode,
+} from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
 import {
   dispatchChildRef,
@@ -279,6 +285,20 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** What `dispatch send-to-agent` says of the message's latest delivery attempt. A queued attempt
+ *  is with a session that is not running, so it never reads as reached. */
+function arrivalText(attempt: MessageDelivery | undefined): string {
+  if (attempt === undefined) return "Dispatch recorded no delivery attempt for it";
+  if (attempt.state === "failed") {
+    return `its delivery failed: ${attempt.error ?? "the listener gave no reason"}`;
+  }
+  if (attempt.state === "pending") return "its delivery is still on its way";
+  if (attempt.state === "queued") {
+    return `that session is stopped, so its delivery is queued: it gets the message if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`;
+  }
+  return `it reached that session as ${attempt.delivery}`;
+}
+
 /** `dispatch send-to-agent`: one message into a session's own conversation, which stands on no
  *  issue, so the call names the session rather than an owner. */
 export async function sendToAgentCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -293,17 +313,10 @@ export async function sendToAgentCommand(context: CommandContext): Promise<Dispa
     ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
   });
   // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
-  // either way there is no attempt to read, which the `undefined` branch below already says.
+  // either way there is no attempt to read, which `arrivalText` already says.
   const attempt = message.deliveries?.at(-1);
   const readBack = conversationReadBack(message.id);
-  const arrival =
-    attempt === undefined
-      ? "Dispatch recorded no delivery attempt for it"
-      : attempt.state === "failed"
-        ? `its delivery failed: ${attempt.error ?? "the listener gave no reason"}`
-        : attempt.state === "pending"
-          ? "its delivery is still on its way"
-          : `it reached that session as ${attempt.delivery}`;
+  const arrival = arrivalText(attempt);
   return {
     text: `Sent message ${message.id} to session ${session}; ${arrival}. ${readBack}`,
     details: {

@@ -2,6 +2,8 @@ package leakguard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -37,6 +40,57 @@ type GhRequest struct {
 	// any write takes today. An empty, non-nil slice is a caller that parsed and found no file,
 	// and the table is not consulted for it.
 	Files []GhFile
+	// WritesNothing is a call its caller found sends no text into any repository: a read, which
+	// `legion gh` admits only by a grammar in its code of the words the call is typed with, one
+	// the shared check reads as a read too (cmd/legion's ghWritesNothing holds the rule). Where
+	// the resolved check is the one that rule was proven against (ProvenCheck), the guard runs
+	// the shared check, which refuses a credential in every call it reads as a read, and skips
+	// what only a write needs: the destination's visibility read and the private-name pass, which
+	// protect the text a write leaves in a public repository. Under any other check the call gets
+	// the whole guard.
+	WritesNothing bool
+	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
+	// caller's rule for WritesNothing was proven against. WritesNothing is honoured only where
+	// the public_leak_check.py beside the resolved check hashes to it (provenCheck), so a check
+	// of another version, or one edited under the same tag, gets the whole guard.
+	ProvenCheck string
+}
+
+// GhAnswer is what GhCall cleared a call with: the standard input it read, for the caller to hand
+// gh in its place, nil where it read none and the caller's own is still whole; and whether the
+// shared check was the whole of the guard (GhRequest.WritesNothing honoured), which is the one
+// case that read no visibility and ran no private-name pass.
+type GhAnswer struct {
+	Stdin       []byte
+	CheckedOnly bool
+}
+
+// checkProgram is the shared check's program, beside the script Resolve finds, whose sha256 says
+// which check is installed: the script only runs it.
+const checkProgram = "public_leak_check.py"
+
+// provenCheck says whether the check Resolve found is the one proven names: the sha256 of the
+// public_leak_check.py beside it, the script's own directory once its symbolic links are
+// followed, is proven. A check with no such file, one whose file cannot be read, and one whose
+// file holds anything else are not, and neither is any check where proven is empty.
+func provenCheck(check, proven string) bool {
+	if proven == "" {
+		return false
+	}
+	dir := filepath.Dir(check)
+	if followed, err := filepath.EvalSymlinks(check); err == nil {
+		dir = filepath.Dir(followed)
+	}
+	program, err := os.Open(filepath.Join(dir, checkProgram))
+	if err != nil {
+		return false
+	}
+	defer program.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, program); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(sum.Sum(nil)), proven)
 }
 
 // whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
@@ -44,41 +98,57 @@ type GhRequest struct {
 const whatGhCall = "the gh call"
 
 // GhCall checks a gh call before it is made, in the shared check's gh-guard shape, and answers
-// the standard input it read.
+// the standard input it read and whether the shared check was the whole of it, which it is for
+// a call that writes nothing under the check its caller's rule was proven against
+// (GhRequest.WritesNothing, GhRequest.ProvenCheck).
 //
 // The check reads a call that takes its body on standard input in two goes: the first call exits
 // 4, meaning "this call reads standard input; buffer it and ask me again", and the second call is
 // handed the buffer. The buffer is a regular file, never a pipe: the check reads it twice, and
 // the check itself refuses a pipe for that reason. The bytes come back so the caller can hand
 // them to gh, because by then this package has read the caller's standard input and the caller
-// cannot read it again; a nil answer means standard input was never read and the caller's own is
+// cannot read it again; a nil Stdin means standard input was never read and the caller's own is
 // still whole.
-func (g *Guard) GhCall(ctx context.Context, req GhRequest) ([]byte, error) {
+func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
+	buffered, checkedOnly, err := g.ghCall(ctx, req)
+	return GhAnswer{Stdin: buffered, CheckedOnly: checkedOnly}, err
+}
+
+// ghCall is GhCall's work: the standard input it read, whether the shared check was the whole of
+// the guard, and the refusal or setup failure, if any.
+func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error) {
 	check, err := g.Resolve()
 	if err != nil {
-		return nil, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
+		return nil, false, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
 	}
 	argv := append([]string{check, "gh-guard"}, req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
-		return nil, sharedNotRun(whatGhCall, err)
+		return nil, false, sharedNotRun(whatGhCall, err)
 	}
 	var buffered []byte
 	if status == checkWantsStdin {
 		buffered, status, printed, err = g.askAgain(ctx, argv, req)
 		if err != nil {
-			return buffered, err
+			return buffered, false, err
 		}
 	}
 	if err := readStatus(whatGhCall, status, printed); err != nil {
-		return buffered, err
+		return buffered, false, err
+	}
+	if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
+		// A read leaves no text in any repository, so neither the destination's visibility nor
+		// the private-name pass is read for it: the check above, which refuses a credential in a
+		// call it reads as a read, is all it needs. Under a check its caller's rule was not
+		// proven against, the check may read the call as a write, so the guard goes on whole.
+		return buffered, true, nil
 	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
 	if err != nil {
-		return buffered, err
+		return buffered, false, err
 	}
 	if !public {
-		return buffered, nil
+		return buffered, false, nil
 	}
 	records := []Record{{Label: "the gh call's arguments", Text: strings.Join(req.Args, " ")}}
 	if len(buffered) > 0 {
@@ -94,7 +164,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) ([]byte, error) {
 	for _, named := range files {
 		text, err := readGhFile(named)
 		if err != nil {
-			return buffered, err
+			return buffered, false, err
 		}
 		record := Record{Label: named.Path, Text: text}
 		if named.Option == inputOption {
@@ -103,7 +173,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) ([]byte, error) {
 		}
 		records = append(records, record)
 	}
-	return buffered, g.rules(ctx, whatGhCall, records)
+	return buffered, false, g.rules(ctx, whatGhCall, records)
 }
 
 // jsonAlso is record and, where its text is a JSON document, a second record of the strings

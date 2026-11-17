@@ -517,8 +517,9 @@ const (
 // instead of asking an architect to retry forever.
 //
 // A child the apply did not record while it, or an unrecorded issue of its parent chain up to the
-// first recorded one, resolves to a repository left out because its GitHub App installation read
-// failed (Options.RepositoryUnread) ends nothing, and is answered by what the daemon will do once
+// first recorded one, resolves to a repository left out because GitHub did not answer its read of
+// the repository — its GitHub App installation read, or its default-branch read past GitHub's rate
+// limit — (Options.RepositoryUnread) ends nothing, and is answered by what the daemon will do once
 // GitHub answers and it recovers that repository's issues from Dispatch's listing. When every
 // unrecorded issue of that chain is todo (Dispatch shows it, or this wave writes it: todoNow), on
 // any repository, the chain is recorded under the recorded one, parents first, by the recovery or
@@ -629,7 +630,7 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	// later), record the chain under the recorded one, parents first. Nothing is told now: a child
 	// still unrecorded when the repository's recovery has run is named then (tellReleaseWaits).
 	if stop == nil {
-		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation read; the daemon records it then",
+		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
 			"issue", child.Key, "tree", tree, "repo", repo)
 		if !s.clearChildReleaseRetry(w, r, child.Key) {
 			return "", false, true
@@ -641,7 +642,7 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 		return "", false, true
 	}
 	return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, fmt.Sprintf(
-		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read) will not record %s either. Release %s first, then release %s again.",
+		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit) will not record %s either. Release %s first, then release %s again.",
 		child.Key, blocker.Key, blocker.Status, repo, child.Key, blocker.Key, child.Key)), true
 }
 
@@ -974,7 +975,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 				pending[child.view.Key] = repo
 				parent := intake.ObservedIssue(child.view).Parent
 				if !s.tellReleaseWait(w, r, grant.Tree, child.view.Key, parent, repo, fmt.Sprintf(
-					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
+					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
 					child.view.Key, above, repo, child.view.Key, above, repo)) {
 					return
 				}

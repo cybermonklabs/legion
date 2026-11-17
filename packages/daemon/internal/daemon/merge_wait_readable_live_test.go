@@ -172,7 +172,9 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 // lifecycle open under the workflow, on a pull request of its own. The reviewer's row is left
 // unwritten for the two whose reviews the proof publishes, since the review itself writes it; the
 // closed issue's is seeded with the approval that stands at its head, because no review of it is
-// published and its approval is the whole of what makes the rule say its round waits.
+// published and that approval is what would make the rule say its round waits, were its pull
+// request open: the rule's own test of the open pull request is what leaves its round waiting on
+// nothing.
 func (r *mergeWaitReadableLive) seed() {
 	t := r.t
 	t.Helper()
@@ -466,7 +468,7 @@ func (r *mergeWaitReadableLive) theNegativeControl() {
 			t.Fatalf("%s carries a mergeWait key, want the key left off the object altogether: %s", key, issues[key]["mergeWait"])
 		}
 	}
-	r.note("read back from one body: %s carries `mergeWait`, %s does not — its round ended — and %s does not either, though its reviewer's approval stands at the head its pull request was closed at, because the object is for an open pull request alone (projection's mergeWaitView, over record.PullRequestOpen)",
+	r.note("read back from one body: %s carries `mergeWait`, %s does not — its round ended — and %s does not either, though its reviewer's approval stands at the head its pull request was closed at, because the object is for an open pull request alone (classify.RoundWaitsOnMergeState holds only for an open pull request)",
 		r.stuck, r.moving, r.closed)
 }
 

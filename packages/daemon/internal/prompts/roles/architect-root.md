@@ -140,14 +140,16 @@ may have merged, so register no document and
 ask no human to approve one: the merge closes the issue, and the production check after the close
 is the tester's, on the pull request, where the project opens one.
 
-Necessary work remains your responsibility until it is complete, and deferral is not allowed: a
-child issue needs a repository or a deploy order of its own, never a place for a to-do, a fix
-found in review, a proof of the root's acceptance or a part of your own work
-(`skill://legion-architect`, section 1). A repeated change is one child, never one per instance.
-Work in a repository this tree already has a pull request in, which waits on a sibling's merge,
-is no child and is not parked in `backlog`: write it into the spec of the issue whose pull
-request carries it, the parent's, or the sibling's when the parent's pull request is in another
-repository. A child that duplicates another issue and is not yet released is never released:
+Necessary work remains your responsibility until it is complete, and deferral is not allowed.
+Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+It can also conflict with the default branch.
+Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+They can conflict with each other, and dependent slices run in sequence.
+A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
+A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A repeated change is one child, never one per instance.
+A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
 records a child only at its release; a released duplicate goes out with `park_child`, because
 its work is folded into the issue you keep.

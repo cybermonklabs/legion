@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // writeExecutable makes an executable file for the resolution tests.
@@ -154,50 +152,21 @@ func TestResolveInvocation(t *testing.T) {
 	}
 }
 
-// The one --append-system-prompt word every pane's OMP gets (runtime-tmux.ts:92-103): the role
-// prompt files `$(cat)`ed, the addressing text escaped for the double quotes, the deployment
-// instructions file `$(cat)`ed, then the project's memory instructions file, joined by blank
-// lines — the same string processes.test.ts:481-491's `promptArgument` builds. A pane whose tree
-// is in no memory group names no memory file and ends at the deployment's own.
+// The one --append-system-prompt word every pane's OMP gets is the path of the file its prompt was
+// written to, one shell word however the path is spelled, and never the text or a `$(cat …)` the
+// shell would expand into one argument the size of the prompt.
 func TestSystemPromptArgument(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		parts runtime.PromptParts
-		want  string
+		name, path, want string
 	}{
-		{
-			name:  "role prompt alone",
-			parts: runtime.PromptParts{RolePromptPaths: []string{"/roles/architect-root.md"}},
-			want:  `--append-system-prompt "$(cat /roles/architect-root.md)"`,
-		},
-		{
-			name: "every part, with a path that needs quoting and addressing text the shell would expand",
-			parts: runtime.PromptParts{
-				RolePromptPaths:            []string{"/roles/core/common.md", "/role prompts/tester.md"},
-				Addressing:                 "Your topic is `notifications.role.legion-omp-LEGION-42-tester` \"$HOME\" \\",
-				DeploymentInstructionsPath: "/state/deployment-instructions.md",
-			},
-			want: "--append-system-prompt \"$(cat /roles/core/common.md '/role prompts/tester.md')\n\n" +
-				"Your topic is \\`notifications.role.legion-omp-LEGION-42-tester\\` \\\"\\$HOME\\\" \\\\\n\n" +
-				"$(cat /state/deployment-instructions.md)\"",
-		},
-		{
-			name: "all four fragments, the memory instructions last",
-			parts: runtime.PromptParts{
-				RolePromptPaths:            []string{"/roles/core/common.md", "/roles/tester.md"},
-				Addressing:                 "Your topic is `notifications.role.legion-omp-LEGION-42-tester`.",
-				DeploymentInstructionsPath: "/state/deployment-instructions.md",
-				MemoryInstructionsPath:     "/state/memory-instructions.md",
-			},
-			want: "--append-system-prompt \"$(cat /roles/core/common.md /roles/tester.md)\n\n" +
-				"Your topic is \\`notifications.role.legion-omp-LEGION-42-tester\\`.\n\n" +
-				"$(cat /state/deployment-instructions.md)\n\n" +
-				"$(cat /state/memory-instructions.md)\"",
-		},
+		{name: "a plain path", path: "/state/secrets/legion-legion-legion-42-tester-system-prompt.md",
+			want: "--append-system-prompt /state/secrets/legion-legion-legion-42-tester-system-prompt.md"},
+		{name: "a path the shell would split or expand", path: "/state dir/$HOME/system-prompt.md",
+			want: `--append-system-prompt '/state dir/$HOME/system-prompt.md'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := SystemPromptArgument(tc.parts); got != tc.want {
-				t.Errorf("SystemPromptArgument =\n%s\nwant\n%s", got, tc.want)
+			if got := SystemPromptArgument(tc.path); got != tc.want {
+				t.Errorf("SystemPromptArgument(%q) = %s, want %s", tc.path, got, tc.want)
 			}
 		})
 	}

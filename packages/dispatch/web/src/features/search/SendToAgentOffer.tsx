@@ -3,23 +3,29 @@ import type { ReactNode } from "react";
 
 import { issueQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
+import { queuedParts } from "../conversation/delivery";
 import { claimHoldingFromRead } from "../issue/ClaimChip";
-import { useAgentText } from "../refs/AgentName";
+import { AgentParts, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { useWrites } from "../writes/write-store";
 import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
-import { type SendToAgent, sendToAgent } from "./send-to-agent";
+import { type SendToAgent, type SendToAgentOutcome, sendToAgent } from "./send-to-agent";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
  *  `aria-activedescendant` read. */
 export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
-/** Where the offer stands once a press has been made: the send out, the message sent, or a
- *  refusal in the person's words. Nothing pressed is no state at all (`useWordsState`). */
+/** Where the offer stands once a press has been made: the send out, the message sent or queued
+ *  for a session that has stopped, or a refusal in the person's words. Nothing pressed is no
+ *  state at all (`useWordsState`). */
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
-  | { readonly agent: string; readonly kind: "sent"; readonly words: string }
+  | {
+      readonly agent: string;
+      readonly kind: Exclude<SendToAgentOutcome["kind"], "refused">;
+      readonly words: string;
+    }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
 
 /**
@@ -87,11 +93,11 @@ export function useSendToAgentOffer({
   const approve = (session: string) => {
     setState({ kind: "sending", words });
     send(writes, { block, issue, session, words }).then(
-      (undelivered) => {
+      (outcome) => {
         setState(
-          undelivered === undefined
-            ? { agent: text.label({ id: session, kind: "session" }), kind: "sent", words }
-            : { kind: "refused", refusal: undelivered, words }
+          outcome.kind === "refused"
+            ? { kind: "refused", refusal: outcome.refusal, words }
+            : { agent: text.label({ id: session, kind: "session" }), kind: outcome.kind, words }
         );
       },
       (error: unknown) => {
@@ -124,7 +130,7 @@ export function useSendToAgentOffer({
   };
 }
 
-/** The one line the bar says about the message it is sending, sent, or could not send. */
+/** The one line the bar says about the message it is sending, sent, queued, or could not send. */
 function SendToAgentSaid({
   issue,
   state,
@@ -146,6 +152,16 @@ function SendToAgentSaid({
     return (
       <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
         Could not send it to the agent on {issue}: {state.refusal}
+      </p>
+    );
+  }
+  // Queued is neither sent nor refused: the words are stored for a session that has stopped
+  // since the bar offered it, so the line is `queuedParts`, as on the Agents card and the
+  // Conversation tab, and the row stays gone, since a second press would store a second copy.
+  if (state.kind === "queued") {
+    return (
+      <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
+        <AgentParts parts={queuedParts(state.agent)} />
       </p>
     );
   }

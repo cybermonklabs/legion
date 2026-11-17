@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The generated Legion plugin's skills and the Envoy skills hold nothing that is true of only one
+  deployment: no measured counts or timings, no dates of incidents, and no deployment's issue keys
+  or repository names.

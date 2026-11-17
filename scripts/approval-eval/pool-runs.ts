@@ -9,6 +9,7 @@ import {
   num,
   outDirectory,
   randomStream,
+  readCorpus,
   signed,
   span,
   table,
@@ -183,8 +184,8 @@ const EXIT_OK = 0;
 /** The reading could not be made at all. */
 const EXIT_CANNOT_RUN = 2;
 
-const USAGE = `usage: bun scripts/approval-eval/pool-runs.ts --run <dir> [--run <dir>]... \\
-  [--shape <with|without>] [--resamples <n>] [--seed <n>] [--out <dir>]
+const USAGE = `usage: bun scripts/approval-eval/pool-runs.ts --corpus <dir> --run <dir> \\
+  [--run <dir>]... [--shape <with|without>] [--resamples <n>] [--seed <n>] [--out <dir>]
 
 Pools several runs of one fresh-agent comparison over one case list, reading each case as the
 mean over the runs of each arm's outcome, and prints the pooled difference with paired
@@ -192,6 +193,9 @@ bootstrap intervals over the case-level differences, two-sided at 90 and at 95 p
 both read off one draw.
 
 Options:
+  --corpus <dir>     Required. The corpus the runs were made from. A run holding a case this
+                     corpus does not hold is refused, since the reserve of INFRA-2897's next
+                     final test (reserve.ts) may hold that case.
   --run <dir>        Required, and repeated: each a directory fresh-agent.ts wrote, holding
                      answers-<shape>.jsonl. Two runs that do not cover one case list are
                      refused, naming the cases.
@@ -405,6 +409,7 @@ export interface PooledRecord {
 
 /** The flags, as the command reads them. */
 interface Flags {
+  corpus: string;
   runs: string[];
   shape: Shape;
   resamples: number;
@@ -424,25 +429,28 @@ async function sha256Of(path: string): Promise<string | null> {
 }
 
 /**
- * One run's answer rows as outcomes, by case and then by arm, read through `heldAnswers`: the
- * owner of that reading, so the last row of each arm and case wins here exactly as it does in
- * the run's own resume.
+ * One run's held answer rows, as `heldAnswers` reads them (the owner of that reading, so the
+ * last row of each arm and case wins here exactly as it does in the run's own resume), as
+ * outcomes by case and then by arm.
  */
-function outcomesOf(rows: readonly AnswerRow[]): Map<string, Partial<Record<ArmName, boolean>>> {
-  const held = new Map<string, Partial<Record<ArmName, boolean>>>();
-  for (const row of heldAnswers(rows).values()) {
-    const outcome = held.get(row.caseId) ?? {};
-    held.set(row.caseId, outcome);
+function outcomesOf(held: Iterable<AnswerRow>): Map<string, Partial<Record<ArmName, boolean>>> {
+  const outcomes = new Map<string, Partial<Record<ArmName, boolean>>>();
+  for (const row of held) {
+    const outcome = outcomes.get(row.caseId) ?? {};
+    outcomes.set(row.caseId, outcome);
     // A faulted row is never an agreement, which is how a single run's own reading counts it.
     outcome[row.arm] = row.fault === null && row.agreed === true;
   }
-  return held;
+  return outcomes;
 }
 
 /**
  * One run read back: one outcome per case and arm, the last row of each winning, as the run's
  * own resume reads them. A case only one arm answered is refused rather than dropped: a run
- * missing half a pair is a run whose difference is read over cases it never paired.
+ * missing half a pair is a run whose difference is read over cases it never paired. A run whose
+ * held rows carry the `model` fault is refused too: such a row is a verdict no record ties to
+ * the measured model, as every row written before rows recorded the agent's own model is, and
+ * pooling it as a non-agreement would print a measured zero for a run that measured nothing.
  */
 export async function readRun(directory: string, shape: Shape): Promise<RunOutcomes> {
   const path = answersPath(directory, shape);
@@ -453,7 +461,19 @@ export async function readRun(directory: string, shape: Shape): Promise<RunOutco
         `--neighbours ${shape}`
     );
   }
-  const held = outcomesOf(rows);
+  const heldRows = [...heldAnswers(rows).values()];
+  const unmodelled = heldRows.filter((row) => row.fault === "model");
+  if (unmodelled.length > 0) {
+    const caseIds = [...new Set(unmodelled.map((row) => row.caseId))].sort();
+    throw new PoolError(
+      `${path} holds ${counted(unmodelled.length, "answer")} of the model fault, on ` +
+        `${counted(caseIds.length, "case")} (${named(caseIds)}): no record ties those verdicts ` +
+        "to the measured model, so the run is not pooled; to ask them again, run fresh-agent.ts " +
+        "with --answers resume on a copy of the run directory, since a resume rewrites its " +
+        "answers and its copy of the skill"
+    );
+  }
+  const held = outcomesOf(heldRows);
   const cases = new Map<string, ArmOutcome>();
   const half: string[] = [];
   for (const [caseId, outcome] of [...held].sort(([one], [two]) => one.localeCompare(two))) {
@@ -1316,6 +1336,7 @@ export function reportLines(record: PooledRecord): string[] {
 
 function readFlags(argv: readonly string[]): Flags {
   let values: {
+    corpus?: string;
     run?: string[];
     shape?: string;
     resamples?: string;
@@ -1326,6 +1347,7 @@ function readFlags(argv: readonly string[]): Flags {
     ({ values } = parseArgs({
       args: [...argv],
       options: {
+        corpus: { type: "string" },
         run: { type: "string", multiple: true },
         shape: { type: "string" },
         resamples: { type: "string" },
@@ -1339,9 +1361,11 @@ function readFlags(argv: readonly string[]): Flags {
     // parseArgs names what it refused, so its message is never repeated.
     throw new UsageError(USAGE);
   }
+  const corpus = values.corpus?.trim();
   const runs = (values.run ?? []).map((one) => one.trim()).filter((one) => one !== "");
-  if (runs.length === 0) throw new UsageError(USAGE);
+  if (!corpus || runs.length === 0) throw new UsageError(USAGE);
   return {
+    corpus,
     runs,
     shape: shapeOf(values.shape, "--shape", DEFAULT_SHAPE, USAGE),
     resamples: whole(values.resamples, "--resamples", DEFAULT_RESAMPLES, 1, USAGE),
@@ -1350,10 +1374,32 @@ function readFlags(argv: readonly string[]): Flags {
   };
 }
 
+/**
+ * Refuses a run holding a case the corpus does not hold: such a case is one the reserve left out
+ * (`reserve.ts`), whose outcomes are agreements with the person's answers on INFRA-2897's next
+ * final test, or one of another corpus, which nothing here can say is not reserved.
+ */
+export function refuseRunsOutside(
+  runs: readonly RunOutcomes[],
+  corpus: ReadonlyMap<string, unknown>
+): void {
+  for (const run of runs) {
+    const outside = [...run.cases.keys()].filter((caseId) => !corpus.has(caseId)).length;
+    if (outside > 0) {
+      throw new PoolError(
+        `${run.directory} holds ${counted(outside, "case")} the corpus does not hold, which ` +
+          "the reserve may hold (reserve.ts), so it is not pooled"
+      );
+    }
+  }
+}
+
 /** The reading as the command makes it: the runs off a disk, and the record printed and written. */
 async function pool(flags: Flags): Promise<number> {
+  const corpus = await readCorpus(flags.corpus);
   const runs: RunOutcomes[] = [];
   for (const directory of flags.runs) runs.push(await readRun(directory, flags.shape));
+  refuseRunsOutside(runs, corpus.byCaseId);
   const options = { resamples: flags.resamples, seed: flags.seed, shape: flags.shape };
   // The two digests are of two files and neither is read from the other, so they are read
   // together: the record carries both and the order they came back in is in nothing it prints.

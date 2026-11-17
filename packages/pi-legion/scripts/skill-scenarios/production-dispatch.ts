@@ -54,8 +54,9 @@ export function processIo(): CliIo {
 }
 
 /** Dispatch's address and what a request to it presents: the bearer a variable or a file gave,
- * or this machine's own identity traded at the secrets broker, which signs a DPoP proof for each
- * request (`ActiveDispatchConfig.credential`). */
+ * or an access token the secrets broker traded for this machine's identity, or for a person's
+ * sign-in on it, presented with a DPoP proof for each request
+ * (`ActiveDispatchConfig.credential`). */
 export interface DispatchCredentials {
   readonly url: string;
   readonly credential: RequestCredential;
@@ -175,13 +176,16 @@ export class ProductionDispatch {
       let response: Response;
       let text: string;
       try {
+        // One deadline for the credential and the read: a broker credential waiting on a pod's
+        // missing registration stops at it, naming the session.
+        const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
           headers: {
             Accept: "application/json",
-            ...(await this.#credential.headers("GET", url.toString())),
+            ...(await this.#credential.headers("GET", url.toString(), undefined, deadline)),
           },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: deadline,
         });
         text = await response.text();
       } catch (error) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,16 +98,20 @@ func TestGoogleLoginMintNamesInvalidRaptWithoutLeakingCredentials(t *testing.T) 
 }
 
 // TestGoogleLoginMintNamesAGoogleOutageAsUpstream: a 5xx from Google is the upstream's failure,
-// not a login that needs a new sign-in, so the broker's log points its operator at Google.
+// not a login that needs a new sign-in, so the broker's log points its operator at Google, after
+// the Retry has asked three times.
 func TestGoogleLoginMintNamesAGoogleOutageAsUpstream(t *testing.T) {
+	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
+	retry, _, _ := testRetry(atTheTop)
 	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
-	_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client()}).Mint(t.Context(), secrets.MintRequest{Value: value})
-	if secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "503") {
-		t.Fatalf("Mint against a Google 503 = %v (class %s), want upstream naming 503", err, secrets.MintErrorClass(err))
+	_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client(), Retry: retry}).Mint(t.Context(), secrets.MintRequest{Value: value})
+	if secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "503") || calls.Load() != 3 || secrets.MintAttempts(err) != 3 {
+		t.Fatalf("Mint against a Google 503 = %v (class %s) after %d calls; want upstream naming 503 after 3", err, secrets.MintErrorClass(err), calls.Load())
 	}
 	if _, err := (secrets.GoogleLogin{}).Mint(t.Context(), secrets.MintRequest{Value: `{"type":"service_account"}`}); secrets.MintErrorClass(err) != "stored-value" {
 		t.Fatalf("Mint of a service-account value = %v, want stored-value", err)
@@ -116,7 +121,8 @@ func TestGoogleLoginMintNamesAGoogleOutageAsUpstream(t *testing.T) {
 // TestGoogleLoginMintNamesARateLimitAsUpstream: a rate limit is not the login's owner's to fix, so
 // Google's rate-limit answers are upstream, never refused: a 429, and a 403 naming the
 // rateLimitExceeded reason Google's usage limits give. Google sends no X-RateLimit-Remaining, so
-// the status and the body are what tell it. A 4xx that is no rate limit stays refused.
+// the status and the body are what tell it. A 4xx that is no rate limit stays refused. None of the
+// three is asked twice: a rate limit that names no wait counts as a minute, which ends the mint.
 func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
 	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
 	for _, tc := range []struct {
@@ -130,14 +136,20 @@ func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
 		{"a 403 that is no rate limit", http.StatusForbidden, `{"error":"access_denied"}`, "refused"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client()}).Mint(t.Context(), secrets.MintRequest{Value: value})
+			retry, _, _ := testRetry(atTheTop)
+			_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client(), Retry: retry}).Mint(t.Context(), secrets.MintRequest{Value: value})
 			if got := secrets.MintErrorClass(err); got != tc.class || strings.Contains(err.Error(), "a rate limit") != (tc.class == "upstream") {
 				t.Fatalf("Mint against Google's %s = %v (class %s), want class %s", tc.name, err, got, tc.class)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("Mint against Google's %s asked %d times; want once", tc.name, calls.Load())
 			}
 		})
 	}

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A Dispatch process hands a `pull_request` envelope whose head row could not be stored back to
+    NATS only while it still holds the delivery durable's hold, under the deliver subject it was
+    handed the envelope on. A process whose hold has lapsed publishes no hand-back at all: the
+    next holder's take-over recreates the durable at its ack floor and is handed that envelope
+    once, where a hand-back published after that take-over would have been read as the new
+    holder's and have the same pull request fetched twice at once. The envelope is not lost by
+    the silence - it is still outstanding, and the take-over delivers it.
+time: 2026-11-08T22:00:00.000000000Z
+custom:
+    Issue: pr2461

@@ -259,7 +259,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const { artifact } = resolved;
     const ownerKey = resolved.issue?.key ?? artifact.project;
     const documentRef = dispatchDocumentRef(ownerKey, artifact.slug);
-    const approval = approvalLine(artifact);
+    const approval = approvalLine(artifact, typeof resolved.issue?.closed_at === "string");
     return {
       text: [
         `Document: ${ownerKey} / ${artifact.name}`,

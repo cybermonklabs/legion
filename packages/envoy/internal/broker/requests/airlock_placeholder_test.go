@@ -109,7 +109,7 @@ func holdsNothingOf(t *testing.T, release Release, secret string) {
 // policy granted it at once.
 func grantOf(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, reason string, names ...string) (requestID, grantID string) {
 	t.Helper()
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, reason, names...), "")
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, reason, names...), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%v) = %+v, %v; want a grant at once", names, request, err)
 	}
@@ -125,7 +125,7 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	requestID, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 
-	release, err := m.Values(t.Context(), grantID, enr, nil)
+	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
@@ -166,12 +166,12 @@ func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 
-	first, err := m.Values(t.Context(), grantID, enr, nil)
+	first, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("first Values: %v", err)
 	}
 	rows := placeholderRows(t, m, grantID)
-	second, err := m.Values(t.Context(), grantID, enr, nil)
+	second, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("second Values: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 		{
 			name:   "a google login",
-			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, `{"type":"authorized_user"}`),
+			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)),
 			minted: googleToken,
 			real:   googleToken,
 			want:   []string{SlotValue},
@@ -260,7 +260,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 		{
 			name:   "a GitHub App",
-			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"),
+			secret: policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
 			minted: githubMint,
 			real:   "ghs_realinstallationtoken",
 			want:   []string{SlotGitHubPrefix + "acme"},
@@ -297,7 +297,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 				}}
 			}
 			_, grantID := grantOf(t, m, enr, key, "read the secret", "SHAPE_KEY")
-			release, err := m.Values(t.Context(), grantID, enr, nil)
+			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
 			if err != nil {
 				t.Fatalf("Values: %v", err)
 			}
@@ -327,7 +327,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 	m.Minters = map[string]Minter{policy.KindAzureLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: azureMint}, nil
 	}}
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in to Azure", "AZURE_LOGIN"), "")
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in to Azure", "AZURE_LOGIN"), "", nil)
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want a pending request", request, err)
 	}
@@ -336,7 +336,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
 
-	release, err := m.Values(t.Context(), decision.GrantID, enr, nil)
+	release, err := m.Values(t.Context(), decision.GrantID, enr, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		},
 		{
 			name:     "a GitHub App of two installations",
-			secret:   policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"),
+			secret:   policytest.KindSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
 			mint:     githubMint,
 			want:     map[string]string{SlotGitHubPrefix + "acme": "ghs_acme_token", SlotGitHubPrefix + "zed": "ghs_zed_token"},
 			wantKind: policy.KindGitHubApp,
@@ -423,7 +423,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			}
 			var grantID string
 			if c.approve {
-				request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in", "SHAPE_KEY"), "")
+				request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in", "SHAPE_KEY"), "", nil)
 				if err != nil || request.RecordID == nil {
 					t.Fatalf("Create = %+v, %v; want a pending request", request, err)
 				}
@@ -455,7 +455,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			}
 			// The slots the proxy holds values for are exactly the slots the release mints
 			// placeholders for, which is what one walk of the value rather than two buys.
-			release, err := m.Values(t.Context(), grantID, enr, nil)
+			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
 			if err != nil {
 				t.Fatalf("Values: %v", err)
 			}
@@ -478,7 +478,7 @@ func TestTheProxyPasswordIsTheFirstPairInSortedOrder(t *testing.T) {
 	)
 	_, grantID := grantOf(t, m, enr, key, "read both", "AWS_KEY", "ZULU_TOKEN")
 
-	release, err := m.Values(t.Context(), grantID, enr, nil)
+	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}

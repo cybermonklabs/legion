@@ -1492,7 +1492,8 @@ func roleRoutedMentioningComment(
 // the event is blocked for mentionPendingDelay (resolveRoleHolders, destination.waiting,
 // batchEvent.mentionPending), and the copy is kept once they have settled,
 // carrying each mentioned session's own key. Nobody waits on that copy: one is kept only for a
-// role no session holds, and it waits for the role's next claim however soon it is stored.
+// role no session holds, and it waits for the role's next live holder however soon it is stored,
+// for one hour at most.
 //
 // The wait is the attempt's own lease and nothing longer, which is the second case here: an
 // attempt still pending past model.DeliveryClaimLapse reads resumed rather than live
@@ -2228,7 +2229,8 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 // So this keep waits too (decideFallbackCopy): the row is left to a later pass for
 // mentionPendingDelay, counting no attempt, and the copy is kept once the mentions have settled,
 // carrying each mentioned session's own key. Nobody waits on that copy: one is kept only for a
-// role no session holds, and it waits for the role's next claim however soon it is stored.
+// role no session holds, and it waits for the role's next live holder however soon it is stored,
+// for one hour at most.
 //
 // The wait is the attempt's own lease and nothing longer, which is the second case here: an
 // attempt pending past model.DeliveryClaimLapse reads resumed rather than live, so the keep

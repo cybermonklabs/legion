@@ -8,8 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
@@ -45,7 +46,7 @@ func (t *modelTransport) client() *http.Client {
 	}}
 }
 
-// defaultRetryWait is how long the retry waits when the response names no Retry-After.
+// defaultRetryWait is how long the retry waits when the response names no wait (retryable).
 const defaultRetryWait = time.Second
 
 func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -109,7 +110,12 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,
-// 429 or a 5xx, after the response's Retry-After (seconds) or a second.
+// 429 or a 5xx, after the wait the response names, read through serverwait.Read, or a second when
+// it names none. A wait of an hour is one a run bounded under an hour, such as the judge's 20 s
+// modelBound, has no time for, so the call is not made again (waitable). The providers this
+// package speaks to name their own limits under other headers (OpenAI's
+// x-ratelimit-reset-requests and -tokens, Anthropic's anthropic-ratelimit-*), which Read does not
+// read, so for them the wait is Retry-After's or the second.
 func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if err != nil {
 		return defaultRetryWait, !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
@@ -117,8 +123,8 @@ func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
 		return 0, false
 	}
-	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second, true
+	if wait, named := serverwait.Read(resp.Header, time.Now()); named {
+		return wait, true
 	}
 	return defaultRetryWait, true
 }

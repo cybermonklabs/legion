@@ -10,10 +10,7 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -91,46 +88,11 @@ func realHelper(t *testing.T) string {
 	return sock
 }
 
-// serveRealHelper serves a real helper.Server against the broker at brokerURL, with an operator
-// file naming operator (an email, as Dispatch names the person who approves) so a test can log it
-// in (Broker.Login). It waits for every session to be retired and the server to stop, then closes
-// the registry, which lets a save still finishing a registration, a retire or an enrollment
-// complete and makes any later one write nothing, and the broker, which does the same for its
-// machine file, before the test's temporary directories go.
+// serveRealHelper is serveRealHelperWith sending the helper's broker calls through
+// http.DefaultClient.
 func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, string) {
 	t.Helper()
-	dir := t.TempDir()
-	operatorFile := filepath.Join(dir, "operator")
-	if err := os.WriteFile(operatorFile, []byte(operator+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	srv := &helper.Server{
-		Registry: helper.NewRegistry(filepath.Join(dir, "sessions.json")),
-		Broker:   &helper.Broker{URL: brokerURL, OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: http.DefaultClient},
-		Hostname: "testhost",
-		PeerOf:   helper.PeerOf,
-		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		MinRenew: 50 * time.Millisecond,
-	}
-	sock := filepath.Join(shortTempDir(t), "helper.sock")
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	served := make(chan struct{})
-	go func() { defer close(served); _ = srv.Serve(ctx, ln) }()
-	t.Cleanup(func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for len(srv.Registry.List()) > 0 && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
-		cancel()
-		<-served
-		srv.Registry.Close()
-		srv.Broker.Close()
-	})
-	return srv, sock
+	return serveRealHelperWith(t, brokerURL, operator, http.DefaultClient)
 }
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {

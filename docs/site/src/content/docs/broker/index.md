@@ -49,6 +49,7 @@ sequenceDiagram
     participant CLI as agent-secrets
     participant Helper as agent-secrets-helper
     participant Broker as Secrets Broker
+    participant GitHub
     participant Model as The judge's model
     participant Dispatch
     actor Person as Approver
@@ -60,6 +61,16 @@ sequenceDiagram
     alt granted at once
         Broker-->>CLI: granted
     else a person must approve
+        opt the request carries a GitHub App narrowing
+            Broker->>GitHub: list the App's installations, to check the account
+            GitHub-->>Broker: the installations, or none on that account
+            opt the narrowing names repositories or read access
+                Broker->>GitHub: mint the token the release would mint, to check the narrowing
+                GitHub-->>Broker: that token, or a refusal of the narrowing
+                Broker->>GitHub: revoke that token at once
+            end
+            Broker-->>CLI: a narrowing it cannot serve is refused here, before the approval request
+        end
         Broker-->>CLI: pending, the approver its record names, and its page on the broker
         opt the airlock rules let the judge decide this secret
             Broker->>Dispatch: is the issue the request's reason names open?
@@ -77,6 +88,16 @@ sequenceDiagram
     Broker-->>CLI: the values, read fresh from the secret store
     CLI->>Agent: run ./deploy.sh with DEMO_API_KEY in its environment
 ```
+
+The GitHub step is there only for a request that carries a GitHub App narrowing, which
+`agent-secrets` sends with the request. The broker decides such a narrowing before the approval
+request, and nothing is written and nobody is asked where it refuses one. It refuses five
+things: an account the secret's `github-owners` tag does not list, a request that names no
+GitHub App secret, a name the airlock holds back, a narrowing GitHub itself refuses, and an
+account the App has no installation on. Where it reaches no verdict, for example because GitHub
+is out of reach or refuses the App itself, or because the check passes its own time bounds, the
+request waits for its approver as it did before, and the refusal comes when the grant is read
+([Concepts](/legion/broker/concepts/#requests-and-grants)).
 
 The judge's step is there only where a deployment configures one. It takes a narrow class of the
 requests that wait: one secret, a lifetime of 15 minutes or less that the secret's airlock rules

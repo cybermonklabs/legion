@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The `legion` tool's production-check description says what its `pending` covers: a merge
+  production does not carry yet, or one it carries with a requirement only the deploy can show
+  still unobserved and a look still to follow.

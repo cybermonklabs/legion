@@ -1,0 +1,2 @@
+kind: Changed
+body: 'The agent-secrets skill says `LEGION_SLACK_BOT_TOKEN` is a shared agent secret, which the broker grants at once to every session with a broker identity, a pod''s and a person''s alike; it no longer says a session outside the Legion daemon''s service is denied it.'

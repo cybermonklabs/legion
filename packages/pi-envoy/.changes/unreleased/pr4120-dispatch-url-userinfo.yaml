@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr4120
+body: |-
+  A Dispatch URL that carries a user and a password (`https://user:password@host/`) no longer
+  shows them in a Dispatch error, in the notice that a Dispatch has no answers route, or in the
+  links `dispatch` prints when `DISPATCH_PUBLIC_URL` is not set; requests still go to the URL as
+  configured. The Envoy listener client's errors leave out a listener URL's user and password the
+  same way.

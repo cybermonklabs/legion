@@ -12,19 +12,20 @@ import (
 )
 
 // machineForm is a machine's own trade of its Google identity token for a Dispatch access token:
-// what `agent-secrets`, the helper and every TypeScript client on a Compute Engine box send, bar
-// the one parameter each test below sets for itself.
+// what `agent-secrets`, the helper and a TypeScript client on a Compute Engine box nobody signed
+// in on send, bar the one parameter each test below sets for itself.
 func machineForm(t *testing.T, f *signInFixture, session string) url.Values {
 	t.Helper()
 	return exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, session)
 }
 
-// TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow is the TypeScript clients' shape: a
-// caller that wants a Dispatch access token and nothing else sends launcher_credential=false and
-// is answered one, with no launcher credential minted for it and nothing in the answer naming
-// one. Each of those clients makes a key per process and per session, so a trade that asked
-// would leave a row on the operator's machine-logins list for every `dispatch` call, every hook
-// run and every session of a long-lived process, and nothing removes those rows.
+// TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow is the shape of a TypeScript client's
+// machine trade: a caller that wants a Dispatch access token and nothing else sends
+// launcher_credential=false and is answered one, with no launcher credential minted for it and
+// nothing in the answer naming one. Each of those clients makes a key per process and per session,
+// so a trade that asked would leave a row on the operator's machine-logins list for every
+// `dispatch` call, every hook run and every session of a long-lived process, and nothing removes
+// those rows.
 func TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow(t *testing.T) {
 	f := newSignInFixture(t)
 	key := newKey(t)
@@ -93,10 +94,11 @@ func TestTheHelpersTradeStillGetsItsLauncherCredential(t *testing.T) {
 }
 
 // TestASignInThatDeclinesItsCredentialIsRefused: a sign-in holds its credential, so a person's
-// trade is the one trade that may not decline it. `agent-secrets login`, its only caller, reads
-// the credential id and refuses an answer without one, and the sessions that sign-in enrols read
-// the person's own secrets under it; a sign-in holding none would do nothing. Nothing is
-// recorded for the refused trade, so the box signs in again rather than carrying a half-made
+// trade is the one trade that may not decline it. `agent-secrets login` reads the credential id
+// and refuses an answer without one, and the sessions that sign-in enrols read the person's own
+// secrets under it; a sign-in holding none would do nothing. A TypeScript client's trade of the
+// sign-in reads no credential id and still sends no parameter, for the same reason. Nothing is
+// recorded for the refused trade, so the box signs in again rather than keeping a half-made
 // sign-in.
 func TestASignInThatDeclinesItsCredentialIsRefused(t *testing.T) {
 	f := newSignInFixture(t)

@@ -24,8 +24,9 @@ import (
 // `alignment`, whose default is "left" where both readers write null for a column the markdown
 // does not align.
 //
-// A typed block's defaults are not here. They are its own schema's (schema/blocks.json), read
-// through typedDefaults, so a block type added there needs no change to this file.
+// A typed block has no entry here, and none of its declared defaults is left out of a display
+// tree: the paragraph at displayNodeAttrs says why that is what this build ships, and
+// dispatch://INFRA-3404 is the change that reads them from the manifest instead.
 var displayNodeDefaults = map[string]Attrs{
 	// heading: `id` is the slug milkdown's own generator would write and both readers leave
 	// empty; `level` is 1 for a heading nothing says the level of.
@@ -52,22 +53,19 @@ var displayMarkDefaults = map[string]Attrs{
 	"link": {"title": nil},
 }
 
-// typedDefaults is every typed block's declared attribute defaults, read from the block schema
-// once. An attribute the schema gives no default is left out of it: the browser declares such
-// an attribute `{ default: undefined }`, which fills nothing in.
-var typedDefaults = func() map[string]Attrs {
-	out := make(map[string]Attrs, len(schema.Types))
-	for _, typ := range schema.Types {
-		defaults := make(Attrs, len(typ.Attributes))
-		for _, attr := range typ.Attributes {
-			if attr.Default != nil {
-				defaults[attr.Name] = attr.Default
-			}
-		}
-		out[typ.Name] = defaults
-	}
-	return out
-}()
+// A typed block's declared attribute defaults are NOT left out of a display tree, and that is
+// what this build ships rather than an oversight here. The encoding was written to leave them
+// out - displayNodeAttrs below still reads displayNodeDefaults for every other node - but main's
+// own map was built in a package variable's initializer from a schema its init filled afterwards,
+// and Go runs every variable initializer before any init, so the map was empty and the encoding
+// left nothing out. Every display tree Dispatch has stored carries its typed defaults, and
+// testdata/display.json records that.
+//
+// This merge keeps that encoding byte for byte: omitting the defaults is a different encoding of
+// every stored tree, which belongs with a raise of DisplayTreeVersion and the fill that backfills
+// it (texttreefill), not with a forward merge. dispatch://INFRA-3404 carries the fix, and until
+// it lands a typed block takes the same path as any other node, through displayNodeDefaults,
+// which holds no entry for one.
 
 // toDisplayJSON is node as a reader is sent it: its own JSON shape with every attribute the
 // browser's schema would supply left out, and nothing written where that leaves an empty object
@@ -90,12 +88,10 @@ func (n *Node) toDisplayJSON() *jsonNode {
 	return j
 }
 
-// displayNodeAttrs is attrs as the display encoding writes them for a node of this type: a typed
-// block's defaults are its own schema's, every other node's are displayNodeDefaults'.
+// displayNodeAttrs is attrs as the display encoding writes them for a node of this type: every
+// node's defaults are displayNodeDefaults', and a typed block has no entry there, so none of its
+// attributes is left out (the paragraph above says why, and dispatch://INFRA-3404 changes it).
 func displayNodeAttrs(nodeType string, attrs Attrs) Attrs {
-	if defaults, typed := typedDefaults[nodeType]; typed {
-		return withoutDefaults(attrs, defaults)
-	}
 	return withoutDefaults(attrs, displayNodeDefaults[nodeType])
 }
 

@@ -36,9 +36,9 @@ const (
 )
 
 // compressAnswers serves one route so that its answer is gzipped when the request says the caller
-// takes gzip, the answer is Dispatch's own JSON, and it is at least compressibleMinimum bytes
-// long. It is mounted around every row of the route table (register), inside the access log, whose
-// line then records the bytes that went on the wire.
+// takes gzip, the answer names a JSON media type (compressibleAnswer), and it is at least
+// compressibleMinimum bytes long. It is mounted around every row of the route table (register),
+// inside the access log, whose line then records the bytes that went on the wire.
 //
 // Every answer carries `Vary: Accept-Encoding` whether or not it was compressed, beside the
 // `Vary: Dispatch-Trees` the same loop adds (varyOnDisplayTrees), so no cache between a browser
@@ -110,13 +110,17 @@ func refusedWeight(parameters string) bool {
 	return false
 }
 
-// compressibleAnswer reports whether an answer's own headers say its body is Dispatch's JSON, the
-// only thing this layer compresses. Every answer Dispatch composes is written through WriteJSON,
-// which sets `application/json`; every other media type an API route writes is an upload's own
-// bytes, served under the type they were stored as (serveFileVersion) - an image, a PDF, an
-// archive, each already compressed or none of this layer's business - so the media type alone
-// keeps the downloads out without a list of routes to keep up to date. An answer that already
-// carries an encoding is left as the handler wrote it.
+// compressibleAnswer reports whether an answer's own headers name a JSON media type,
+// `application/json` or one ending in `+json`, and no encoding. The rule is the media type,
+// whoever wrote the body, so it needs no list of routes to keep up to date: WriteJSON's answers
+// and the JSON a handler writes itself qualify, and so does a file version stored as
+// `application/json`, which serveFileVersion answers under that type. Every other media type
+// passes as its handler wrote it: a file or image version under any other stored type (an image,
+// a PDF, an archive, each already compressed or none of this layer's business), a run's event
+// stream, and a document version's Markdown download (`text/markdown`, getArtifactVersion). That
+// download is left uncompressed on purpose: it is a file a person saves, asked for rarely, and a
+// document is at most 1 MiB. An answer that already carries an encoding is left as the handler
+// wrote it.
 func compressibleAnswer(header http.Header) bool {
 	if header.Get("Content-Encoding") != "" {
 		return false

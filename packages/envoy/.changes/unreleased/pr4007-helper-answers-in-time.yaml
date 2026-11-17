@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  `agent-secrets enroll --helper` and `unenroll --helper` no longer wait past the helper's
+  20-second bound behind a call that `agent-secrets-helper` makes for itself. When the helper is
+  trading the sign-in of the person signed in on the box and that trade outlasts the bound, the
+  command answers `ENROLL_FAILED` or `UNENROLL_FAILED` and `timed out waiting for <person>'s
+  sign-in on this machine, which another call holds while it trades`; the command made no
+  enrollment and ended none. It had sent the broker nothing, or, for an enroll, the broker had
+  refused its first try under that person's sign-in, and the line then goes on `, to drop the
+  credential the broker refused (…)`. When the broker refuses the machine login's credential
+  (`LAUNCHER_INVALID`) while the helper is refreshing that login, the command answers that
+  refusal at the bound, and the refresh settles the credential when it succeeds or the broker
+  answers `invalid_grant`. Without this, each of these waited the helper's own call out and was
+  answered `ENROLL_OUTCOME_UNKNOWN` or `UNENROLL_OUTCOME_UNKNOWN` at 21 seconds.

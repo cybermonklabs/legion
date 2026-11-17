@@ -214,7 +214,7 @@ function ArtifactRow({
         <a
           className={`shrink-0 text-sm font-medium underline ${linkText} ${linkHoverText}`}
           download=""
-          href={artifactVersionUrl(artifact.id, latestVersion.number)}
+          href={artifactVersionUrl(artifact.id, latestVersion.number, { download: true })}
         >
           Download version {latestVersion.number}
         </a>

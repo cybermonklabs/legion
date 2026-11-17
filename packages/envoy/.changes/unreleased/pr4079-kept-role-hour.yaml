@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  A role message that no live session holds is kept for one hour, for a role with no claim and now
+  also for a claim whose holder is unresponsive or gone, on the publish route and on the role lane.
+  The `202` names the end of that hour as `kept_until`, and for `holder_lapsed` the holder, its
+  `holder_state` and its `last_seen`. A publish with `keep: false` keeps nothing and still answers
+  `404`. A repeat of a dedupe key whose copy is still kept answers with that first copy and stores
+  nothing new; a repeat after the copy ended is kept as a new copy. A holder that registers again,
+  or claims again, after it was not live gets its kept copies then, with no sweep, also when a new
+  process resumed the session and its claim still names the process before it.
+  At the end of a copy's hour the listener drops it, counts it on `envoy_role_kept_expired_total`
+  (labels `kept_by` and `stale`) and logs it once, whether or not any session holds the role, and
+  sends the sender's session one dead letter on its agent subject when the publish named that
+  session (`envoy_role_dead_letters_total`). A copy that no walk had claimed, and whose hour ended
+  more than an hour before the walk that drops it, is dropped as stale with no dead letter, and a
+  copy Dispatch's outbox kept gets none. A copy that the live holder does not take for its delivery
+  mode is dropped inside its hour, and the sender it is owed to gets a dead letter that names the
+  mode the holder does not take, or says that the mode could not be read. The sweep now walks
+  every kept lane, at most 16 at a time, and raises the role's wake report again in each
+  five-minute interval while a copy the listener kept has at least 20 minutes of its hour left and
+  no live session holds the role. `envoy_role_kept_undecodable_total` counts copies no read can
+  decode. The lane cursor gains `dead_letter`, the reason a walk claimed a copy for its dead
+  letter, which an earlier listener and Dispatch's outbox ignore.

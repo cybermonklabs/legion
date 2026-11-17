@@ -43,16 +43,21 @@ EOF
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
   proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
-  the root's pull request or an open child's."* `wait` for its verdict, since it runs as a job of
-  its own. A child survives it only when it needs a repository or a deploy order of its own: its
-  code is in a repository no open pull request of this tree is in, or it must be applied on its
-  own before other work of the tree can build on it. A repeated change — the same edit per
-  program, directory or instance of this tree's own work — is one child, never one per instance.
-  Work in a repository this tree already has a pull request in, which waits on a sibling's merge,
-  is no child and is not parked in `backlog`: write it into the spec of the issue whose pull
-  request carries it — the parent's, or the sibling's when the parent's pull request is in another
-  repository — so one pull request lands it in order, and a deletion of what this tree replaced
-  rides in the pull request of the last change it waits on the same way.
+  the root's pull request or an open child's. Weigh each separate pull request against combining
+  its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+  It can also conflict with the default branch.
+  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+  They can conflict with each other, and dependent slices run in sequence."*
+  `wait` for its verdict, since it runs as a job of its own.
+  Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+  It can also conflict with the default branch.
+  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+  They can conflict with each other, and dependent slices run in sequence.
+  A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
+  A repeated change — the same edit per program, directory or instance of this tree's own work — is one child, never one per instance.
+  Include deletion of what this tree replaced in this tree's work, sized by those reasons.
   Post the verdict, with the folds you made, as one `dispatch comment` on your own issue (the
   root, in a root session). Its first line is exactly `Red-team verdict for <root key>:`, with
   the root's own key in place of the placeholder, so a reader can find it among the issue's
@@ -80,11 +85,10 @@ EOF
   `gates.design: off`: the gate's opening starts the root's own first phase unless the root waits
   on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`,
   so a child filed after that leaves the root working beside its children.
-- Give a child `--blocked-by` only for an issue outside this tree's own repositories, or one whose
-  deploy another child builds on, then release every child at once with `release_children`:
+- A child may wait on a sibling's merge in the same repository with `--blocked-by`.
+  Release every child at once with `release_children`:
   Legion holds a released child until its last blocker closes, and a child is inert only until it
-  is released. No child waits on a sibling's merge in a repository this tree already has a pull
-  request in; that work is written into the spec of the issue whose pull request carries it.
+  is released.
   Each child the daemon starts takes an admission slot of its own, so four started children can
   take four of the deployment's cap; when a child holds none, [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says.
 - Never release a child `--blocked-by` its own parent: the parent now merges last, so that child
@@ -104,9 +108,11 @@ issue `LEGION-41`, role `architect` is `legion-acme-legion-41-architect`.
 
 ## Across repositories
 
-A change across repositories gets one child per repository:
-`dispatch issue --project <project> --parent <root> --repo <owner/name> …`. Choose the repository at
-creation, because the daemon fixes it when it records the child.
+Split a change across repositories into children, each in one repository.
+Size their pull requests by the reasons above.
+Create each child with:
+`dispatch issue --project <project> --parent <root> --repo <owner/name> …`.
+Choose the repository at creation, because the daemon fixes it when it records the child.
 
 Release a child that depends on another repository's change only after that change's pull request
 merges, because the child's work must build on the merged change. Name the merged commit in its
@@ -118,9 +124,10 @@ name the merged commit. Read the other repositories with your gh's read-only acc
 
 ## Recording a wait on other work
 
-Set an issue's `blocked_by` list when its work must wait on an issue outside this tree
-(`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which replaces the whole
-list, so read the issue's existing links first).
+Set an issue's `blocked_by` list when its work must wait on an issue outside this tree, of any
+Dispatch project (`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which
+replaces the whole list, so read the issue's existing links first); Dispatch refuses a link to
+another project's issue only to a credential that names one project (`PROJECT_SCOPE`).
 That list is how Legion learns of the wait.
 An issue the daemon has already started returns its admission slot while a blocker of it is not
 `done`, so the deployment's cap goes to work that can move,

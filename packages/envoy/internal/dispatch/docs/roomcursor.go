@@ -41,12 +41,15 @@ type roomInstance struct {
 	// (keepInstance).
 	resident *residentLoad
 
-	// issueCloseStarted is taken by the first append of this instance the gate refused because
-	// the document's issue is closed, and that refusal alone closes the room
-	// (Service.refuseClosedIssueAppend); every later refusal of this instance takes nothing and
-	// closes nothing. It is kept here rather than on the room's record because the record
-	// outlives the room: a room that loads again is a new instance with its own mark, so
-	// nothing of a closed room's is left standing and no document load writes it.
+	// issueCloseStarted is taken by the first refusal of this instance's updates the gate made
+	// because the document's issue is closed - the room's own append of one, or a settlement's
+	// store write of the room's updates (settlement.endOnRefusedUpdate) - and that refusal alone
+	// closes the room (Service.refuseClosedIssueAppend); every later refusal of this instance
+	// takes nothing and closes nothing. A settlement that finds the mark taken saves nothing of
+	// this instance (settlement.roomRefusedUpdate). It is kept here rather than on the room's
+	// record because the record outlives the room: a room that loads again is a new instance
+	// with its own mark, so nothing of a closed room's is left standing and no document load
+	// writes it.
 	//
 	// The mark saves a goroutine and a close pass per refused keystroke, not a close of the
 	// wrong room. A room stores one update per keystroke, so a burst of refused keystrokes

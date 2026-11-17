@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  Dispatch's GitHub client reads a wait longer than an hour, such as a `Retry-After` of
+  9999999999 seconds or an `X-RateLimit-Reset` of 9223372036854775807, as one hour, and a negative
+  `Retry-After` as no wait. It read those two large values as zero or a negative wait, so it
+  recorded a rate limit that had already ended and Dispatch could ask GitHub again at once, while
+  the webhook redelivery sweep waited only its own one-minute floor. An hour is GitHub's own longest
+  wait, since GitHub counts its primary rate limits per hour, and a longer wait would hold every
+  App call of every Dispatch process for as long. The secrets broker's mint, the model loop its
+  judge runs (`agentloop`) and the broker helper's refresh read a server's wait by the same rule:
+  a model call whose endpoint asks for more than its run has left is not made again inside its
+  run, and the helper waits its one-minute cap after a 429 that asks for longer. All of
+  them read `Retry-After` in seconds or as an HTTP date, and `X-RateLimit-Reset` when
+  `X-RateLimit-Remaining` is `0`.

@@ -224,13 +224,14 @@ type PaneInputs struct {
 	GHOwnersDir, GHDefault, GH string
 	// OperatorEnv is the operator's pane variables (runtime.tmux.pane_env), PiConfigFiles the
 	// operator's Oh My Pi overlays every pane names (runtime.tmux.pi_config_files),
-	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and
-	// MemoryConfigFiles the project's own (memory.config_files), which only a pane whose tree is
-	// in the memory group is given (runtime.SpawnSpec.Memory); nil for none.
-	OperatorEnv       map[string]string
-	PiConfigFiles     []string
-	RoleConfigFiles   []string
-	MemoryConfigFiles []string
+	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and Variants the
+	// arms of the project's declared experiments this pane's unit was drawn into
+	// (runtime.SpawnSpec.Variants), whose own overlays the pane names last, in the order the
+	// project's file declares the experiments; nil for none.
+	OperatorEnv     map[string]string
+	PiConfigFiles   []string
+	RoleConfigFiles []string
+	Variants        []runtime.Variant
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
 	// the pane is then told no such variable and refuses every public write with the setup error
@@ -251,7 +252,8 @@ type PaneInputs struct {
 // PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
 // (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
 // operator's overlays, then the role's own, then the
-// project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
+// overlays of each arm this pane's unit was drawn into, in the order the project's file declares
+// the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
@@ -314,7 +316,7 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_GH_PATH", in.GH)
 	}
 	add("PI_SHELL_PREFIX", shellprefix.For(workerbin.LauncherDir(in.StateDir)))
-	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, in.MemoryConfigFiles), ":"))
+	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, runtime.VariantOverlays(in.Variants)), ":"))
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
@@ -408,9 +410,9 @@ func readPaneReport(command string, res result, expectWindow bool) (paneReport, 
 }
 
 // Spawn starts a fresh agent for spec's claim: under the launch lock, a refusal while the claim's
-// process still runs, then the pane's secrets written as files and a pane in the issue's window, or
-// a new window for it, running `legion worker-shim` around OMP. The returned locator carries the
-// incarnation read at launch.
+// process still runs, then the pane's secrets and its composed system prompt written as files and a
+// pane in the issue's window, or a new window for it, running `legion worker-shim` around OMP. The
+// returned locator carries the incarnation read at launch.
 // A spec with a ResumeSessionFile is refused: continuing a recorded agent is Resume's, so there is
 // one path to `--resume`.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
@@ -476,27 +478,27 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 	return nil
 }
 
-// launch is Spawn's and Resume's shared half: every check that needs no tmux, then, under the launch
-// lock, the refusal of a claim whose process still runs, the secret files, the claim's gh bundle
-// and the pane. The refusal comes first, so a refused launch rewrites none of the files the live
-// process reads. A session found in no folder it searched is runtime.ErrSessionFileMissing,
-// whatever the claim recorded and whether or not the operator's takeover is on
-// (takingOverSession): the search is the same search either way, and a session nothing holds is
-// the same fact however the daemon is configured. The caller starts a fresh agent in its place,
-// charged nothing and reported (supervise's start), which is also what a taken-over runtime's
-// session gets, since nothing tells it from this host's own (sessionfile.go).
+// launch is Spawn's and Resume's shared half: every check that needs no tmux, the composed system
+// prompt among them (runtime.ComposePrompt), then, under the launch lock, the refusal of a claim
+// whose process still runs, the secret files, the prompt's file, the claim's gh bundle and the
+// pane. The prompt is composed before anything is written, so a prompt file that cannot be read
+// leaves no file behind. The refusal of a live claim comes before the
+// writes, so a refused launch rewrites none of the files the live process reads. The prompt's
+// file is written before the pane opens (runtime.WriteSystemPrompt says why).
+//
+// A session found in no folder it searched is runtime.ErrSessionFileMissing, whatever the claim
+// recorded and whether or not the operator's takeover is on (takingOverSession): the search is the
+// same search either way, and a session nothing holds is the same fact however the daemon is
+// configured. The caller starts a fresh agent in its place, charged nothing and reported
+// (supervise's start), which is also what a taken-over runtime's session gets, since nothing tells
+// it from this host's own (sessionfile.go).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
 	}
-	for _, path := range slices.Concat(spec.Prompt.RolePromptPaths,
-		[]string{spec.Prompt.DeploymentInstructionsPath, spec.Prompt.MemoryInstructionsPath}) {
-		if path == "" {
-			continue
-		}
-		if _, err := os.Stat(path); err != nil {
-			return runtime.Locator{}, fmt.Errorf("spawn %s: prompt file: %w", spec.Claim, err)
-		}
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	backend := runtime.Of(spec.Backend)
 	launcher, ok := r.launchers[backend]
@@ -550,6 +552,10 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := runtime.WriteSecretFiles(r.stateDir, files); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+	}
 	ghDefault, err := r.writeGitHubCredential(spec, credential)
 	if err != nil {
 		return runtime.Locator{}, err
@@ -559,17 +565,11 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		path = spec.Env["PATH"]
 	}
 	path = workerbin.Path(path, r.stateDir)
-	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion})
+	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
-	// Only a pane whose tree was drawn into the memory group names the project's memory overlays;
-	// every other pane's PI_CONFIG_FILES is the one it had before the block existed.
-	var memoryOverlays []string
-	if spec.Memory {
-		memoryOverlays = r.memoryConfigFiles
-	}
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
 	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
@@ -584,7 +584,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		MemoryConfigFiles: memoryOverlays, LeakCheck: leakCheck,
+		Variants: spec.Variants, LeakCheck: leakCheck,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }

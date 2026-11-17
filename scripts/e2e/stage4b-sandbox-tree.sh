@@ -3554,8 +3554,9 @@ last long enough to be ended inside. A production check's task (its first line `
 waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. This proof has no production and no deploy
 role: no production carries the merge, so the look leaves `Production: pending deploy of <merge
-commit>` on the pull request's body (on the last look, writes on the pull request that the check
-did not run because production did not carry the merge within the bound) and reports verdict
+commit>` on the pull request's body (on the last look, whose pending is for production not
+carrying the merge alone, as here, writes on the pull request that the check did not run because
+production did not carry the merge within the bound) and reports verdict
 pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
 else wakes a check — no deploy, no Dispatch notice, nothing the daemon does of its own — so the
@@ -3914,8 +3915,8 @@ for child in "$child1" "$child2"; do
   on_issue "$child" until_true 900 "planner worker on $child, a child of $tree1, to register from an issue pod of its own" issue_worker_live "$child" planner
   assert_claim_endpoints "$child" planner
   record_resident "$child" planner || fail "$child's planner has no session and pod to keep: $(claim_view "$child" planner)"
-  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree),
-  # not on the state view's issue entry, which carries no tree.
+  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree);
+  # this step reads it there.
   child_tree=$(claims_cli list --json | jq -r --arg issue "$child" '[.claims[] | select(.issue == $issue and .role == "planner") | .tree] | first // ""') ||
     fail "legion claims list could not be read for $child's planner"
   [ "$child_tree" = "$tree1" ] ||
@@ -5986,13 +5987,14 @@ until_true 600 "$tree3's pods to be gone" sh -c \
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
 # (1) The controller was launched with the daemon's own design gate steps, none here (the run's
 # `gates.design` is `off`, the empty list): the Oh My Pi running in the controller's directory
-# carries the line in its --append-system-prompt.
+# carries the line in its system prompt, the file its --append-system-prompt names.
 steps_line='Design gate steps: none.'
 controller_launched_with_steps() {
-  local proc
+  local proc file
   for proc in /proc/[0-9]*; do
     [ "$(readlink "$proc/cwd" 2>/dev/null)" = "$work/controller-state/controller" ] || continue
-    tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | grep -qF "$steps_line" && return 0
+    file=$(tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | awk 'p{print;exit} $0=="--append-system-prompt"{p=1}')
+    [ -n "$file" ] && grep -qF "$steps_line" "$file" && return 0
   done
   return 1
 }
@@ -6293,8 +6295,18 @@ until [ -n "$planner_killed" ]; do
   if hold_end_charged "$(claim_token "$tree4" planner)"; then planner_killed=$ended_incarnation; fi
 done
 note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_pod_uid)"
-interrupted_needle="Your previous turn on this task was interrupted when your process died."
-planner_resent() { session_contains "$tree4" planner "$interrupted_needle"; }
+# The task goes again behind the sentence the claim's record of the kill composes
+# (packages/daemon/internal/supervise/relaunch.go, relaunchSentence): its first statement says the
+# turn was interrupted, and the next names the death as its cause. Both are read, each as a fixed
+# string of the planner's session, because neither alone says the kill was what it told.
+interrupted_needle="Your previous turn on this task was interrupted."
+death_needle="ended because the process died: "
+# One read of the session serves both needles, since each poll reads the whole session text.
+planner_resent() {
+  local text
+  text=$(claim_session_text "$tree4" planner) || return 1
+  grep -Fq -- "$interrupted_needle" <<<"$text" && grep -Fq -- "$death_needle" <<<"$text"
+}
 on_tree "$tree4" until_true 600 "$tree4's planner to be sent its task again, told its turn was interrupted" planner_resent
 send_agent "$tree4" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 on_tree "$tree4" wait_for_phase "$tree4" implementing "$plan_seconds"
@@ -6548,9 +6560,10 @@ until_true 900 "the bound to start the last look of $tree1's production check" l
 state_file check-look-2
 # The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
 # A tester that reported the last look before this read has had its pod taken again. The
-# daemon's task names the last look and its rule (write on the pull request that the check did not
-# run within the bound, report pending), and the proof sends the closed issue nothing: the close of
-# the check is the observation.
+# daemon's task names the last look and its rule (its pending is for production not carrying the
+# merge alone, as here: write on the pull request that the check did not run within the bound,
+# report pending), and the proof sends the closed issue nothing: the close of the check is the
+# observation.
 last_look_pod_back() { root_running || check_closed "$tree1"; }
 on_tree "$tree1" until_true 900 "the bound's look to make the root's Sandbox $root_pod again, Running, and bring its pod back" last_look_pod_back
 until_true 600 "the last look's pending report to close $tree1's production check" check_closed "$tree1"

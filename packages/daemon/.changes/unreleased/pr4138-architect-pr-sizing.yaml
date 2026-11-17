@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  Architect role prompts size pull requests for efficient, reliable delivery without a
+  preferred count, explain the costs of large and small requests, and allow a child to
+  be released blocked by a sibling's merge in the same repository.

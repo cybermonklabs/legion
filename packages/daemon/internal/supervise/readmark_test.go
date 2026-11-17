@@ -377,11 +377,20 @@ func TestAnOldProcessesRefusalLeavesTheNewSendsMark(t *testing.T) {
 // whenever it lands, says the prompt never ran. It must clear the mark, or a completion from the
 // next turn of a claim serving no run is credited to a task nobody read. Nothing on the way —
 // a confirmation, a relaunch — may drop the record of which prompt set the mark.
+//
+// The turn that starts with the re-send in flight is taken for the given-up prompt's own, which
+// is still outstanding (Machine.outstanding): the pinned Oh My Pi runs one admitted prompt at a
+// time, so the session's next turn is that prompt's, and the lost re-send takes back no
+// confirmation of it (refused). The given-up prompt's refusal is what says that turn was not its
+// own, and it takes the confirmation back with the mark.
 func TestAnUnacknowledgedResendLeavesTheGivenUpPromptsRefusalToClearTheMark(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		identity bool
-		resend   func(h *harness)
+		// confirmed is the re-send's turn starting while it is in flight, which the given-up
+		// prompt still outstanding keeps confirmed until that prompt's refusal.
+		confirmed bool
+		resend    func(h *harness)
 	}{
 		{name: "the re-send's adopt step fails", identity: true, resend: func(h *harness) {
 			h.rt.FailAdoptWorkingCopy(errBoom)
@@ -395,7 +404,7 @@ func TestAnUnacknowledgedResendLeavesTheGivenUpPromptsRefusalToClearTheMark(t *t
 			h.conn.RefusePrompt("the model provider refused the request")
 			h.observe(runtime.Alive)
 		}},
-		{name: "the re-send's turn confirms it in flight, then the send is lost", resend: func(h *harness) {
+		{name: "the re-send's turn confirms it in flight, then the send is lost", confirmed: true, resend: func(h *harness) {
 			gated := newGatedConn()
 			gated.Conn.FailPrompt(errBoom)
 			h.conns.Register(testToken, gated)
@@ -435,14 +444,14 @@ func TestAnUnacknowledgedResendLeavesTheGivenUpPromptsRefusalToClearTheMark(t *t
 			h.advance(2 * testRPC)
 
 			tc.resend(h)
-			if p := h.pending(); p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
-				t.Fatalf("pending after the lost re-send = %+v, want it unconfirmed under the given-up prompt's mark", p)
+			if p := h.pending(); p.DeliveredAt.IsZero() || p.ConfirmedAt.IsZero() == tc.confirmed {
+				t.Fatalf("pending after the lost re-send = %+v, want it under the given-up prompt's mark, confirmed %v", p, tc.confirmed)
 			}
 
 			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: "the model provider refused the request"})
 
-			if p := h.pending(); !p.DeliveredAt.IsZero() {
-				t.Fatalf("pending after the given-up prompt's refusal = %+v, want its read mark gone", p)
+			if p := h.pending(); !p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
+				t.Fatalf("pending after the given-up prompt's refusal = %+v, want its read mark and any confirmation gone", p)
 			}
 			if run := h.claim().ServingRun(); run != 0 {
 				t.Fatalf("the claim serves run %d, want none: nobody read the task", run)

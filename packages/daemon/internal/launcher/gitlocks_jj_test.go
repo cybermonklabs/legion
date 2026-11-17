@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -79,16 +78,6 @@ func newJJClone(t *testing.T) *jjClone {
 	// same reason, since jj searches upward from the directory it is started in for the closest
 	// .jj and a command with none would open the workspace the test process stands in.
 	run := fixturegit.Isolated(t, home)
-	// The seed push below runs under whatever git is first on PATH, and in an issue pod that is
-	// Legion's wrapper (/opt/legion/bin/git), which points the push at a hook running the leak
-	// guard. The guard resolves the shared public leak check before it clears anything and
-	// refuses a push it can find none for (leakguard's Resolve), and fixtureenv.Isolated drops
-	// PUBLIC_LEAK_CHECK with the rest of what reaches past the test — so without a check of this
-	// row's own the push stops with LEAK CHECK SETUP ERROR and the row fails before it has
-	// planted a lock. The stand-in is one that clears every write, written beside the fixture as
-	// every other fixture that pushes writes one, so the row proves the same thing in a pod as on
-	// a runner whose git is the real one.
-	run = run.With("PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, root, leakguardtest.Passes))
 	feed, seed := filepath.Join(root, "feed"), filepath.Join(root, "seed")
 	// The clone and the workspace sit where provisioning puts them under a state directory,
 	// which is where the launcher's sweep derives the clone from, so both come from the call

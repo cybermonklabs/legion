@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -186,6 +188,36 @@ func TestDefaultBranchRefusesARepositoryItCannotRead(t *testing.T) {
 	_, err := DefaultBranch(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"))
 	if want := `read the default branch of acme/widgets: GitHub answered GET /repos/acme/widgets with 404: {"message":"Not Found","status":"404"}`; errorText(err) != want {
 		t.Fatalf("DefaultBranch error = %q, want %q", errorText(err), want)
+	}
+}
+
+// A default-branch read GitHub refuses for its rate limit carries GitHub's answer through Read's
+// wrap: a caller tells the limit, and how long GitHub asks it to wait, from a refusal of the
+// repository such as the 404 above, and reads the limit's headers as GitHub sent them.
+func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
+	// Ten minutes out, so no scheduling delay can carry the clock past it before the answer is read.
+	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "15000")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", reset)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"API rate limit exceeded for installation ID 7.","status":"403"}`)
+	}))
+	t.Cleanup(server.Close)
+	_, err := Read(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"))
+	var answer *githubrest.Answer
+	if !errors.As(err, &answer) || !answer.RateLimited {
+		t.Fatalf("Read = %v, want GitHub's rate-limited *githubrest.Answer", err)
+	}
+	if answer.RetryAfter < 9*time.Minute || answer.RetryAfter > 10*time.Minute {
+		t.Errorf("the limit's wait = %s, want until the reset ten minutes away", answer.RetryAfter)
+	}
+	if want := (githubrest.LimitHeaders{Limit: "15000", Remaining: "0", Reset: reset}); answer.Limit != want {
+		t.Errorf("the limit's headers = %+v, want %+v", answer.Limit, want)
+	}
+	if want := `read the default branch of acme/widgets: GitHub answered GET /repos/acme/widgets with 403: {"message":"API rate limit exceeded for installation ID 7.","status":"403"}`; errorText(err) != want {
+		t.Errorf("Read error = %q, want %q", errorText(err), want)
 	}
 }
 

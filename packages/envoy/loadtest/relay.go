@@ -164,9 +164,18 @@ func (r *relaySessions) delivery(session int) map[string]any {
 // handler takes session's relay frames: it answers `received` at once, counts a first frame of
 // each stream sequence as a receipt (an agent-topic one when the frame's subject is the session's
 // agent subject), then answers `done`, which moves the session's resume point, and records the
-// frame with that answer, as the plugin answers done once the frame is written.
+// frame with that answer, as the plugin answers done once the frame is written. The send route's
+// connection probe (bus.ConnectionProbeHeader) is answered done, as the plugin answers it before
+// it decodes anything, and counted as nothing: not a frame, a receipt, a duplicate, an
+// undecodable frame or a reply error.
 func (r *relaySessions) handler(ns *natsSessions, session int, agentSubject string, nonce int64) nats.MsgHandler {
 	return func(m *nats.Msg) {
+		if m.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			if m.Reply != "" {
+				_ = m.Respond(relayReplyDone)
+			}
+			return
+		}
 		now := time.Now().UnixNano()
 		r.reply(m, relayReplyReceived)
 		r.frameCount.Add(1)

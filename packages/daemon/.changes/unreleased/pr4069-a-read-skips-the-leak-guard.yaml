@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  On a pod, a `legion gh` call that writes nothing no longer reads the repository's visibility,
+  so it costs no extra REST request and no longer fails with `LEAK CHECK SETUP ERROR` when the
+  installation's REST limit is spent. It still runs the shared leak check, which refuses a
+  credential in it, and it is refused when that check cannot run; only the visibility read and
+  the private-name pass are skipped. Such a call is typed in a read grammar: a listed read
+  (`pr view`, `pr list`, `pr diff`, `run view`, `run list` and the rest) typed by its own name
+  with only the options its list names, never `--web`, or a `gh api` call of one relative REST
+  endpoint with only `--jq`/`-q`, `--template`/`-t`, `--cache`, `-X GET`/`--method GET` (the
+  word `GET` alone), `-H`/`--header` naming no method override, `--paginate` and `--slurp`.
+  Each option is its own word and each value the next word, neither empty nor beginning with
+  `-`, so `--repo=o/r`, `-q.x`, `-XGET`, `-cw` and `--` are outside it. A read typed any other
+  way gets the whole guard, as before. The rule, which admits only what the shared check also
+  reads as a read, is `ghWritesNothing` in `packages/daemon/cmd/legion/gh_reads.go`.
+  The guard skips only under the shared check that rule was proven against, the one the worker
+  image pins, which it tells by the sha256 of its `public_leak_check.py`; under any other check,
+  a tmux pane's of another version included, every call gets the whole guard as before. gh runs
+  such a call with `GH_PAGER=cat` and without `GH_BROWSER` or `BROWSER`. The call log records it
+  as `visibility="checked-only"`.

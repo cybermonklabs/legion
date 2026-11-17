@@ -18,20 +18,23 @@
 // packages/daemon/internal/prompts/roles_test.go), and the planner's rule in the planner's own
 // part alone (roles_test.go's TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst).
 // Neither file starts anything, so neither says that a role process was ever launched with that
-// text. This driver reads the text from the one place that says it: the Oh My Pi process's own
-// command line, /proc/<pid>/cmdline. The pid the claim's locator carries is the
+// text. This driver reads the text from what the process itself was started with: the Oh My Pi
+// process's own command line, /proc/<pid>/cmdline, and the file its one `--append-system-prompt`
+// word names. The pid the claim's locator carries is the
 // `legion worker-shim`'s (parseLocalIncarnation, over the incarnation localruntime_live_test.go's
 // launch mints), and the shim starts Oh My Pi as a child
 // rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
 // for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
 // shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this
 // proof claims. The argv is NUL-separated, and the word after `--append-system-prompt` is the
-// whole prompt the agent runs under.
+// path of the file that holds the whole prompt the agent runs under: Oh My Pi reads a value with
+// no newline as a path and appends the file's contents, and the launch writes that file before
+// the process starts and never while it runs (runtime.WriteSystemPrompt).
 //
 // It reads the prompt from nowhere else on purpose. The composer, the role prompt files below the
 // state directory and the SpawnSpec the runtime recorded each hold the text before a process ever
 // took it, so a proof that read any of the three would prove again what the unit tests prove.
-// Only the kernel's copy of the argv says what the agent was started with.
+// Only the kernel's copy of the argv says which file the agent was started with.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
@@ -149,7 +152,7 @@ var podRuleForRootArchitect = []string{
 var completionAfterWorkForPlanner = []string{
 	"`head` (the 40-character lower-case commit",
 	"to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds",
-	"record it with `dispatch handoff-write --issue <issue> --phase plan --body-file \"$TMPDIR/<issue>-plan.json\"`, then report completion",
+	"Record it with `dispatch handoff-write --issue <issue> --phase plan --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, then report completion",
 }
 
 // rolePromptRuleLive is one run of the proof: the booted daemon, the one tree it seeds, and the
@@ -410,18 +413,19 @@ func (r *rolePromptRuleLive) carriesTheRule(what, rule string, token claim.Token
 
 // ---- what a step reads --------------------------------------------------------------------------
 
-// launchedPromptOf is the `--append-system-prompt` word the claim's own Oh My Pi was launched
-// with, read from that process's /proc/<pid>/cmdline, the kernel's own copy of its argv, one word
-// per NUL-separated field.
+// launchedPromptOf is the prompt the claim's own Oh My Pi was launched with: the contents of the
+// file the `--append-system-prompt` word of that process's /proc/<pid>/cmdline names, the
+// kernel's own copy of its argv, one word per NUL-separated field.
 //
 // The pid the claim's locator carries is the shim's, not the agent's: localruntime_live_test.go
-// launches `legion worker-shim … -- omp --mode rpc --append-system-prompt <prompt>` and records
-// that process's pid, and the shim starts Oh My Pi as a child (internal/shim/shim.go's
+// launches `legion worker-shim … -- omp --mode rpc --append-system-prompt <prompt file>` and
+// records that process's pid, and the shim starts Oh My Pi as a child (internal/shim/shim.go's
 // exec.Command) rather than exec'ing into it. So this walks /proc for the shim's own child whose
 // argv[0] is the Oh My Pi this run launches, and reads that child. A shim that dropped or
 // rewrote the prompt fails here, where a read of the shim's own argv would pass it.
 //
-// A shim with no such child, a command line it cannot read, and an argv with no prompt word each
+// A shim with no such child, a command line it cannot read, an argv with no prompt word, and a
+// prompt file that cannot be read — which Oh My Pi would have taken as the prompt's text — each
 // end the proof naming what it found.
 func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt {
 	t := r.t
@@ -453,7 +457,13 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 			t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with %s as the last word of its argv, so it carries no prompt: %s",
 				token, pid, shim, promptWord, argvSummary(argv))
 		}
-		return launchedPrompt{pid: pid, shim: shim, prompt: argv[i+1]}
+		file := argv[i+1]
+		text, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with %s %s, which could not be read, so it ran under that path's own text: %v",
+				token, pid, shim, promptWord, file, err)
+		}
+		return launchedPrompt{pid: pid, shim: shim, prompt: string(text)}
 	}
 	t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with no %s word at all; its argv is %s",
 		token, pid, shim, promptWord, argvSummary(argv))

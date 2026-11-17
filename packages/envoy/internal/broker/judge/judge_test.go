@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -251,37 +250,6 @@ func TestTheModelsWordsAreClampedAndFiltered(t *testing.T) {
 			t.Errorf("the row's reason is %q; want the refused runes dropped and the rest kept", reason)
 		}
 	})
-}
-
-// TestARawAnswerAndAReasonCarryNoRefusedRune pins the filter itself over the two bounds, as the
-// row and the log line need it: every rune record.validateReason refuses is gone, and what is
-// left is no longer than the bound.
-func TestARawAnswerAndAReasonCarryNoRefusedRune(t *testing.T) {
-	refused := "\u0000\u0001\u200b\u202e\u2028\u2029\ufeff\n\r\t"
-	for _, c := range []struct {
-		name  string
-		in    string
-		limit int
-		want  string
-	}{
-		{"a reason of refused runes alone", refused, maxReasonRunes, ""},
-		{"a reason around them", "a" + refused + "b", maxReasonRunes, "ab"},
-		{"a reason at its bound", strings.Repeat("é", 500), maxReasonRunes, strings.Repeat("é", maxReasonRunes)},
-		{"a raw answer at its bound", strings.Repeat("x", 50_000), maxRawAnswer, strings.Repeat("x", maxRawAnswer)},
-		{"a string inside both bounds", "plain words", maxReasonRunes, "plain words"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			got := sanitize(c.in, c.limit)
-			if got != c.want {
-				t.Errorf("sanitize(%q, %d) = %q; want %q", c.in, c.limit, got, c.want)
-			}
-			for _, r := range got {
-				if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp) {
-					t.Errorf("sanitize kept %q, a rune a reason may not carry", r)
-				}
-			}
-		})
-	}
 }
 
 // TestAnApprovalTheRequestMachineRefusedStillRecordsItsVerdict: a person decided the request

@@ -1,4 +1,4 @@
-// Checks the guides' layout; runs on demand (bun test scripts/semantic-line-breaks.guides.test.ts) and is deliberately not in CI: the deployment's rule is an instruction first, and a gate only once a measurement shows one is needed.
+// Checks the guides' layout, on demand (bun test scripts/semantic-line-breaks.guides.test.ts) and in CI: ci.yaml's test job runs it in the step "Check the guides' semantic line breaks", behind the guide_layout filter, which names the guides below and the checker it spawns.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -64,4 +64,6 @@ test("the root guide, the e2e README and the Kubernetes doc hold no raw HTML blo
     visit(tree, false);
   }
   expect(found).toEqual([]);
-});
+  // Parsing the three guides took 5.6 s on an issue pod on 2026-11-16, past bun's default 5 s,
+  // and grows with them; the deadline is for a parse that hangs, not a measure of its speed.
+}, 60_000);

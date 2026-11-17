@@ -11,6 +11,7 @@ import {
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundUnavailable,
   RELAY_PROGRESS_INTERVAL_MS,
+  RelayHeader,
   type RelayMessage,
   type RelayReply,
   registerWithRelay,
@@ -241,6 +242,43 @@ describe("relay frames", () => {
     expect(replies).toEqual([["_INBOX.bad", "done"]]);
     expect(handed).toEqual([]);
     expect(logs.some((line) => line.includes("undecodable"))).toBe(true);
+  });
+
+  // The listener's connection probe rides the relay subject with one header and no body. Read as
+  // a frame it would move the resume point past stored messages; logged, it would put a line in
+  // the session's log for every send to it.
+  test("a connection probe is answered done, logs nothing, reaches no host and moves no resume point", () => {
+    const { delivery, replies, handed, logs, gaps, persisted } = setup();
+    const probe = (reply: string | undefined): RelayMessage => ({
+      data: new Uint8Array(),
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : "") },
+      reply,
+    });
+    expect(RelayHeader.probe).toBe("Envoy-Probe");
+
+    delivery.receive(probe("_INBOX.probe.1"));
+    expect(replies).toEqual([["_INBOX.probe.1", "done"]]);
+    expect(delivery.resumePoint()).toBeUndefined();
+    expect(persisted).toEqual([]);
+
+    delivery.receive(relay({ seq: 7 }));
+    handed[0]?.done();
+    const point = delivery.resumePoint();
+    const writes = persisted.length;
+    const answered = replies.length;
+    const logged = logs.length;
+    delivery.receive(probe("_INBOX.probe.2"));
+    // A probe with no inbox asks nothing, so nothing answers it.
+    delivery.receive(probe(undefined));
+
+    expect(replies.slice(answered)).toEqual([["_INBOX.probe.2", "done"]]);
+    expect(handed).toHaveLength(1);
+    expect(delivery.resumePoint()).toEqual(point);
+    expect(point).toEqual({ stream_id: STREAM, seq: 7 });
+    expect(persisted).toHaveLength(writes);
+    expect(gaps).toEqual([]);
+    expect(logs).toHaveLength(logged);
+    expect(logs.some((line) => line.includes("undecodable"))).toBe(false);
   });
 });
 

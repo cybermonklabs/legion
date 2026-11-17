@@ -131,7 +131,10 @@ type Reconciler struct {
 	Pace time.Duration
 	// PassTimeout is how long one pass may run, which its caller sets to the interval its loop
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
-	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded.
+	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded. A
+	// rate limit GitHub answers as the bound falls is still written to the shared ledger after
+	// it, for up to githubapp's limitRecordTimeout (5 s), so a pass's last write can end that
+	// much past PassTimeout.
 	PassTimeout time.Duration
 	// Instance answers this process's row in the registry of live server processes, the id
 	// processes.Register gave it, and "" while the process holds none yet. It is what each pass

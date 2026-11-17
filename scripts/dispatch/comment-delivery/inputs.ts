@@ -1,3 +1,5 @@
+import { DELIVERY_ATTEMPT_STATES } from "../../../packages/contracts/src/dispatch-api";
+
 // The comment delivery audit's three input files (#2366), read and checked: comments.csv,
 // receipts.tsv and receipts-counts.txt, as report.ts gives them. Every problem is pushed to the
 // caller's list; a row that cannot be read makes no model value.
@@ -56,7 +58,7 @@ const COMMENT_LEVEL_COLUMNS = [
   "route_source",
 ] as const;
 const SHAPES = ["ask_thread", "reply", "anchored", "conversation"] as const;
-const MENTION_STATES = ["", "pending", "sent", "failed"] as const;
+const MENTION_STATES = ["", ...DELIVERY_ATTEMPT_STATES] as const;
 const MENTION_MODES = ["btw", "aside", "steer"] as const;
 const STATUSES = ["received", "not_received", "unknown"] as const;
 const UNKNOWN_REASONS = ["session_not_in_store", "role", "btw"] as const;

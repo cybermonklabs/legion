@@ -78,10 +78,11 @@ func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseR
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
 }
 
-// WakeTask is the one task a woken role is given, the sentence its first turn reads before
-// anything else: which wake brought its pod back and what that wake was about. R6 asks for
-// exactly one such task or message per wake, and the outbox row that carries it is written in the
-// wake's own transaction, so a wake that commits has its task and one that does not has neither.
+// WakeTask is the one task a woken role is given: which wake brought its pod back and what that
+// wake was about. A message Envoy kept for the role can reach the woken session as a card before
+// this task does, so the role message sentence says so. R6 asks for exactly one such task or
+// message per wake, and the outbox row that carries it is written in the wake's own transaction,
+// so a wake that commits has its task and one that does not has neither.
 func WakeTask(kind, detail string) string {
 	const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
@@ -91,7 +92,10 @@ func WakeTask(kind, detail string) string {
 			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
-			") while your pod was gone, which nothing kept: the sender's next attempt reaches you now."
+			") while your pod was gone. Envoy keeps a role message for one hour: a message kept for your role " +
+			"reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
+			"hour ended before you came back, and Envoy tells its sender when it drops one. " +
+			"A message sent with keep: false is not kept, and its sender sends it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
 			") while your pod was gone, which nothing kept: the sender's next attempt reaches you now."
@@ -258,12 +262,12 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
-// works, and the architect, whose phases (accepting, and every phase of a tree root the table
-// gives no worker) are the architect's own turn rather than a worker's. It is the one statement of
-// "the worker of the open phase" the release reads: which role a release arms a backstop for —
-// an architect gets none, because nothing of its own is due and a sub-architect woken for nothing
-// would hold a pod open for the backstop period — which role a CI settlement wakes, and which
-// live claim of a pod has a phase reminder armed in it.
+// works, and the architect, whose phases (admitted and accepting) are the architect's own turn
+// rather than a worker's. It is the one statement of "the worker of the open phase" the release
+// reads: which role a release arms a backstop for — an architect gets none, because nothing of
+// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
+// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
+// armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
 	if role := phase.RoleFor(p); role != claim.RoleArchitect {
 		return role

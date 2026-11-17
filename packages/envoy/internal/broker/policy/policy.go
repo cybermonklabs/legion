@@ -198,6 +198,17 @@ func TrimForShape(value, shape string) (string, bool) {
 	}
 }
 
+// DecodeValue refuses value, which a secret of kind holds under shape, its shape tag, when that
+// kind's minter would refuse it: it decodes the value a release hands the minter (TrimForShape)
+// with secrets.ParseValue, the decoder every minter calls, so the error names what is wrong in the
+// minter's own words and never quotes the value. It is the one statement of trim-then-decode,
+// which Current's value reads and `agent-secrets`' writes both call.
+func DecodeValue(kind, shape, value string) error {
+	spend, _ := TrimForShape(value, shape)
+	_, err := secrets.ParseValue(kind, spend)
+	return err
+}
+
 // ErrMaxGrantMalformed is a max-grant tag that is not a Go duration of at least one second.
 var ErrMaxGrantMalformed = errors.New("max-grant is a duration of at least 1s")
 
@@ -676,9 +687,17 @@ func ParseKindSource(source string) (kind, storeSource string, minted bool, err 
 // prefix, or the one that does was refused.
 var ErrUnknownSecret = errors.New("no agent secret has this name")
 
+// ErrPendingValue is a name whose secret exists and waits for its first value
+// (ReasonPendingValue): `agent-secrets secret create` made it and its owner has not yet stored the
+// value. Unlike ErrUnknownSecret it is not final, so a request for it is refused with this, naming
+// the secret, never as unknown.
+var ErrPendingValue = errors.New("exists and awaits its first value; ask again after its owner stores it")
+
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
-// the one that does is scheduled for deletion. It is not a refusal, so it is never logged as
-// RefusedMessage.
+// the one that does is scheduled for deletion. It is not a refusal, so it is never in
+// Set.Refused nor written as RefusedMessage: a reread of a name nobody created adds no
+// broker_unservable_secrets series, and a refused secret found absent writes ServableMessage
+// with now=absent.
 const ReasonAbsent = "absent"
 
 type ownerKind int
@@ -822,6 +841,55 @@ type Set struct {
 	// spending the untrimmed value.
 	Version string
 	Secrets map[string]Secret
+	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
+	// name in the store (the name its RefusedMessage line carries), with why. It is not in
+	// Version: a refused secret is served to nobody, so a refusal that comes, goes or changes its
+	// reason re-evaluates no live grant the served secrets did not already move. Current compares
+	// it with the set before to write the state-change lines, and broker_unservable_secrets
+	// (NewUnservableSecrets) reads it at each scrape.
+	Refused map[string]Refusal
+	// Pending is every secret under the prefix waiting for its value (ReasonPendingValue), keyed
+	// as Refused is. It is served to nobody and refused for nothing: it is in neither Version nor
+	// broker_unservable_secrets, and Current writes PendingMessage for an id that enters it.
+	Pending map[string]Pending
+	// versions is the version of each served kind secret's value as the load or reread that read
+	// it listed it (secrets.Listing.Version), keyed by Name. It is in neither Secret nor Version,
+	// so a write of a new value moves no Version and ends no grant: Current decodes the value of
+	// each version, kind and shape it has not decoded, and refuses the secret only when the
+	// decoder does (ReasonValueMalformed).
+	versions map[string]string
+}
+
+// ValueVersion is the version of the kind secret name's value as s lists it, and "" for a name s
+// lists no kind secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
+// the refusal is keyed on the version the policy listed when the value was read.
+func (s *Set) ValueVersion(name string) string { return s.versions[name] }
+
+// Refusal is why the policy refuses to serve one secret under the prefix, as a load found it.
+type Refusal struct {
+	// Reason is one of the Reason* refusal constants.
+	Reason string
+	// Owner is the secret's owner tag as the store holds it, and "" for ReasonOwnerTagMissing and
+	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows.
+	Owner string
+}
+
+// Pending is one secret under the prefix waiting for its first value (ReasonPendingValue), as a
+// load found it. It is no refusal, and so no Refusal.
+type Pending struct {
+	// Owner is the secret's owner tag as the store holds it.
+	Owner string
+	// Created is when the store created the secret, so a caller can tell the wait has ended
+	// (Current.PendingValue, pendingAt) without a reload.
+	Created time.Time
+}
+
+// setOf is NewSet(secrets) carrying refused, pending and versions, which NewSet's Version leaves
+// out.
+func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[string]Pending, versions map[string]string) *Set {
+	set := NewSet(secrets)
+	set.Refused, set.Pending, set.versions = refused, pending, versions
+	return set
 }
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets

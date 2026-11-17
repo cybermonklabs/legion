@@ -41,7 +41,11 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			if route == "approved" {
 				tier = policy.TierHuman
 			}
-			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, "ordinary-value"))
+			// The stored value is one the google-login decoder reads, so the retag below is
+			// served as that kind at once: the policy refuses a kind secret whose value it cannot
+			// decode (policy.ReasonValueMalformed), and the race needs it served.
+			ordinary := policytest.KindValue(policy.KindGoogleLogin)
+			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, ordinary))
 			minted := 0
 			machine.Minters = map[string]Minter{
 				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -49,7 +53,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 					return secrets.Minted{Value: "access-token"}, nil
 				},
 			}
-			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "")
+			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "", nil)
 			if err != nil {
 				t.Fatalf("Create = %v", err)
 			}
@@ -61,7 +65,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 				}
 				grantID = *request.GrantID
 			case "reused":
-				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "")
+				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "", nil)
 				if err != nil || reused.GrantID == nil || request.GrantID == nil || *reused.GrantID != *request.GrantID {
 					t.Fatalf("second Create = %+v, %v; want the first request's grant reused", reused, err)
 				}
@@ -79,14 +83,14 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			store := fixtureStore(machine)
 			var duringErr error
 			machine.Secrets = retagDuringRead{Reader: machine.Secrets, once: &sync.Once{}, err: &duringErr, during: func(ctx context.Context) error {
-				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, "ordinary-value"))
+				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, ordinary))
 				if err := machine.Policy.Refresh(ctx); err != nil {
 					return err
 				}
 				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, canary))
 				return nil
 			}}
-			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil)
+			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
 			if duringErr != nil {
 				t.Fatalf("the retag during the read: %v", duringErr)
 			}

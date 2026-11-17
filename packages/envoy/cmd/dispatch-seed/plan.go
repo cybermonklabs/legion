@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // seedPlan is every row the run will write, with its key, its uuid and its time, decided before
@@ -192,8 +193,8 @@ func (p *seedPlan) planProjects() {
 		p.projects[index] = projectPlan{
 			Key:     key,
 			Name:    p.vocabulary.phrase(p.random, 3) + " project",
-			Repo:    fmt.Sprintf("seedorg/%s", lower(key)),
-			OwnRepo: fmt.Sprintf("seedorg/%s-service", lower(key)),
+			Repo:    fmt.Sprintf("seedorg/%s", fold.ASCII(key)),
+			OwnRepo: fmt.Sprintf("seedorg/%s-service", fold.ASCII(key)),
 			Issues:  issues,
 		}
 	}
@@ -507,14 +508,4 @@ func (p *seedPlan) planMessages() {
 		}
 		p.messages[index] = message
 	}
-}
-
-func lower(value string) string {
-	out := []byte(value)
-	for index := range out {
-		if out[index] >= 'A' && out[index] <= 'Z' {
-			out[index] += 'a' - 'A'
-		}
-	}
-	return string(out)
 }

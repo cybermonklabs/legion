@@ -21,6 +21,7 @@ import (
 // (anchorBlock).
 const (
 	codeDocSchema             = "DOC_SCHEMA"
+	codeDocNewerContent       = "DOC_NEWER_CONTENT"
 	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
 	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
 	codeInternal              = "INTERNAL"
@@ -39,15 +40,20 @@ const (
 // evicted, and its retry meets the document itself.
 //
 // A stored history this request itself could not decode is DOCUMENT_UNLOADABLE, the state a
-// rebuild repairs. A tree outside the schema is DOC_SCHEMA, which both take only after the
-// branches that name the caller's own input or a block the document does not hold, so a refusal
-// whose reason the renderer gave (an ask block that cannot render) stays that refusal.
+// rebuild repairs. A tree holding an element this build does not know is DOC_NEWER_CONTENT: a
+// newer build wrote it while two builds serve one database, so the caller tries again later,
+// perhaps on that build, and no repair applies. A tree outside the schema is DOC_SCHEMA, which both
+// take only after the branches that name the caller's own input or a block the document does not
+// hold, so a refusal whose reason the renderer gave (an ask block that cannot render) stays that
+// refusal.
 func documentErrorCode(err error) string {
 	switch {
 	case errors.Is(err, docs.ErrServiceUnavailable):
 		return codeDocServiceUnavailable
 	case errors.Is(err, docs.ErrDocumentUnloadable):
 		return codeDocumentUnloadable
+	case errors.Is(err, docs.ErrDocNewerContent):
+		return codeDocNewerContent
 	case errors.Is(err, docs.ErrDocSchema):
 		return codeDocSchema
 	}
@@ -108,6 +114,21 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	case codeDocumentUnloadable:
 		writeError(w, documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
 		slog.Warn("dispatch: API document history cannot load", "error", err)
+		return
+	case codeDocNewerContent:
+		// The message is the document's own (docs.NewerContentError), the same on every route.
+		var newer *docs.NewerContentError
+		message := docs.ErrDocNewerContent.Error()
+		var elements []string
+		if errors.As(err, &newer) {
+			message = newer.Error()
+			elements = newer.Elements
+		}
+		writeError(w, documentCode, http.StatusConflict, message)
+		// The operator's line names the elements the document holds and nothing taken from the
+		// error: its chain carries whatever the request wrapped it in, the caller's own identity
+		// among it, which no log of ours writes (CodeQL go/clear-text-logging).
+		slog.Warn("dispatch: API document holds an element this build cannot read", "elements", elements)
 		return
 	}
 	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one

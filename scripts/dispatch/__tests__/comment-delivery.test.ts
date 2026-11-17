@@ -234,6 +234,20 @@ describe("the pairs and the comments", () => {
     );
   });
 
+  test("a queued mention is addressed, is not delivered yet, and is refused by nothing", () => {
+    const comments = input.comments.replace(
+      `${CLAIMANT},claimant,false,,,,,,,`,
+      `${CLAIMANT},claimant;mention,false,${CLAIMANT.slice(8)},` +
+        "01a1eeee-1111-7222-8333-000000000002,,steer,queued,,"
+    );
+    const withQueued = judge({ ...input, comments });
+    const queued = judged(withQueued, REPLY);
+    expect(queued.pairs[0]?.pair.mentionState).toBe("queued");
+    expect(queued.verdict).toEqual({ class: "not-delivered", cause: "mention-queued" });
+    expect(withQueued.commentCounts.causes.get("mention-queued")).toBe(1);
+    expect(withQueued.commentCounts.causes.get("not-addressed:claimant+mention")).toBeUndefined();
+  });
+
   test("not-running reads the checked session's start too, and an end left empty means still running", () => {
     const early = input.receipts.replace(
       `${id(10)}\t1010\tsession:${SESSION_A}\ttrue\t${SESSION_A}\tnot_received\t\t\t\t\t\t2026-10-01T00:00:00.000Z\t2026-10-31T00:00:00.000Z`,
@@ -281,8 +295,8 @@ describe("the document", () => {
       "Total 14 = delivered 4 + not delivered 7 (never-published 1, no-target 1, " +
         "not-addressed:claimant 2, not-addressed:route 0, not-addressed:follower 0, " +
         "not-addressed:asker 0, not-addressed:mention 0, mention-failed:session-not-live 1, " +
-        "mention-failed:receipt-timeout 0, mention-failed:other 0, not-running 1, " +
-        "running-no-row 1) + unknown 3"
+        "mention-failed:receipt-timeout 0, mention-failed:other 0, mention-queued 0, " +
+        "not-running 1, running-no-row 1) + unknown 3"
     );
     expect(lines[4]).toBe(
       "- Window: comments that people created from 2026-10-01T00:00:00Z (included) to " +
@@ -292,8 +306,8 @@ describe("the document", () => {
       "Total 15 = delivered 3 + not delivered 9 (never-published 1, no-target 1, " +
         "not-addressed:claimant 2, not-addressed:route 0, not-addressed:follower 0, " +
         "not-addressed:asker 0, not-addressed:mention 0, mention-failed:session-not-live 1, " +
-        "mention-failed:receipt-timeout 0, mention-failed:other 0, not-running 1, " +
-        "running-no-row 3) + unknown 3"
+        "mention-failed:receipt-timeout 0, mention-failed:other 0, mention-queued 0, " +
+        "not-running 1, running-no-row 3) + unknown 3"
     );
     expect(first.stdout).toContain(
       "## Each pair\n\n" +
@@ -321,6 +335,14 @@ describe("the document", () => {
         "- Comments: 14 = with a receipt 4 + without 10. A comment with a receipt has a row with " +
         "the status `received` in receipts.tsv, listed or unlisted.\n" +
         "- A person's comment rows from which no id was read: 0.\n"
+    );
+    // Which sessions the transcript store holds, which is what an unknown of this reason means: it
+    // holds the Legion pods' sessions too, so such an unknown of a pod's session is not expected.
+    expect(first.stdout).toContain(
+      "- `session_not_in_store`: the transcript store does not hold the session. The store holds " +
+        "the Oh My Pi sessions of the dev boxes and of the Legion pods, and no Claude Code session " +
+        "of either. It loads each machine on its own schedule, so a session newer than its " +
+        "machine's last load is not in it yet.\n"
     );
     expect(first.stdout).toContain(
       `- Comment ${id(7)}: \`session:01a1f001-0000-7000-8000-00000000000f\`, first at ` +

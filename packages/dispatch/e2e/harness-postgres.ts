@@ -33,6 +33,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { Interrupted } from "./local-instance-support";
@@ -44,15 +45,72 @@ const execFileAsync = promisify(execFile);
 export const pgImageVariable = "DISPATCH_E2E_PG_IMAGE";
 /** This directory's `initdb` and `pg_ctl` serve every stack. */
 export const pgBinVariable = "DISPATCH_E2E_PG_BIN";
+/** The connections a stack's server must allow beyond its superuser reserve, as
+ *  `connectionsArgs` prints them, given by a caller that cannot run `go`. */
+export const pgConnectionsVariable = "DISPATCH_E2E_PG_CONNECTIONS";
 
 /** The database every stack's server holds, named the same in each: the stacks are separate
  *  clusters, and nothing outside a stack reads it. */
 const databaseName = "dispatch_e2e";
-/** A stack's connection limit. One Dispatch process opens up to `store.ConnectionsPerProcess`
- *  (89, packages/envoy/internal/dispatch/store/pool.go), two-process mode runs two of them on
- *  one stack, the harness's psql sessions open their own, and Postgres reserves 3 for
- *  superusers: 200 clears all of that with room for a pool that has not closed yet. */
-const maxConnections = 200;
+/** packages/envoy, the Go module `connectionsArgs` runs in. */
+const envoyDirectory = fileURLToPath(new URL("../../envoy", import.meta.url));
+/** `go` with these prints `testlimits.ServerConnections`
+ *  (packages/envoy/internal/dispatch/testlimits): the connections a Dispatch test server must
+ *  allow beyond its superuser reserve. */
+const connectionsArgs = ["run", "./internal/dispatch/store/cmd/connections"];
+/** Postgres's default `superuser_reserved_connections`. The harness does not set it, so each
+ *  stack's server keeps this many slots for superusers, and the suite's connections get none. */
+const superuserReserved = 3;
+/** A stack's connection limit: `testlimits.ServerConnections` plus `superuserReserved`. It comes
+ *  from the Go code, so the harness holds no count of a Dispatch process's pool. A server that
+ *  allows fewer does not fail where the size is wrong. It fails later, as a 53300 refusal inside
+ *  a room, a lease or a socket, and nothing in that failure names the cause. The first stack
+ *  that starts reads it, once per run.
+ *
+ *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every job of
+ *  `.github/workflows/dispatch-browser.yaml` that starts stacks here sets it from a step that
+ *  runs `connectionsArgs` before its browser step: the `shard` and `alone` jobs run in a
+ *  container with no Go, so their `binaries` job runs it, and the `visual` job runs it in a step
+ *  of its own, outside its browser step's budget. Unset, which is a developer's or an issue
+ *  pod's run, where Go is installed, the harness runs `go` with `connectionsArgs` itself. */
+let maxConnections: Promise<number> | undefined;
+async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
+  const given = env[pgConnectionsVariable];
+  if (given !== undefined) {
+    const server = positiveWholeNumber(given);
+    if (server === undefined) {
+      throw new Error(
+        `The Dispatch e2e harness cannot start: ${pgConnectionsVariable}=${JSON.stringify(given)} ` +
+          "is not a positive whole number of connections."
+      );
+    }
+    return server + superuserReserved;
+  }
+  const named = `\`go ${connectionsArgs.join(" ")}\` in ${envoyDirectory}`;
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("go", connectionsArgs, { cwd: envoyDirectory }));
+  } catch (error) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${named} failed: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const server = positiveWholeNumber(stdout);
+  if (server === undefined) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${named} printed ${JSON.stringify(stdout)}, ` +
+        "not a positive whole number of connections."
+    );
+  }
+  return server + superuserReserved;
+}
+/** `text` as a positive whole number, one optional trailing newline allowed; else undefined. */
+function positiveWholeNumber(text: string): number | undefined {
+  const printed = /^([1-9][0-9]*)\n?$/.exec(text)?.[1];
+  const value = printed === undefined ? Number.NaN : Number(printed);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
 /** A stack's server. Its data dies with the run and its database is 46 MB with a working set of
  *  one scenario's rows, so each setting here gives up something only a database that outlives
  *  its run can use. What each costs if the database were real is on its own line. Measured in an
@@ -60,7 +118,6 @@ const maxConnections = 200;
  *  own median (51.5 ms before, 52.0 ms after): they take work off a stack's server that this
  *  pod's two cores were not short of, and the runner's four are. */
 const settings = [
-  `max_connections=${maxConnections}`,
   // Crash safety. Nothing here survives the run, so a cluster that dies loses nothing anyone
   // reads: a real database would lose committed transactions (`synchronous_commit`) or the
   // whole cluster (`fsync`, `full_page_writes`) to a power cut.
@@ -92,6 +149,11 @@ const settings = [
   "checkpoint_timeout=60min",
   "max_wal_size=4GB",
 ];
+/** Every setting a stack's server starts with: its connection limit, then `settings`. */
+async function serverSettings(env: NodeJS.ProcessEnv): Promise<string[]> {
+  maxConnections ??= readMaxConnections(env);
+  return [`max_connections=${await maxConnections}`, ...settings];
+}
 /** How long a stack's server may take to answer `select 1`. */
 const readyMs = 120_000;
 /** How many ports a cluster tries before it gives up (see `freePort`). */
@@ -182,11 +244,18 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
 
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. */
-async function startCluster(bin: string, data: string, dir: string, what: string): Promise<number> {
+async function startCluster(
+  bin: string,
+  data: string,
+  dir: string,
+  what: string,
+  env: NodeJS.ProcessEnv
+): Promise<number> {
   let last = "";
+  const started = await serverSettings(env);
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
-    const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...settings.map((s) => `-c ${s}`)];
+    const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
     try {
       await execFileAsync(join(bin, "pg_ctl"), [
         "-D",
@@ -218,7 +287,7 @@ async function startCluster(bin: string, data: string, dir: string, what: string
   );
 }
 
-function binariesProvider(dir: string, bin: string): StackPostgres {
+function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): StackPostgres {
   for (const tool of ["initdb", "pg_ctl"]) {
     if (!existsSync(join(bin, tool))) {
       throw new Error(
@@ -244,7 +313,7 @@ function binariesProvider(dir: string, bin: string): StackPostgres {
       "-E",
       "UTF8",
     ]);
-    const port = await startCluster(bin, data, templateDir, "the stacks' Postgres template");
+    const port = await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
       await ready(admin, "the stacks' Postgres template", signal);
@@ -273,7 +342,7 @@ function binariesProvider(dir: string, bin: string): StackPostgres {
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        const port = await startCluster(bin, data, stackDir, what);
+        const port = await startCluster(bin, data, stackDir, what, env);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
         };
@@ -306,13 +375,14 @@ async function containerLog(container: string): Promise<string> {
   }
 }
 
-function imageProvider(image: string, run: string): StackPostgres {
+function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): StackPostgres {
   return {
     name: `the Postgres image ${image}`,
     start: (index, signal) =>
       stackOf(signal, async (): Promise<StackDatabase> => {
         const what = `stack ${index}'s Postgres`;
         let refused = "";
+        const started = await serverSettings(env);
         for (let attempt = 1; attempt <= bindAttempts; attempt++) {
           // The name carries the attempt: a container whose port was taken keeps its name until it
           // is removed, and the run removes it with the stack.
@@ -345,7 +415,7 @@ function imageProvider(image: string, run: string): StackPostgres {
               // "an unused mount/volume" and then exits, since 18 wants one mount a level up
               // (docker-library/postgres#1259).
               image,
-              ...settings.flatMap((setting) => ["-c", setting]),
+              ...started.flatMap((setting) => ["-c", setting]),
             ]);
           } catch (error) {
             // `docker run` publishes the port itself, so this is the port another listener took
@@ -407,7 +477,7 @@ export function stackPostgres(options: {
         "from its initdb and pg_ctl."
     );
   }
-  if (image !== "") return imageProvider(image, options.run);
-  if (bin !== "") return binariesProvider(options.dir, bin);
+  if (image !== "") return imageProvider(image, options.run, env);
+  if (bin !== "") return binariesProvider(options.dir, bin, env);
   return undefined;
 }

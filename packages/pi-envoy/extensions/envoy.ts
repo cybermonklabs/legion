@@ -116,6 +116,7 @@ import {
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
+  publishResultDetails,
   sendConfirmationText,
   sessionsOnMachine,
   toMessageMetadata,
@@ -205,7 +206,11 @@ import {
   taskWasAbandoned,
 } from "../src/registration-state";
 import { ServerClock } from "../src/server-clock";
-import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-context";
+import {
+  type CarriedAnswers,
+  carriedAnswers,
+  withSessionAnswers,
+} from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
 import { TypedPictures } from "../src/typed-pictures";
 import {
@@ -315,6 +320,43 @@ export function setNatsConnectForTests(dial: typeof connect): void {
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+/**
+ * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`; agent-infra's
+ * sessions workload sets it once t-e-32 renames its `RoleEnv`, `AGENT_SESSION_ROLE` today), taken
+ * into a process-wide slot when this module loads. Every extension instance of the process reads
+ * it from the slot, an instance a later load of this entry makes included (a `task` subagent's, or
+ * each top-level session of an ACP host).
+ *
+ * The load leaves the variable set to "" rather than deleting it. A delete reaches `process.env`
+ * alone: the C environment the process started with keeps the value, and a child Oh My Pi starts
+ * in a PTY (its bash tool's `pty: true`) begins from that environment with the variables built
+ * from `Bun.env` laid over it, so a deleted variable comes back. "" lies over it in every
+ * environment built from `Bun.env`, the PTY's and the plain shell's (`procmgr`), and a child's
+ * load reads "" as no role, so an `omp` an agent runs inside the pod claims none of the pod's
+ * roles. A later load in this process that finds "" keeps the role held; one that finds a value
+ * set again takes that one. Only a `Bun.spawn` that names no `env` still hands a child the value,
+ * since it passes the environment the process started with, which no write here reaches.
+ */
+const SESSION_ROLE = Symbol.for("legion.pi-envoy.session-role");
+
+interface GlobalSessionRole {
+  [key: symbol]: string | undefined;
+}
+
+const sessionRoleStore = globalThis as unknown as GlobalSessionRole;
+
+if (process.env.ENVOY_SESSION_ROLE !== undefined) {
+  const launched = process.env.ENVOY_SESSION_ROLE.trim();
+  if (launched !== "") sessionRoleStore[SESSION_ROLE] = launched;
+  process.env.ENVOY_SESSION_ROLE = "";
+}
+
+// The slot outlives every instance of this entry in the process, so a suite clears it between
+// rows, as it clears the NATS stand-in above. Production callers never call this.
+export function resetSessionRoleForTests(): void {
+  delete sessionRoleStore[SESSION_ROLE];
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
@@ -1031,10 +1073,15 @@ export default function envoyExtension(pi: PiApi): void {
   // record. Oh My Pi refreshes the shell's environment after `session_start`, `session_switch`
   // and `session_branch`; any other caller refreshes it itself. A caller after `session_start`
   // passes `ui`, so a record it cannot write is a notice at once: the start notices are shown once.
+  // A session with no id yet names none, as "" rather than a delete: a delete reaches
+  // `process.env` alone, and the C environment the process started with keeps a value it
+  // inherited (an omp started from another session's shell), which a child Oh My Pi starts in a
+  // PTY begins from with the variables built from `Bun.env` laid over it. "" lies over that value,
+  // and every reader takes "" as unset (the `dispatch` CLI, `legion git`, this file, AskGate).
   const bindDispatchSession = (id: string, ui?: SessionContext["ui"]): void => {
     process.env.DISPATCH_STATE_DIR ||= sessionStateRoot(process.env);
     if (id === "") {
-      delete process.env.DISPATCH_SESSION_ID;
+      process.env.DISPATCH_SESSION_ID = "";
       dispatchLedger = undefined;
       return;
     }
@@ -2914,6 +2961,12 @@ export default function envoyExtension(pi: PiApi): void {
         : `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} ran; nothing was claimed`
     );
 
+  // The Envoy role a session pod's launch named for its session, as the module's load took it
+  // into the slot and left "" in the environment (`SESSION_ROLE`): the session claims it itself,
+  // under its own credential, which the listener holds to this very session, at every pass that
+  // registers it (`settleRole`). Read when the instance is created.
+  const sessionRole = sessionRoleStore[SESSION_ROLE];
+
   // The registration and role state the two serial queues write, the queues themselves, each
   // task's deadline and this extension instance's client instance id, all private to
   // `../src/registration-state`. A queued task writes none of it by hand: `run` hands it a handle
@@ -2938,12 +2991,24 @@ export default function envoyExtension(pi: PiApi): void {
       // that holds a role heartbeats from here on, whichever claim took it. The record names the
       // session the claim was made for and this process, so a second process reading the same
       // transcript — a continuation that resumed a live session's id — tells its own records
-      // from this one's.
-      pi.appendEntry(ROLE_CLAIM_ENTRY, {
-        role,
-        session_id: claimedFor,
-        client_instance_id: clientInstanceID,
-      });
+      // from this one's. The launch's role is claimed again at every pass, so a claim of it that
+      // the newest record on the branch already names — that role, for that session, by this
+      // process — writes nothing.
+      const newest =
+        role === sessionRole
+          ? transcriptRoleRecord(activeSessionContext?.sessionManager.getBranch?.() ?? [])
+          : undefined;
+      const recorded =
+        newest?.role === role &&
+        newest.session_id === claimedFor &&
+        newest.client_instance_id === clientInstanceID;
+      if (!recorded) {
+        pi.appendEntry(ROLE_CLAIM_ENTRY, {
+          role,
+          session_id: claimedFor,
+          client_instance_id: clientInstanceID,
+        });
+      }
       if (activeSessionContext !== undefined) ensureHeartbeat(activeSessionContext);
     },
     dial: dialNats,
@@ -3406,13 +3471,16 @@ export default function envoyExtension(pi: PiApi): void {
   //    survives `omp --resume` after the listener has reaped a dead session's rows), and a
   //    recorded release is final. A fork's branch is a copy of its parent's, so it records its
   //    parent's role; a `/new` records none; a resume or branch records its own.
+  //  - Otherwise the role a session pod's launch named (`sessionRole`), which the pass claims
+  //    outright (`settleRole`), so the listener never refuses it. A move the model makes with
+  //    `envoy_role_set` is a record, which no pass undoes.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
   //  - Otherwise, once when a pass establishes a resumed or switched session (`readRows`), the
   //    listener's rows for `id` (a same-id resume inside the reap window) and for the sessions it
   //    continues.
-  // None of them while the listener has refused that role to `id`. The pass
-  // claims it softly (`settleRole`): a session's records may be stale evidence (the parent of a
+  // None of them while the listener has refused that role to `id`. The pass claims every role but
+  // the launch's softly (`settleRole`): a session's records may be stale evidence (the parent of a
   // fork whose role moved to the child, a second process on the same transcript), and it must not
   // take a role another live session holds. The listener decides that atomically: a soft claim
   // naming a predecessor takes the role from that predecessor only when the predecessor has no
@@ -3429,6 +3497,7 @@ export default function envoyExtension(pi: PiApi): void {
     const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
     if (recorded !== undefined) return want(recorded);
+    if (sessionRole !== undefined) return sessionRole;
     const held = registrationState.heldRole();
     const holdID = registrationState.holdSessionID();
     const lineage = continuedBy(id);
@@ -3691,7 +3760,11 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
+    // The launch's role is claimed at every pass that registered the session, below, rather than
+    // read as held between two registrations: the launch named this session its holder.
+    const launched = desired === sessionRole;
     if (
+      !launched &&
       !registrationState.holdIsUnconfirmed() &&
       registrationState.heldRole() === desired &&
       registrationState.holdSessionID() === host
@@ -3727,24 +3800,27 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
-    // The claim may supersede this process's own hold of the role, wherever the listener names
-    // it, or else whichever session the host session continues the listener names (a fork's hold
-    // from this process or an earlier one).
+    // The launch's role is claimed outright, last-claim-wins, as the pod's own claimer did: a
+    // holder that is another session is stale (an evicted pod's session the registry still lists
+    // as live for minutes) or wrong, and a soft claim would leave the role with it. Every other
+    // claim is soft and may supersede this process's own hold of the role, wherever the listener
+    // names it, or else whichever session the host session continues the listener names (a
+    // fork's hold from this process or an earlier one).
     const holdID = registrationState.holdSessionID();
     let supersedes =
       registrationState.heldRole() === desired && holdID !== undefined && holdID !== ""
         ? holdID
         : undefined;
     const lineage = continuedBy(host);
-    if (supersedes === undefined && lineage.length > 1) {
+    if (!launched && supersedes === undefined && lineage.length > 1) {
       const holder = await handle.readRoleHolder(desired);
       if (holder !== undefined && holder !== host && lineage.includes(holder)) supersedes = holder;
     }
     try {
-      const claimed = await handle.claimRole(desired, {
-        soft: true,
-        previousSessionID: supersedes,
-      });
+      const claimed = await handle.claimRole(
+        desired,
+        launched ? {} : { soft: true, previousSessionID: supersedes }
+      );
       if (claimed && unheard) handle.noteNoticesClosed(desired);
     } catch (error) {
       // This catch would otherwise swallow a step the handle refused: the check says so instead.
@@ -4145,14 +4221,15 @@ export default function envoyExtension(pi: PiApi): void {
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
-      // The failure line shows nothing a person wrote.
-      return read.text === undefined ? undefined : { text: read.text, words: read.words ?? [] };
+      return carriedAnswers(read);
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs
-      // only the list: the request says the list could not be read, and why.
+      // only the list: the request says the list could not be read, after its last message where
+      // a list sat (`withSessionAnswers`), and the log says why. A failure line already placed
+      // keeps its own reason.
       logger.warn(`envoy: people's answers could not be read: ${messageFor(error)}`);
-      return { text: sessionAnswersFailureLine(messageFor(error)), words: [] };
+      return { text: sessionAnswersFailureLine(messageFor(error)) };
     }
   };
 
@@ -4197,6 +4274,17 @@ export default function envoyExtension(pi: PiApi): void {
           );
         },
         read: () => sessionAnswersText(context),
+        // A failed read that gave the cached list, or a list an older copy of this extension
+        // rendered from its cache, where the placed bytes stay: the model is not told of that
+        // failure (the kept bytes may name an earlier one), unless the kept bytes are that read's
+        // own text, which say it. So the log says it, on the first such request and not again
+        // until a read has answered, so a lasting failure logs once. The reason is this copy's
+        // read's own, as its failure line would carry it, or the sentence an older copy's read
+        // line names, as that copy's renderer wrote it, ending with a full stop, `?` or `!`.
+        unshownFailure: (reason) =>
+          logger.warn(
+            `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`
+          ),
       });
       const result = messages ?? withSkill ?? aged;
       return result === undefined ? undefined : { messages: result };
@@ -4794,6 +4882,8 @@ export default function envoyExtension(pi: PiApi): void {
             recipient: result.recipient,
             recipient_state: result.recipientState,
             confirmed: result.confirmed,
+            state: result.state,
+            ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
           });
         }
         case EnvoyToolOperation.publish: {
@@ -4813,15 +4903,17 @@ export default function envoyExtension(pi: PiApi): void {
           // role lane, which its holder does not follow, actually goes undelivered: a
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
-          // visible here: a plain topic's subscribers are not in the answer at all, since the
-          // stream stores one copy each session's own consumer delivers. AGENTS.md and the
+          // visible here: a plain topic's answer counts its subscribers and names none, since
+          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
           // envoy skill carry the general rule. A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
           // holder it names is the session the resolution read, which never received the message.
           const undelivered =
             result.kept !== true && source !== "" && result.holder === source && inSubagent;
-          const published = publishConfirmationText(result);
+          // The listener sends a message for a kept copy no session took only to the publish's
+          // source session, and a subagent whose parent cannot be resolved publishes from none.
+          const published = publishConfirmationText(result, { senderNamed: source !== "" });
           return toolSuccess(
             undelivered
               ? `${published}\nNot delivered: that holder is the session this subagent sends as, and the listener drops a message whose source session is its recipient, so the agent that spawned you did not receive it. Reach it with a write to its agent:// address instead.`
@@ -4829,10 +4921,7 @@ export default function envoyExtension(pi: PiApi): void {
             {
               event_id: result.envelope.event_id,
               topic,
-              ...(result.holder === undefined ? {} : { holder: result.holder }),
-              ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
-              ...(result.kept === undefined ? {} : { kept: result.kept }),
-              ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+              ...publishResultDetails(result),
               ...(undelivered ? { undelivered_echo: true } : {}),
             }
           );

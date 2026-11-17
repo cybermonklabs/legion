@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-const launcherUsage = "usage: legion launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--session-instance <project:region:instance> --session-database <name> --session-user <login>] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)"
+const launcherUsage = "usage: legion launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)"
 
 // roleList collects a repeated --role: an issue pod's container names every resident role, the
 // controller's pod exactly one.
@@ -46,6 +46,7 @@ func runLauncher(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	sessionInstance := flags.String("session-instance", "", "the Cloud SQL instance holding the session database: project:region:instance")
 	sessionDatabase := flags.String("session-database", "", "the session database in that instance")
 	sessionUser := flags.String("session-user", "", "the IAM login this pod signs in to the session database as")
+	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates with this pod's own credentials and signs in as; optional, and given only with the three other session flags")
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
@@ -57,7 +58,9 @@ func runLauncher(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	cfg := launcher.Config{
 		Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
 		Stdout: stdout, Stderr: stderr,
-		SessionDatabase: ompsessions.Database{Instance: *sessionInstance, Name: *sessionDatabase, User: *sessionUser},
+		SessionDatabase: ompsessions.Database{
+			Instance: *sessionInstance, Name: *sessionDatabase, User: *sessionUser, ImpersonateServiceAccount: *sessionAccount,
+		},
 	}
 	if *rolesDir != "" {
 		cfg.RolesDir, cfg.Roles, cfg.TestPostgres = *rolesDir, roles, *testPostgres

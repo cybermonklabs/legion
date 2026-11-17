@@ -219,6 +219,112 @@ func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 	}
 }
 
+func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// Issues filed from one template, one for each issue they concern, share every scored word:
+	// the key each title names is the only difference, and the gate scores no key. Without the
+	// title rule the second create scores 1.0 against the first and is refused.
+	reviewed12 := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	reviewed15 := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-15 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if reviewed15.Key != "TEST-2" {
+		t.Fatalf("create naming TEST-15 = %q, want TEST-2", reviewed15.Key)
+	}
+
+	// The same issue reviewed twice is still a near copy, and the refusal names only the issue
+	// whose title names the same key.
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != reviewed12.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, reviewed12.Key)
+	}
+
+	// A title that names no issue is scored as before: a copy of the text with the key left out
+	// of the title is still a near copy of both.
+	body = requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 2 {
+		t.Fatalf("candidates = %#v, want %s and %s", body.Candidates, reviewed12.Key, reviewed15.Key)
+	}
+}
+
+func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// The candidate's title cites another issue, and the copy's title names the candidate itself,
+	// as a copy whose title ends "(carries ACME-28)" names ACME-28 when ACME-28's own title cites
+	// ACME-23. The two titles share no key, but the copy is about the candidate, so it is refused.
+	original := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat under TEST-40",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat (carries " + original.Key + ")",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != original.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, original.Key)
+	}
+}
+
+func TestCreateIssueDuplicateRefusesAKeyedCopyOfATitleThatNamesNoIssue(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// The rule leaves a candidate out only when both titles name a key. A copy that adds a key to
+	// the title of an original whose title names none is still about the original, so it is
+	// still refused.
+	original := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat (see TEST-40)",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != original.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, original.Key)
+	}
+}
+
+func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// More issues from one template than the gate answers, each newer than the one the copy
+	// copies and each scoring as high against it: a rule applied after the statement's limit
+	// would read only the newer five, leave them all out, and let the copy through.
+	original := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	for reviewed := 13; reviewed < 13+duplicateCandidateLimit; reviewed++ {
+		requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+			"project": "TEST", "title": fmt.Sprintf("Review TEST-%d against its verification.md", reviewed),
+			"spec": duplicateSpecAstrolabe,
+		}))
+	}
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Review TEST-12 against its verification.md",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != original.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, original.Key)
+	}
+}
+
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")

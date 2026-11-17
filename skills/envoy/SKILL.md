@@ -19,8 +19,12 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 
 - Read the `recipient` in the send result, the session Envoy targeted: if it is not the one you meant, resend to the right id.
 
+- A send answered `queued <id> for <recipient>: the session is stopped …` (`state: stopped`) went to a session that is not running, and nothing of its claims changes.
+  Do not send that message again, because a second send stores a second copy for that session to read.
+  What each send answer means: `skill://envoy/references/deliveries.md`, "What a publish and a send answer".
+
 - When `envoy_send` says the send is not confirmed delivered, send the same message again with the `idempotency_key` the error names, within 72 hours:
-  Envoy drops it as a repeat if the first copy arrived, and the result says when an earlier attempt was already stored.
+  Envoy drops it as a repeat if the first copy arrived, and the result then says the earlier attempt was already stored (its text begins `sent to <recipient> once` for a running session, `queued once for <recipient>` for a stopped one).
   A resend without that key can deliver the message twice.
   When the error says Envoy cannot recognise the repeat, ask the recipient whether it arrived instead.
 
@@ -100,7 +104,7 @@ Every topic starts with `notifications.`.
   Envoy also subscribes you to the lifecycle subject `pr.<n>`, which NATS `>` alone does not match, because `>` needs one or more trailing tokens.
 
 - Read the `warnings` that `envoy_subscribe` returns, and confirm the active topics with `envoy_list`.
-  A warning names the spelling Envoy publishes, or a token that is not a GitHub topic kind; fix the topic it names.
+  A warning names the spelling Envoy publishes, a token that is not a GitHub topic kind, or a pull request's bare subject `pr.<n>` that no topic of yours extends to its reviews; fix the topic it names.
   "No GitHub event ... in the stream's retention window" means nothing came from that repository in the last 72 hours:
   check that the GitHub App that sends Envoy its webhooks is installed on that repository before you rely on a wake.
 
@@ -131,18 +135,16 @@ Every topic starts with `notifications.`.
 - Publish to a role with `envoy_publish(topic="notifications.role.<role>", ...)`;
   never subscribe to a role topic, because the listener forwards a role message to its holder only.
   A publish returns once Envoy's stream has stored the forward for the holder, with the live `holder` and its `holder_state`.
-  When nobody holds the role, Envoy keeps the message for the session that claims the role next: the answer says it was kept, and that session is handed it once, within one hour of the keep.
-  A holder that is not `live` returns an error instead: that refusal names the holder, its `holder_state` (`unresponsive` or `gone`), its `last_seen` and `claim_released: false`, and nothing was forwarded and nothing kept, so publish the message again once the holder answers rather than starting a replacement for it or taking anything from it.
-  A forward the stream did not store for a live holder within about 4 seconds errs too, and you see that one after about 8 seconds, because the client tries once more.
-  No error releases the role's claim: a holder whose `holder_state` is `unresponsive` keeps its role.
+  When no live session holds the role, Envoy keeps the message for one hour: the answer says it was kept, and its `kept_until` is the time that hour ends.
+  That holds when nobody claims the role, and when its holder is not `live`: the answer then also names the holder, its `holder_state` (`unresponsive` or `gone`) and its `last_seen`.
+  The next session to hold the role live before `kept_until` is handed the message once, and that can be the same holder when it answers again.
+  If no session takes it by then, Envoy drops it, and when your publish named your session, sends your session a message that names it, unless it dropped it more than an hour late.
+  An `unresponsive` holder is not dead, so start no replacement for it and take nothing from it.
+  A forward the stream did not store for a live holder within about 4 seconds errs, and you see that error after about 8 seconds, because the client tries once more.
+  Neither a kept answer nor an error releases the role's claim: a holder whose `holder_state` is `unresponsive` keeps its role.
   `envoy_role_get(role=...)` finds the holder first.
   The forward is kept on the holder's inbox, so the holder's session gets it once from its own durable consumer, also after a restart, a reconnect, or while it was not running.
-  From a shell with no tool device, read the holder with `envoy role <role>` where sjawhar/dotfiles' `scripts/envoy` is on the PATH, and in a Legion pod, which has no `envoy` command, with `curl -sS -H "Authorization: Bearer $(cat "$ENVOY_TOKEN_FILE")" "$ENVOY_URL/v1/roles/<role>" | jq -r '.holder // .reason // .error'`, which prints the holder's session id, `unclaimed` for a role nobody holds, or the error of a refused read, such as `unauthorized` for a bad token.
-
-- A message that must reach more than 4 role topics is the project controller's to send, not yours.
-  Each publish wakes a session, and a woken session reads its whole context again, which the provider charges as uncached input: a mean of 576,083 tokens a wake, a median of 493,636 and a ninetieth percentile of 1,327,888.
-  The controller is also the one session that can read whether a wave of wakes is already running, and a fan-out sent into a daemon restart or a pod roll is what puts an Anthropic organization over its per-minute uncached-input cap.
-  Send the controller the topics and the text, and it sends them at its own rate (`skill://legion-controller`).
+  From a shell with no tool device, such as one in a Legion pod, read the holder with `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$ENVOY_TOKEN_FILE")") "$ENVOY_URL/v1/roles/<role>" | jq -r '.holder // .reason // .error'` in bash (the `<(...)` keeps the token out of `curl`'s arguments), which prints the holder's session id, `unclaimed` for a role nobody holds, or the error of a refused read, such as `unauthorized` for a bad token.
 
 - For a team, the group subscribes to `notifications.team.<name>.>`, and any member publishes to `notifications.team.<name>.all`.
   Envoy's stream keeps a team topic, so a publish returns once it is stored and every session that follows the topic gets it once from its own consumer
@@ -151,6 +153,9 @@ Every topic starts with `notifications.`.
   A team topic is not kept for a session that subscribes later: a consumer starts where its session is, not at the beginning.
   Every other `notifications.` topic no source in the table uses is refused by name, at publish and at subscribe, because no session would ever receive it.
   A topic outside `notifications.` is refused at publish alone: you may subscribe to one, and nothing is stored under it, so you receive nothing on it.
+
+- A publish answered `published <id>; no other session subscribes to <topic>, so no other session gets it` reached nobody: reach whoever you meant another way.
+  What the counts in a publish answer mean: `skill://envoy/references/deliveries.md`, "What a publish and a send answer".
 
 - How a role claim survives a resume, a fork or a dead process: `skill://envoy/references/roles.md`.
 

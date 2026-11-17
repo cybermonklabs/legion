@@ -61,6 +61,20 @@ func TestReduceFilterSubjects(t *testing.T) {
 			want:     []string{"a.>"},
 		},
 		{
+			// A digit sorts before `>`, so a subject can sort before the subject that contains it
+			// (`a.1` before `a.>`), and the first subject of a pair is then the one dropped. The
+			// subject after it takes its place, and must still be weighed against every subject
+			// after it: `a.2.*` contains `a.2.x`, which lies between them.
+			name:     "a subject dropped for a later one that contains it leaves the next weighed against every later subject",
+			subjects: []string{"a.>", "a.2.x", "a.1", "a.2.*"},
+			want:     []string{"a.>"},
+		},
+		{
+			name:     "every subject a wildcard before them contains is dropped, one after another",
+			subjects: []string{"a.d", "a.*", "a.c", "a.b"},
+			want:     []string{"a.*"},
+		},
+		{
 			name:     "subjects that do not overlap stay, sorted",
 			subjects: []string{"notifications.github.o.r.>", "notifications.agent.ses_a", "notifications.dispatch.issue.K-1.>"},
 			want:     []string{"notifications.agent.ses_a", "notifications.dispatch.issue.K-1.>", "notifications.github.o.r.>"},
@@ -115,7 +129,7 @@ func sessionConsumersOnStream(t *testing.T) (*Client, *SessionConsumers) {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	consumers, err := ConnectSessionConsumers([]string{uri}, 0)
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}
@@ -762,7 +776,7 @@ func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	disjoint := []string{contracts.AgentSubject("ses_filters"), "notifications.github.o.r.>"}
-	if _, err := consumers.create(ctx, "ses_disjoint", "s-ses_disjoint", disjoint, 0); err != nil {
+	if _, err := consumers.create(ctx, "ses_disjoint", "s-ses_disjoint", disjoint, 0, true); err != nil {
 		t.Fatalf("create with filters that do not overlap: %v", err)
 	}
 	overlapping := []string{"notifications.github.o.r.>", "notifications.github.*.r.pull"}
@@ -778,7 +792,7 @@ func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
 	}
 
 	// A consumer whose two filters both match one subject is delivered that message once.
-	if _, err := consumers.create(ctx, "ses_collide", "s-ses_collide", overlapping, 0); err != nil {
+	if _, err := consumers.create(ctx, "ses_collide", "s-ses_collide", overlapping, 0, true); err != nil {
 		t.Fatalf("create with the overlapping filters: %v", err)
 	}
 	pull := pullSession(t, consumers, "ses_collide")
@@ -1035,7 +1049,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	}
 	// A connection of this row's own, on the test's account: closing it ends no other row's
 	// pull and no cleanup of the connection sessionConsumersOnStream hands out.
-	mine, err := ConnectSessionConsumers([]string{testnats.URL(t)}, 0)
+	mine, err := ConnectSessionConsumers([]string{testnats.URL(t)}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
 	}
@@ -1124,7 +1138,7 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	consumers, err := ConnectSessionConsumers([]string{uri}, 0)
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}
@@ -1232,9 +1246,11 @@ func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
 }
 
 // A restart whose create faulted leaves the consumer's pending start behind, and every later call
-// would create the consumer there whatever it was asked for. Delete drops it, so the next
-// registration that carries a resume point of its own creates the consumer at that point rather
-// than at the start of a restart of a session that has since ended.
+// would create the consumer there whatever it was asked for. Delete drops it, recording the floor
+// before it on the session's resume lane, so the next registration creates the consumer from that
+// record rather than from the pending start of a restart of a session that has since ended: its
+// resume point past the floor is lowered to the floor plus one (create), which hands the session
+// everything the dropped start held.
 func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -1268,8 +1284,8 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 	}
 	later := publishStored(t, owner, agent, "later")
 	start, err := consumers.Ensure(ctx, session, []string{agent}, later+1)
-	if err != nil || start.StartSeq != later+1 || !start.Created {
-		t.Fatalf("Ensure carrying a resume point = %+v, %v; want the consumer created at %d", start, err, later+1)
+	if err != nil || start.StartSeq != held || !start.Created {
+		t.Fatalf("Ensure carrying a resume point past the recorded floor = %+v, %v; want the consumer created at %d, the floor the delete recorded plus one", start, err, held)
 	}
 }
 
@@ -1633,7 +1649,7 @@ func TestAConsumerCarriesTheInactiveThresholdItsHandleWasOpenedWith(t *testing.T
 		{"opened with a negative threshold", "ses_threshold_negative", -time.Minute, SessionConsumerInactiveThreshold},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			consumers, err := ConnectSessionConsumers([]string{uri}, tc.threshold)
+			consumers, err := ConnectSessionConsumers([]string{uri}, tc.threshold, nil)
 			if err != nil {
 				t.Fatalf("connect session consumers: %v", err)
 			}

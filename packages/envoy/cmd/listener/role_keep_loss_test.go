@@ -30,7 +30,7 @@ func TestAKeptCopyItsDrainNeverForwardedStillReachesTheRolesHolder(t *testing.T)
 		holder = "ses_kept_claimed_then_lost"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-claimed-then-lost-00")
-	if !keepRoleMessage(harness.client, harness.config.logger, role, item) {
+	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey

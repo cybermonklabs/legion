@@ -105,31 +105,37 @@ func TestGoogleServiceAccountMintImpersonatesTheStoredAccount(t *testing.T) {
 }
 
 // TestGoogleServiceAccountMintNamesGooglesVerdict: an IAM refusal, which is what a broker that may
-// not impersonate the account gets, is refused; an outage is the upstream's, so an operator reads
-// the class and knows whether to fix an IAM binding or wait.
+// not impersonate the account gets, is refused at its first attempt; an outage is the upstream's,
+// asked three times under the Retry, so an operator reads the class and knows whether to fix an
+// IAM binding or wait.
 func TestGoogleServiceAccountMintNamesGooglesVerdict(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		code  int
-		body  string
-		class string
+		name     string
+		code     int
+		body     string
+		class    string
+		attempts int64
 	}{
-		{"refused", http.StatusForbidden, `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"caller does not have permission"}}`, "refused"},
-		{"outage", http.StatusServiceUnavailable, `{"error":{"code":503,"status":"UNAVAILABLE","message":"backend unavailable"}}`, "upstream"},
+		{"refused", http.StatusForbidden, `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"caller does not have permission"}}`, "refused", 1},
+		{"outage", http.StatusServiceUnavailable, `{"error":{"code":503,"status":"UNAVAILABLE","message":"backend unavailable"}}`, "upstream", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server, _ := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.code)
 				_, _ = io.WriteString(w, tc.body)
 			})
 
+			retry, _, _ := testRetry(atTheTop)
 			minter := &secrets.GoogleServiceAccount{
 				BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(),
-				Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail},
+				Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail}, Retry: retry,
 			}
 			_, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Value: serviceAccountValue})
 			if err == nil || secrets.MintErrorClass(err) != tc.class {
 				t.Fatalf("Mint error = %v (class %s), want class %s", err, secrets.MintErrorClass(err), tc.class)
+			}
+			if calls.Load() != tc.attempts || int64(secrets.MintAttempts(err)) != tc.attempts {
+				t.Fatalf("Mint asked the IAM endpoint %d times (%d attempts); want %d", calls.Load(), secrets.MintAttempts(err), tc.attempts)
 			}
 			for _, quoted := range []string{"caller does not have permission", "backend unavailable", "PERMISSION_DENIED", "UNAVAILABLE"} {
 				if strings.Contains(err.Error(), quoted) {

@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -138,5 +139,97 @@ func TestLoggerErrorLevel(t *testing.T) {
 
 	if logEntry["level"] != "ERROR" {
 		t.Errorf("expected level=ERROR, got %v", logEntry["level"])
+	}
+}
+
+// cloudEntry hands one record to NewCloudHandler and answers what it wrote, read as JSON, failing t
+// unless the handler wrote exactly one line holding one JSON object. It calls Handle, not a
+// Logger: a Logger asks Enabled first and drops a record below INFO before the handler sees it,
+// and what a row here reads is what the handler writes for the record it is given.
+func cloudEntry(t *testing.T, record slog.Record) map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := NewCloudHandler(&buf).Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	line := buf.Bytes()
+	if bytes.IndexByte(line, '\n') != len(line)-1 {
+		t.Fatalf("the handler wrote %q; want one line, ended by its newline", line)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(line, &entry); err != nil {
+		t.Fatalf("the handler's line is not one JSON object: %v\n%s", err, line)
+	}
+	return entry
+}
+
+// TestTheCloudHandlerWritesEachLevelAsItsSeverity: each of slog's four levels is written under
+// severity as the LogSeverity name Cloud Logging reads an entry's severity from, a level between
+// two of them as the one below it, and no entry carries slog's own level key.
+func TestTheCloudHandlerWritesEachLevelAsItsSeverity(t *testing.T) {
+	for _, row := range []struct {
+		level slog.Level
+		want  string
+	}{
+		{slog.LevelDebug, "DEBUG"},
+		{slog.LevelInfo, "INFO"},
+		{slog.LevelInfo + 2, "INFO"},
+		{slog.LevelWarn, "WARNING"},
+		{slog.LevelError, "ERROR"},
+		{slog.LevelError + 4, "ERROR"},
+	} {
+		t.Run(row.level.String(), func(t *testing.T) {
+			entry := cloudEntry(t, slog.NewRecord(time.Now(), row.level, "a line", 0))
+			if entry["severity"] != row.want {
+				t.Fatalf("severity = %v, want %s: %v", entry["severity"], row.want, entry)
+			}
+			if level, ok := entry[slog.LevelKey]; ok {
+				t.Fatalf("the entry carries %s=%v beside its severity: %v", slog.LevelKey, level, entry)
+			}
+		})
+	}
+}
+
+// TestTheCloudHandlerIsAtInfo: the handler writes INFO and above, as the listener's does.
+func TestTheCloudHandlerIsAtInfo(t *testing.T) {
+	handler := NewCloudHandler(&bytes.Buffer{})
+	if handler.Enabled(context.Background(), slog.LevelDebug) || !handler.Enabled(context.Background(), slog.LevelInfo) {
+		t.Fatalf("Enabled(DEBUG) = %t, Enabled(INFO) = %t; want false and true",
+			handler.Enabled(context.Background(), slog.LevelDebug), handler.Enabled(context.Background(), slog.LevelInfo))
+	}
+}
+
+// TestTheCloudHandlerWritesMessageTimeAndDurationsAsCloudLoggingReadsThem: the message is under
+// message and not msg, the time is RFC 3339 with its nanoseconds in UTC whatever zone the record
+// was stamped in, every attribute is a field of its own, and a time.Duration, at the top or
+// inside a group, is Go's duration string rather than slog's integer nanoseconds.
+func TestTheCloudHandlerWritesMessageTimeAndDurationsAsCloudLoggingReadsThem(t *testing.T) {
+	stamped := time.Date(2026, 11, 13, 9, 30, 15, 123456789, time.FixedZone("UTC+2", 2*60*60))
+	record := slog.NewRecord(stamped, slog.LevelInfo, "broker reread rate", 0)
+	record.AddAttrs(
+		slog.Int("replicas", 3),
+		slog.Duration("every", 90*time.Second),
+		slog.String("name", "example/agent-secrets/demo-key"),
+		slog.Group("wait", slog.Duration("budget", 1500*time.Millisecond)),
+	)
+	entry := cloudEntry(t, record)
+
+	if entry["message"] != "broker reread rate" {
+		t.Errorf("message = %v, want the record's message: %v", entry["message"], entry)
+	}
+	if msg, ok := entry[slog.MessageKey]; ok {
+		t.Errorf("the entry carries %s=%v beside its message: %v", slog.MessageKey, msg, entry)
+	}
+	if want := "2026-11-13T07:30:15.123456789Z"; entry["time"] != want {
+		t.Errorf("time = %v, want %s, the record's instant in UTC with its nanoseconds: %v", entry["time"], want, entry)
+	}
+	if entry["replicas"] != float64(3) || entry["name"] != "example/agent-secrets/demo-key" {
+		t.Errorf("replicas = %v and name = %v, want 3 and the name, each a field of its own: %v", entry["replicas"], entry["name"], entry)
+	}
+	if entry["every"] != "1m30s" {
+		t.Errorf("every = %v, want 1m30s: %v", entry["every"], entry)
+	}
+	if wait, ok := entry["wait"].(map[string]any); !ok || wait["budget"] != "1.5s" {
+		t.Errorf("wait = %v, want a group whose budget is 1.5s: %v", entry["wait"], entry)
 	}
 }

@@ -25,7 +25,8 @@ import (
 // login, prints the broker's confirmation code and where to type it — AGENT_SECRETS_APPROVE_URL's
 // /credentials/machine when that is set, else the broker's verification_uri the helper relays,
 // else the Dispatch credential page by name — then polls the helper until the login reaches a
-// terminal state.
+// terminal state. The login op waits helper.BrokerCallWait, because its answer is the outcome of
+// a broker call; each login-status poll reads the helper's own state and waits 10 s.
 func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	if err := newFlagSet("machine login", stderr).Parse(flagArgs); err != nil {
@@ -36,7 +37,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	sock, _ := helperSocket()
-	resp, err := helper.Call(sock, helper.Request{Op: "login"}, 10*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "login"}, helper.BrokerCallWait)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %v\n", err)
 		return 1

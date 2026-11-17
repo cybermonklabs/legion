@@ -375,7 +375,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "pull request merged",
 			subject: "notifications.github.sjawhar.legion.pr.42",
 			file:    "github/pr-merged.json",
-			want:    PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-captured"},
+			want:    PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-captured", HeadSHA: "head-captured"},
 		},
 		{
 			name:    "pull request review",
@@ -1216,11 +1216,15 @@ func TestConsumeAppliesAPushToAnIssuesBranchAndToABase(t *testing.T) {
 // Push the workflow applies to the pull request it records there; a push to a branch of any other
 // shape decodes to the BasePush that says a pull request's base may have moved, since that is the
 // shape of a branch pull requests sit on. A push to a ref that is no branch at all decodes to
-// neither.
+// neither. GitHub's deletion of an issue's branch, a push whose after is record.NoCommit, names no
+// head and decodes to no fact; the deletion of a base is still the BasePush that says the base
+// moved.
 func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) {
 	captured := capturedGitHubEnvelope(t, "push.json")
 	for _, tc := range []struct {
 		ref string
+		// after replaces the push's after, head-captured, when it is set.
+		after string
 		// branch is the issue branch the push decodes to a Push on, base the branch it decodes to a
 		// BasePush on; both empty is a ref that decodes to no fact.
 		branch string
@@ -1235,9 +1239,20 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 		{ref: "refs/heads/bot/LEGION-208", base: "bot/LEGION-208"},
 		{ref: "refs/tags/legion/LEGION-208"},
 		{ref: "refs/heads/"},
+		{ref: "refs/heads/legion/LEGION-208", after: record.NoCommit},
+		{ref: "refs/heads/main", after: record.NoCommit, base: "main"},
 	} {
-		t.Run(tc.ref, func(t *testing.T) {
+		t.Run(strings.TrimSpace(tc.ref+" "+tc.after), func(t *testing.T) {
 			data := bytes.ReplaceAll(captured, []byte("refs/heads/legion/LEGION-208"), []byte(tc.ref))
+			after := "head-captured"
+			if tc.after != "" {
+				after = tc.after
+				replaced := bytes.ReplaceAll(data, []byte(`\"after\":\"head-captured\"`), []byte(`\"after\":\"`+after+`\"`))
+				if bytes.Equal(replaced, data) {
+					t.Fatal("the captured push carries no after to replace")
+				}
+				data = replaced
+			}
 			decoded, err := decodeMessage("notifications.github.sjawhar.legion.push.branch.x", "CAPTURE", capturedRepositories, data)
 			if err != nil {
 				t.Fatalf("decode: %v", err)
@@ -1246,11 +1261,11 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 			basePush, isBase := decoded.Fact.(BasePush)
 			switch {
 			case tc.branch == "" && tc.base == "" && decoded.Fact != nil:
-				t.Fatalf("fact = %#v, want none for a ref that is no branch", decoded.Fact)
+				t.Fatalf("fact = %#v, want none for a ref that is no branch or a deletion of an issue's branch", decoded.Fact)
 			case tc.branch != "" && (!isPush || push.Branch != tc.branch):
 				t.Fatalf("fact = %#v, want a push to %s", decoded.Fact, tc.branch)
-			case tc.base != "" && (!isBase || basePush.Branch != tc.base || basePush.After != "head-captured"):
-				t.Fatalf("fact = %#v, want a base push to %s at head-captured", decoded.Fact, tc.base)
+			case tc.base != "" && (!isBase || basePush.Branch != tc.base || basePush.After != after):
+				t.Fatalf("fact = %#v, want a base push to %s at %s", decoded.Fact, tc.base, after)
 			}
 		})
 	}

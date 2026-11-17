@@ -111,28 +111,30 @@ func (r *Registry) Match(machineID string, topic string) []Interest {
 	return r.matchLocked(func(visit func(string)) { r.index.match(machineID, topic, visit) })
 }
 
-// matchLocked collects the cached interests walk visits, once each: a session's interest can hold
-// several patterns that match one subject, and the index visits its key once per matching
-// pattern. A registry with no index yet, which a test can build as a literal, matches nothing.
-// Callers hold r.mu.
+// MatchAllMachines returns the cached interests whose topics match topic on every machine, each
+// session once however many of its topics match: the sessions a publish to topic is for, wherever
+// they registered, which a publish's recipient count reads (cmd/listener). Delivery reads Match,
+// a machine's own sessions; nothing delivers by this walk.
+func (r *Registry) MatchAllMachines(topic string) []Interest {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.matchLocked(func(visit func(string)) { r.index.matchAllMachines(topic, visit) })
+}
+
+// matchLocked collects the cached interests walk visits, once each (oncePerKey): a session's
+// interest can hold several patterns that match one subject, and the index visits its key once
+// per matching pattern. A registry with no index yet, which a test can build as a literal,
+// matches nothing. Callers hold r.mu.
 func (r *Registry) matchLocked(walk func(visit func(key string))) []Interest {
 	out := []Interest{}
 	if r.index == nil {
 		return out
 	}
-	var seen map[string]struct{}
-	walk(func(key string) {
-		if _, dup := seen[key]; dup {
-			return
-		}
-		if seen == nil {
-			seen = map[string]struct{}{}
-		}
-		seen[key] = struct{}{}
+	walk(oncePerKey(func(key string) {
 		if item, ok := r.cache.Get(key); ok {
 			out = append(out, item)
 		}
-	})
+	}))
 	return out
 }
 
