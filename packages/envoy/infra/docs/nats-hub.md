@@ -519,10 +519,8 @@ SSH-through-IAP grant to a team, or a role that holds every permission, reaches 
 firewall rule exists, and 8222 answers `/connz`, `/subsz` and `/jsz` with no authentication of its
 own. So before turning `monitorThroughIap` on beside `privateProjects`, list the project's and the
 instance's tunnel grants, and condition or remove every one that holds no `destination.port`
-condition. For the deployment this hub serves, that is its plan F's go-live item 8(h), which covers
-research@'s project-wide IAP grant. The health
-checks' rule and its `/healthz` are unchanged. The input rewrites the VM's user data, so turning it
-on or off replaces the VM (see [Updating a hub](#updating-a-hub)).
+condition. The health checks' rule and its `/healthz` are unchanged. The input rewrites the VM's
+user data, so turning it on or off replaces the VM (see [Updating a hub](#updating-a-hub)).
 
 ## The VM's external address
 
