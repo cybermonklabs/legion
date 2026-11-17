@@ -96,18 +96,27 @@ var singleDashLong = regexp.MustCompile(`^-[A-Za-z][A-Za-z-]+$`)
 // placeholder is a `<name>` of a row, which placeholderValues gives the value of.
 var placeholder = regexp.MustCompile(`<([^<>]+)>`)
 
+// parserRefusal is a line in which `legion` refuses a call's words before it runs anything: a word
+// it does not take, a stray word before a wrapper's `--` among them (afterDash), a flag it does not
+// have or that lacks its value, a command it does not have, a count of words it does not take, or
+// a form that moved. Every row is a call its caller makes and the release before ran, so such a
+// line is a difference, whatever the exit status: `claude-bridge` exits 2 and `launcher role-init`
+// 71 whether they refuse a stray word or fail further on, as they did under Go's flag package.
+var parserRefusal = regexp.MustCompile(`(?m)^legion( [a-z-]+)*: (unexpected argument|unknown (shorthand )?flag|unknown command|flag needs an argument|invalid argument|bad flag syntax|name .*\(got [0-9]+ words\)|.* is now "legion )`)
+
 // invocation is one row of the table.
 type invocation struct {
 	caller, argv, oldExit, oldDigest, newArgv, movedIn string
 }
 
 // Each row of the table runs, in its new form, against the built binary with the exit status and
-// standard output the release before gave the old form: a caller that relied on how Go's flag
-// package read its words (a single-dash long flag, a flag after a positional, a word after a
-// wrapper's `--`) is a row whose run differs. Each run reads and writes nothing of the machine:
-// its paths are under absentRoot, its HOME and working directory are the test's own, and nothing
-// it calls answers. A row whose caller this change moved to a new output carries `-` for the
-// digest: its exit is compared, and the caller's own test reads the output.
+// standard output the release before gave the old form, and with no refusal of its words on
+// standard error (parserRefusal): a caller that relied on how Go's flag package read its words (a
+// single-dash long flag, a flag after a positional, a word before a wrapper's `--`) is a row whose
+// run differs. Each run reads and writes nothing of the machine: its paths are under absentRoot,
+// its HOME and working directory are the test's own, and nothing it calls answers. A row whose
+// caller this change moved to a new output carries `-` for the digest: its exit is compared, and
+// the caller's own test reads the output.
 func TestInvocationTable(t *testing.T) {
 	rows := readInvocations(t)
 	if len(rows) == 0 {
@@ -129,7 +138,7 @@ func TestInvocationTable(t *testing.T) {
 			t.Errorf("%s: no recorded run of the release before (old_exit %q, old_stdout_sha256 %q)", row.caller, row.oldExit, row.oldDigest)
 			continue
 		}
-		code, digest, err := runInvocation(t, legion, args)
+		code, digest, stderr, err := runInvocation(t, legion, args)
 		switch {
 		case err != nil:
 			t.Errorf("%s: %s: %v", row.caller, row.newArgv, err)
@@ -137,6 +146,9 @@ func TestInvocationTable(t *testing.T) {
 			t.Errorf("%s: %s exited %d, the release before %s", row.caller, row.newArgv, code, row.oldExit)
 		case row.oldDigest != "-" && digest != row.oldDigest:
 			t.Errorf("%s: %s printed other than the release before (stdout sha256 %s, want %s)", row.caller, row.newArgv, digest, row.oldDigest)
+		}
+		if refusal := parserRefusal.FindString(stderr); refusal != "" {
+			t.Errorf("%s: %s is refused by its words, which the release before ran: %q", row.caller, row.newArgv, refusal)
 		}
 	}
 }
@@ -176,7 +188,7 @@ func recordOld(t *testing.T, rows []invocation, legion string) {
 	var out strings.Builder
 	out.WriteString("caller\targv\told_exit\told_stdout_sha256\tnew_argv\tmoved_in\n")
 	for _, row := range rows {
-		code, digest, err := runInvocation(t, legion, concrete(t, row.argv))
+		code, digest, _, err := runInvocation(t, legion, concrete(t, row.argv))
 		if err != nil {
 			t.Fatalf("%s: %s: %v", row.caller, row.argv, err)
 		}
@@ -254,9 +266,9 @@ func splitWords(line string) ([]string, error) {
 
 // runInvocation runs legion with args in a directory and a HOME of the test's own, with PATH and
 // nothing else of the test process's environment, standard input empty, and answers its exit
-// status and the sha256 of its standard output. A run still going after twenty seconds is an
-// error: a call that waits on something is no call the table can compare.
-func runInvocation(t *testing.T, legion string, args []string) (int, string, error) {
+// status, the sha256 of its standard output and its standard error. A run still going after twenty
+// seconds is an error: a call that waits on something is no call the table can compare.
+func runInvocation(t *testing.T, legion string, args []string) (code int, digest, stderr string, err error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -264,18 +276,18 @@ func runInvocation(t *testing.T, legion string, args []string) (int, string, err
 	home := t.TempDir()
 	cmd.Dir = t.TempDir()
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_STATE_HOME=" + home + "/state", "XDG_CONFIG_HOME=" + home + "/config"}
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	err := cmd.Run()
+	var stdout, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &errb
+	err = cmd.Run()
 	sum := sha256.Sum256(stdout.Bytes())
 	var exit *exec.ExitError
 	switch {
 	case ctx.Err() != nil:
-		return 0, "", fmt.Errorf("still running after 20s")
+		return 0, "", "", fmt.Errorf("still running after 20s")
 	case err == nil:
-		return 0, hex.EncodeToString(sum[:]), nil
+		return 0, hex.EncodeToString(sum[:]), errb.String(), nil
 	case errors.As(err, &exit) && exit.ExitCode() >= 0:
-		return exit.ExitCode(), hex.EncodeToString(sum[:]), nil
+		return exit.ExitCode(), hex.EncodeToString(sum[:]), errb.String(), nil
 	}
-	return 0, "", err
+	return 0, "", "", err
 }
