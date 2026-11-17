@@ -8,4 +8,4 @@ body: |-
   slower one has up to 1.5 s more to answer before the create goes in unchecked.
 time: 2026-11-17T19:00:00Z
 custom:
-    Issue: near-copy-bound
+    Issue: pr4340
