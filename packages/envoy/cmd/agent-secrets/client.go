@@ -593,13 +593,14 @@ type refusedBeforeCall struct{ text string }
 
 func (e *refusedBeforeCall) Error() string { return e.text }
 
-// pathID refuses id, naming it as kind, when it would not appear in a call's path as written: the
-// proof signs the URL this client builds, and the broker checks it against its public URL and the
-// path it decoded, so an id url.PathEscape would change (a '%', a space, a '/') could only be
-// escaped into a proof the broker refuses, or sent raw into a different path.
+// pathID refuses id, naming kind and never id, when it would not appear in a call's path as
+// written: the proof signs the URL this client builds, and the broker checks it against its public
+// URL and the path it decoded, so an id url.PathEscape would change (a '%', a space, a '/') could
+// only be escaped into a proof the broker refuses, or sent raw into a different path. The id is
+// not printed: an argument that is no id is where a credential pasted in the wrong place lands.
 func pathID(kind, id string) error {
 	if url.PathEscape(id) != id {
-		return &refusedBeforeCall{fmt.Sprintf("%q is not %s", id, kind)}
+		return &refusedBeforeCall{"not " + kind + " (the argument is not printed: it holds a character a call's path would change)"}
 	}
 	return nil
 }

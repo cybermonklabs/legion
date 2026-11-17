@@ -252,7 +252,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 	defer broker.Close()
 	for _, id := range []string{"req%zz", "a b", "a/b", "req%25zz"} {
 		_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "status", id)
-		want := "agent-secrets status: " + strconv.Quote(id) + " is not a request id\n"
+		want := "agent-secrets status: not a request id (the argument is not printed: it holds a character a call's path would change)\n"
 		if exit == 0 || stderr != want {
 			t.Errorf("status %q: exit %d, stderr %q; want exactly %q, with no trailer since nothing was sent", id, exit, stderr, want)
 		}

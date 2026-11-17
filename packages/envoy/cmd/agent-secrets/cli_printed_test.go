@@ -804,3 +804,51 @@ func TestASettingsFileKeyItDoesNotTakeIsNotPrinted(t *testing.T) {
 		}
 	})
 }
+
+// TestAnIdThatCannotBeInAPathIsNotPrinted: an id a form would put in a call's path, which a URL
+// path would change, is refused before any call naming the kind of id and never the argument, which
+// is where a credential pasted in the wrong place lands. An id that can be in a path goes on to the
+// call (the control).
+func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw/pathid-91de07"
+	for _, row := range []struct {
+		args []string
+		kind string
+	}{
+		{[]string{"status", secret}, "a request id"},
+		{[]string{"cancel", secret}, "a request id"},
+		{[]string{"revoke", secret}, "a grant id"},
+		{[]string{"machine", "revoke", secret}, "a machine id"},
+		{[]string{"grant", "revoke", secret}, "a grant id"},
+	} {
+		for _, id := range []string{secret, "plain-id-0001"} {
+			args := append(append([]string{}, row.args[:len(row.args)-1]...), id)
+			name := strings.Join(args, " ")
+			if id != secret {
+				name = "control: " + name
+			}
+			t.Run(name, func(t *testing.T) {
+				useBareEnvironment(t)
+				t.Setenv("AGENT_SECRETS_URL", "http://127.0.0.1:1")
+				t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+				sock := filepath.Join(t.TempDir(), "helper.sock")
+				if err := os.WriteFile(sock, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+				stdout, stderr, code := runIn(args...)
+				if code == 0 {
+					t.Fatalf("exit 0, stdout %q; want a failure", stdout)
+				}
+				refusal := "not " + row.kind + " (the argument is not printed: it holds a character a call's path would change)"
+				if id != secret {
+					if strings.Contains(stderr, "not "+row.kind) {
+						t.Errorf("stderr %q refuses an id that can be in a path", stderr)
+					}
+					return
+				}
+				requireSays(t, "the output", stdout+stderr, []string{"hunter2pw"}, []string{refusal})
+			})
+		}
+	}
+}
