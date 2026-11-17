@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -14,8 +15,96 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// chunkSubjects is how many subjects under the chunk keys the known-session bucket's stream holds a
+// message on: live chunks and the markers replaced chunks left, read from the stream itself.
+func chunkSubjects(t *testing.T, conn *nats.Conn) int {
+	t.Helper()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	info, err := js.StreamInfo("KV_"+bus.KnownSessionBucket, &nats.StreamInfoRequest{SubjectsFilter: "$KV." + bus.KnownSessionBucket + "." + kvchunk.Prefix + ">"})
+	if err != nil {
+		t.Fatalf("read the known-session stream's chunk subjects: %v", err)
+	}
+	return len(info.State.Subjects)
+}
+
+// heartbeatDay records a session of the 1.2 MB shape on a server of the default 1 MiB max
+// payload, then rewrites it as a day of heartbeats does: 144 times, each KnownSessionRefreshAge
+// after the last on the store's clock. With purge, the marker pass runs kvchunk.MarkerGrace after
+// each rewrite, once the watcher has delivered the deletes of the chunks it replaced. It reports
+// how many chunks the record is stored in and how many chunk subjects the bucket holds after the
+// day, and requires after each pass that the bucket hold the live chunks alone.
+func heartbeatDay(t *testing.T, purge bool) (int, int) {
+	t.Helper()
+	_, uri := testnats.StartConfig(t, "jetstream {}\n", []string{"-js"}, true)
+	conn := testnats.Connect(t, uri)
+	t.Cleanup(conn.Close)
+	clock := &knownClock{at: time.Now()}
+	known := openKnownOn(t, conn, clock.Now)
+	topics := make([]string, 300)
+	for i := range topics {
+		topics[i] = fmt.Sprintf("notifications.dispatch.issue.K-0.t%04d-%s", i, strings.Repeat("x", 3900))
+	}
+	record := KnownSession{SessionID: "ses_known_day", Topics: topics}
+	if err := known.RecordWithin(t.Context(), record); err != nil {
+		t.Fatalf("record the session: %v", err)
+	}
+	row, ok := known.cached("ses_known_day")
+	if !ok || !row.layout.Chunked() {
+		t.Fatalf("the record of %d bytes of topics is not stored in chunks: %+v", len(strings.Join(topics, "")), row.layout)
+	}
+	chunks := row.layout.Chunks
+	for beat := range 144 {
+		clock.set(clock.Now().Add(KnownSessionRefreshAge))
+		if err := known.RecordWithin(t.Context(), record); err != nil {
+			t.Fatalf("heartbeat %d: %v", beat, err)
+		}
+		testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the watcher to deliver the deletes of the replaced chunks", func() bool {
+			known.mu.RLock()
+			defer known.mu.RUnlock()
+			return len(known.markers.Due(clock.Now())) >= chunks
+		})
+		if !purge {
+			continue
+		}
+		clock.set(clock.Now().Add(kvchunk.MarkerGrace))
+		purged, err := known.purgeChunkMarkers(t.Context())
+		if err != nil || purged < chunks {
+			t.Fatalf("heartbeat %d: the marker pass purged %d markers (%v), want the %d chunks the rewrite replaced", beat, purged, err, chunks)
+		}
+		if subjects := chunkSubjects(t, conn); subjects != chunks {
+			t.Fatalf("heartbeat %d: after the marker pass the bucket holds %d chunk subjects, want the record's %d live chunks", beat, subjects, chunks)
+		}
+	}
+	requireKnownTopics(t, "the store after a heartbeat day", known, "ses_known_day", topics)
+	return chunks, chunkSubjects(t, conn)
+}
+
+// The case: with the marker pass on, a day of heartbeats of a record of about 1.2 MB leaves the
+// bucket holding the record's two live chunks and no marker, where the pass runs.
+func TestAHeartbeatDayOfAChunkedKnownSessionRecordLeavesOnlyItsLiveChunks(t *testing.T) {
+	chunks, subjects := heartbeatDay(t, true)
+	t.Logf("after 144 heartbeats with the marker pass: %d chunk subjects, the record in %d chunks", subjects, chunks)
+	if chunks != 2 || subjects != chunks {
+		t.Fatalf("after a heartbeat day the bucket holds %d chunk subjects for a record in %d chunks, want 2 and 2", subjects, chunks)
+	}
+}
+
+// The control: the same day with no marker pass leaves every replaced chunk's marker, one subject
+// each, which the bucket would keep for its 30-day MaxAge.
+func TestAHeartbeatDayOfAChunkedKnownSessionRecordWithNoMarkerPassLeavesEveryMarker(t *testing.T) {
+	chunks, subjects := heartbeatDay(t, false)
+	t.Logf("after 144 heartbeats with no marker pass: %d chunk subjects, the record in %d chunks", subjects, chunks)
+	if want := chunks * 145; subjects != want {
+		t.Fatalf("after a heartbeat day with no marker pass the bucket holds %d chunk subjects, want %d: %d live and %d markers", subjects, want, chunks, chunks*144)
+	}
+}
 
 // openKnownOn opens the known-session store on conn with the clock now and waits for its cache.
 func openKnownOn(t *testing.T, conn *nats.Conn, now func() time.Time) *KnownSessions {

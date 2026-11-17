@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -167,15 +168,22 @@ type KnownSessions struct {
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
 
-	// mu guards records, chunks and topics, which are kept in step: every record the copy stores
-	// or removes for the bucket's sake is indexed or unindexed through its rows
+	// mu guards records, chunks, markers and topics, which are kept in step: every record the copy
+	// stores or removes for the bucket's sake is indexed or unindexed through its rows
 	// (newKnownSessions), and the sweep removes from both. chunks is the copy of the bucket's
 	// chunks (kvchunk.Chunks), fed and swept by the same reads as records: the copy joins a record
-	// stored in chunks from it, and the sweep collects from it the chunks no record names.
+	// stored in chunks from it, and the sweep collects from it the chunks no record names. markers
+	// is the chunk keys the watcher delivered as removed, which the marker pass purges
+	// (purgeChunkMarkers).
 	mu      sync.RWMutex
 	records kvwatch.Copy[knownRow]
 	chunks  *kvchunk.Chunks
+	markers *kvchunk.Markers
 	topics  *store.TopicMatcher
+	// markerPurgeFailed is set once a marker pass that failed has been logged, so a NATS user
+	// without STREAM.PURGE on the bucket says so once per process rather than every pass, and
+	// cleared by a pass that purged.
+	markerPurgeFailed atomic.Bool
 
 	// openMu guards conn, watcher, asked and covered. The watcher is installed when the bucket
 	// opens, which is at OpenKnownSessions for a listener whose user may open it and at a later
@@ -235,6 +243,7 @@ func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 		watchOptions: opts.watch,
 		topics:       store.NewTopicMatcher(),
 		chunks:       kvchunk.NewChunks(opts.now),
+		markers:      kvchunk.NewMarkers(),
 		conn:         conn,
 		wake:         make(chan struct{}, 1),
 		stopped:      make(chan struct{}),
@@ -966,14 +975,16 @@ func (c knownCache) BeginRead(read kvwatch.Read) {
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered): a chunk into the copy of the
-// chunks, and anything else into the copy of the records, which joins a manifest from the chunks
-// delivered before it (decodeKnownLocked). It logs a value it could not decode, which removed the
-// session's record.
+// chunks, and its marker, when the record is one, into the markers the marker pass purges
+// (purgeChunkMarkers); anything else into the copy of the records, which joins a manifest from the
+// chunks delivered before it (decodeKnownLocked). It logs a value it could not decode, which
+// removed the session's record.
 func (c knownCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
 	if kvchunk.IsChunkKey(entry.Key) {
 		_ = c.s.chunks.Delivered(entry)
+		c.s.markers.Delivered(entry, c.s.now())
 		return
 	}
 	if err := c.s.records.Delivered(entry); err != nil {
@@ -991,13 +1002,17 @@ func (c knownCache) CompleteRead(kvwatch.Read) {
 	c.s.chunks.CompleteRead()
 }
 
-// sweepUntilStopped runs the one periodic pass until the store is stopped: the sweep of the
-// records that aged out, then the collection of the chunks no record names (collectChunks), each
-// of its deletes waiting no longer than the store's stop. A collection that failed is logged, and
-// the next pass collects again.
+// sweepUntilStopped runs the store's two periodic passes until the store is stopped. Every hour:
+// the sweep of the records that aged out, then the collection of the chunks no record names
+// (collectChunks). Every kvchunk.MarkerGrace: the purge of the chunk markers past that grace
+// (purgeChunkMarkers), so the bucket holds a chunk key's marker for at most two of those periods
+// rather than for its 30-day MaxAge. Each of their bucket calls waits no longer than the store's
+// stop. A pass that failed is logged, and the next pass tries again.
 func (s *KnownSessions) sweepUntilStopped() {
 	ticker := time.NewTicker(knownSessionSweepInterval)
 	defer ticker.Stop()
+	markerTicker := time.NewTicker(kvchunk.MarkerGrace)
+	defer markerTicker.Stop()
 	ctx, cancel := s.untilStopped()
 	defer cancel()
 	for {
@@ -1010,8 +1025,53 @@ func (s *KnownSessions) sweepUntilStopped() {
 				s.logger().Warn("the known-session store could not collect the chunks no record names",
 					slog.Int("chunks_collected", collected), slog.String("error", err.Error()))
 			}
+		case <-markerTicker.C:
+			_, _ = s.purgeChunkMarkers(ctx)
 		}
 	}
+}
+
+// purgeChunkMarkers purges from the bucket each chunk key's marker that the watcher was first
+// delivered more than kvchunk.MarkerGrace ago (kvchunk.Markers.Due, kvchunk.PurgeMarkers), and
+// reports how many it purged. Every replaced chunk leaves one marker on a key nothing writes
+// again, and the bucket keeps a marker for its 30-day MaxAge, so without this pass a session whose
+// record is two chunks, rewritten every KnownSessionRefreshAge, leaves 8,640 marker subjects in
+// the bucket in 30 days; with it, the chunks of one rewrite and their markers for one grace or two.
+// A record's own key is never purged: its marker says the session's record was deleted.
+//
+// A pass that failed - a NATS user without STREAM.PURGE on the bucket's stream refuses every
+// purge - is logged at WARN once until a pass purges again, and keeps every marker it did not
+// purge for the next pass, except one delivered before KnownSessionRetention, which the bucket's
+// MaxAge has removed. It does nothing while the store's bucket is not open. Each purge waits no
+// longer than ctx.
+func (s *KnownSessions) purgeChunkMarkers(ctx context.Context) (int, error) {
+	watcher := s.watch()
+	if watcher == nil {
+		return 0, nil
+	}
+	now := s.now()
+	s.mu.RLock()
+	due := s.markers.Due(now.Add(-kvchunk.MarkerGrace))
+	s.mu.RUnlock()
+	kv, _ := watcher.Handle()
+	purged, err := kvchunk.PurgeMarkers(ctx, kv, due)
+	s.mu.Lock()
+	s.markers.Forget(due[:purged])
+	if err != nil {
+		s.markers.Forget(s.markers.Due(now.Add(-KnownSessionRetention)))
+	}
+	s.mu.Unlock()
+	if err != nil {
+		if !s.markerPurgeFailed.Swap(true) {
+			s.logger().Warn("the known-session store could not purge the markers of its replaced chunks",
+				slog.Int("markers_purged", purged), slog.Int("markers_due", len(due)), slog.String("error", err.Error()))
+		}
+		return purged, err
+	}
+	if purged > 0 {
+		s.markerPurgeFailed.Store(false)
+	}
+	return purged, nil
 }
 
 // sweep drops every record that has aged out of KnownSessionRetention, giving back the strings and
