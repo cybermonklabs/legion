@@ -363,7 +363,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
 		}
-		before, answered, raiseErr := Bounded(ctx, func() (int, error) { return raiseStream(js, info, config.Replicas) })
+		before, answered, raiseErr := Bounded(ctx, func() (int, error) { return raiseStream(ctx, js, info, config.Replicas) })
 		switch {
 		case !answered:
 			err = fmt.Errorf("raise %s: the raise drew no answer when the wait ended: %w", stream, context.Cause(ctx))
@@ -414,7 +414,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 // returns the copies it had then, 0 when it left the bucket alone: the keeper's raise, which reads
 // the stream once and is made again at its next pass (raiseStream). One copy needs no read: every
 // stream has at least one.
-func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, error) {
+func raiseReplicas(ctx context.Context, js nats.JetStreamContext, bucket string, replicas int) (int, error) {
 	if replicas <= 1 {
 		return 0, nil
 	}
@@ -423,7 +423,7 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	if err != nil {
 		return 0, fmt.Errorf("raise %s: %w", stream, err)
 	}
-	return raiseStream(js, info, replicas)
+	return raiseStream(ctx, js, info, replicas)
 }
 
 // raiseStream raises the stream info describes to replicas copies when it has fewer, and returns
@@ -437,13 +437,13 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 // or its sends run out (updateStream). Its error names the stream and, for a refused raise, the
 // setting (refusedSettings): `raise KV_envoy_interests: ENVOY_NATS_REPLICAS=3: ...`, so the
 // keeper's line says which bucket it could not raise.
-func raiseStream(js nats.JetStreamContext, info *nats.StreamInfo, replicas int) (int, error) {
+func raiseStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, replicas int) (int, error) {
 	if info.Config.Replicas >= replicas {
 		return 0, nil
 	}
 	raised := info.Config
 	raised.Replicas = replicas
-	if err := updateStream(js, &raised, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas }); err != nil {
+	if err := updateStream(ctx, js, &raised, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas }); err != nil {
 		return 0, fmt.Errorf("raise %s: %w", info.Config.Name, refusedSettings(err, &info.Config, &raised))
 	}
 	return info.Config.Replicas, nil
@@ -613,7 +613,7 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	aged := info.Config
 	aged.MaxAge = maxAge
 	_, answered, err := Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, updateStream(js, &aged, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge })
+		return struct{}{}, updateStream(ctx, js, &aged, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge })
 	})
 	if !answered {
 		return 0, fmt.Errorf("set %s max age: the update drew no answer when the wait ended: %w", stream, context.Cause(ctx))

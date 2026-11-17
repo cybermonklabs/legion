@@ -113,3 +113,52 @@ func TestAServerThatAnswersEveryReadLateIsStillWaitedFor(t *testing.T) {
 		t.Fatalf("lookups sent = %d, want the ones the first limits cut and the one that was waited for", lookups)
 	}
 }
+
+// lostUpdateJetStream applies its first stream update and answers it nats.ErrTimeout, as nats.go
+// answers an update the server applied while it elected a leader and never answered, and holds
+// the reply of the first read after that update for RequestTimeout before answering
+// nats.ErrTimeout too; every other request is the cluster's own.
+type lostUpdateJetStream struct {
+	nats.JetStreamContext
+	updated   atomic.Bool
+	readsLost atomic.Int32
+}
+
+func (js *lostUpdateJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if js.updated.CompareAndSwap(false, true) {
+		if _, err := js.JetStreamContext.UpdateStream(cfg, opts...); err != nil {
+			return nil, err
+		}
+		return nil, nats.ErrTimeout
+	}
+	return js.JetStreamContext.UpdateStream(cfg, opts...)
+}
+
+func (js *lostUpdateJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if js.updated.Load() && js.readsLost.Add(1) == 1 {
+		time.Sleep(RequestTimeout)
+		return nil, nats.ErrTimeout
+	}
+	return js.JetStreamContext.StreamInfo(stream, opts...)
+}
+
+// A raise the server applied and never answered, whose first read afterwards is lost too, still
+// succeeds: the read that tells a raise that landed from one that did not is a read of the
+// stream's state, sent again past its read limit (updateStream), where one lost read reported the
+// raise that landed as one that failed, "raise KV_<bucket>: ENVOY_NATS_REPLICAS=3: nats: timeout".
+func TestARaiseWhoseAnswerAndNextReadAreLostStillLands(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	conn, js := memberJetStream(t, cluster, 0)
+	const bucket = "envoy_lost_update_test"
+	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+		t.Fatalf("create the one-copy bucket: %v", err)
+	}
+	lost := &lostUpdateJetStream{JetStreamContext: js}
+	if _, err := EnsureKeyValue(t.Context(), conn, lost, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+		t.Fatalf("a raise whose answer and next read were lost = %v, want it to land", err)
+	}
+	if !lost.updated.Load() || lost.readsLost.Load() < 2 {
+		t.Fatalf("the raise was sent %v and read %d times after it, want it sent and read again after the lost read: this row holds nothing",
+			lost.updated.Load(), lost.readsLost.Load())
+	}
+}

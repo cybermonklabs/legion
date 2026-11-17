@@ -214,7 +214,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 			t.Fatalf("the newer release's start left the subjects %v, want %s among them", subjects, added)
 		}
 	}}
-	restored, err := keepStream(keeper, &limited, capsAnUnsetStream)
+	restored, err := keepStream(t.Context(), keeper, &limited, capsAnUnsetStream)
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the limited program's keeper restored %v (%v), want %v", restored, err, want)
 	}
@@ -222,11 +222,11 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 		t.Fatalf("subjects %v still hold %s: the keeper's write did not land after the newer start's", subjects, added)
 	}
 
-	restored, err = keepStream(js, &newer, capsAnUnsetStream)
+	restored, err = keepStream(t.Context(), js, &newer, capsAnUnsetStream)
 	if want := []string{"subjects added " + added}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the newer release's keeper restored %v (%v), want %v", restored, err, want)
 	}
-	if restored, err := keepStream(js, &limited, capsAnUnsetStream); err != nil || len(restored) != 0 {
+	if restored, err := keepStream(t.Context(), js, &limited, capsAnUnsetStream); err != nil || len(restored) != 0 {
 		t.Fatalf("the limited program's next pass restored %v (%v), want nothing", restored, err)
 	}
 	info := deployedStream(t, js)
@@ -257,7 +257,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 			t.Fatalf("the start that moves the role lanes off: %v", err)
 		}
 	}}
-	restored, err := keepStream(keeper, &limited, capsAnUnsetStream)
+	restored, err := keepStream(t.Context(), keeper, &limited, capsAnUnsetStream)
 	if err == nil || !strings.Contains(err.Error(), roleLane) || len(restored) != 0 {
 		t.Fatalf("the keeper's pass on the stream it read with the role lanes = %v (%v), want an error naming %s", restored, err, roleLane)
 	}
@@ -268,7 +268,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 		t.Fatalf("subjects %v capture the role lanes after the start moved them off", subjects)
 	}
 
-	restored, err = keepStream(js, &limited, capsAnUnsetStream)
+	restored, err = keepStream(t.Context(), js, &limited, capsAnUnsetStream)
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the keeper's next pass restored %v (%v), want %v", restored, err, want)
 	}
@@ -314,14 +314,14 @@ func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
 		t.Fatalf("the alpha release's start: %v", err)
 	}
 
-	restored, err := keepStream(js, &beta, capsAnUnsetStream)
+	restored, err := keepStream(t.Context(), js, &beta, capsAnUnsetStream)
 	if want := []string{"subjects added notifications.beta.>"}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the beta release's keeper restored %v (%v), want %v", restored, err, want)
 	}
 	counting := &countingJetStream{JetStreamContext: js}
 	for range 3 {
 		for _, cfg := range []*nats.StreamConfig{&alpha, &beta} {
-			if restored, err := keepStream(counting, cfg, capsAnUnsetStream); err != nil || len(restored) != 0 {
+			if restored, err := keepStream(t.Context(), counting, cfg, capsAnUnsetStream); err != nil || len(restored) != 0 {
 				t.Fatalf("a keeper pass with subjects %v restored %v (%v), want nothing", cfg.Subjects, restored, err)
 			}
 		}

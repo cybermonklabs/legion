@@ -931,7 +931,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		return nil, err
 	}
 	if err := written("update", func() error {
-		if err := updateStream(js, &desired, func(again *nats.StreamInfo) bool {
+		if err := updateStream(ctx, js, &desired, func(again *nats.StreamInfo) bool {
 			reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
 			return reflect.DeepEqual(reconciled, again.Config)
 		}); err != nil {
@@ -1088,9 +1088,14 @@ func keptSubjects(deployed, own []string) []string {
 //     does overlap is refused every send, and the last refusal is returned.
 //
 // Any other refusal is the update's own error.
-func updateStream(js nats.JetStreamContext, update *nats.StreamConfig, holds func(*nats.StreamInfo) bool) error {
+//
+// The read after the update is a read of a stream's state, sent again while the server leaves it
+// unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
+// sent while the stream's group elects a leader can draw no answer, and a read sent then can be
+// lost too, so a read sent once could leave a raise that landed reported as one that failed.
+func updateStream(ctx context.Context, js nats.JetStreamContext, update *nats.StreamConfig, holds func(*nats.StreamInfo) bool) error {
 	settled := func() bool {
-		again, err := js.StreamInfo(update.Name)
+		again, err := readAgain(ctx, update.Name+" STREAM.INFO", func() (*nats.StreamInfo, error) { return js.StreamInfo(update.Name) })
 		return err == nil && holds(again)
 	}
 	var err error
