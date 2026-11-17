@@ -401,11 +401,28 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
+	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
+	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
+	// reaches past the meaning deadline is the test's choice rather than a race between the
+	// meaning query and 300 ms of wall clock (INFRA-3904).
+	crossProjectWait time.Duration
+	// meaningBound overrides the meaning allowance of the related-item check
+	// (relatedMeaningAllowance), which the check's own allowance still caps; zero, which every
+	// server the deployment builds leaves it, means relatedMeaningAllowance. Only a test sets it,
+	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
+	// can be told from that deadline without a clock (INFRA-3904).
+	meaningBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
-	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
-	// (the forced create whose check does not answer), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
+	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'
+	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
+	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
+	// until the bound ends it, so the bound and nothing else decides that case.
+	beforeDuplicateRead func(ctx context.Context) error
 	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
 	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
 	// place under the id a create will write, as a refusal whose insert landed but whose answer the
@@ -614,11 +631,12 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, then for the hub's
-// goroutines, the relay's and the test hooks' listener. The detached work comes first because it
-// is the only work lifetime does not stop: a keyed handler is bounded by keyedHandlerLimit, a
-// delivery by the listener client's receipt timeout per recipient, and each reads and writes
-// through the database pool this wait is holding open for it.
+// its client, then for every live socket and the subscriptions it ran, serving none that opens from
+// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
+// listener. The detached work comes first because it is the only work lifetime does not stop: a
+// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
+// timeout per recipient, and each reads and writes through the database pool this wait is holding
+// open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()

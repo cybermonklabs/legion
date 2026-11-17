@@ -261,11 +261,22 @@ func (h *HeldPort) Pass(cmd *exec.Cmd, envName string) {
 	cmd.ExtraFiles = append(cmd.ExtraFiles, h.file)
 }
 
-// Release closes the held socket without handing it to a process, for a process that binds the
-// port itself: a build of envoy-dispatch before DISPATCH_LISTEN_FD. The port is free from this call
-// until that process binds it, so another program can take it in between.
-func (h *HeldPort) Release() {
-	_ = h.file.Close()
+// SocketListens reports whether /proc/net/tcp lists a listening socket of inode, on any address:
+// the inode names a socket whoever holds a descriptor of it, where its port is any program's to
+// bind once the socket is closed. A line's fourth field is its state, 0A for LISTEN, and its
+// tenth the socket's inode.
+func SocketListens(t testing.TB, inode string) bool {
+	t.Helper()
+	table, err := os.ReadFile("/proc/net/tcp")
+	if err != nil {
+		t.Fatalf("read the listening sockets: %v", err)
+	}
+	for line := range strings.SplitSeq(string(table), "\n") {
+		if fields := strings.Fields(line); len(fields) > 9 && fields[3] == "0A" && fields[9] == inode {
+			return true
+		}
+	}
+	return false
 }
 
 // LockedBuffer is a buffer a process's output, or a logger, writes from more than one goroutine

@@ -90,6 +90,9 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	held, _ := rig.storeEvent(t, agent)
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
+	// Every caller's next step restarts the relay at the ack floor, which deletes the consumer
+	// holding that message and creates it again.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	return rig, sessionID, standIn, held, floor
 }
 
