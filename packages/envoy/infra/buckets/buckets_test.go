@@ -470,6 +470,30 @@ func TestThisMachineIsQueriedHereWithNoSSH(t *testing.T) {
 	}
 }
 
+// A --this-machine proof by a command that is process 1 of its PID namespace blocks, and runs no
+// query: such a command is a container's entrypoint in a PID namespace of its own, whose query
+// would read that container's processes alone and call the machine clean. The same command with any
+// other process id runs the query and is judged by its answer. Without the check, the process-1
+// case ran the query and passed on a clean answer.
+func TestThisMachineBlocksAsProcessOneOfItsNamespace(t *testing.T) {
+	for _, c := range []struct {
+		pid     int
+		blocked bool
+		calls   int
+	}{{1, true, 0}, {4242, false, 1}} {
+		w := &world{hostAnswers: map[string][]string{here: {clean(180)}}}
+		f := fence{thisMachine: true, pid: c.pid, run: w.run}
+		var out bytes.Buffer
+		blockers := f.proveThisMachine(context.Background(), &out)
+		if blocked := len(blockers) > 0; blocked != c.blocked || len(w.calls) != c.calls {
+			t.Fatalf("pid %d: blockers %q, calls %q; want blocked %t and %d calls", c.pid, blockers, w.calls, c.blocked, c.calls)
+		}
+		if c.blocked && !strings.Contains(blockers[0], "process 1 of its PID namespace") {
+			t.Fatalf("pid 1 blocked with %q, want it to name process 1 of its PID namespace", blockers[0])
+		}
+	}
+}
+
 // --this-machine runs the real host query here: it refuses while a real stand-in named
 // envoy-listener runs, naming its pid, and passes once the stand-in has ended. The query is the
 // one --host sends (TestTheHostQuerySeesARealWriterProcessUnderEachOfItsNamesUntilItEnds), and only

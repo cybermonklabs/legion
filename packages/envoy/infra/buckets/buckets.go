@@ -310,7 +310,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster, --host for each machine and --this-machine for the one the command runs on; --first-deployment proves no writer absent and needs them too")
 		return 2
 	}
-	f.run, f.http = run, client
+	f.run, f.http, f.pid = run, client, os.Getpid()
 	f.dispatch = slices.Contains(buckets, bus.CIStateBucket)
 
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment), bus.WithInboxPrefix(InboxPrefix))
@@ -503,8 +503,10 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 type fence struct {
 	kubeContexts []string
 	hosts        []string
-	// thisMachine queries the machine the command runs on, through sh rather than ssh.
+	// thisMachine queries the machine the command runs on, through sh rather than ssh; pid is the
+	// command's own process id, which proveThisMachine reads.
 	thisMachine     bool
+	pid             int
 	ssh             string
 	connz           []string
 	firstDeployment bool
@@ -753,8 +755,15 @@ func (f fence) proveHost(ctx context.Context, out io.Writer, host string) []stri
 
 // proveThisMachine proves that no writer process runs on the machine the command runs on: the host
 // query, run here through sh, judged as a host's (processBlockers). In a container it reads only
-// the PID namespace the container holds, which is the machine's with docker's --pid host.
+// the PID namespace the container holds, which is the machine's with docker's --pid host. A command
+// that is process 1 of its PID namespace is a container's entrypoint in a namespace of its own -
+// on a machine, process 1 is its init - so its query would read the container's processes alone
+// and report the machine clean: it blocks instead. A container whose entrypoint is something else
+// (a shell that runs the command) is not caught this way, which the usage and the runbook say.
 func (f fence) proveThisMachine(ctx context.Context, out io.Writer) []string {
+	if f.pid == 1 {
+		return []string{"this machine: the command is process 1 of its PID namespace, so it runs in a container that does not share the machine's, and its query would read that container's processes alone: run it with docker's --pid host, or compose's pid: host"}
+	}
 	raw, err := f.call(ctx, "sh", "-c", hostQuery(f.writerProcesses()))
 	if err != nil {
 		return []string{fmt.Sprintf("this machine: the query failed: %v", err)}
