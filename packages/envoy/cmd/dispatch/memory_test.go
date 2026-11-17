@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -220,8 +221,8 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 // the budget into a fresh server, and a second fill reads as many others, which the cache takes in
 // place of the first. After each fill the cache's own figures (dispatch_rooms, on the server's
 // loopback profiler) hold it within two entries of its budget, so a cache that stores nothing
-// fails, and never past it, so a cache that never evicts fails; and the second fill peaks at most
-// one request above the first, so what eviction drops is memory given back.
+// fails, and never past it, so a cache that never evicts fails; and the second fill's resident
+// peak is at most one request (requestMemoryBound) above the first's.
 //
 // What the first fill leaves resident above idle is not what the cache holds: the fill reuses the
 // free heap the server held at idle, which is what its boot left uncollected or not yet given back.
@@ -253,11 +254,22 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 		artifactIDs[index] = cloneColdReadArtifact(t, memory, upload.artifactID, index)
 	}
 	// The reader's profiler takes a port the kernel chooses, which the line it logs names
-	// (pprofListening); it binds before the server serves, so the line is there once start returns.
+	// (pprofListening). The server logs it before it serves, but its output reaches this test
+	// through a pipe the test copies on its own goroutine, so the line is waited for, until the
+	// server exits.
 	memory.env = []string{"DISPATCH_PPROF_PORT=0"}
 	reader := memory.start(t)
 	memory.env = nil
-	listening := pprofListening.FindStringSubmatch(reader.output.String())
+	var listening []string
+	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+		listening = pprofListening.FindStringSubmatch(reader.output.String())
+		select {
+		case <-reader.exited:
+			return true
+		default:
+			return listening != nil
+		}
+	})
 	if listening == nil {
 		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.outputTail())
 	}
