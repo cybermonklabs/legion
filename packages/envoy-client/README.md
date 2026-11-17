@@ -164,7 +164,13 @@ a plugin dials only with these options), reconnecting forever 2 s apart, and a p
 (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
 within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes. A failed connect is logged as
+default 120 s interval left a frozen path for up to 6 minutes. A session that presents its broker
+token never gives up over a refused credential, and redials on `brokerRedialDelays` instead of
+2 s apart: at once when it loses its connection, then after waits drawn anew between half and all
+of 4 s, 8 s, 16 s, then 20 s for good (`brokerRedialWaitBounds`), so a hub that refuses every
+session at once is asked again about 73 times a second by 1,100 of them rather than 550, and
+each is back within 20 s of the hub admitting again. A seed or no credential keeps the flat 2 s.
+A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
 <credential>: <reason>`, built once for every caller (pi-envoy, the channel server, the e2e bridge,
 `nats-stream` and `dispatch-user-turns`). The servers are named by the setting that holds them

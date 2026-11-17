@@ -13,7 +13,9 @@ import type { NatsCredential } from "./nats-credential";
  * unanswered, so a path that freezes (packets stop, neither side closes) is left within
  * 3 x 10 s = 30 s and redialed at once. A redial that also hangs costs nats.js's 20 s dial timeout
  * and the 2 s reconnect wait: 30 + 20 + 2 = 52 s, under a minute. nats.js's default 120 s interval
- * left a frozen path for up to 6 minutes.
+ * left a frozen path for up to 6 minutes. A session that presents its broker token redials on
+ * `brokerRedialDelays` instead, and comes back sooner still: its first redial is at once and its
+ * next is due within `BROKER_REDIAL_FIRST_MS` of that one's start, which the 20 s hang has passed.
  */
 export const NATS_PING_INTERVAL_MS = 10_000;
 export const NATS_MAX_PINGS_OUT = 2;
@@ -33,7 +35,13 @@ export const NATS_MAX_PINGS_OUT = 2;
  * it clears `lastError` after a successful reconnect only for an expired authentication
  * (`protocol.js:397-399`), so a session refused once in any earlier outage would abort on its first
  * refusal in the next one. A seed or no credential keeps nats.js's default, as before the auth
- * service (R12, `__tests__/nats-connection-r12.test.ts`): no auth service decides those. */
+ * service (R12, `__tests__/nats-connection-r12.test.ts`): no auth service decides those.
+ *
+ * A session that presents its broker token also redials on `brokerRedialDelays`, a backoff, where
+ * one with a seed or none keeps the flat 2 s (R12): every refused redial costs the auth service a
+ * decision, and a hub that refuses every session at once would otherwise be asked again by each of
+ * them every 2 s for as long as it refuses. `reconnectTimeWait` is then unused (nats.js reads it
+ * only in its own default handler, `options.js:95-105`). */
 export function natsConnectionOptions(input: {
   readonly servers: readonly string[];
   readonly name: string;
@@ -48,7 +56,82 @@ export function natsConnectionOptions(input: {
     reconnectTimeWait: 2_000,
     pingInterval: NATS_PING_INTERVAL_MS,
     maxPingOut: NATS_MAX_PINGS_OUT,
-    ...(input.credential.kind === "broker" ? { ignoreAuthErrorAbort: true } : {}),
+    ...(input.credential.kind === "broker"
+      ? { ignoreAuthErrorAbort: true, reconnectDelayHandler: brokerRedialDelays() }
+      : {}),
+  };
+}
+
+/** The highest wait before a broker-token session's first planned redial, and the most any later
+ *  one waits: each doubles from the first until it reaches the cap (`brokerRedialWaitBounds`). */
+export const BROKER_REDIAL_FIRST_MS = 4_000;
+export const BROKER_REDIAL_CAP_MS = 20_000;
+
+/**
+ * How long nats.js leaves its redial handler uncalled, at most, while it redials: the longest wait
+ * (the cap) or the longest failed dial, two addresses of a server name that each hang for nats.js's
+ * 20 s dial timeout (`protocol.js:417`, `_doDial` dials each address in turn), whichever is longer,
+ * and a margin. A call later than this after the one before it finds that the connection was up in
+ * between, so it starts a new outage.
+ */
+export const BROKER_REDIAL_OUTAGE_GAP_MS = 60_000;
+
+/** The range the wait before the `wait`-th planned redial of an outage is drawn from, uniformly:
+ *  from half its highest to its highest, the highest being `BROKER_REDIAL_FIRST_MS` doubled
+ *  `wait - 1` times, at most `BROKER_REDIAL_CAP_MS`. So 2-4 s, 4-8 s, 8-16 s, then 10-20 s on. */
+export function brokerRedialWaitBounds(wait: number): { lowestMs: number; highestMs: number } {
+  const highestMs = Math.min(
+    BROKER_REDIAL_CAP_MS,
+    BROKER_REDIAL_FIRST_MS * 2 ** Math.min(wait - 1, 30)
+  );
+  return { lowestMs: highestMs / 2, highestMs };
+}
+
+/**
+ * The `reconnectDelayHandler` of a session that presents its broker token: it redials at once on
+ * losing its connection, then waits `brokerRedialWaitBounds(1)`, `(2)` and so on between the starts
+ * of its redials, each drawn anew, until one is admitted. One handler serves one connection, so
+ * `natsConnectionOptions` makes a new one each time.
+ *
+ * Sized to the auth service's measured refusal throughput: one replica at its 0.5 CPU decided
+ * 1,200 refusals a second, every one inside its budget, and began to shed at about 1,350. 1,100
+ * sessions dropped together redial at once, as they did before, a burst the replica's queue holds;
+ * their next redials spread over 2-4 s, about 550 a second; and once at the cap they redial
+ * 1,100 / 15 s, about 73 a second. A session is back at most 20 s after the hub admits again.
+ *
+ * nats.js asks the handler for a wait on every turn of its redial loop and dials only when the
+ * server's last dial plus that wait has passed (`protocol.js:519-559`): so the handler answers 0
+ * to dial now, which places that server's last dial at this call, and otherwise the time from this
+ * call's dial to the next one due, which the loop sleeps out before asking again. A server nats.js
+ * has never dialed is dialed at once whatever the answer (`srv.lastConnect === 0`).
+ *
+ * nats.js calls the handler only while it redials, so a call more than
+ * `BROKER_REDIAL_OUTAGE_GAP_MS` after the one before it starts a new outage, at once. A connection
+ * that is admitted and lost again inside that gap keeps its place in the backoff, so a hub that
+ * flaps keeps its sessions slowed; a reconnect asked for inside it (a token renewal, a session
+ * switch) waits for the redial already due, at most the cap. `random` and `now` are for a test.
+ */
+export function brokerRedialDelays(
+  random: () => number = Math.random,
+  now: () => number = Date.now
+): () => number {
+  let lastCall = Number.NEGATIVE_INFINITY;
+  let dialedAt = 0;
+  let dueAt = Number.NEGATIVE_INFINITY;
+  let waits = 0;
+  return () => {
+    const at = now();
+    if (at - lastCall > BROKER_REDIAL_OUTAGE_GAP_MS) {
+      dueAt = Number.NEGATIVE_INFINITY;
+      waits = 0;
+    }
+    lastCall = at;
+    if (at < dueAt) return dueAt - dialedAt;
+    waits += 1;
+    const { lowestMs, highestMs } = brokerRedialWaitBounds(waits);
+    dialedAt = at;
+    dueAt = at + lowestMs + random() * (highestMs - lowestMs);
+    return 0;
   };
 }
 

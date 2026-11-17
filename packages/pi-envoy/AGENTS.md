@@ -629,7 +629,10 @@ How soon a reconnect comes: `ensureConnection` dials with the shared options of
 is left within 30 s and redialed at once; a redial that also hangs costs nats.js's 20 s dial
 timeout and the 2 s reconnect wait, 52 s in all. It reconnects forever, 2 s apart, and the
 `reconnect` status renews the relay's epoch. nats.js's default 120 s ping interval left a frozen path for
-up to 6 minutes.
+up to 6 minutes. A session that presents its broker token (`NATS_AUTH=broker`) redials instead on
+`brokerRedialDelays`: at once, then after waits drawn between half and all of 4 s, 8 s, 16 s and
+then 20 s for good, so a hub that refuses every session at once is not asked again by each of
+them every 2 s, and each is back within 20 s of the hub admitting again.
 
 What the relay carries: the frames the stream keeps on the agent subject (direct messages,
 Dispatch deliveries, and the forwards of role messages to a role this session holds) and on the
