@@ -828,23 +828,28 @@ type definitionOf struct {
 	key      string
 }
 
-// definitionJoinsQuery reads each approval of each document that $1 names, in the order the
-// approvals' events committed (docs.ReviewOrder, oldest first): its version, its event (events.id,
-// 0 for an approval from before reviews kept their event, migration 0120) and its time. The first
+// definitionJoinsQuery reads each approval of each document that $1 names, newest first in the
+// order the approvals' events committed (docs.ReviewOrder): its version, its event (events.id, 0
+// for an approval from before reviews kept their event, migration 0120) and its time. The newest
 // approval of each version other than the one $2 names for its document also carries that
-// version's markdown, so one query reads every older approved version.
+// version's markdown, so one query reads every older approved version. The approvals are read from
+// artifact_reviews alone, under that name, since docs.ReviewOrder names its columns so.
 const definitionJoinsQuery = `
-	select r.artifact_id::text, r.version, coalesce(e.id, 0), r.created_at,
-		case when r.version <> latest.version and row_number() over (
-			partition by r.artifact_id, r.version order by r.event_seq nulls first, r.created_at, r.id
-		) = 1 then coalesce(v.markdown, '') end
-	from artifact_reviews r
-	join unnest($1::uuid[], $2::int[]) as latest(id, version) on latest.id = r.artifact_id
-	join artifacts a on a.id = r.artifact_id
-	left join events e on e.issue_key = a.issue_key and e.seq = r.event_seq
-	left join artifact_versions v on v.artifact_id = r.artifact_id and v.number = r.version
-	where r.state = 'approved'
-	order by r.artifact_id, r.event_seq nulls first, r.created_at, r.id
+	with approved as (
+		select artifact_id, version, event_seq, created_at,
+			row_number() over (partition by artifact_id order by ` + docs.ReviewOrder + `) as newest,
+			row_number() over (partition by artifact_id, version order by ` + docs.ReviewOrder + `) as of_version
+		from artifact_reviews
+		where artifact_id = any($1::uuid[]) and state = 'approved'
+	)
+	select ap.artifact_id::text, ap.version, coalesce(e.id, 0), ap.created_at,
+		case when ap.version <> latest.version and ap.of_version = 1 then coalesce(v.markdown, '') end
+	from approved ap
+	join unnest($1::uuid[], $2::int[]) as latest(id, version) on latest.id = ap.artifact_id
+	join artifacts a on a.id = ap.artifact_id
+	left join events e on e.issue_key = a.issue_key and e.seq = ap.event_seq
+	left join artifact_versions v on v.artifact_id = ap.artifact_id and v.number = ap.version
+	order by ap.artifact_id, ap.newest
 `
 
 // definitionJoins is when each definition that contested names joined the list of root: for each
@@ -926,10 +931,10 @@ func definitionJoins(ctx context.Context, q queryer, root string, roots []string
 		if event, ok := history.arrival(*document.artifact.IssueKey, root, roots); ok {
 			arrived = &moment{event: event}
 		}
-		list := approvals[document.artifact.ID]
+		list := approvals[document.artifact.ID] // newest first
 		for _, key := range keys {
 			order := joinOrder{arrived: arrived}
-			for at := len(list) - 1; at >= 0 && holds(list[at].version, key); at-- {
+			for at := 0; at < len(list) && holds(list[at].version, key); at++ {
 				order.approved = list[at].at
 			}
 			joins[definitionOf{index, key}] = order

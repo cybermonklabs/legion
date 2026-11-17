@@ -1585,6 +1585,23 @@ func TestEachDefinitionJoinsTheListAtItsOwnApproval(t *testing.T) {
 			approveRevisionThrough(t, tree, older, a, termLine("sirocco", sirocco), termLine("lease", otherLease), 2)
 			return outcome{b, specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: b.Key}, a, 2}
 		}},
+		// A review's created_at is the start of its transaction, so an approval that committed
+		// later can carry the earlier time. Here A's second approval carries a time before its
+		// first one, and the order in which the events committed still decides.
+		{"A adds lease in its second version, after B defined it, and that approval's time is before A's first", func(t *testing.T, tree specFormTree, older http.Handler) outcome {
+			a := createFormIssue(t, tree.handler, tree.root, "A, approved first with no lease, its times reversed", specWithTerms(termLine("sirocco", sirocco)))
+			approveFormDocument(t, older, a.PrimaryArtifactID)
+			b := createFormIssue(t, tree.handler, tree.root, "B, approved second with lease", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, older, b.PrimaryArtifactID)
+			approveRevisionThrough(t, tree, older, a, termLine("sirocco", sirocco), termLine("lease", otherLease), 2)
+			if tag, err := tree.database.Pool.Exec(context.Background(), `
+				update artifact_reviews set created_at = (select min(created_at) from artifact_reviews) - interval '1 hour'
+				where artifact_id = $1 and version = 2 and state = 'approved'
+			`, a.PrimaryArtifactID); err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("give A's second approval the earliest time: rows=%d err=%v", tag.RowsAffected(), err)
+			}
+			return outcome{b, specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: b.Key}, a, 2}
+		}},
 		{"A removes lease in its second version and adds it again in its third, after B defined it", func(t *testing.T, tree specFormTree, older http.Handler) outcome {
 			a := createFormIssue(t, tree.handler, tree.root, "A, approved first with lease", specWithTerms(termLine("lease", otherLease)))
 			approveFormDocument(t, older, a.PrimaryArtifactID)
