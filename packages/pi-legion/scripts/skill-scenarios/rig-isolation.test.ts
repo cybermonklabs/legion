@@ -297,12 +297,7 @@ beforeAll(async () => {
   // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
   // of them, and this hook would throw on a host that does not have it.
   if (withoutPython) return;
-  const resolved = Bun.spawnSync([
-    "python3",
-    "-I",
-    "-c",
-    "import sys; print(sys.executable)",
-  ]);
+  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
   const executable = resolved.stdout.toString().trim();
   if (resolved.exitCode !== 0 || !path.isAbsolute(executable)) {
     throw new Error(

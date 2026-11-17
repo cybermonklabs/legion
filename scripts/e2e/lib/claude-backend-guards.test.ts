@@ -225,19 +225,15 @@ printf 'status %s: %s\\n' "$status" "$found"`;
       // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
       // environment and passed as data, not the first python3 on PATH: under `env -i` a version
       // manager's shim there (mise's, with no python selected) has no version and starts nothing.
-      const resolved = Bun.spawnSync([
-        "python3",
-        "-I",
-        "-c",
-        "import sys; print(sys.executable)",
-      ]);
+      const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
       const python = resolved.stdout.toString().trim();
       if (resolved.exitCode !== 0 || !isAbsolute(python)) {
         throw new Error(
           `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
         );
       }
-      const r = run(`
+      const r = run(
+        `
 ready=$scratch/ready err=$scratch/stderr
 env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$PYTHON" -c '
 import ctypes, os, sys, time
@@ -265,7 +261,9 @@ echo "before: $(state "$pid")"
 if { : <"/proc/$pid/environ"; } 2>/dev/null; then echo "environ: readable"; else echo "environ: unreadable"; fi
 ${check}
 echo "after: $(state "$pid")"
-printf 'stderr: [%s]\\n' "$(cat "$err")"`, { PYTHON: python });
+printf 'stderr: [%s]\\n' "$(cat "$err")"`,
+        { PYTHON: python }
+      );
       expect(r.err).toBe("");
       const lines = r.out.trim().split("\n");
       expect(lines[0]).toBe("fixture: not dumpable");
