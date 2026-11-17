@@ -43,16 +43,16 @@ func (n *fixtureName) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// The listener settles a head's check runs as the shared fixture
+// The listener settles a head's check runs and commit statuses as the shared fixture
 // packages/contracts/fixtures/checks-settlement/listener-rules.json says: each run is delivered as
 // its check_run webhook through the real handler, configured with the fixture's reviewer App, into
-// the real CI store, and the summary loop's settlement names each check's highest-id run, its name
-// cut as the store keys it, the failed and cancelled checks, and a tester or architect run only from
-// the reviewer App. This test is the whole of what holds those rules: the Legion daemon had a pass
-// that built a settlement for a head the listener never settled, read from this same fixture, and
-// that pass went with the daemon's own periodic reads of GitHub (dispatch://INFRA-714 R1), so
-// nothing else reads the file now. A rule changed here and not in the listener fails this test,
-// and a reader looking for the daemon's half will not find one.
+// the real CI store, each status the reconcile's mapping keeps is recorded by a writer of the same
+// bucket, and the summary loop's settlement names each check's highest-id run, its name cut as the
+// store keys it, the failed and cancelled checks, a tester or architect run only from the reviewer
+// App, and each terminal status with its state, apart from the check runs. The Legion daemon's pass
+// that built a settlement from this fixture went with its own periodic reads of GitHub
+// (dispatch://INFRA-714 R1). A rule changed here and not in the listener fails this test, and a
+// reader looking for the daemon's half of these rules will not find one.
 func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "checks-settlement", "listener-rules.json"))
 	if err != nil {
@@ -61,13 +61,15 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	var fixture struct {
 		ReviewerAppID string                       `json:"reviewerAppId"`
 		CheckRuns     []map[string]json.RawMessage `json:"checkRuns"`
+		Statuses      []map[string]any             `json:"statuses"`
 		Settlement    struct {
 			CheckRuns []struct {
 				Name fixtureName `json:"name"`
 				ID   uint64      `json:"id"`
 			} `json:"check_runs"`
-			Failed    []fixtureName `json:"failed"`
-			Cancelled []fixtureName `json:"cancelled"`
+			Failed    []fixtureName       `json:"failed"`
+			Cancelled []fixtureName       `json:"cancelled"`
+			Statuses  []cistore.StatusRef `json:"statuses"`
 		} `json:"settlement"`
 	}
 	if err := json.Unmarshal(encoded, &fixture); err != nil {
@@ -85,6 +87,10 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 		return out
 	}
 	wantFailed, wantCancelled := names(fixture.Settlement.Failed), names(fixture.Settlement.Cancelled)
+	wantStatuses := fixture.Settlement.Statuses
+	if len(wantStatuses) == 0 {
+		t.Fatal("the shared fixture's settlement names no status")
+	}
 
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -101,6 +107,12 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	defer cancel()
 	if err := store.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("cache ready: %v", err)
+	}
+	// The reconcile's writer, which records the statuses Dispatch reads of GitHub into the same
+	// bucket the listener's store settles from.
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("reconcile"))
+	if err != nil {
+		t.Fatalf("open the reconcile's writer: %v", err)
 	}
 	const (
 		secret = "s"
@@ -132,6 +144,24 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 		"pull_request": {"head": {"sha": %q}, "updated_at": "2026-10-28T08:00:00Z"},
 		"repository": {"name": "example-repo", "owner": {"login": "example-org"}}
 	}`, head), "d0")
+	// Each status goes through the reconcile's mapping into its writer, as Dispatch's CI reconcile
+	// records what it reads of GitHub: the listener drops every status webhook. The mapping keeps
+	// no pending status, so that one is never recorded. They are recorded before the check runs, so
+	// the settlement that names every run already holds them.
+	var unrecorded []string
+	for _, status := range fixture.Statuses {
+		observation, ok := contracts.GithubStatusObservation(status, "example-org", "example-repo", "42", head)
+		if !ok {
+			unrecorded = append(unrecorded, fmt.Sprint(status["state"]))
+			continue
+		}
+		if changed, err := writer.RecordStatus(ctx, observation); err != nil || !changed {
+			t.Fatalf("record the status %s: changed %v, %v", observation.Context, changed, err)
+		}
+	}
+	if !slices.Equal(unrecorded, []string{"pending"}) {
+		t.Fatalf("the fixture's statuses the mapping recorded none of are in states %v, want the pending one alone", unrecorded)
+	}
 	for i, run := range fixture.CheckRuns {
 		var name fixtureName
 		if err := json.Unmarshal(run["name"], &name); err != nil {
@@ -163,8 +193,9 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 			break
 		}
 	}
-	if !slices.Equal(last.CheckRuns, wantRuns) || !slices.Equal(last.Failed.Checks, wantFailed) || !slices.Equal(last.Cancelled.Checks, wantCancelled) {
-		t.Fatalf("the listener's settlement\nruns %v\nfailed %v\ncancelled %v\nwant the fixture's\nruns %v\nfailed %v\ncancelled %v",
-			last.CheckRuns, last.Failed.Checks, last.Cancelled.Checks, wantRuns, wantFailed, wantCancelled)
+	if !slices.Equal(last.CheckRuns, wantRuns) || !slices.Equal(last.Failed.Checks, wantFailed) || !slices.Equal(last.Cancelled.Checks, wantCancelled) ||
+		!slices.Equal(last.Statuses, wantStatuses) {
+		t.Fatalf("the listener's settlement\nruns %v\nfailed %v\ncancelled %v\nstatuses %v\nwant the fixture's\nruns %v\nfailed %v\ncancelled %v\nstatuses %v",
+			last.CheckRuns, last.Failed.Checks, last.Cancelled.Checks, last.Statuses, wantRuns, wantFailed, wantCancelled, wantStatuses)
 	}
 }

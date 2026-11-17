@@ -26,11 +26,19 @@ func githubEvent(event string) bool {
 }
 
 // githubSkip returns true for event types the handler acknowledges with 200 and neither
-// publishes nor records. merge_group is GitHub's merge queue building (`checks_requested`) or
-// tearing down (`destroyed`) a temporary merge commit: it names no pull request head, and
-// nothing in Legion routes on it (LEGION-99). It runs after signature verification.
+// publishes nor records. It runs after signature verification.
+//
+// merge_group is GitHub's merge queue building (`checks_requested`) or tearing down (`destroyed`)
+// a temporary merge commit: it names no pull request head, and nothing in Legion routes on it
+// (LEGION-99).
+//
+// status is a commit status posted on a commit: the event carries the commit and no pull request,
+// so the listener cannot tell which head's CI record it belongs to, and published it would reach
+// each daemon of the repository as a message that names nothing. Dispatch's CI reconcile reads the
+// statuses of each open pull request head from GitHub instead and records them in that head's CI
+// record (cistore.Writer.RecordStatus).
 func githubSkip(event string) bool {
-	return event == "merge_group"
+	return event == "merge_group" || event == "status"
 }
 
 // githubSenderField extracts a string field from the sender map.

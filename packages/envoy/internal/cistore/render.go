@@ -83,12 +83,30 @@ type Summary struct {
 	Cancelled            StatusGroup    `json:"cancelled"`
 	Skipped              StatusGroup    `json:"skipped"`
 	FailingChecks        []FailingCheck `json:"failing_checks"`
+	// Statuses names each commit status the record holds with its state, in context order, and
+	// is left out when the record holds none, so a head with no status settles in the same bytes
+	// as before the record held statuses. A status is no check run: check_runs, the groups from
+	// failed to skipped and failing_checks name check runs alone, and a check run and a status of
+	// one name are two entries.
+	Statuses []StatusRef `json:"statuses,omitempty"`
 }
 
 // CheckRunRef names one check and its latest GitHub check-run id.
 type CheckRunRef struct {
 	Name string `json:"name"`
 	ID   uint64 `json:"id"`
+}
+
+// StatusRef names one commit status and its state: success, failure or error.
+type StatusRef struct {
+	Context string `json:"context"`
+	State   string `json:"state"`
+}
+
+// statusFailed reports whether a commit status in state failed: failure and error did, success
+// did not.
+func statusFailed(state string) bool {
+	return state == "failure" || state == "error"
 }
 
 // renderSummary derives the stable checks payload. Names within each group are
@@ -134,6 +152,12 @@ func renderSummary(s State) Summary {
 		Cancelled:     group(groups[catCancelled]),
 		Skipped:       group(groups[catSkipped]),
 		FailingChecks: failingChecks,
+	}
+	if contexts := statusContexts(s.Statuses); contexts != nil {
+		sum.Statuses = make([]StatusRef, len(contexts))
+		for i, name := range contexts {
+			sum.Statuses[i] = StatusRef{Context: name, State: s.Statuses[name].State}
+		}
 	}
 	if s.EmittedCount > 0 {
 		sum.SupersededSettlement = "true"

@@ -1,6 +1,9 @@
 package contracts
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T) {
 	body := map[string]any{
@@ -57,5 +60,122 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 	}
 	if observation.ObservedAt != "2026-09-07T03:01:00Z" {
 		t.Errorf("check suite observation timestamp = %q", observation.ObservedAt)
+	}
+}
+
+// A commit status maps from the shape GitHub's REST answer lists it in, and the reconcile maps a
+// status its GraphQL query read into the same shape with GraphQL's upper-case state, so both map to
+// one observation. The sha and the number are the caller's; a null link or description is empty.
+func TestGithubStatusObservationMapsAListedStatus(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	rest := map[string]any{
+		"id":          float64(4021),
+		"context":     "ci/preview",
+		"state":       "failure",
+		"created_at":  "2026-11-17T05:00:00Z",
+		"updated_at":  "2026-11-17T05:00:00Z",
+		"target_url":  "https://ci.example.com/acme/widgets/4021",
+		"description": "The preview build failed",
+	}
+	got, ok := GithubStatusObservation(rest, "acme", "widgets", "7", sha)
+	want := StatusObservation{
+		Owner: "acme", Repo: "widgets", Number: "7", SHA: sha,
+		Context: "ci/preview", State: "failure", CreatedAt: "2026-11-17T05:00:00Z",
+		URL: "https://ci.example.com/acme/widgets/4021", Description: "The preview build failed",
+	}
+	if !ok || got != want {
+		t.Fatalf("GithubStatusObservation(REST) = %+v, %v; want %+v", got, ok, want)
+	}
+	graphQL := map[string]any{
+		"context":     "ci/preview",
+		"state":       "FAILURE",
+		"created_at":  "2026-11-17T05:00:00Z",
+		"target_url":  "https://ci.example.com/acme/widgets/4021",
+		"description": "The preview build failed",
+	}
+	if got, ok := GithubStatusObservation(graphQL, "acme", "widgets", "7", sha); !ok || got != want {
+		t.Fatalf("GithubStatusObservation(GraphQL's state) = %+v, %v; want %+v", got, ok, want)
+	}
+	bare := map[string]any{"context": "ci/preview", "state": "success", "created_at": "2026-11-17T05:00:00Z", "target_url": nil, "description": nil}
+	if got, ok := GithubStatusObservation(bare, "acme", "widgets", "7", sha); !ok || got.URL != "" || got.Description != "" || got.State != "success" {
+		t.Fatalf("GithubStatusObservation(no link, no description) = %+v, %v; want a success with both empty", got, ok)
+	}
+}
+
+// The record keeps a status in success, failure or error alone. GitHub's GraphQL StatusState also
+// has PENDING and EXPECTED, and REST has pending: none of them maps to an observation, and neither
+// does a status with no context or a head with no sha.
+func TestGithubStatusObservationMapsOnlyATerminalStatus(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	status := func(context, state string) map[string]any {
+		return map[string]any{"context": context, "state": state, "created_at": "2026-11-17T05:00:00Z"}
+	}
+	for _, state := range []string{"success", "failure", "error", "SUCCESS", "FAILURE", "ERROR"} {
+		if got, ok := GithubStatusObservation(status("ci/build", state), "acme", "widgets", "7", sha); !ok || got.State != strings.ToLower(state) {
+			t.Errorf("a status in %s = %+v, %v; want it mapped in %s", state, got, ok, strings.ToLower(state))
+		}
+	}
+	for _, state := range []string{"pending", "PENDING", "EXPECTED", "expected", "", "cancelled"} {
+		if got, ok := GithubStatusObservation(status("ci/build", state), "acme", "widgets", "7", sha); ok {
+			t.Errorf("a status in %q mapped to %+v; want none", state, got)
+		}
+	}
+	if got, ok := GithubStatusObservation(status("", "success"), "acme", "widgets", "7", sha); ok {
+		t.Errorf("a status with no context mapped to %+v; want none", got)
+	}
+	if got, ok := GithubStatusObservation(status("ci/build", "success"), "acme", "widgets", "7", ""); ok {
+		t.Errorf("a status of no head mapped to %+v; want none", got)
+	}
+	for _, state := range []string{"success", "failure", "error"} {
+		if !TerminalStatusState(state) {
+			t.Errorf("TerminalStatusState(%q) = false, want true", state)
+		}
+	}
+	for _, state := range []string{"pending", "expected", "SUCCESS", ""} {
+		if TerminalStatusState(state) {
+			t.Errorf("TerminalStatusState(%q) = true, want false", state)
+		}
+	}
+}
+
+// What a status observation copies goes to the CI record, which goes to NATS whole, so each text is
+// capped as a check run's is. The record is keyed by context, so a context past the cap keeps a
+// digest of the whole context after its ellipsis: two contexts that share the kept text stay two
+// entries, and one context keys the same entry every time.
+func TestAStatusIsCappedAtTheEnvelopeTextCap(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	observe := func(t *testing.T, fields map[string]any) StatusObservation {
+		t.Helper()
+		object := map[string]any{"context": "ci/build", "state": "success", "created_at": "2026-11-17T05:00:00Z"}
+		for key, value := range fields {
+			object[key] = value
+		}
+		got, ok := GithubStatusObservation(object, "acme", "widgets", "7", sha)
+		if !ok {
+			t.Fatalf("GithubStatusObservation(%.60v) mapped to nothing", object)
+		}
+		return got
+	}
+	shared := strings.Repeat("c", 3000)
+	first := observe(t, map[string]any{"context": shared + "/lint"}).Context
+	second := observe(t, map[string]any{"context": shared + "/test"}).Context
+	if first == second {
+		t.Fatalf("two contexts sharing their first %d runes capped to one: %.60q", maxEnvelopeTextRunes, first)
+	}
+	if again := observe(t, map[string]any{"context": shared + "/lint"}).Context; again != first {
+		t.Fatalf("one context capped two ways: %.60q and %.60q", first, again)
+	}
+	if first != checkName(shared+"/lint") {
+		t.Fatalf("a capped context is %.60q, want it keyed as a check name is (checkName)", first)
+	}
+	if !strings.HasPrefix(first, strings.Repeat("c", 2048)+"… ") || len([]rune(first)) != 2048+2+16 {
+		t.Fatalf("capped context %.60q (%d runes) does not keep the first 2,048 runes, an ellipsis and a digest", first, len([]rune(first)))
+	}
+	long := strings.Repeat("u", 600_000)
+	got := observe(t, map[string]any{"target_url": long, "description": long, "created_at": long})
+	for field, value := range map[string]string{"URL": got.URL, "Description": got.Description, "CreatedAt": got.CreatedAt} {
+		if value != strings.Repeat("u", 2048)+"…" {
+			t.Fatalf("%s has %d runes, want the first 2,048 and an ellipsis", field, len([]rune(value)))
+		}
 	}
 }

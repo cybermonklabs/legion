@@ -820,6 +820,61 @@ func TestGitHubHandlerMergeGroup(t *testing.T) {
 	}
 }
 
+// TestGitHubHandlerStatus asserts a commit status event is acknowledged with 200 and neither
+// published nor recorded, as merge_group is: the event carries a commit and no pull request, and
+// Dispatch's CI reconcile reads each open head's statuses from GitHub instead. The body is shaped
+// from GitHub's documented status payload; the signature check still runs before the skip.
+func TestGitHubHandlerStatus(t *testing.T) {
+	body := []byte(`{
+		"id": 4021,
+		"sha": "0123456789abcdef0123456789abcdef01234567",
+		"name": "acme/widgets",
+		"target_url": "https://ci.example.com/acme/widgets/4021",
+		"context": "ci/preview",
+		"description": "The preview build failed",
+		"state": "failure",
+		"commit": {"sha": "0123456789abcdef0123456789abcdef01234567"},
+		"branches": [{"name": "feature", "commit": {"sha": "0123456789abcdef0123456789abcdef01234567"}}],
+		"created_at": "2026-11-17T05:00:00Z",
+		"updated_at": "2026-11-17T05:00:00Z",
+		"sender": {"login": "preview-bot[bot]", "type": "Bot"},
+		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"}
+	}`)
+	for i, tc := range []struct {
+		name       string
+		signature  string // "" signs the body with the handler's secret
+		wantStatus int
+	}{
+		{name: "a status is acknowledged and not published", wantStatus: 200},
+		{name: "an unsigned status is still refused", signature: "sha256=invalid", wantStatus: 401},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pub := &mockPublisher{}
+			recorder := &mockRecorder{}
+			handler := GitHubHandler("s", "@legion", "", pub, recorder)
+			req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(string(body)))
+			req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("d-status-%d", i))
+			req.Header.Set("X-GitHub-Event", "status")
+			sig := tc.signature
+			if sig == "" {
+				sig = githubSign("s", body)
+			}
+			req.Header.Set("X-Hub-Signature-256", sig)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if len(pub.published) != 0 {
+				t.Errorf("published = %d, want 0; first topic %q", len(pub.published), pub.published[0].Topic)
+			}
+			if n := len(recorder.calls) + len(recorder.suiteCalls); n != 0 {
+				t.Errorf("recorder calls = %d, want 0", n)
+			}
+		})
+	}
+}
+
 // TestGitHubHandlerCIRecordsObservations asserts a check_run webhook records
 // one state fact per associated PR and never publishes the obsolete raw topic.
 func TestGitHubHandlerCIRecordsObservations(t *testing.T) {

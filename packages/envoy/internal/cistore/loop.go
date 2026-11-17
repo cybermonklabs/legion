@@ -412,6 +412,9 @@ func settlementEnvelope(state State, issuedAt int64) (contracts.Envelope, error)
 	}, nil
 }
 
+// settledPayloadSummary is the settlement's one line. A settlement that names a commit status adds
+// how many statuses passed and failed, and the contexts of the failed ones, after the failing
+// check runs; one that names none reads as before the record held statuses.
 func settledPayloadSummary(sum Summary) string {
 	summary := fmt.Sprintf(
 		"checks settled on %s#%s @ %s: %d passed, %d failed, %d cancelled, %d skipped",
@@ -420,6 +423,18 @@ func settledPayloadSummary(sum Summary) string {
 	)
 	if sum.Failed.Count > 0 {
 		summary += "; failing: " + strings.Join(sum.Failed.Checks, ", ")
+	}
+	if len(sum.Statuses) > 0 {
+		var failing []string
+		for _, status := range sum.Statuses {
+			if statusFailed(status.State) {
+				failing = append(failing, status.Context)
+			}
+		}
+		summary += fmt.Sprintf("; statuses: %d passed, %d failed", len(sum.Statuses)-len(failing), len(failing))
+		if len(failing) > 0 {
+			summary += "; failing statuses: " + strings.Join(failing, ", ")
+		}
 	}
 	if sum.SupersededSettlement == "true" {
 		summary += " (re-settled)"
