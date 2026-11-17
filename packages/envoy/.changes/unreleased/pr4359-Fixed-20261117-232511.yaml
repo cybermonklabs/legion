@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The broker's airlock proxy refuses a dial to the broker cluster's own addresses. A Kubernetes Service range can be public address space - GKE's default is `34.118.224.0/20` - so the proxy's rules for loopback, private, link-local and `100.64.0.0/10` addresses let a command with an airlock grant tunnel to a ClusterIP of the cluster the broker runs in, the broker's own Service among them.
+  `BROKER_AIRLOCK_CLUSTER_RANGES` names that cluster's Service range and each pod or node range RFC 1918 does not already make private, as comma-separated CIDR prefixes, IPv4 or IPv6. A CONNECT tunnel, a bound host's request and a plain-HTTP request to an address inside one of them are refused `403 ADDRESS_REFUSED` naming the setting, before anything is dialled; `BROKER_AIRLOCK_TEST_DIAL_ALLOW` still opens an address it names.
+  With the airlock on (`BROKER_AIRLOCK_RULES_FILE`) in a cluster (`KUBERNETES_SERVICE_HOST` set), the broker refuses to start when the setting is missing, when an element is empty or is no CIDR prefix, or when no range holds `KUBERNETES_SERVICE_HOST`, so a deployment that missed its Service range cannot pass silently. Outside a cluster the setting is optional, and `dev-airlock.sh` starts its brokers outside any cluster.
+time: 2026-11-17T23:25:11.000000000Z
+custom:
+  Issue: pr4359
