@@ -1423,6 +1423,11 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
+	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
+	// here, before anything moves (backwardReasonRefusal).
+	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Reason); code != "" {
+		return refused(code, why), nil
+	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
