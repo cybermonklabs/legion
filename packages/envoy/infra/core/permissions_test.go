@@ -92,6 +92,7 @@ var listenerBasePublish = []string{
 	"$JS.API.CONSUMER.DELETE.KV_envoy_dpop_proofs.>",
 	"$JS.FC.KV_envoy_dpop_proofs.>",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
+	"$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
 }
 
 // sessionConsumerPublish are the session consumers' calls (create with and without a filter

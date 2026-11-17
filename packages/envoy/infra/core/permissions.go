@@ -48,7 +48,11 @@ const inboxes = nats.InboxPrefix + ">"
 //     the calls nats.go's KV makes and the raise a start sends (bucketPermissions): the bucket's
 //     stream info, create and update, direct and stream message gets, writes to its keys, its
 //     watchers' consumer create and delete, and their flow-control replies;
-//   - the purge of the interest bucket, which its delete-marker collection sends.
+//   - the purge of the interest bucket, which its delete-marker collection sends, and of the
+//     known-session bucket, which the purge of its replaced chunks' markers sends. NATS grants a
+//     purge by stream alone (the subject a purge filters to is in its request), so each reaches
+//     the whole bucket; a user that holds the bucket's writes can already delete or roll up every
+//     key of it, so neither removes a record that user could not.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -75,7 +79,7 @@ func listenerGrant(machineID string) Permissions {
 	for _, bucket := range bus.ListenerBuckets() {
 		publish = append(publish, bucketPermissions(bucket)...)
 	}
-	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket)
+	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket, jsAPI+"STREAM.PURGE."+kvStream+bus.KnownSessionBucket)
 	return Permissions{
 		Publish: Rules{Allow: publish},
 		Subscribe: Rules{Allow: []string{

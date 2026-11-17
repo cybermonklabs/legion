@@ -11,7 +11,11 @@ body: |-
   bus refuses for its size, and a registration whose session consumer filter is past the max payload,
   are now answered `413` naming the size and the bound, with no `Retry-After`. A compare-and-swap that
   lost to another write on a replicated bucket (code 10164) is now read again instead of answered
-  `503`. A listener of an earlier build reads a chunked record as one it cannot decode. A rollback to
-  an earlier build leaves the chunks and manifests in `envoy_interests` and `envoy_known_sessions`,
-  where that build removes none of them and they hold the interest bucket's marker collection back:
-  delete each `=chunk.` key and each value that starts `chunked ` with `nats kv del` after it.
+  `503`. The known-session store purges the delete markers of its replaced chunks every five minutes,
+  which needs a new grant, publish on `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, now in every
+  listener, host and Dispatch user set; a user without it keeps those markers for the bucket's 30
+  days, logs one WARN and serves on. A listener of an earlier build reads a chunked record as one it
+  cannot decode. A rollback to an earlier build leaves the chunks and manifests in `envoy_interests`
+  and `envoy_known_sessions`, where that build removes none of them and they hold the interest
+  bucket's marker collection back: delete each `=chunk.` key and each value that starts `chunked `
+  with `nats kv del` after it.

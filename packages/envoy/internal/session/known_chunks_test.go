@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -103,6 +104,226 @@ func TestAHeartbeatDayOfAChunkedKnownSessionRecordWithNoMarkerPassLeavesEveryMar
 	t.Logf("after 144 heartbeats with no marker pass: %d chunk subjects, the record in %d chunks", subjects, chunks)
 	if want := chunks * 145; subjects != want {
 		t.Fatalf("after a heartbeat day with no marker pass the bucket holds %d chunk subjects, want %d: %d live and %d markers", subjects, want, chunks, chunks*144)
+	}
+}
+
+// lockedLog is a log a store writes from its own goroutines while a test reads it.
+type lockedLog struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *lockedLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// markerRig is a tracing NATS server of a 64 KiB max payload whose one user may publish to
+// everything but deny, the known-session store on it with a clock the test moves, and the session
+// ses_known_marked whose chunked record one rewrite has replaced, so the watcher has delivered the
+// markers of the chunks that rewrite deleted.
+type markerRig struct {
+	srv    *testnats.Server
+	conn   *nats.Conn
+	known  *KnownSessions
+	clock  *knownClock
+	logs   *lockedLog
+	before int
+}
+
+func newMarkerRig(t *testing.T, deny ...string) markerRig {
+	t.Helper()
+	seed, public := testnats.User(t)
+	quoted := make([]string, len(deny))
+	for i, subject := range deny {
+		quoted[i] = fmt.Sprintf("%q", subject)
+	}
+	config := fmt.Sprintf("trace: true\nmax_payload: %d\njetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: "+
+		"{ publish: { allow: [\">\"], deny: [%s] }, subscribe: { allow: [\">\"] } } } ]\n}\n",
+		kvchunktest.MaxPayload, public, strings.Join(quoted, ", "))
+	srv, uri := testnats.StartConfig(t, config, []string{"-DV", "-js"}, false)
+	conn, err := testnats.ConnectSeed(t, uri, seed)
+	if err != nil {
+		t.Fatalf("connect to the granted NATS: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	clock := &knownClock{at: time.Now()}
+	logs := &lockedLog{}
+	known, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1), WithKnownSessionClock(clock.Now),
+		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	if err != nil {
+		t.Fatalf("open the known-session store: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	if err := known.WaitForCacheReady(context.Background()); err != nil {
+		t.Fatalf("the known-session cache did not become ready: %v", err)
+	}
+	for _, label := range []string{"first", "second"} {
+		if err := known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_marked", Topics: kvchunktest.Topics(label, 400)}); err != nil {
+			t.Fatalf("record the %s record: %v", label, err)
+		}
+	}
+	rig := markerRig{srv: srv, conn: conn, known: known, clock: clock, logs: logs}
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the watcher to deliver the markers of the replaced chunks", func() bool {
+		known.mu.RLock()
+		defer known.mu.RUnlock()
+		rig.before = len(known.markers.Due(clock.Now()))
+		return rig.before > 0
+	})
+	clock.set(clock.Now().Add(kvchunk.MarkerGrace + time.Second))
+	return rig
+}
+
+// traceThrough is every line of the server's log once the trace of a sentinel published after
+// everything the store sent is in it.
+func (r markerRig) traceThrough(t *testing.T) []string {
+	t.Helper()
+	sentinel := fmt.Sprintf("trace.sentinel.%d", time.Now().UnixNano())
+	if err := r.conn.Publish(sentinel, nil); err != nil {
+		t.Fatalf("publish the trace sentinel: %v", err)
+	}
+	if err := r.conn.Flush(); err != nil {
+		t.Fatalf("flush the trace sentinel: %v", err)
+	}
+	var log string
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the sentinel's trace line", func() bool {
+		log = r.srv.Log()
+		return strings.Contains(log, "[PUB "+sentinel+" ")
+	})
+	return strings.Split(log, "\n")
+}
+
+// tracedPurgeSubjects is the subject of every stream purge the server traced a client publishing.
+func tracedPurgeSubjects(trace []string) []string {
+	var subjects []string
+	for _, line := range trace {
+		_, rest, ok := strings.Cut(line, "<<- [PUB ")
+		if !ok {
+			_, rest, ok = strings.Cut(line, "<<- [HPUB ")
+		}
+		if subject, _, _ := strings.Cut(rest, " "); ok && strings.Contains(subject, ".API.STREAM.PURGE.") {
+			subjects = append(subjects, subject)
+		}
+	}
+	return subjects
+}
+
+// The capability the marker pass needs, off a real server's own trace: one purge of
+// $JS.API.STREAM.PURGE.KV_envoy_known_sessions per marker, and no purge of any other stream. Each
+// purge is filtered to a chunk's key, so the record keys keep every message, and the pass leaves
+// the bucket holding the live chunks and the records alone.
+func TestTheChunkMarkerPassSendsTheKnownSessionPurgeItsGrantMustAllow(t *testing.T) {
+	rig := newMarkerRig(t)
+	purgeSubject := "$JS.API.STREAM.PURGE.KV_" + bus.KnownSessionBucket
+	purged, err := rig.known.purgeChunkMarkers(t.Context())
+	if err != nil || purged != rig.before {
+		t.Fatalf("a pass under a grant that allows the purge purged %d markers (%v), want the %d due", purged, err, rig.before)
+	}
+	purges := tracedPurgeSubjects(rig.traceThrough(t))
+	t.Logf("purges the server traced: %v", purges)
+	if len(purges) != purged {
+		t.Fatalf("the server traced %d purges for %d markers purged", len(purges), purged)
+	}
+	for _, subject := range purges {
+		if subject != purgeSubject {
+			t.Fatalf("the pass published to another purge subject, %s, besides %s", subject, purgeSubject)
+		}
+	}
+	row, _ := rig.known.cached("ses_known_marked")
+	if subjects := chunkSubjects(t, rig.conn); subjects != row.layout.Chunks {
+		t.Fatalf("after the pass the bucket holds %d chunk subjects, want the record's live chunks alone", subjects)
+	}
+}
+
+// The negative control is the refusal path a listener whose grant predates this pass must survive:
+// a pass the server refuses purges nothing, keeps every marker for the next pass, logs one WARN
+// however many passes run, and the store keeps answering its records.
+func TestAChunkMarkerPassTheGrantRefusesPurgesNothingWarnsOnceAndTheStoreServes(t *testing.T) {
+	purgeSubject := "$JS.API.STREAM.PURGE.KV_" + bus.KnownSessionBucket
+	rig := newMarkerRig(t, purgeSubject)
+	subjects := chunkSubjects(t, rig.conn)
+	for pass := range 2 {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		purged, err := rig.known.purgeChunkMarkers(ctx)
+		cancel()
+		if err == nil || purged != 0 {
+			t.Fatalf("pass %d under a grant that denies the purge purged %d markers (%v), want none and the error", pass, purged, err)
+		}
+		t.Logf("pass %d: %v", pass, err)
+	}
+	rig.known.mu.RLock()
+	kept := len(rig.known.markers.Due(rig.clock.Now()))
+	rig.known.mu.RUnlock()
+	if kept != rig.before {
+		t.Fatalf("after two refused passes the store keeps %d markers, want the %d due for the next pass", kept, rig.before)
+	}
+	if after := chunkSubjects(t, rig.conn); after != subjects {
+		t.Fatalf("a refused pass changed the bucket's chunk subjects from %d to %d", subjects, after)
+	}
+	if warnings := strings.Count(rig.logs.String(), "could not purge the markers of its replaced chunks"); warnings != 1 {
+		t.Fatalf("two refused passes logged %d warnings, want one:\n%s", warnings, rig.logs.String())
+	}
+	var violations int
+	for _, line := range rig.traceThrough(t) {
+		if strings.Contains(line, "Permissions Violation for Publish to") {
+			violations++
+			if !strings.Contains(line, purgeSubject) {
+				t.Fatalf("the grant refused another subject too: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	if violations == 0 {
+		t.Fatal("the server logged no permissions violation; the grant did not refuse the purge")
+	}
+	requireKnownTopics(t, "the store after a refused pass", rig.known, "ses_known_marked", kvchunktest.Topics("second", 400))
+}
+
+// A record's own key is never purged: its marker says the session's record was deleted, which a
+// listener that starts later must still be told. The pass purges the replaced chunks' markers and
+// leaves the deleted record's marker in the bucket, so a store opened afterwards answers no record
+// for that session.
+func TestTheChunkMarkerPassLeavesARecordsOwnMarker(t *testing.T) {
+	rig := newMarkerRig(t)
+	js, err := rig.conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := js.KeyValue(bus.KnownSessionBucket)
+	if err != nil {
+		t.Fatalf("open the bucket: %v", err)
+	}
+	if err := rig.known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_deleted", Topics: []string{"notifications.team.deleted"}}); err != nil {
+		t.Fatalf("record the session to delete: %v", err)
+	}
+	if err := kv.Delete("ses_known_deleted"); err != nil {
+		t.Fatalf("delete the record: %v", err)
+	}
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the store to drop the deleted record", func() bool {
+		_, ok := rig.known.Get("ses_known_deleted")
+		return !ok
+	})
+	rig.clock.set(rig.clock.Now().Add(kvchunk.MarkerGrace + time.Second))
+	if _, err := rig.known.purgeChunkMarkers(t.Context()); err != nil {
+		t.Fatalf("the pass: %v", err)
+	}
+	info, err := js.StreamInfo("KV_"+bus.KnownSessionBucket, &nats.StreamInfoRequest{SubjectsFilter: "$KV." + bus.KnownSessionBucket + ".ses_known_deleted"})
+	if err != nil {
+		t.Fatalf("read the deleted record's subject: %v", err)
+	}
+	if len(info.State.Subjects) != 1 {
+		t.Fatalf("after the pass the deleted record's key holds %d subjects, want its one marker", len(info.State.Subjects))
+	}
+	if fresh := openKnownOn(t, rig.conn, time.Now); fresh != nil {
+		if _, ok := fresh.Get("ses_known_deleted"); ok {
+			t.Fatal("a store opened after the pass answers a record for the deleted session")
+		}
 	}
 }
 

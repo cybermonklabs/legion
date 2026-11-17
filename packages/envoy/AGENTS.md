@@ -3788,20 +3788,29 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A larger record is written as chunks under `=chunk.<generation>.<index>`, a new random generation per write, and then as a manifest under the record's own key (`chunked {"generation":…,"chunks":…,"bytes":…,"sha256":…}`), with the write a whole record uses: the interest record's compare-and-swap, the known-session record's put.
   A chunk is three quarters of that room less 1 KiB, so the leader's answer to a read of it, which carries the chunk in base64 inside JSON, fits under the max payload as well.
   No session id under `=chunk.` is stored or removed: an interest write, an unsubscribe or a deregistration for one is a `400`.
-  A reader joins the chunks and checks their length and SHA-256 before it decodes them, so it gets the old record whole or the new record whole, never a mix:
+  A KV write the bus still refuses for its size, past the server's max payload or the bucket's largest value, is `bus.ErrTooLarge` naming the size and the bound (`bus.KeyValue.tooLarge`), which the registration route answers `413` with no `Retry-After`.
+
+- A reader of a chunked record joins the chunks and checks their length and SHA-256 before it decodes them, so it gets the old record whole or the new record whole, never a mix:
   a cache's watcher is delivered a manifest's chunks before the manifest, in stream order, and joins from those;
   a read from the bucket reads each chunk from the stream's leader (`bus.KeyValue.GetFromLeader`), and one that finds a chunk gone reads the manifest again, which a rewrite has moved, up to five times.
   A manifest is read only when it is one this build can write (a 26-character base32 generation, at least one byte, at most one chunk per byte, a lower-case hex SHA-256), and nothing is sized by its claims before its chunks are read, so any value a writer of the bucket stores under a record's key is at worst a record this build cannot decode.
   A manifest whose chunks are not all there at the same revision, or do not join, is such a record (`store.ErrMalformedInterest` for the interest record), which the session's next registration replaces.
-  A write deletes the chunks of the record it replaced once its manifest lands, and its own once the bucket refused the manifest (a compare-and-swap another write beat, or any other refusal) or the write took more than a minute of wall time before sending it (`kvchunk.WriteBound`), so a write that stops at any step leaves the old record served.
+
+- A write of a chunked record deletes the chunks of the record it replaced once its manifest lands, and its own once the bucket refused the manifest (a compare-and-swap another write beat, or any other refusal) or the write took more than a minute of wall time before sending it (`kvchunk.WriteBound`), so a write that stops at any step leaves the old record served.
   A compare-and-swap another write beat is `nats.ErrKeyExists` on every bucket: a replicated bucket's refusal of two swaps in flight at once, code 10164, is named so too (`bus.KeyValue`'s `lostSwap`), so the store reads the record again rather than answering `503`.
   A delete deletes the chunks of the record it deleted; a deregistration, which deletes at the revision it reads, deletes only the chunks the bucket holds, in order (`kvchunk.DeleteStored`).
   What a crash or a call that did not answer leaves, no record names, and it is collected once the cache took it more than 10 minutes ago (`kvchunk.Grace`) and while the cache follows its bucket: by every interest reaper pass, whether or not its reap failed (`store.Registry.StartReaper`, which logs `chunks_collected`), and by the known-session store's hourly sweep.
-  Each chunk a rewrite replaces leaves one delete marker under a key no write uses again: the interest bucket's marker collection purges those, and the known-session bucket keeps them for its 30-day `MaxAge`, about 8,640 markers a month for a session whose record is two chunks and is refreshed every 10 minutes (`session.KnownSessionRefreshAge`), which every listener's warm-up of that bucket reads.
-  A listener of an earlier build reads a manifest as a record it cannot decode and logs each chunk as a value it cannot decode; it could store no such record either, since the bus refused the write.
+
+- Each chunk a rewrite replaces leaves one delete marker under a key no write uses again.
+  The interest bucket's marker collection purges those with every other marker.
+  The known-session bucket keeps a marker for its 30-day `MaxAge`, which would be 8,640 marker subjects a month for a session whose record is two chunks and is refreshed every 10 minutes (`session.KnownSessionRefreshAge`), so its store purges them itself: every 5 minutes (`kvchunk.MarkerGrace`) it purges, with a purge filtered to that one key, each chunk key's marker its watcher was first delivered more than 5 minutes ago, by when every running listener's watcher has dropped that chunk too (`session.KnownSessions.purgeChunkMarkers`).
+  A record's own key is never purged, since its marker says the session's record was deleted.
+  Measured on a 1 MiB server over a day of heartbeats of a 1.2 MB record: 2 chunk subjects with the pass, 290 without it.
+  The pass needs publish on `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`; a user without it keeps the markers, logs `the known-session store could not purge the markers of its replaced chunks` once until a pass purges, and serves on.
+
+- A listener of an earlier build reads a chunked record's manifest as a record it cannot decode and logs each chunk as a value it cannot decode; it could store no such record either, since the bus refused the write.
   In a fleet that mixes builds, an earlier build's write over a chunked interest record (a role claim through it, say) stores only that write's topics, and the session's next registration through a listener of this build stores its whole list again.
   A rollback to an earlier build leaves every chunk and manifest in the buckets, where nothing of that build removes them, and their live keys hold the interest bucket's marker-collection floor down: delete each `=chunk.` key and each manifest after the rollback (`nats kv ls envoy_interests`, `nats kv get` for a value that starts `chunked `, then `nats kv del`), and the same in `envoy_known_sessions`.
-  A KV write the bus still refuses for its size, past the server's max payload or the bucket's largest value, is `bus.ErrTooLarge` naming the size and the bound (`bus.KeyValue.tooLarge`), which the registration route answers `413` with no `Retry-After`.
 
 - The known-session store (`envoy_known_sessions`, `internal/session/known.go`) holds one record per session that registered through any listener within `session.KnownSessionRetention` (30 days), keyed by session id:
   its title, its capabilities, the topics its registration stored, and its last seen time (`session.KnownSession`).
