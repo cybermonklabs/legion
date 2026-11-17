@@ -70,16 +70,20 @@ test("the act rule fails each row React printed an act message in, and the file 
     fail: /^ *(\d+) fail$/m.exec(output)?.[1],
     pass: /^ *(\d+) pass$/m.exec(output)?.[1],
   };
-  expect(ran).toEqual({ exitCode: 1, fail: "3", pass: "1" });
+  expect(ran).toEqual({ exitCode: 1, fail: "4", pass: "1" });
   const failed = failedRows(output);
   expect([...failed.keys()].sort()).toEqual([
     "(unnamed)",
     "a state set outside act fails its row",
+    "a state set outside act fails its row while console.error is quiet",
     "an act inside a waitFor callback fails its row",
   ]);
   const outside = failed.get("a state set outside act fails its row");
   expect(outside).toContain("error: React printed 1 act message(s) in this row:");
   expect(outside).toContain("update outside act in CountSetOutsideAct");
+  const quiet = failed.get("a state set outside act fails its row while console.error is quiet");
+  expect(quiet).toContain("error: React printed 1 act message(s) in this row:");
+  expect(quiet).toContain("update outside act in CountSetWhileQuiet");
   const inWaitFor = failed.get("an act inside a waitFor callback fails its row");
   expect(inWaitFor).toContain("error: React printed 1 act message(s) in this row:");
   expect(inWaitFor).toContain("act environment off");
@@ -92,7 +96,9 @@ test("the act rule fails each row React printed an act message in, and the file 
   // CountSetOutsideAct's and LateTimerCount's "not wrapped" lines, and the waitFor row's "not
   // configured" line. Neither the rule's message nor the source excerpt Bun prints above it
   // repeats React's words, so a count of React's lines counts each message once; and the recorder
-  // still prints every act message, so a recorder that swallowed them would read 0 here.
+  // still prints every act message, so a recorder that swallowed them would read 0 here. The
+  // quiet row's message is recorded, as that row's failure shows, and never printed, so it adds
+  // none; a `quietConsoleError` that printed its calls would make the "not wrapped" count 3.
   expect({
     notConfigured: output.split(NOT_CONFIGURED).length - 1,
     notWrapped: output.split(NOT_WRAPPED).length - 1,

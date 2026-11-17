@@ -8,6 +8,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { act as reactAct, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import { quietConsoleError } from "./act-warnings";
+
 /** The setter of the count a row's component shows, which the row calls with no event between. */
 interface HeldCount {
   set: (count: number) => void;
@@ -39,6 +41,10 @@ function CountSetInWaitFor({ held }: { held: HeldCount }) {
   return <p>{useHeldCount(held)}</p>;
 }
 
+function CountSetWhileQuiet({ held }: { held: HeldCount }) {
+  return <p>{useHeldCount(held)}</p>;
+}
+
 test("a state set inside act passes", () => {
   const held = heldCount();
   render(<CountSetInsideAct held={held} />);
@@ -52,6 +58,20 @@ test("a state set outside act fails its row", () => {
   const held = heldCount();
   render(<CountSetOutsideAct held={held} />);
   held.set(1);
+});
+
+// The one sanctioned silencing of `console.error` drops React's line from the log, so the
+// whole-output count `act-warnings.test.ts` reads finds none for this row, and still records the
+// message, so the rule fails this row by its name.
+test("a state set outside act fails its row while console.error is quiet", () => {
+  const held = heldCount();
+  render(<CountSetWhileQuiet held={held} />);
+  const logged = quietConsoleError();
+  try {
+    held.set(1);
+  } finally {
+    logged.mockRestore();
+  }
 });
 
 // Testing Library turns the act environment off while it waits. React's own `act` leaves it off,

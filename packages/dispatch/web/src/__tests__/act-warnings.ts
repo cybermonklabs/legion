@@ -1,3 +1,5 @@
+import { type Mock, spyOn } from "bun:test";
+
 // React 19's act messages, each by a piece of its text as react@19.2.8 and react-dom@19.2.8 print
 // it, with what the rule calls it. The table is at the top of the file on purpose: when the rule
 // throws, Bun prints the `throw` line and the five lines above it, and a count of React's own
@@ -46,6 +48,7 @@ const STACK_DEPTH = 100;
 /**
  * Records each act message React prints from here on, and still prints every call as it was
  * called, act messages included, so the log shows React's own text at the moment it was printed.
+ * While a row holds the spy of `quietConsoleError`, each call reaches that spy, not this wrapper.
  * Call it once, from the preload: under `--parallel` the preload runs again for each file, with a
  * fresh `console`, so the wrapper never wraps itself.
  */
@@ -58,6 +61,19 @@ export function installActMessageRecorder(): void {
       print.apply(console, args);
     }
   };
+}
+
+/**
+ * Keeps `console.error` quiet until the row calls `mockRestore()` on the spy this returns: a row
+ * whose code logs on purpose uses it to keep that expected output out of the log. The spy records
+ * each act message it is handed before it drops the call, so the rule still fails the row that
+ * drew one. It is the only sanctioned way to silence `console.error`: a replacement, or a row's
+ * own spy with a `mockImplementation`, drops React's act messages before the rule can read them.
+ */
+export function quietConsoleError(): Mock<typeof console.error> {
+  return spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    recordActMessage(args);
+  });
 }
 
 function recordActMessage(args: readonly unknown[]): void {

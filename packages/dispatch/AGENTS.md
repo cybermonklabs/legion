@@ -1737,10 +1737,12 @@ A press whose answer lands outside `act` holds that answer on a `Promise.withRes
 gives it inside `await act(async () => { ... })` after the press, as `mintLostWith` in
 `features/settings/AgentTokensSection.test.tsx` does.
 None of these clears one: silencing `console.error`, by a replacement or a spy's
-`mockImplementation`, which hides the message from the rule and from the log alike; setting
-`IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment`; or a `user-event` call inside
-`act`, after which React prints "The current testing environment is not configured to support
-act(...)" and the row fails on that instead.
+`mockImplementation`, which hides the message from the rule and from the log alike, and a row
+whose code logs on purpose keeps `console.error` quiet only through `quietConsoleError()` in
+`__tests__/act-warnings.ts`, which still records each act message, so the rule still fails the
+row; setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment`; or a `user-event`
+call inside `act`, after which React prints "The current testing environment is not configured
+to support act(...)" and the row fails on that instead.
 
 An interaction is performed with `@testing-library/user-event`, never dispatched with
 `fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
