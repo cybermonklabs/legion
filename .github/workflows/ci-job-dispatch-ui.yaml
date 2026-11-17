@@ -77,8 +77,9 @@ jobs:
       # covered end to end by every multi-worker run of the browser suite itself.
       #
       # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
-      # lane prints its own ` --seed=<n>` in its summary. A red run is reproduced with the failing
-      # file alone and that seed, as packages/dispatch/AGENTS.md ("## Commands") says.
+      # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
+      # reproduced with its file alone and that seed, as packages/dispatch/AGENTS.md ("## Commands")
+      # says; it also says what a row that failed from the lane's load needs.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch
