@@ -201,12 +201,16 @@ const specFormDocumentOwner = documentOwnerValidation(true);
 function specFormRefusal(value: unknown): string | undefined {
   const input = value as Readonly<Record<string, unknown>>;
   if (input["root"] !== undefined) {
-    return SPEC_FORM_DOCUMENT_ARGUMENTS.every((name) => input[name] === undefined) ? undefined : SPEC_FORM_ROOT_RULE;
+    return SPEC_FORM_DOCUMENT_ARGUMENTS.every((name) => input[name] === undefined)
+      ? undefined
+      : SPEC_FORM_ROOT_RULE;
   }
   return brokenParts([
     [specFormDocumentOwner.check(value), specFormDocumentOwner.message],
     [
-      input["version"] === undefined || typeof input["artifact"] === "string" || typeof input["ref"] === "string",
+      input["version"] === undefined ||
+        typeof input["artifact"] === "string" ||
+        typeof input["ref"] === "string",
       SPEC_FORM_VERSION_RULE,
     ],
   ]);

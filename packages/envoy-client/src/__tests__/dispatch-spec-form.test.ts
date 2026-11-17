@@ -516,9 +516,15 @@ describe("dispatch spec-form", () => {
 
   test("--version with an issue and no --artifact is refused before any request, since a version belongs to one document", async () => {
     forms["ACME-5-spec"] = formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 1 });
-    forms["ACME-5-verification"] = formRead("ACME-5-verification", "verification.md", 3, "covered", {
-      claim: 1,
-    });
+    forms["ACME-5-verification"] = formRead(
+      "ACME-5-verification",
+      "verification.md",
+      3,
+      "covered",
+      {
+        claim: 1,
+      }
+    );
 
     for (const argv of [
       ["spec-form", "ACME-5", "--version", "1"],

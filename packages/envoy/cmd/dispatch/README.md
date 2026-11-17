@@ -4680,18 +4680,20 @@ Each item below names a path with its method and identity, then its purpose.
       No rule compares the texts of that version, so its component names are no nouns of the system.
       The way out of both is a new version of that document, and for the approved document its approval.
 
-    A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
-    `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
-    `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
-    The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
-    A person's approval of a covered document gets the same refusal through three routes.
-    These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
-    That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
-    A request for changes is never refused.
-    When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
-    `texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
-    A refusal writes each `unread` line before its last line.
-    A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+    - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+      `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
+      `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+      The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
+      A person's approval of a covered document gets the same refusal through three routes.
+      These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
+      That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
+      A request for changes is never refused.
+      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
+      `texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
+      A refusal writes each `unread` line in `refusal`, after the findings.
+
+    A reopen and the repair pass judge a withdrawn request at the versions that it names when they end (`PATCH /api/v1/issues/{key}`, above).
+    They leave a request that breaks the form at those versions resolved, with the findings as its reason.
     A carry of an approval to a new version passes the same gate, and it judges the same documents as the person's own Approve.
     These are the carried version and each other document of the open request, at the version that the request names.
     So Dispatch carries no approval to a version whose text breaks the form.
