@@ -709,7 +709,7 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 // current head, and returns the pull request ready to apply it. It may only when candidate.Head is
 // the current head: every other settlement - an earlier head's, a head a force push left - stands
 // for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
-// since check runs, generations and snapshots are each head's own.
+// since check runs, generations, snapshots and commit statuses are each head's own.
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -724,6 +724,7 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	pr.CheckRuns = nil
 	pr.Generation = 0
 	pr.Snapshot = ""
+	pr.Statuses = nil
 	return pr, true
 }
 
@@ -1003,7 +1004,10 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // are taken only from a settlement of the head the fence stands at (SettlementFor, which moves
 // that head to the candidate's whenever the candidate is the nearer one to the pull request's
 // head). A settlement of a head below it merges its runs and the conclusions of them, and leaves
-// the recorded head's numbering as it was.
+// the recorded head's numbering as it was. The commit statuses are taken the same way, and whole:
+// the candidate's list, each stamped with the candidate's head (stampedStatuses), replaces the
+// list the record keeps, since the reconcile reads every status of the head from GitHub, and a
+// settlement this does not apply leaves the kept list as it is.
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	if ClassifySettlement(pr, candidate) != SettlementNewer {
 		return pr, false
@@ -1014,6 +1018,7 @@ func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (reco
 	if candidate.Head == pr.CheckedHead {
 		pr.Generation = candidate.Generation
 		pr.Snapshot = candidate.Snapshot
+		pr.Statuses = stampedStatuses(candidate)
 	}
 	pr.Failing = append([]string(nil), outcome.Failing...)
 	pr.Cancelled = append([]string(nil), outcome.Cancelled...)

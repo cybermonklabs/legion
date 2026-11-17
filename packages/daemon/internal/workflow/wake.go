@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -175,19 +176,41 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
 // task carries: the checks the settlement names failed, then the ones it names cancelled, and
-// "every check passed" when it names neither.
+// "every check passed" when it names neither. After either of the first two it names each commit
+// status the settlement names failed (record.CommitStatus.Failed), in context order. A settlement
+// that names a failed status and neither a failed nor a cancelled check run says the head passed
+// every check run and then names the statuses, since the head did not pass every check. With no
+// failed status the text is the one it was before the daemon read statuses.
 func settlementDetail(fact intake.PullRequestChecks) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
 		head = head[:12]
 	}
+	var failed []string
+	for _, status := range fact.Statuses {
+		if status.Failed() {
+			failed = append(failed, status.Context)
+		}
+	}
+	slices.Sort(failed)
+	var detail string
 	switch {
 	case len(fact.Failing) > 0:
-		return head + " failed " + strings.Join(fact.Failing, ", ")
+		detail = head + " failed " + strings.Join(fact.Failing, ", ")
 	case len(fact.Cancelled) > 0:
-		return head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+		detail = head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+	case len(failed) > 0:
+		detail = head + " passed every check run"
 	default:
 		return head + " passed every check"
+	}
+	switch len(failed) {
+	case 0:
+		return detail
+	case 1:
+		return detail + "; failed commit status " + failed[0]
+	default:
+		return detail + "; failed commit statuses " + strings.Join(failed, ", ")
 	}
 }
 

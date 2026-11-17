@@ -707,15 +707,25 @@ type CheckRun = record.AttemptRun
 // a cancellation is a property of the run - a later push can cancel it - where a failure is of the
 // code. What they come to is told to the roles that work the issue, which decide it
 // (workflow's tellChecks).
+//
+// Statuses are the commit statuses the settlement names, each with its context and its state, in
+// context order and with no stamp (record.CommitStatus): entries of their own kind, apart from
+// the check runs, which a context sharing a check run's name never joins. A settlement that names
+// none, a listener's of an earlier release among them, carries an empty list, which replaces the
+// statuses the pull request keeps for the head as any list does. StatusesUnread is a list the
+// decoder could not read (decodeChecks): the rest of the settlement stands, and the pull request
+// keeps the statuses it holds for the head (workflow's checks).
 type PullRequestChecks struct {
-	Repo       string
-	Number     int
-	HeadSHA    string
-	CheckRuns  []record.AttemptRun
-	Generation int64
-	Snapshot   string
-	Failing    []string
-	Cancelled  []string
+	Repo           string
+	Number         int
+	HeadSHA        string
+	CheckRuns      []record.AttemptRun
+	Generation     int64
+	Snapshot       string
+	Failing        []string
+	Cancelled      []string
+	Statuses       []record.CommitStatus
+	StatusesUnread bool
 }
 
 func (PullRequestChecks) isFact() {}

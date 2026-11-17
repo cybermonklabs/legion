@@ -1,0 +1,43 @@
+-- 20261117112334_pull_request_statuses.up.sql — the commit statuses of the checked head
+-- (dispatch://INFRA-1997 R7).
+--
+-- pull_requests.statuses is record.PullRequest.Statuses: each commit status of the checked head
+-- that the last settlement the daemon applied for that head named, with its context and its state
+-- (success, failure or error), each stamped with that head (record.CommitStatus.Head). Each
+-- settlement applied for the checked head replaces the whole list (classify.ApplySettlement), a
+-- settlement of a new checked head and a reopen clear it with the check runs
+-- (classify.SettlementFor, the reopen step of a head run), and a new generation clears it with them
+-- (record.Store.ClearGeneration). The daemon names these statuses in its CI message, in the notice
+-- of a head GitHub will not merge, and, for each failed one, in the task of a role that a settlement
+-- wakes (workflow's settledChecks, headChecks and settlementDetail).
+--
+-- Every row the table already holds takes the default, the empty list, and nothing fills it: no
+-- release before this one kept a status, and the next settlement of each head names its own.
+--
+-- The release before this one names each column it reads and writes (record's pullRequestColumns
+-- and PutPullRequest), so it neither reads nor writes this one, and every row it inserts takes the
+-- default. After a rollback that release still moves checked_head and the check runs and leaves
+-- this list as this release left it, so a kept list can be older than checked_head. The stamp is
+-- what keeps such a list out of the texts: each text names only the statuses stamped with the head
+-- it is about, the checked head in the CI message and the current head in the notice.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction below, run with the daemon
+-- stopped:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table pull_requests drop column if exists statuses;
+--   delete from schema_version where version = 20261117112334;
+--   commit;
+--   SQL
+--
+-- The drop and the delete of this migration's row go together. The release before this one needs
+-- neither, since it never names the column: the column would stand there unread. Both are owed to
+-- the roll-forward. With the column dropped and the row deleted, store.apply finds no row of this
+-- version and runs this file again, which adds the column again at its default. The drop is also
+-- what lets this file run again at all, since an add of a column that stands fails.
+--
+-- What the drop costs is the kept statuses: after the roll-forward each pull request holds none
+-- until the next settlement of its head, and until then no text names one.
+alter table pull_requests add column statuses jsonb not null default '[]'::jsonb;

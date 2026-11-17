@@ -40,6 +40,12 @@ type SettlementCandidate struct {
 	Snapshot   string              `json:"snapshot"`
 	Failing    []string            `json:"failing"`
 	Cancelled  []string            `json:"cancelled"`
+	// Statuses are the commit statuses the settlement names for Head, in context order and with
+	// no stamp (record.CommitStatus): the whole list GitHub holds for that head, which replaces the
+	// list the pull request keeps wherever the settlement applies to the checked head
+	// (ApplySettlement). They are no check runs and decide nothing of the fence, its order or what
+	// fails in it.
+	Statuses []record.CommitStatus `json:"statuses,omitempty"`
 }
 
 // CiOutcome is the effective result of a partial listener settlement combined with the stored
@@ -145,6 +151,18 @@ func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 		runs = append(runs, run)
 	}
 	return runs
+}
+
+// stampedStatuses is in's commit statuses, each stamped with the head the settlement is of, which
+// is how the pull request keeps them (record.PullRequest.Statuses): an empty list where in names
+// none.
+func stampedStatuses(in SettlementCandidate) []record.CommitStatus {
+	statuses := make([]record.CommitStatus, 0, len(in.Statuses))
+	for _, status := range in.Statuses {
+		status.Head = in.Head
+		statuses = append(statuses, status)
+	}
+	return statuses
 }
 
 // concludedBy is what outcome comes to once the fence has spoken: a name the fence holds a
