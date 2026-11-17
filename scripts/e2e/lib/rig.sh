@@ -258,6 +258,13 @@ start_process() {
 # process that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with
 # `read` and `mapfile`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE,
 # even on the left of `||`.
+#
+# proc_children's list is complete only for a process whose children cannot exit while it is read:
+# proc_tid_children(5) says that a child which exits during the read can leave another child out
+# of it. stop_tree stops the parent first, which stops new children, and it does not stop the
+# children, so a child that exits as the list is read can hide a sibling. `pgrep -P`, which
+# stop_tree called before, walks /proc the same way and misses the same sibling. So the list is as
+# complete as it was, and neither form is the frozen read that man page asks for.
 proc_stat_field() {
   local stat fields
   if [ -d /proc/self ]; then
@@ -283,10 +290,12 @@ proc_children() {
 }
 
 # proc_describe PID... prints one line for each PID that runs: its pid, parent, process group,
-# session, start time and command line, what `ps -o pid,ppid,pgid,sid,lstart,args -p` prints, read
-# from that process alone. The command line's words are joined by spaces and each control character
-# is a space, as procps-ng prints it, so a process is one line. A PID that is gone prints nothing,
-# as ps prints no line for it. A host with no /proc asks ps.
+# session, start time and command line, in the fields of `ps -o pid,ppid,pgid,sid,lstart,args -p`,
+# read from that process alone and from /proc/stat, whose btime turns a start into a clock time.
+# The command line's words are joined by spaces, and each control character becomes a space, which
+# keeps one process on one line; procps-ng prints a control character as `?` instead, so a line of
+# this and a line of ps are not the same bytes. A PID that is gone prints nothing, as ps prints no
+# line for it. A host with no /proc asks ps.
 proc_describe() {
   local pid stat fields words boot ticks IFS=' '
   if [ ! -d /proc/self ]; then
