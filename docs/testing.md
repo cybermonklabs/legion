@@ -32,14 +32,14 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
-- A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
+- A peer that is not there is `packages/envoy/testport`, in both Go modules: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP.
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
 ## Test helpers the two Go modules share
 
 `packages/daemon` is a Go module of its own, and Go's internal-package rule keeps it from importing `github.com/sjawhar/envoy/internal/...`.
-So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `sourcecheck`, `testnatsimages` and `brokertest`.
+So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `testport`, `testpool`, `sourcecheck`, `testnatsimages` and `brokertest`.
 A helper of `packages/envoy/internal` that the daemon needs moves out of `internal/` first, and its callers in both modules import it from there; it is never copied.
 The daemon's own `internal/fixtureenv`, the guard that keeps its git and jj off a Legion pod's workspace, shares only a name with Envoy's, so a daemon file that needs both imports Envoy's under another name.
 
@@ -363,13 +363,13 @@ on that machine `TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlasts
 appliers on one `testpg.ClonePool`, passed the server's `max_connections` of 100 and failed with
 SQLSTATE 53300, while CI passed.
 
-Each module names the size once: `testdb.PoolConns` in `packages/daemon/internal/testpg/testdb`
-and `testpool.PoolConns` in `packages/envoy/internal/testpool`, both 4, which is what every unsized
-pool already had on CI and pgx's own floor. Neither imports anything of its module, so every test
-package can take it, and `testpool` is a package of its own because envoy's `internal/testpg`
-imports testcontainers. A test writes `testdb.NewPool(ctx, dsn)` or `testpool.NewPool(ctx, dsn)`
-where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant on a config from
-`pgxpool.ParseConfig`; a test that needs another size sets `MaxConns` itself. A pool copied from
+The size is named once, for both Go modules: `testpool.PoolConns` in `packages/envoy/testpool`, 4,
+which is what every unsized pool already had on CI and pgx's own floor. It imports pgx and the
+standard library and nothing else, so every test package of either module can take it; it is a
+package of its own because envoy's `internal/testpg` imports testcontainers. A test writes
+`testpool.NewPool(ctx, dsn)` where it would write `pgxpool.New`, and sets `config.MaxConns` to the
+constant on a config from `pgxpool.ParseConfig`; a test that needs another size sets `MaxConns`
+itself. A pool copied from
 another pool's `Config()` keeps that pool's size, and `testpg.ClonePool` is sized at the
 constant. A store a product opens sizes its own pool on every machine, so a test that opens one,
 or a process it starts on a test's DSN, gets that store's size: the daemon's `store.Open` holds

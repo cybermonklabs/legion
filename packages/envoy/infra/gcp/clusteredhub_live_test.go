@@ -38,8 +38,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/envoy/testwait"
 )
 

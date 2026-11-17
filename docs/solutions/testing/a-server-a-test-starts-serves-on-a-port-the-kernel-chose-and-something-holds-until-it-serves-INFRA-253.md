@@ -42,7 +42,7 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
     Linux with IPv6 enabled, and only for a server whose own socket sets `SO_REUSEADDR`: reserve
     the port for the whole run with a socket bound to `[::]:0` with `SO_REUSEADDR` and
     `IPV6_V6ONLY` off that never listens (`testport.Reserve` in
-    `packages/envoy/internal/testport/reserve.go`, as `reservePorts` in
+    `packages/envoy/testport/reserve.go`, as `reservePorts` in
     `packages/envoy/infra/gcp/clusteredhub_live_test.go` calls it; testnats's `Gate` holds its
     closed port with the same helper). A Go server binds beside it and binds it
     again on a restart, since Go's listeners set `SO_REUSEADDR`, and meanwhile the kernel gives the

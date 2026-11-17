@@ -3,12 +3,12 @@
 // machine's CPU count, so a test that took it would run with a pool of a different size on every
 // machine.
 //
-// It is a package of its own, beside internal/testpg rather than in it, because it imports
-// pgxpool and the standard library and nothing else. internal/testpg imports testcontainers to
-// start a Postgres container, and a test binary that took the pool size from it would link
-// testcontainers for one constant. This package imports nothing of this module either, so every
-// package's tests can take it, internal/dispatch/store's and internal/broker/store's own among
-// them.
+// It is a package of its own, not part of internal/testpg, because it imports pgxpool and the
+// standard library and nothing else: internal/testpg imports testcontainers to start a Postgres
+// container, and a test binary that took the pool size from it would link testcontainers for one
+// constant. It is a public package because the daemon module's tests take it too, and Go's
+// internal rule keeps that module from importing this one's internal packages (docs/testing.md,
+// "Test helpers the two Go modules share").
 package testpool
 
 import (
@@ -25,9 +25,9 @@ import (
 // these suites, so every test is already green at it, and it is pgx's own floor. It is never
 // derived from runtime.NumCPU or GOMAXPROCS: a test's pool is the same size on every machine.
 //
-// internal/broker/store/storetest sizes the broker store's pool with it. A pool a test copies from
-// a Dispatch store's configuration keeps that store's own size, which store.Open fixes in code. A
-// test that needs another size sets MaxConns itself.
+// A store's own pool is not this size. The Dispatch store's Open fixes its pool at 64 connections
+// and the broker store's Open at 10, each in code, and a pool a test copies from a store's
+// configuration keeps that store's size. A test that needs another size sets MaxConns itself.
 const PoolConns = 4
 
 // NewPool is pgxpool.New with MaxConns fixed at PoolConns: a pool on dsn that dials nothing until

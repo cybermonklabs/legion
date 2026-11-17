@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/githubtest"
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -238,7 +239,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// The state names no root whose gate is closed in `blocked`, so the link's arrival is read off
 	// the daemon's own mirror of Dispatch, at the sequence Dispatch gave the link. Every state read
 	// until the gate opens is judged as well: the architect holds that tree's work, so none may name it.
-	raw, err := testdb.NewPool(t.Context(), cfg.PostgresDSN)
+	raw, err := testpool.NewPool(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -51,7 +52,7 @@ func emptyStore(t *testing.T) *Store {
 	}
 	adminURL := *base
 	adminURL.Path = "/postgres"
-	admin, err := testdb.NewPool(ctx, adminURL.String())
+	admin, err := testpool.NewPool(ctx, adminURL.String())
 	if err != nil {
 		t.Fatalf("connect to the admin database: %v", err)
 	}

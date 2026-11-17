@@ -16,8 +16,9 @@
 // imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
 // internal/store's own tests take the same fixture every other package's tests take.
 //
-// PoolConns is the size of every Postgres pool a test of this module builds, and NewPool is
-// pgxpool.New at that size: pgxpool's own default follows the machine's CPU count.
+// The size of every Postgres pool a test of this module builds is not here: it is
+// github.com/sjawhar/envoy/testpool's PoolConns, and its NewPool is pgxpool.New at that size,
+// imported by both Go modules' tests (docs/testing.md, "Test helpers the two Go modules share").
 //
 // DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
 // its own comment says which callers make that rewrite and what it refuses. RandomName is
@@ -41,7 +42,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -56,29 +56,6 @@ const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 " + Image + "\n" +
 	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
-
-// PoolConns is the size, as MaxConns, of every Postgres pool a test of this module builds.
-// pgxpool's default is max(4, runtime.NumCPU()), so an unsized pool holds 4 connections on CI's
-// 4-vCPU runners and hundreds on a large devbox, where a test's concurrent work on one pool can
-// open more connections than the server's max_connections and fail with SQLSTATE 53300. Four is
-// what every unsized pool already got on the CI runners that run
-// these suites, so every test is already green at it, and it is pgx's own floor. It is never
-// derived from runtime.NumCPU or GOMAXPROCS: a test's pool is the same size on every machine.
-//
-// It lives here because this package imports nothing of this module, so every package's tests
-// can take it, internal/store's among them. A test that needs another size sets MaxConns itself.
-const PoolConns = 4
-
-// NewPool is pgxpool.New with MaxConns fixed at PoolConns: a pool on dsn that dials nothing until
-// it is used, as pgxpool.New's does, and that answers pgxpool's own errors unchanged.
-func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, err
-	}
-	config.MaxConns = PoolConns
-	return pgxpool.NewWithConfig(ctx, config)
-}
 
 // Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end.
 func Database(t testing.TB, prefix string) string {

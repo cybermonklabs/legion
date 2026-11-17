@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -24,7 +25,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // LEGION-755's proof that the daemon itself queues a person's handover: a person's legion label on
@@ -265,7 +265,7 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 		map[string]string{"key": cfg.Project, "name": "A person's handover"}, nil)
 	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
 		map[string]any{"project": cfg.Project, "default": true}, nil)
-	raw, err := testdb.NewPool(t.Context(), cfg.PostgresDSN)
+	raw, err := testpool.NewPool(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}

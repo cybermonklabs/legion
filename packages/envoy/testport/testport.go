@@ -1,13 +1,12 @@
 // Package testport is a loopback address that refuses every dial for as long as the test that
 // asked for it runs. A test that needs a peer that is not there takes one rather than the address
 // of a server or listener it closed: a freed port is any process's to take, and on a machine that
-// runs other tests beside this one another process took it and answered HTTP (dispatch://INFRA-3904).
+// runs other tests beside this one another process took it and answered HTTP.
 //
-// The daemon module has no copy of it. A daemon test that needs it moves it to a public package of
-// packages/envoy first, as testtmp and testwait were moved, rather than copying it: Go's internal
-// rule keeps the daemon from importing this package, and packages/daemon/internal/textcheck's
-// envoy_helper_copies_test.go fails a copy (docs/testing.md, "Test helpers the two Go modules
-// share").
+// Both Go modules' tests import it. It is a public package so that the daemon module, which Go's
+// internal rule keeps from importing this module's internal packages, imports it rather than
+// keeping a copy, which packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails
+// (docs/testing.md, "Test helpers the two Go modules share").
 package testport
 
 import (

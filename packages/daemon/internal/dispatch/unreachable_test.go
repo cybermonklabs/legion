@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Unreachable is the predicate daemon.go's boot gate judges every reconcile failure with: a boot

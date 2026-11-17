@@ -31,9 +31,9 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
-	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 

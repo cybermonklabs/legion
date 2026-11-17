@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/internal/testpool"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // loopCheckFound is the whole seed found: a loopFound that matches a plan exactly, which each

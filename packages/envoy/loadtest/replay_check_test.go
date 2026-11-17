@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/testpool"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 func TestMaskTextOrdinals(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 var probeNow = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)

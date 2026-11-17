@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/testpool"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // TestAWriteWithoutAThumbprintKeepsTheBinding: a registration bound to a role's key stays bound

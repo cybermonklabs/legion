@@ -23,7 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testpool"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------

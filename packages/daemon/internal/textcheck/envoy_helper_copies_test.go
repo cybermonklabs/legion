@@ -60,7 +60,8 @@ func TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper(t *testing.T) {
 	// A check that read no helper, or not the ones the daemon is known to need, would pass on
 	// anything: each of these must be among what it reads.
 	for _, want := range []string{"testtmp/testtmp.go", "testwait/testwait.go", "githubtest/githubtest.go",
-		"logtest/buffer.go", "fixtureenv/fixtureenv.go", "testnkeys/nkeys.go"} {
+		"logtest/buffer.go", "fixtureenv/fixtureenv.go", "testnkeys/nkeys.go", "testport/testport.go",
+		"testpool/testpool.go"} {
 		if _, ok := helpers[want]; !ok {
 			t.Fatalf("the check does not read packages/envoy/%s as a test helper's file; it reads %d files, so it "+
 				"would pass a copy of that one", want, len(helpers))

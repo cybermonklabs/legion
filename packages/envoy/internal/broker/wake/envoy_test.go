@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // capturingHandler records every slog record it is asked to handle, so a test can assert that

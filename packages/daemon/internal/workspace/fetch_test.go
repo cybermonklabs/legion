@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Which clone failures Fetch retries: git's fatal exit with a cause naming a connection that failed

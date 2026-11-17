@@ -21,8 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
-	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/envoy/testwait"
 )
 

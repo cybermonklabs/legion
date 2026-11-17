@@ -9,12 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // startMidRead commits, behind the first statement a read sends, the pair the run of a retired
@@ -109,7 +109,7 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 	})
 
 	// The writer's own pool, and the read's, which traces its statements.
-	writer, err := testdb.NewPool(ctx, dsn)
+	writer, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the writer's pool: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsOwnRunHasTakenAway(t *t
 	if err != nil {
 		t.Fatalf("parse the read's pool configuration: %v", err)
 	}
-	config.MaxConns = testdb.PoolConns
+	config.MaxConns = testpool.PoolConns
 	config.ConnConfig.Tracer = starting
 	reader, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
