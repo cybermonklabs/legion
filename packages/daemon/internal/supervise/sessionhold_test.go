@@ -368,6 +368,30 @@ func TestARefusedSessionIsNeverRegistered(t *testing.T) {
 		}
 	})
 
+	// A contained claim keeps its hello identity, so every observation asks the registration again
+	// and is refused again; the refusal is written at Error once for the incarnation and session
+	// (Machine.registrationRefused, review round 14 of #4220, note 42). The control (the pull
+	// request records the run): every refusal written, one line per observation.
+	t.Run("a refused registration asked again at each observation is written once", func(t *testing.T) {
+		h, recorder, hello := rig(t)
+		h.launch()
+		hello()
+		h.register()
+		h.ready()
+		h.store.setHold(sessionID(session), other)
+		h.restart()
+		hello()
+		for range 4 {
+			h.observe(runtime.Alive)
+		}
+		if got := recorder.registered(); !slices.Equal(got, []string{session}) {
+			t.Fatalf("registered %v, want only the first process's %s", got, session)
+		}
+		if lines := h.logs.lines("not registering a session this claim may not take"); len(lines) != 1 {
+			t.Fatalf("the refused registration was written at Error %d times over the observations, want once:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+	})
+
 	t.Run("a launch's chosen session no claim holds", func(t *testing.T) {
 		h, recorder, hello := rig(t)
 		h.rt.ScriptLaunchSession(h.token, "ses_chosen")
@@ -620,34 +644,12 @@ func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	}
 }
 
-// ReleaseAfter is written to the second, so it is rounded up: a time written to the second is never
-// before the release statement's own gate, the switch plus ReleaseWindow (review round 6 of #4220).
-// A claim that never switched has none.
-//
-// The control (the pull request records the run): ReleaseAfter without the rounding answers
-// 01:00:00.4, which RFC3339 writes as 01:00:00, before the gate.
-func TestReleaseAfterIsNeverBeforeTheGate(t *testing.T) {
-	switched := time.Date(2026, 11, 16, 12, 0, 0, 400_000_000, time.UTC)
-	gate := switched.Add(ReleaseWindow)
-	got := ReleaseAfter(Claim{Abandoned: AbandonedSession{Session: "ses_old", At: switched}})
-	if got.Before(gate) || got.Nanosecond() != 0 || got.Sub(gate) >= time.Second {
-		t.Fatalf("ReleaseAfter of a switch at %s is %s; want the gate %s rounded up to the second", switched.Format(time.RFC3339Nano), got.Format(time.RFC3339Nano), gate.Format(time.RFC3339Nano))
-	}
-	whole := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	if got := ReleaseAfter(Claim{Abandoned: AbandonedSession{Session: "ses_old", At: whole}}); !got.Equal(whole.Add(ReleaseWindow)) {
-		t.Fatalf("ReleaseAfter of a switch at a whole second is %s, want %s", got, whole.Add(ReleaseWindow))
-	}
-	if got := ReleaseAfter(Claim{}); !got.IsZero() {
-		t.Fatalf("ReleaseAfter of a claim that never switched is %s, want none", got)
-	}
-}
-
-// A claim holds at most MaxHeldNamesPerClaim names of sessions (review N2 of #4220): nothing
-// deletes a hold, so without a bound one role could grow the daemon's record without end. A
-// registration whose new names would take the claim past it is refused 409 with
-// claim.HeldNamesCapRefusal, recording, enrolling and holding nothing; one that fills the cap
-// exactly registers; and a claim at the cap still resumes the session it recorded, whose names it
-// holds already, and registers it again.
+// A claim holds at most MaxHeldNamesPerClaim names of sessions (review N2 of #4220): a hold ends
+// only by an operator's release, so without a bound one role could grow the daemon's record
+// without end. A registration whose new names would take the claim past it is refused 409 with
+// claim.HeldNamesCapRefusal, recording, enrolling and holding nothing, and its Warn line names the
+// release command; one that fills the cap exactly registers; and a claim at the cap still resumes
+// the session it recorded, whose names it holds already, and registers it again.
 //
 // The control (the pull request records the run): holdRecorded reading the store's cap error as a
 // store that did not answer, as before the cap: the registration past the cap answers
@@ -685,57 +687,14 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 		if got, want := h.store.heldBy(h.token), MaxHeldNamesPerClaim-names+1; got != want {
 			t.Fatalf("the claim holds %d names after the refusal, want the %d it held before", got, want)
 		}
-		// The operator's way out is on the refusal's line: the statement that frees the names of its
-		// older sessions (review F1 of #4220), which the store's test runs.
+		// The operator's way out is on the refusal's line: the command that frees the names of its
+		// other sessions once the broker carries nothing of them (ReleaseNames).
 		lines := h.records.of(heldNamesCapLine)
 		if len(lines) != 1 {
 			t.Fatalf("the refusal was logged %d times, want once", len(lines))
 		}
-		if release, ok := lines[0].attr("release"); !ok || release.String() != ReleaseOldNamesStatement(h.claim().Project, h.token) {
-			t.Fatalf("the refusal's line gives the statement %v, want %q", release, ReleaseOldNamesStatement(h.claim().Project, h.token))
-		}
-		// A claim that never switched sessions has no single time: the statement frees its holds by
-		// their own age, and only those whose names contain no id of its session.
-		if after, ok := lines[0].attr("release_after"); !ok || !strings.HasPrefix(after.String(), "none: the claim has never switched sessions") {
-			t.Fatalf("the refusal's line gives release_after %v, want the never-switched answer", after)
-		}
-	})
-
-	// The usual way to the cap's refusal: an operator gave the claim a new session with
-	// forget-session, and the statement frees nothing for ReleaseWindow after that forget, so the
-	// refusal's line says when it can (review round 5 of #4220), as an absolute time.
-	t.Run("a claim refused just after a forget is told when the release can free anything", func(t *testing.T) {
-		h := newHarness(t)
-		h.reach(StateReady)
-		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.must(RequestForgetSession{Claim: h.token, Session: session})
-		switched := h.claim().Abandoned.At
-		if switched.IsZero() {
-			t.Fatal("the forget recorded no switch time")
-		}
-		const fresh, freshFile = "ses_after_forget", "/state/sessions/after-forget.jsonl"
-		fill(h, MaxHeldNamesPerClaim-h.store.heldBy(h.token)-len(RecordedHolds(fresh, freshFile))+1)
-		h.must(RequestResume{Claim: h.token})
-		h.connect()
-		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: fresh, SessionFile: freshFile,
-			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
-		var refusal claim.Refusal
-		if !errors.As(err, &refusal) || refusal != claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim) {
-			t.Fatalf("registering a new session at the cap = %v, want %v", err, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
-		}
-		lines := h.records.of(heldNamesCapLine)
-		if len(lines) != 1 {
-			t.Fatalf("the refusal was logged %d times, want once", len(lines))
-		}
-		// The forget's time plus the window, rounded up to the second, computed here rather than by
-		// ReleaseAfter, so a ReleaseAfter without the window fails it whatever second the clock is on.
-		gate := switched.Add(ReleaseWindow).UTC()
-		if whole := gate.Truncate(time.Second); !whole.Equal(gate) {
-			gate = whole.Add(time.Second)
-		}
-		want := gate.Format(time.RFC3339)
-		if after, ok := lines[0].attr("release_after"); !ok || after.String() != want {
-			t.Fatalf("the refusal's line gives release_after %v, want %s, the window after the forget at %s", after, want, switched.UTC().Format(time.RFC3339Nano))
+		if release, ok := lines[0].attr("release"); !ok || release.String() != ReleaseNamesCommand(h.token) {
+			t.Fatalf("the refusal's line gives the release %v, want %q", release, ReleaseNamesCommand(h.token))
 		}
 	})
 
@@ -773,12 +732,137 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 	})
 }
 
+// An operator's release (ReleaseNames, `legion claims release-names`) frees every name the claim
+// holds but those of the session it records, and only once the secrets broker answers that no
+// enrollment of this daemon's login carries anything for them (Enroller.Carried): the broker's own
+// rows stand in for the time window the release once estimated. A claim at the cap that needs a
+// new session — usually one an operator just gave a new one with forget-session — is refused the
+// release while the broker still carries its old session, frees nothing then, and once the carry
+// ends the release frees the old session's names and every earlier one, marks the abandoned
+// session released, and the claim's next registration of a new session is admitted. The
+// recovery needs no second switch and no wait the operator works out.
+//
+// The controls (the pull request records each run): ReleaseNames asking the broker nothing frees
+// the old session while the broker carries it; releasable keeping no current name frees the
+// claim's own current session, which it still resumes.
+func TestAReleaseFreesAClaimsOtherNamesOnlyOnceTheBrokerCarriesNothingOfThem(t *testing.T) {
+	fill := func(h *harness, n int) {
+		h.t.Helper()
+		for i := range n {
+			h.store.setHold(sessionID(fmt.Sprintf("ses_earlier_%d", i)), h.token)
+		}
+	}
+	ends := epoch.Add(12 * time.Hour)
+
+	t.Run("the recovery of a claim at the cap", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.reach(StateReady)
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
+		const fresh, freshFile = "ses_after_forget", "/state/sessions/after-forget.jsonl"
+		fill(h, MaxHeldNamesPerClaim-h.store.heldBy(h.token)-len(RecordedHolds(fresh, freshFile))+1)
+		h.must(RequestResume{Claim: h.token})
+		h.connect()
+		registerFresh := func() error {
+			return h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: fresh, SessionFile: freshFile,
+				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		}
+		var refusal claim.Refusal
+		if err := registerFresh(); !errors.As(err, &refusal) || refusal != claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim) {
+			t.Fatalf("registering a new session at the cap = %v, want %v", err, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
+		}
+
+		broker.carry(CarriedEnrollment{SessionID: session, EnrollmentID: "enr-1", State: CarriedDormant, EndsAt: ends})
+		held := h.store.heldBy(h.token)
+		_, err := h.m.ReleaseNames(h.ctx)
+		var carried *NamesCarriedError
+		if !errors.As(err, &carried) || len(carried.Carried) != 1 || carried.Carried[0].EnrollmentID != "enr-1" {
+			t.Fatalf("the release while the broker carries %s = %v, want a refusal naming enrollment enr-1", session, err)
+		}
+		if !strings.Contains(err.Error(), session) || !strings.Contains(err.Error(), ends.Format(time.RFC3339)) {
+			t.Fatalf("the refusal %q names neither %s nor when its carry ends, %s", err, session, ends.Format(time.RFC3339))
+		}
+		if got := h.store.heldBy(h.token); got != held {
+			t.Fatalf("the refused release left the claim holding %d names, want the %d it held", got, held)
+		}
+		if asked := broker.askedCarried(); len(asked) != 1 || !slices.Contains(asked[0], session) {
+			t.Fatalf("the broker was asked %v, want one question naming %s", asked, session)
+		}
+
+		broker.endCarry(session)
+		released, err := h.m.ReleaseNames(h.ctx)
+		if err != nil {
+			t.Fatalf("the release once the broker carries nothing = %v", err)
+		}
+		if released.Checked != CheckedByBroker || released.Abandoned != session || len(released.Freed) != held {
+			t.Fatalf("the release answered %d freed, checked %q, abandoned %q; want all %d, %q, %s",
+				len(released.Freed), released.Checked, released.Abandoned, held, CheckedByBroker, session)
+		}
+		if got := h.store.heldBy(h.token); got != 0 {
+			t.Fatalf("the claim holds %d names after the release, want none: it records no session", got)
+		}
+		if a := h.store.load(h.token).Abandoned; a.Session != session || a.Released.IsZero() {
+			t.Fatalf("the stored claim's abandoned session is %+v, want %s marked released", a, session)
+		}
+		if err := registerFresh(); err != nil {
+			t.Fatalf("registering the new session after the release = %v, want it admitted", err)
+		}
+	})
+
+	t.Run("the current session's names are kept", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.reach(StateReady)
+		fill(h, 3)
+		released, err := h.m.ReleaseNames(h.ctx)
+		if err != nil || len(released.Freed) != 3 || released.Abandoned != "" {
+			t.Fatalf("the release = %+v, %v; want the 3 earlier names freed and no abandoned session", released, err)
+		}
+		for _, name := range RecordedHolds(session, sessionFile) {
+			if holder, _ := h.store.holdOf(name); holder != h.token {
+				t.Fatalf("%s %s, of the session the claim records, is held for %q after the release, want %s", name.Kind, name.Name, holder, h.token)
+			}
+		}
+		for _, ids := range broker.askedCarried() {
+			if slices.Contains(ids, session) {
+				t.Fatalf("the broker was asked about %v, which names the claim's current session", ids)
+			}
+		}
+	})
+
+	t.Run("a broker that does not answer frees nothing", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.reach(StateReady)
+		fill(h, 3)
+		broker.carriedErr = errors.New("broker unreachable")
+		held := h.store.heldBy(h.token)
+		if _, err := h.m.ReleaseNames(h.ctx); !errors.Is(err, ErrCarryUnanswered) {
+			t.Fatalf("the release with no broker answer = %v, want ErrCarryUnanswered", err)
+		}
+		if got := h.store.heldBy(h.token); got != held {
+			t.Fatalf("the unanswered release left the claim holding %d names, want the %d it held", got, held)
+		}
+	})
+
+	t.Run("a daemon with no broker frees with no check and says so", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		fill(h, 3)
+		released, err := h.m.ReleaseNames(h.ctx)
+		if err != nil || len(released.Freed) != 3 || released.Checked != CheckedNoBroker {
+			t.Fatalf("the release with no broker = %+v, %v; want the 3 earlier names freed, checked %q", released, err, CheckedNoBroker)
+		}
+	})
+}
+
 // A machine keeps the names of the session its claim records that the store answered as the
 // claim's, and asks the store nothing more of them (holdRecorded). Once the claim forgets that
 // session, an operator's release may free those names and another claim take them
-// (ReleaseOldNamesStatement), so forgetSession empties the cache (review F2 of #4220's round 4): a
-// later registration of the forgotten session on the same machine asks the store again and is
-// refused, recording and enrolling nothing.
+// (ReleaseNames), so forgetSession empties the cache (review F2 of #4220's round 4): a later
+// registration of the forgotten session on the same machine asks the store again and is refused,
+// recording and enrolling nothing.
 //
 // The control (the pull request records the run): forgetSession keeping the cache; the
 // registration is admitted under the other claim's session.

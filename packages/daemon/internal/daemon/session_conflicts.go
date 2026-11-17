@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -45,16 +46,19 @@ import (
 // failed and retired) is named and left as it is: a retired claim launches nothing, and a queued,
 // uncertain or failed one that launches again is refused each time and fails at its launch budget.
 // The table decides (a *supervise.RefusedError), so a state it later lets a suspension reach is
-// suspended here with no change to this list. A suspension that fails for any other reason — a
-// stop the runtime refuses, a write the store refuses — is logged at Error naming the claim, and
-// the boot goes on. The claim is then contained but not stopped: its hold refuses every relaunch,
+// suspended here with no change to this list. A suspension that fails for any other reason is
+// logged at Error naming the claim, and the boot goes on: a stop the runtime refuses leaves the
+// process running, and a write the store refuses after the stop leaves the process stopped and
+// the claim not yet recorded suspended (review round 13 of #4220, note 37). Either way the claim
+// is contained, and where its process runs on it is not stopped: its hold refuses every relaunch,
 // resume and new enrollment of it before anything starts; the enrollment its process holds is
 // revoked once the broker confirms the revocation, the claim keeping it recorded, handed to no
 // connection, and asking again at each observation until then, and recorded no longer, logged at
 // Error, where the broker refuses the revocation for good, while the process renews it until it
 // stops (revokeUnheld); and the daemon publishes nothing to its Envoy role, whatever the claim's
-// state, or to the controller topic, and sends that process no task and no compaction
-// (holdRecorded, ensureEnrolled, outbox.publish, sendPending, compactStart). The process runs on
+// state, or, for the daemon's own controller under `controller: daemon`, to the controller topic,
+// and sends that process no task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
+// sendPending, compactStart). The process runs on
 // under the session until it is stopped, and the Envoy listener does not yet withhold the role its
 // session claimed: the daemon could free the role, but the process claims a free role again at its
 // next heartbeat. So a message another session sends to that role reaches the session's
@@ -84,7 +88,9 @@ import (
 // asks again.
 //
 // The settle statement is a statement an operator runs, and a session's names are the agent's own
-// text, so each is written into it as a SQL literal (supervise.SQLLiteral), never as it came.
+// text, so each is written into it as a SQL literal (supervise.SQLLiteral), never as it came. It
+// moves only a name still held for no claim, and only to one of the claims the line names, so a
+// second run answers UPDATE 0 and a token that names none of them moves nothing.
 func (s *supervision) holdRecordedSessions(ctx context.Context) error {
 	held, err := s.supervisor.store.HoldRecordedSessions(ctx, s.plan.project)
 	if err != nil {
@@ -124,8 +130,13 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 				append(line, "bytes", len(c.Hold.Name))...)
 		default:
 			if c.Holder == "" {
+				claims := make([]string, len(c.Claims))
+				for i, token := range c.Claims {
+					claims[i] = supervise.SQLLiteral(string(token))
+				}
 				line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
-					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''")
+					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''"+
+					" and '<token>' in ("+strings.Join(claims, ", ")+")")
 			}
 			s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		}
@@ -150,7 +161,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained but not stopped: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction, but the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction; where the runtime refused the stop the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}

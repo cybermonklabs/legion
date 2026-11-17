@@ -485,6 +485,48 @@ func (c *Client) Revoke(ctx context.Context, id string) error {
 	return refusal(status, raw)
 }
 
+// CarriedEnrollment is one enrollment POST /v1/enrollments/carried answers: a pod enrollment this
+// daemon's login launched, of one of the session ids asked, that is live or still carries a grant
+// or a request for the next enrollment of its session id. State is "live" or "dormant"; EndsAt is
+// when the live one's lease ends, unless its process renews it, or the dormant one's carry ends.
+type CarriedEnrollment struct {
+	SessionID    string    `json:"session_id"`
+	EnrollmentID string    `json:"enrollment_id"`
+	State        string    `json:"state"`
+	EndsAt       time.Time `json:"ends_at"`
+}
+
+type carriedBody struct {
+	SessionIDs []string `json:"session_ids"`
+}
+
+type carriedAnswer struct {
+	Carried *[]CarriedEnrollment `json:"carried"`
+}
+
+// Carried is POST /v1/enrollments/carried, authenticated with a launcher proof: every enrollment
+// this daemon's login launched, of one of sessionIDs, that the broker still carries something
+// for. An empty answer is none; a 200 whose body names no carried list at all is not the
+// contract's shape and an error, never read as none. With no live launcher credential it answers
+// the non-permanent NO_MACHINE_CREDENTIAL, as Enroll does; any other refusal is an *APIError.
+func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
+	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs})
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, refusal(status, raw)
+	}
+	var answer carriedAnswer
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return nil, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
+	}
+	if answer.Carried == nil {
+		return nil, fmt.Errorf("broker answered %d with no carried list", status)
+	}
+	return *answer.Carried, nil
+}
+
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's body: the pod's own projected token for
 // the broker's audience, which names the pod (its account and uid), the session name that pod may
 // trade under, the RFC 7638 thumbprint of the role's own key, which binds the registration to

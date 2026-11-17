@@ -14,10 +14,10 @@ body: |-
   claim an earlier daemon recorded under such a name takes nothing under it and is suspended at
   boot. A registration that would take one claim past
   2,048 held names is refused with `409`: a claim that records a session still resumes it, and one
-  that needs a new session starts none until an operator runs the statement the refusal's log line
-  gives, which frees the names of its older sessions once its last session switch is 13 hours 5
-  minutes past: the broker's default carry window, its longest lease, and two of its sweeps with
-  room; it must not run while no broker serves. At every boot the daemon holds, in one
+  that needs a new session starts none until an operator runs `legion claims release-names`, which
+  the refusal's log line names: it frees the names of the claim's other sessions once the secrets
+  broker answers that no enrollment of this daemon's login still carries anything for them, and
+  frees nothing while one does. At every boot the daemon holds, in one
   statement, each name a claim records that no row holds, as after a rollback to a release before
   this one, and logs at Error each claim whose current session records a name held for another
   claim, for none or by no row, suspending each it can; a suspension that fails is logged at Error
@@ -44,7 +44,8 @@ body: |-
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
   one, retries a failed one and leaves a retired one as it is, and for a name held for none records
   the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and
-  kind = '<kind>' and name = '<name>' and claim = ''`, which moves no name a claim already holds);
+  kind = '<kind>' and name = '<name>' and claim = '' and '<token>' in (<the line's claims>)`, which
+  moves no name a claim already holds and to no claim the line does not name);
   docs/kubernetes.md gives the steps whole. A name only an
   abandoned session records is logged at Warn and suspends nothing. A hold the store does not
   answer at a relaunch is tried again at the probe interval, charging nothing. A refusal asked

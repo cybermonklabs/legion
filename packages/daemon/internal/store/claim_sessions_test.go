@@ -448,180 +448,123 @@ func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
 	}
 }
 
-// A claim at the cap that needs a new session starts none until an operator frees the names of its
-// older sessions (review F1 of #4220), with the statement the daemon's log gives
-// (supervise.ReleaseOldNamesStatement). Run on a claim at the cap whose last session switch was 14
-// hours ago, it frees the holds recorded more than its window, 13 hours 5 minutes, ago, keeps every
-// name of the session the claim records (an earlier file of it too) and of the one it last
-// abandoned, keeps names recorded within the window, and touches no other claim's, though the other
-// claim holds names as old (review F3 of round 4); then the new session the claim was refused is
-// admitted.
+// An operator's release frees a claim's names through FreeHolds (supervise.Machine.ReleaseNames),
+// which deletes only the names the table holds for that claim: asked to free every name of two
+// sessions, one its own and one another claim's, it frees and answers its own, in kind and then
+// name order, and the other claim's stay that claim's. Once freed, another claim takes them.
+// ClaimHolds answers what the claim holds, in the same order.
 //
-// The controls (the pull request records each run): the statement without its clauses that keep
-// the current and abandoned sessions' names frees them too, and the test fails naming them; the
-// statement without its `h.claim =` clause frees the other claim's old names, and the test fails
-// counting them.
-func TestTheReleaseStatementLetsAClaimAtTheCapStartANewSession(t *testing.T) {
+// The control (the pull request records the run): the delete without its `h.claim = $2` clause
+// frees the other claim's names too, and the test fails naming them.
+func TestFreeHoldsFreesOnlyItsOwnClaimsNames(t *testing.T) {
 	const holder, other = claim.Token("legion-LEGION-501-implementer"), claim.Token("legion-LEGION-502-implementer")
 	ctx := context.Background()
 	store := migratedStore(t)
-	const current, currentFile = "ses_current", "/state/sessions/--w--/2026-11-16T09-00-00-000Z_ses_current.jsonl"
-	const earlierFile = "/state/sessions/--w--/2026-11-14T09-00-00-000Z_ses_current.jsonl"
-	const abandoned, abandonedFile = "ses_abandoned", "/state/sessions/--w--/2026-11-15T09-00-00-000Z_ses_abandoned.jsonl"
-	recordReleaseClaim(t, store, holder, current, currentFile, abandoned, abandonedFile, "14 hours")
-	// The other claim switched sessions as long ago, and holds old sessions of its own, so the
-	// statement could free them if it did not keep to its one claim.
-	recordReleaseClaim(t, store, other, "ses_other", "/state/sessions/--w--/2026-11-16T09-00-00-000Z_ses_other.jsonl",
-		"ses_other_abandoned", "/state/sessions/--w--/2026-11-15T09-00-00-000Z_ses_other_abandoned.jsonl", "14 hours")
-	hold := func(token claim.Token, session, file string) error {
-		_, err := store.HoldSessions(ctx, "legion", token, supervise.RecordedHolds(session, file))
-		return err
-	}
-	for _, s := range []struct {
-		token         claim.Token
-		session, file string
-	}{{holder, current, currentFile}, {holder, current, earlierFile}, {holder, abandoned, abandonedFile},
-		{other, "ses_other", "/state/sessions/--w--/2026-11-16T09-00-00-000Z_ses_other.jsonl"},
-		{other, "ses_elder_1", "/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_elder_1.jsonl"},
-		{other, "ses_elder_2", "/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_elder_2.jsonl"}} {
-		if err := hold(s.token, s.session, s.file); err != nil {
-			t.Fatalf("hold %s %s: %v", s.session, s.file, err)
+	mine := supervise.RecordedHolds("ses_mine", "/state/sessions/--w--/2026-11-16T09-00-00-000Z_ses_mine.jsonl")
+	theirs := supervise.RecordedHolds("ses_theirs", "/state/sessions/--w--/2026-11-16T09-00-00-000Z_ses_theirs.jsonl")
+	for token, holds := range map[claim.Token][]supervise.Hold{holder: mine, other: theirs} {
+		if _, err := store.HoldSessions(ctx, "legion", token, holds); err != nil {
+			t.Fatalf("hold %s's session: %v", token, err)
 		}
 	}
-	if _, err := store.Pool().Exec(ctx, `update claim_sessions set recorded_at = now() - interval '14 hours' where claim = $1`, string(other)); err != nil {
-		t.Fatal(err)
+	sorted := slices.Clone(mine)
+	slices.SortFunc(sorted, func(a, b supervise.Hold) int {
+		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
+	})
+	if got, err := store.ClaimHolds(ctx, "legion", holder); err != nil || !slices.Equal(got, sorted) {
+		t.Fatalf("ClaimHolds = %v, %v; want %v", got, err, sorted)
 	}
-	// Older sessions up to the cap, then one more within the window.
-	oldSession := func(i int) (string, string) {
-		return fmt.Sprintf("ses_old_%04d", i), fmt.Sprintf("/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_old_%04d.jsonl", i)
-	}
-	held := func(token claim.Token) int {
-		t.Helper()
-		var n int
-		if err := store.Pool().QueryRow(ctx, `select count(*) from claim_sessions where project = 'legion' and claim = $1`, string(token)).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	for i := 0; held(holder)+3 <= supervise.MaxHeldNamesPerClaim-3; i++ {
-		session, file := oldSession(i)
-		if err := hold(holder, session, file); err != nil {
-			t.Fatalf("hold old session %d: %v", i, err)
-		}
-	}
-	if _, err := store.Pool().Exec(ctx, `update claim_sessions set recorded_at = now() - interval '14 hours' where claim = $1`, string(holder)); err != nil {
-		t.Fatal(err)
-	}
-	if err := hold(holder, "ses_recent", "/state/sessions/--w--/2026-11-16T20-00-00-000Z_ses_recent.jsonl"); err != nil {
-		t.Fatalf("hold the recent session: %v", err)
-	}
-	for held(holder)+3 <= supervise.MaxHeldNamesPerClaim {
-		if _, err := store.HoldSessions(ctx, "legion", holder, []supervise.Hold{sessionHold(fmt.Sprintf("ses_fill_%d", held(holder)))}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	const fresh, freshFile = "ses_fresh", "/state/sessions/--w--/2026-11-16T21-00-00-000Z_ses_fresh.jsonl"
-	if err := hold(holder, fresh, freshFile); !errors.Is(err, supervise.ErrHeldNamesCap) {
-		t.Fatalf("a new session of the claim at the cap answers %v, want supervise.ErrHeldNamesCap", err)
-	}
-	otherBefore := held(other)
 
-	statement := supervise.ReleaseOldNamesStatement("legion", holder)
-	tag, err := store.Pool().Exec(ctx, statement)
+	freed, err := store.FreeHolds(ctx, "legion", holder, append(slices.Clone(theirs), mine...))
 	if err != nil {
-		t.Fatalf("run the release statement %q: %v", statement, err)
+		t.Fatalf("FreeHolds: %v", err)
 	}
-	t.Logf("the release statement freed %d names; the claim holds %d", tag.RowsAffected(), held(holder))
-
-	kept := append(append(append(supervise.RecordedHolds(current, currentFile), supervise.RecordedHolds(current, earlierFile)...),
-		supervise.RecordedHolds(abandoned, abandonedFile)...),
-		supervise.RecordedHolds("ses_recent", "/state/sessions/--w--/2026-11-16T20-00-00-000Z_ses_recent.jsonl")...)
-	for _, h := range kept {
-		var c string
-		if err := store.Pool().QueryRow(ctx, `select claim from claim_sessions where project = 'legion' and kind = $1 and name = $2`,
-			string(h.Kind), h.Name).Scan(&c); err != nil || claim.Token(c) != holder {
-			t.Errorf("%s %s is held for %q (%v) after the release; want it still %s's", h.Kind, h.Name, c, err, holder)
+	if !slices.Equal(freed, sorted) {
+		t.Errorf("FreeHolds freed %v, want only the claim's own %v", freed, sorted)
+	}
+	for _, h := range theirs {
+		if got := holdOne(ctx, t, store, "legion", holder, h); got != other {
+			t.Errorf("%s %s is held for %q after the release, want it still %s's", h.Kind, h.Name, got, other)
 		}
 	}
-	if got := held(other); got != otherBefore {
-		t.Errorf("the other claim holds %d names after the release, want the %d it held", got, otherBefore)
+	if got, err := store.ClaimHolds(ctx, "legion", holder); err != nil || len(got) != 0 {
+		t.Errorf("ClaimHolds after the release = %v, %v; want none", got, err)
 	}
-	if old, _ := oldSession(0); holdOne(ctx, t, store, "legion", other, sessionHold(old)) != other {
-		t.Errorf("%s, an old session's id, is still held for %s after the release", old, holder)
-	}
-	if err := hold(holder, fresh, freshFile); err != nil {
-		t.Errorf("the new session after the release answers %v, want it admitted", err)
-	}
-}
-
-// recordReleaseClaim records token's claim, failed, on session and file, with the session it last
-// abandoned switched away from switchedAgo ago (a PostgreSQL interval), or with none when abandoned
-// is empty.
-func recordReleaseClaim(t *testing.T, store *Store, token claim.Token, session, file, abandoned, abandonedFile, switchedAgo string) {
-	t.Helper()
-	if _, err := store.Pool().Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
-		session, session_file, state, failure, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
-		abandoned_session)
-		values ($1, 'legion', 'LEGION-501', 'LEGION-501', 'implementer', 1, $2, $3, 'failed', '', 0, 0, 0, 0,
-			case when $4::text = '' then null else jsonb_build_object('session', $4::text, 'sessionFile', $5::text,
-				'why', 'an operator gave the claim a new session', 'at', now() - nullif($6::text, '')::interval) end)`,
-		string(token), session, file, abandoned, abandonedFile, switchedAgo); err != nil {
-		t.Fatalf("record %s: %v", token, err)
+	for _, h := range mine {
+		if got := holdOne(ctx, t, store, "legion", other, h); got != other {
+			t.Errorf("%s %s, freed, is held for %q when the other claim asks; want it the other claim's", h.Kind, h.Name, got)
+		}
 	}
 }
 
-// The release statement's window, 13 hours 5 minutes, counts from the claim's last session switch,
-// not from when a hold was written (review R4-1 of #4220): a hold is written when its session is
-// first registered, and the session may have run until the switch, while the broker keeps its
-// grants for its carry window, 12 hours by default, from when its enrollment went dormant, which a
-// failed revoke puts up to the longest lease, an hour, after the process ended (review F1 of round
-// 4), and it marks the dormancy and ends the carry each at a sweep, up to 60 seconds late (review
-// round 7). A claim that records S3, abandoned S2 an hour ago, 12 hours 30 minutes ago, or 13 hours
-// 2 minutes ago, and holds S1 from 14 hours ago has its S1 freed by nothing: another claim
-// registering S1 is refused it.
+// A session the claim abandoned and an operator's release then freed (supervise.AbandonedSession.
+// Released) gives the boot no name: the boot holds only the names of the claim's current session,
+// and once another claim takes a freed name, the boot's conflict read names no conflict for it,
+// since the releasing claim records the session only to say where it went. An abandoned session no
+// release freed still gives its names, as before.
 //
-// The controls (the pull request records each run): the statement without its last-switch clause
-// frees S1's three names in every row, and the other claim's hold of S1 takes them; the statement
-// with 12 hours for its window frees them in the 12 hours 30 minutes and 13 hours 2 minutes rows,
-// and with 13 hours, in the 13 hours 2 minutes row alone.
-func TestTheReleaseStatementFreesNothingWithinTheWindowOfTheLastSwitch(t *testing.T) {
+// The control (the pull request records the run): recordedNames reading the abandoned session
+// whatever its released mark holds the released session's names for the claim again at boot, and
+// the test fails counting them.
+func TestTheBootHoldsNoNameOfAReleasedAbandonedSession(t *testing.T) {
 	const holder, other = claim.Token("legion-LEGION-601-implementer"), claim.Token("legion-LEGION-602-implementer")
 	file := func(session string) string {
 		return "/state/sessions/--w--/2026-11-16T00-00-00-000Z_" + session + ".jsonl"
 	}
-	for _, switched := range []string{"1 hour", "12 hours 30 minutes", "13 hours 2 minutes"} {
-		t.Run("the last switch "+switched+" ago", func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		released bool
+	}{
+		{name: "released", released: true},
+		{name: "not released", released: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := migratedStore(t)
-			recordReleaseClaim(t, store, holder, "ses_s3", file("ses_s3"), "ses_s2", file("ses_s2"), switched)
-			for _, s := range []struct{ session, ago string }{{"ses_s1", "14 hours"}, {"ses_s2", "14 hours"}, {"ses_s3", "1 hour"}} {
-				if _, err := store.HoldSessions(ctx, "legion", holder, supervise.RecordedHolds(s.session, file(s.session))); err != nil {
-					t.Fatalf("hold %s: %v", s.session, err)
-				}
-				if _, err := store.Pool().Exec(ctx, `update claim_sessions set recorded_at = now() - $2::interval
-					where claim = $1 and name in ($3, $4)`, string(holder), s.ago, s.session,
-					"2026-11-16T00-00-00-000Z_"+s.session+".jsonl"); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			tag, err := store.Pool().Exec(ctx, supervise.ReleaseOldNamesStatement("legion", holder))
+			recordAbandoningClaim(t, store, holder, "ses_current", file("ses_current"), "ses_old", file("ses_old"), tc.released)
+			held, err := store.HoldRecordedSessions(ctx, "legion")
 			if err != nil {
-				t.Fatalf("run the release statement: %v", err)
+				t.Fatalf("HoldRecordedSessions: %v", err)
 			}
-			if tag.RowsAffected() != 0 {
-				t.Errorf("the release statement freed %d names %s after the claim's last switch, want none", tag.RowsAffected(), switched)
+			current, old := supervise.RecordedHolds("ses_current", file("ses_current")), supervise.RecordedHolds("ses_old", file("ses_old"))
+			want := len(current)
+			if !tc.released {
+				want += len(old)
 			}
-			holders, err := store.HoldSessions(ctx, "legion", other, supervise.RecordedHolds("ses_s1", file("ses_s1")))
+			if held != want {
+				t.Fatalf("the boot held %d names, want %d: the current session's %d, and the abandoned session's %d unless it is released",
+					held, want, len(current), len(old))
+			}
+			if !tc.released {
+				return
+			}
+			if holders, err := store.HoldSessions(ctx, "legion", other, old); err != nil || slices.ContainsFunc(holders, func(c claim.Token) bool { return c != other }) {
+				t.Fatalf("the other claim taking the released session's names = %v, %v; want them its own", holders, err)
+			}
+			conflicts, err := store.SessionConflicts(ctx, "legion")
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("SessionConflicts: %v", err)
 			}
-			for i, h := range supervise.RecordedHolds("ses_s1", file("ses_s1")) {
-				if holders[i] != holder {
-					t.Errorf("another claim holding S1's %s %s is answered %q, want %s: S1 may have run until %s ago", h.Kind, h.Name, holders[i], holder, switched)
-				}
+			if len(conflicts) != 0 {
+				t.Errorf("the boot reads conflicts %+v, want none: %s records the released session only to say where it went", conflicts, holder)
 			}
 		})
+	}
+}
+
+// recordAbandoningClaim records token's claim, failed, on session and file, with the session it
+// last abandoned an hour ago, its release marked when released is set.
+func recordAbandoningClaim(t *testing.T, store *Store, token claim.Token, session, file, abandoned, abandonedFile string, released bool) {
+	t.Helper()
+	if _, err := store.Pool().Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
+		session, session_file, state, failure, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
+		abandoned_session)
+		values ($1, 'legion', 'LEGION-601', 'LEGION-601', 'implementer', 1, $2, $3, 'failed', '', 0, 0, 0, 0,
+			jsonb_build_object('session', $4::text, 'sessionFile', $5::text, 'why', 'an operator gave the claim a new session',
+				'at', now() - interval '1 hour')
+			|| case when $6::bool then jsonb_build_object('released', now()) else '{}'::jsonb end)`,
+		string(token), session, file, abandoned, abandonedFile, released); err != nil {
+		t.Fatalf("record %s: %v", token, err)
 	}
 }
 

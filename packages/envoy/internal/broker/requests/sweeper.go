@@ -67,12 +67,7 @@ type Sweeper struct {
 	MachineLogins *machine.Service
 	OAuth         *oauthstore.Store
 	Interval      time.Duration
-	// SessionCarry is BROKER_SESSION_CARRY_SECONDS: how long a dormant enrollment's grants and
-	// pending requests wait for the next enrollment of its session name to take them before this
-	// sweep revokes them (enroll.Service.EndCarried). 0 ends every dormant enrollment the next
-	// tick finds, which is the broker's behaviour before the carry.
-	SessionCarry time.Duration
-	Wake         func(ctx context.Context, enrollmentID, requestID, state string)
+	Wake          func(ctx context.Context, enrollmentID, requestID, state string)
 	// failing is, for each sweep, whether its last run failed (settle), which is the whole of
 	// what this Sweeper remembers between ticks: the rows are read fresh every tick.
 	failing [len(sweeps)]bool
@@ -99,9 +94,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 // logged when it starts a run of failures, not at every tick of that run (settle).
 // Lapsed enrollments go first, so a request whose session is gone is cancelled with it rather
 // than expired and its owner woken; the carry sweep follows them, so a lapse that leaves an
-// enrollment dormant with the carry turned off (SessionCarry 0) is finished in the same tick.
-// One Sweeper's ticks run one at a time, as Run's do: Tick reads and writes the state settle
-// keeps, under no lock.
+// enrollment dormant with the carry turned off (enroll.Service.Carry 0) is finished in the same
+// tick. One Sweeper's ticks run one at a time, as Run's do: Tick reads and writes the state
+// settle keeps, under no lock.
 func (s *Sweeper) Tick(ctx context.Context) {
 	ended, err := s.Enrollments.EndLapsed(ctx)
 	for _, e := range ended {
@@ -110,7 +105,7 @@ func (s *Sweeper) Tick(ctx context.Context) {
 			"grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled, "left_dormant", e.Dormant)
 	}
 	s.settle(ctx, sweepLapsedEnrollments, err)
-	carried, err := s.Enrollments.EndCarried(ctx, s.SessionCarry)
+	carried, err := s.Enrollments.EndCarried(ctx)
 	for _, e := range carried {
 		slog.Info("broker sweeper: ended a dormant enrollment whose carry window passed", "enrollment_id", e.ID,
 			"kind", e.Kind, "runtime_id", e.RuntimeID, "slot", e.Slot, "session_id", e.SessionID,

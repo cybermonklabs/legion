@@ -102,6 +102,10 @@ func (enrollsEveryPod) Enroll(_ context.Context, e supervise.PodEnrollment) (str
 
 func (enrollsEveryPod) Revoke(context.Context, string) error { return nil }
 
+func (enrollsEveryPod) Carried(context.Context, []string) ([]supervise.CarriedEnrollment, error) {
+	return []supervise.CarriedEnrollment{}, nil
+}
+
 // TestRegistrationsAreRenewedBeforeTheyLapse runs a role of an issue pod under the daemon's own
 // registrar (newRegistrar, with exchange_audience set) for 25 hours on the test's clock, against a
 // broker that holds each registration to the day past its last write. The daemon writes the

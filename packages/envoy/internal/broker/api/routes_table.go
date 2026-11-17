@@ -262,6 +262,8 @@ func routes() []apiRoute {
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
 		{http.MethodDelete, "/v1/enrollments/{id}", launcherAuth((*server).deleteEnrollment)},
+		// Answer which pod enrollments the caller's account launched still carry something for a session.
+		{http.MethodPost, "/v1/enrollments/carried", launcherAuth((*server).carriedEnrollments)},
 		// Log a service in with its own projected Kubernetes ServiceAccount token, which no person
 		// approves: answers its launcher credential's id and expiry.
 		{http.MethodPost, "/v1/launcher-credentials/token", public((*server).tokenLogin)},
