@@ -322,8 +322,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
-      # The key this run looked up, and whether it filled it: the superseded job keeps that key
-      # and deletes this ref's other go-envoy-infra entries, and runs only after a fill.
+      # The key this run looked up, and whether it filled it: the superseded job keeps that key,
+      # deletes the entries it supersedes (this ref's go-envoy-infra entries of the same runner and
+      # Go with an older module-file hash), and runs only after a fill.
       key: ${{ steps.go-envoy-infra.outputs.cache-primary-key }}
       filled: ${{ steps.go-envoy-infra.outputs.cache-hit != 'true' }}
     steps:
@@ -409,7 +410,8 @@ jobs:
           fi
           jq -r --arg keep "$KEEP" --arg ref "$REF" \
             'def base: gsub("-[0-9a-f]{64}"; "");
-             .[] | select(.ref == $ref and .key != $keep and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
+             .[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep
+                          and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
             while read -r id; do
               if ! [[ $id =~ ^[0-9]+$ ]]; then
                 echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
