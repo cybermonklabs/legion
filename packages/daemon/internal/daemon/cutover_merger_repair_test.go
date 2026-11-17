@@ -756,7 +756,7 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 		t.Fatalf("record the control issue: %v", err)
 	}
 	if err := workflow.StartOrOwe(ctx, tx, r.records, control.Key, record.SuperviseRequest{Op: "start", Tree: control.Tree,
-		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: workflow.ResumePhaseTask(control, ""),
+		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: workflow.ResumePhaseTask(control),
 		ResumeTask: true, RuleResume: true}, time.Now()); err != nil {
 		t.Fatalf("owe the control issue's merger a start: %v", err)
 	}
@@ -884,7 +884,7 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	if stands == nil {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
-	want := workflow.ResumePhaseTask(*stands, "")
+	want := workflow.ResumePhaseTask(*stands)
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}

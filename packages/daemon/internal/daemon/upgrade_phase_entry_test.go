@@ -517,7 +517,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 
 	for i, shape := range shapes {
 		if shape.wantResume {
-			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key], "")
+			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key])
 			continue
 		}
 		shapes[i].wantTask = shape.owedTask

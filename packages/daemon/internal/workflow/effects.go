@@ -183,15 +183,16 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // enqueue and enqueueAt write (a wake's start among them, wakeRow, and a ready worker's catch-up,
 // readyWorkerTask), the start of a phase worker (startOrOwe, which every start Engine.started
 // builds comes through) and a root architect's start that claims the decisions it names
-// (EnqueueNaming). It is where a task takes what every task of its worker must name: the entry
-// of the reviewer's round (namingTheReviewEntry), which the reviewer copies into the footer of
-// its review from the newest sentence naming an entry that its session was given, so a kind of
-// task added later cannot be queued without it.
+// (EnqueueNaming). It is where a task takes what every task of its worker must name: the
+// sentences of the reviewer's review round (namingTheReviewRound), the commit the reviewer's own
+// last deciding review read and the entry of its round, which the reviewer copies into the footer
+// of its review from the newest sentence naming an entry that its session was given, so a kind of
+// task added later cannot be queued without them.
 //
-// Only a start of the reviewer can name an entry (reviewEntryOf), so no other row reads the
-// record for it. A reviewer's start reads the phase its issue stands in and the reviewer's row as
-// tx holds them, which is the row's entry at the moment the task is queued: a start that raised
-// the entry wrote the row first in this same transaction (enter).
+// Only a start of the reviewer can name either, so no other row reads the record for them. A
+// reviewer's start reads the phase its issue stands in and the reviewer's row as tx holds them,
+// which is the row's commit and entry at the moment the task is queued: a start that raised the
+// entry wrote the row first in this same transaction (enter).
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
 	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer {
@@ -206,7 +207,7 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 		if err != nil {
 			return record.OutboxRow{}, err
 		}
-		start.Task = namingTheReviewEntry(start.Task, start.Role, standing.Phase, record.PhaseRowOf(rows, start.Role))
+		start.Task = namingTheReviewRound(start.Task, start.Role, standing.Phase, record.PhaseRowOf(rows, start.Role))
 	}
 	return record.NewOutboxRow(issue, start, at)
 }
@@ -469,7 +470,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
-		task = phaseResumeTask(issue, role, row)
+		task = ResumePhaseTask(issue)
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
@@ -487,15 +488,12 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // (record.SuperviseRequest.ResumeTask). The entry it raises is of no move back: the promotion
 // hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	reviewed, err := e.reviewedPartFor(ctx, tx, issue, role)
+	task := ResumePhaseTask(issue)
+	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, false)
 	if err != nil {
 		return err
 	}
-	entry, task, err := e.enter(ctx, tx, issue, role, ResumePhaseTask(issue, reviewed), false, false)
-	if err != nil {
-		return err
-	}
-	return e.started(ctx, tx, issue, role, task, entry, startMarks{resumeTask: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true})
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
@@ -777,10 +775,11 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the
 // record alone (SendOwedEntry). For the reviewer entering a review round that text is task ending
-// with the sentence that names the entry just raised, as the queue of every task writes it
-// (namingTheReviewEntry, queuedRow), so the queue finds the sentence there and writes it no second
-// time. That is why enter answers the text and its two phase-worker callers send what it answers,
-// never their own task: the number is known only once it is raised, here.
+// with the sentences of its round, the commit its row holds and then the entry just raised, as the
+// queue of every task writes them (namingTheReviewRound, queuedRow), so the queue finds them there
+// and writes them no second time. That is why enter answers the text and its two phase-worker
+// callers send what it answers, never their own task: the number is known only once it is raised,
+// here.
 //
 // movedBack is written with them: whether the start raising this entry was a move back to an
 // earlier phase. Its one reader is the completion route's entry fence, which takes a completion
@@ -798,8 +797,13 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		return 0, "", err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
-	row.EntryTask = namingTheReviewEntry(task, role, issue.Phase, row)
+	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
+	// The entry's sentence is named only while the row holds the task of that entry, as the row
+	// written here does: raised is that row, read for the sentences alone, and the row is given its
+	// task once, the text the worker is sent.
+	raised := row
+	raised.EntryTask = task
+	row.EntryTask = namingTheReviewRound(task, role, issue.Phase, raised)
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, "", err
 	}
@@ -841,10 +845,7 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
-// reviewed is the commit the daemon last recorded for the reviewer (reviewedPart), "" for every
-// start but a later review round's; the part that names it (reviewedCommit.part) is placed after
-// the pull request and before the reason.
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reviewed reviewedCommit, reason string) string {
+func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
@@ -859,20 +860,10 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
 	}
-	text += reviewed.part()
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
 	return text
-}
-
-// phaseResumeTask is the phase's resume task (ResumePhaseTask) for role level with the entry row,
-// its phases row, holds, as every start that hands that role its phase's work again builds it:
-// it names the commit the reviewer's own review read (reviewedPart), "" for any other start. The
-// send of an owed entry builds it too, only for a row that stores no task. The queue appends the
-// entry its round stands at (queuedRow).
-func phaseResumeTask(issue record.Issue, role claim.Role, row record.PhaseRow) string {
-	return ResumePhaseTask(issue, reviewedPart(role, issue.Phase, row))
 }
 
 func continueLine(issue record.Issue) string {
@@ -892,13 +883,9 @@ func handoffWord(role claim.Role) string {
 
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last. reviewed is
-// the commit the daemon last recorded for the reviewer (reviewedPart), whose part
-// (reviewedCommit.part) is placed after the continue line and before the closing sentence: a
-// reviewer resumed in a fresh session has no earlier task to read it from. It is "" for every
-// other start.
-func ResumePhaseTask(issue record.Issue, reviewed reviewedCommit) string {
-	return continueLine(issue) + reviewed.part() + " Resume the existing phase work."
+// the work on, which is what a resumed session needs to tell this phase from its last.
+func ResumePhaseTask(issue record.Issue) string {
+	return continueLine(issue) + " Resume the existing phase work."
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

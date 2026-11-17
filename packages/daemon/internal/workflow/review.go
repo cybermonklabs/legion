@@ -593,9 +593,9 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (reviewedPart). Two rules say which deciding review moves it. Where either fails, the commit
-	// stays where it stands, and the cost is a next round that reads more: from an older commit,
-	// or the whole change.
+	// (namingTheReviewRound). Two rules say which deciding review moves it. Where either fails, the
+	// commit stays where it stands, and the cost is a next round that reads more: from an older
+	// commit, or the whole change.
 	//
 	// The review is the reviewer's own: a review-App review whose Legion footer names the session
 	// the reviewer's claim records (byReviewer). A person's review decides the round and leaves the

@@ -57,18 +57,20 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 // (ReviewEntryLabel): the number the reviewer's row holds at that moment (record.PhaseRow.Entry),
 // in each round, the first one too, while the row holds the task of an entry. The reviewer writes
 // it into the footer of each review it submits for that task, and only a review that names the
-// entry that stands moves the commit the reviewer read (review). One function writes the sentence
-// (reviewEntry.part), and the one place every task for a worker is queued through (queuedRow)
-// appends it, so each way the daemon gives the reviewer a task reaches it, whichever composed the
-// task: the cases here are each way there is today, a wake of each kind among them. A start that
-// raises the entry stores the text it sends (enter), so the row's stored task and the delivered
-// one are one text, and the delivery of an owed entry sends that text again with the sentence once.
+// entry that stands moves the commit the reviewer read (review). One function gives the reviewer's
+// task the sentences of its round (namingTheReviewRound): the commit its row holds, from the second
+// round on, then the entry, its last sentence. The one place every task for a worker is queued
+// through (queuedRow) calls it, so each way the daemon gives the reviewer a task reaches it,
+// whichever composed the task: the cases here are each way there is today, a wake of each kind
+// among them. A start that raises the entry stores the text it sends (enter), so the row's stored
+// task and the delivered one are one text, and the delivery of an owed entry sends that text again
+// with each sentence once.
 //
 // The resume task made because the stored text is empty (a clear emptied it, and no entry was
 // raised since) names no entry, since no review of that entry moves the commit. A task of any
 // other role names no entry either.
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
-	resume := "Continue root. Issue: LEGION-208. Phase: reviewing." + reviewedPartOf(headOne) + " Resume the existing phase work."
+	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf(headOne)
 	for _, tc := range []struct {
 		name string
 		// walk takes LEGION-208 to the path's start, with only that start in the outbox, and returns
@@ -134,7 +136,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				seedIssue(t, pool, *held)
 				outboxRan(t, pool)
 				apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"})
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42." + reviewedPartOf(headOne) + " Reason: the claim failed."
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42. Reason: the claim failed." + reviewedPartOf(headOne)
 			},
 		},
 		{
@@ -176,11 +178,11 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				return pool, resume
 			},
 		},
-		{name: "a wake on a CI settlement", walk: wakesTheReviewerInRoundTwo(pods.WakeChecks)},
-		{name: "a wake on a role message", walk: wakesTheReviewerInRoundTwo(pods.WakeRoleMessage)},
-		{name: "a wake on an agent message", walk: wakesTheReviewerInRoundTwo(pods.WakeAgentMessage)},
-		{name: "a wake on the backstop", walk: wakesTheReviewerInRoundTwo(pods.WakeBackstop)},
-		{name: "a wake of any other kind", walk: wakesTheReviewerInRoundTwo(aKindStillToCome)},
+		{name: "a wake on a CI settlement", walk: namingTheCommitOfRoundOne(wakesTheReviewerInRoundTwo(pods.WakeChecks))},
+		{name: "a wake on a role message", walk: namingTheCommitOfRoundOne(wakesTheReviewerInRoundTwo(pods.WakeRoleMessage))},
+		{name: "a wake on an agent message", walk: namingTheCommitOfRoundOne(wakesTheReviewerInRoundTwo(pods.WakeAgentMessage))},
+		{name: "a wake on the backstop", walk: namingTheCommitOfRoundOne(wakesTheReviewerInRoundTwo(pods.WakeBackstop))},
+		{name: "a wake of any other kind", walk: namingTheCommitOfRoundOne(wakesTheReviewerInRoundTwo(aKindStillToCome))},
 		{
 			name: "the resume of an entry whose stored task is empty", none: true,
 			walk: func(t *testing.T) (*pgxpool.Pool, string) {
@@ -218,6 +220,60 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			}
 			if !tc.raises && !tc.none && !strings.HasSuffix(stored, reviewEntryPartOf(row.Entry)) {
 				t.Fatalf("the reviewer's row stores the task %q, want the task its entry %d was raised with, which names it", stored, row.Entry)
+			}
+		})
+	}
+}
+
+// The stored task of an entry (enter) is the text the reviewer was sent, word for word, and the
+// delivery of that entry owed again (SendOwedEntry) sends it as stored, though the reviewer's row
+// holds another commit since: each sentence of the round once, and the commit the task named when
+// it was stored, or none where it named none. The queue (queuedRow, namingTheReviewRound) finds
+// the sentence of the entry that stands at the task's end and adds nothing. Each case moves the
+// row's commit by hand, to a commit the stored task does not name.
+func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// walk takes LEGION-208 to a round of the reviewer, its entry raised and its task stored.
+		walk func(t *testing.T) (*pgxpool.Pool, *Engine)
+		// names is the commit the stored task names, "" for none; moved is the commit the row is
+		// moved to.
+		names, moved string
+	}{
+		{name: "a stored task that names no commit", moved: headOne, walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
+			pool, engine, _ := reviewRoundOne(t)
+			return pool, engine
+		}},
+		{name: "a stored task that names a commit", names: headOne, moved: headTwo, walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
+			pool, engine, _ := reviewRoundTwo(t)
+			return pool, engine
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, engine := tc.walk(t)
+			stored := reviewerRow(t, pool).EntryTask
+			commit := ""
+			if tc.names != "" {
+				commit = reviewedPartOf(tc.names)
+			}
+			if entry := reviewerRow(t, pool).Entry; !strings.HasSuffix(stored, " Pull request: #42."+commit+reviewEntryPartOf(entry)) ||
+				strings.Count(stored, ReviewedCommitLabel) != strings.Count(commit, ReviewedCommitLabel) {
+				t.Fatalf("the reviewer's row stores the task %q, want it to end with the pull request, then %q, then entry %d", stored, commit, entry)
+			}
+			if _, err := pool.Exec(context.Background(), "update phases set reviewed_head = $1 where issue = 'LEGION-208' and role = 'reviewer'", tc.moved); err != nil {
+				t.Fatalf("move the reviewer's commit: %v", err)
+			}
+			row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
+			if row.ReviewedHead != tc.moved || row.EntryTask != stored || issue.Phase != phase.Reviewing {
+				t.Fatalf("the reviewer's row holds the commit %q and the task %q in %s, want %s, the task as stored, and reviewing",
+					row.ReviewedHead, row.EntryTask, issue.Phase, tc.moved)
+			}
+			outboxRan(t, pool)
+			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
+			})
+			if delivered := deliveredTask(t, pool, tc.name); delivered != stored {
+				t.Fatalf("the owed entry is delivered as %q, want the stored task %q word for word: the row's commit moved to %s since", delivered, stored, tc.moved)
 			}
 		})
 	}
@@ -334,33 +390,49 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 	}
 }
 
+// namingTheCommitOfRoundOne is walk with the commit round 1's review read named after the task it
+// answers, as the queue names it before the entry (namingTheReviewRound): the task a wake of the
+// reviewer in its second round must read before the sentence of its entry.
+func namingTheCommitOfRoundOne(walk func(t *testing.T) (*pgxpool.Pool, string)) func(t *testing.T) (*pgxpool.Pool, string) {
+	return func(t *testing.T) (*pgxpool.Pool, string) {
+		pool, before := walk(t)
+		return pool, before + reviewedPartOf(headOne)
+	}
+}
+
 // Each wake of the reviewer of an issue in reviewing, while the reviewer's row holds the task of
-// an entry, gives it a task that ends naming that entry (ReviewEntryLabel): a reviewer that waits
-// for CI is released after the idle period, and the wake is then its newest task. The wake's task
-// is never the phase's work, and it still names the round's entry, because the reviewer writes the
-// number of the newest such sentence its session was given into its review's footer, and the
-// commit moves only for a review that names the entry that stands. The sentence is the one the
-// queue of every worker's task appends (queuedRow), on each kind of wake, once.
+// an entry, gives it a task that ends naming the commit the row holds (ReviewedCommitLabel) and
+// then that entry (ReviewEntryLabel), each once: a reviewer that waits for CI is released after
+// the idle period, and the wake is then its newest task. The wake's task is never the phase's
+// work, and it still names the round's commit and entry, as each task of the reviewer in reviewing
+// does: the reviewer writes the number of the newest entry its session was given into its review's
+// footer, and the commit moves only for a review that names the entry that stands. The two
+// sentences are the ones the queue of every worker's task appends (queuedRow, namingTheReviewRound),
+// on each kind of wake.
 //
-// reviewEntryOf names an entry for the reviewer, in reviewing, while its row holds the task of
-// that entry, and for nothing else. The controls are its three other cases, each given the wake's
+// namingTheReviewRound names a commit and an entry for the reviewer, in reviewing, while its row
+// holds them, and for nothing else. The controls are its three other cases, each given the wake's
 // task alone: a woken role that is not the reviewer, a woken reviewer whose row the generation's
 // clear left with no task and no commit (record.Store.ClearGeneration), and a woken reviewer
-// whose issue has left reviewing.
+// whose issue has left reviewing, whose row still holds both.
 func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	for _, kind := range wakeKinds {
 		t.Run(kind, func(t *testing.T) {
 			pool, wake := wakesTheReviewerInRoundTwo(kind)(t)
 			row := reviewerRow(t, pool)
-			if row.EntryTask == "" || row.Entry < 2 {
-				t.Fatalf("the reviewer's row holds entry %d with the task %q, want round 2's entry and its task", row.Entry, row.EntryTask)
+			if row.EntryTask == "" || row.Entry < 2 || row.ReviewedHead != headOne {
+				t.Fatalf("the reviewer's row holds entry %d with the task %q and the commit %q, want round 2's entry, its task and %s",
+					row.Entry, row.EntryTask, row.ReviewedHead, headOne)
 			}
 			task := onlyReviewerStart(t, pool).Task
-			if want := wake + reviewEntryPartOf(row.Entry); task != want {
-				t.Fatalf("the woken reviewer is delivered the task %q, want %q: it ends naming entry %d, the row's", task, want, row.Entry)
+			if want := wake + reviewedPartOf(headOne) + reviewEntryPartOf(row.Entry); task != want {
+				t.Fatalf("the woken reviewer is delivered the task %q, want %q: it ends naming %s, the row's commit, and then entry %d, the row's",
+					task, want, headOne, row.Entry)
 			}
-			if named := strings.Count(task, ReviewEntryLabel); named != 1 {
-				t.Fatalf("the woken reviewer's task %q names %q %d times, want once", task, ReviewEntryLabel, named)
+			for _, label := range []string{ReviewedCommitLabel, ReviewEntryLabel} {
+				if named := strings.Count(task, label); named != 1 {
+					t.Fatalf("the woken reviewer's task %q names %q %d times, want once", task, label, named)
+				}
 			}
 		})
 	}
@@ -404,8 +476,9 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
 				pool, engine, apply := reviewRoundOne(t)
 				apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
-				if got := issuePhase(t, pool); got != phase.Implementing || reviewerRow(t, pool).EntryTask == "" {
-					t.Fatalf("after the request for changes the issue is in %s and the reviewer's row holds the task %q, want implementing and round 1's task", got, reviewerRow(t, pool).EntryTask)
+				if row := reviewerRow(t, pool); issuePhase(t, pool) != phase.Implementing || row.EntryTask == "" || row.ReviewedHead != headOne {
+					t.Fatalf("after the request for changes the issue is in %s and the reviewer's row holds the task %q and the commit %q, want implementing, round 1's task and %s",
+						issuePhase(t, pool), row.EntryTask, row.ReviewedHead, headOne)
 				}
 				outboxRan(t, pool)
 				releasesTheReviewer(t, pool, engine)
@@ -422,7 +495,7 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				t.Fatalf("supervise start rows = %+v, want the one wake of the %s", starts, tc.role)
 			}
 			if starts[0].Task != wake {
-				t.Fatalf("the woken %s is delivered the task %q, want the wake's task %q alone: reviewEntryOf names no entry here", tc.role, starts[0].Task, wake)
+				t.Fatalf("the woken %s is delivered the task %q, want the wake's task %q alone: namingTheReviewRound names neither a commit nor an entry here", tc.role, starts[0].Task, wake)
 			}
 		})
 	}

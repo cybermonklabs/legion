@@ -4,7 +4,7 @@
 // the reviewer with in its second review round holds ` Last reviewed commit: <sha>.`, the head the
 // reviewer's own deciding review of the first round read, a review whose footer names the entry of
 // that round (record.PhaseRow.ReviewedHead, which workflow's review writes and workflow's
-// reviewedPart names), and the task of the first round names no commit.
+// namingTheReviewRound names), and the task of the first round names no commit.
 // scripts/e2e/review-range.sh builds this driver with `-tags e2e` and owns the nats-server and the
 // PostgreSQL it runs against.
 //

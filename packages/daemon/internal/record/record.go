@@ -563,8 +563,8 @@ type PhaseRow struct {
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
 	// round or moves it (workflow's RoundRefusal.Waits). Unlike Decision it outlives its round: no
 	// entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
-	// it), so the task of the reviewer's next round names it (workflow's reviewedPart) and the
-	// reviewer reads the difference from it to the head. Only a review of the entry that stands
+	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
+	// the reviewer reads the difference from it to the head. Only a review of the entry that stands
 	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that
 	// entry (Entry, intake.PullRequestReview.LegionEntry). No time is compared. A review that names
 	// no entry, or another one, decides its round and leaves the commit where it stands, so the

@@ -703,7 +703,7 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 }
 
 // The task of a later review round names the commit the reviewer's own newest deciding review of
-// its round read (` Last reviewed commit: <sha>.`, which workflow's reviewedCommit.part writes from
+// its round read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound writes from
 // record.PhaseRow.ReviewedHead), so the reviewer can read the difference from that commit rather
 // than the whole change again. The composed reviewer prompt therefore names the field, the
 // function that writes it into the task, and whose review sets it: the session the daemon recorded
@@ -717,9 +717,8 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // commit the reviewer's own last approval or request for changes read is gone. It says to read the
 // difference from that commit and each thread, gives the thermonuclear pair that same diff, keeps
 // every defect seen outside it a finding, and names the three cases that read the whole change
-// again. The pair's old sentence, which ran it over the whole change in every round, is gone, and so
-// is the citation of reviewedPart, which picks the commit and writes nothing. This shows the text is
-// loaded, never that a reviewer follows it.
+// again. The pair's old sentence, which ran it over the whole change in every round, is gone. This
+// shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -729,7 +728,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	for _, phrase := range []string{
 		"Last reviewed commit: <sha>",
 		"no entry into a phase clears it",
-		"`reviewedCommit.part` in `packages/daemon/internal/workflow/reviewed_commit.go` writes it into the task",
+		"`namingTheReviewRound` in `packages/daemon/internal/workflow/review_round.go` writes it into the task",
 		"Your session is the one the daemon recorded on the claim it started you under, in your first round as in every later one;",
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
@@ -752,7 +751,6 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	}
 	for _, retired := range []string{
 		"Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code",
-		"`reviewedPart` in `packages/daemon/internal/workflow/effects.go` writes into the task",
 		"A `COMMENT`, a review the daemon set aside and a person's review leave it where it stands.",
 		"EntryRaisedAt",
 		"after the daemon last entered you into that round",
