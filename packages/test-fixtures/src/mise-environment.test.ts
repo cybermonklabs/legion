@@ -48,8 +48,9 @@ test("mise's own variables win over the XDG base directories", () => {
   });
 });
 
-// mise reads an empty variable as unset (var_path): `XDG_CONFIG_HOME=` is not the relative `mise`.
-test("an empty variable is read as unset", () => {
+// mise reads an empty path variable as unset (var_path): `XDG_CONFIG_HOME=` is not the relative
+// `mise`. MISE_TRUSTED_CONFIG_PATHS is a list, not a path: the last two rows cover it.
+test("an empty path variable is read as unset", () => {
   expect(
     callerMiseEnvironment(
       {
@@ -62,7 +63,6 @@ test("an empty variable is read as unset", () => {
         MISE_GLOBAL_CONFIG_FILE: "",
         MISE_SYSTEM_CONFIG_DIR: "",
         MISE_SYSTEM_CONFIG_FILE: "",
-        MISE_TRUSTED_CONFIG_PATHS: "",
       },
       home
     )
@@ -169,13 +169,24 @@ test("a system config file is passed only when the caller names one", () => {
   ).toBe("/etc/m.toml");
 });
 
+/** The MISE_TRUSTED_CONFIG_PATHS the helper passes for a caller that sets it to `list`. */
+const trusted = (list: string) =>
+  callerMiseEnvironment({ MISE_TRUSTED_CONFIG_PATHS: list }, home).MISE_TRUSTED_CONFIG_PATHS;
+
 // mise splits the list on the path separator and drops empty entries (list_by_os_path_separator),
-// then expands each entry's `~/` against its HOME (Settings::trusted_config_paths).
+// then expands each entry's `~` against its HOME (Settings::trusted_config_paths).
 test("trusted config paths are passed entry by entry, without empty entries", () => {
-  const named = (list: string) =>
-    callerMiseEnvironment({ MISE_TRUSTED_CONFIG_PATHS: list }, home).MISE_TRUSTED_CONFIG_PATHS;
   expect(callerMiseEnvironment({}, home).MISE_TRUSTED_CONFIG_PATHS).toBeUndefined();
-  expect(named("/a")).toBe("/a");
-  expect(named(":/a::~/b:")).toBe("/a:/caller-home/b");
-  expect(named(":")).toBeUndefined();
+  expect(trusted("/a")).toBe("/a");
+  expect(trusted(":/a::~/b:")).toBe("/a:/caller-home/b");
+});
+
+// An empty list parses: confique keeps a successful parse of "" or ":" as an empty set, and the
+// environment outranks the config files' trusted_config_paths (src/config/settings.rs:1415-1427).
+// Dropping it would hand the child the paths the caller's config trusts, which the caller turned
+// off.
+test("an empty trusted path list the caller sets is passed, empty", () => {
+  expect(trusted("")).toBe("");
+  expect(trusted(":")).toBe("");
+  expect(trusted("::")).toBe("");
 });

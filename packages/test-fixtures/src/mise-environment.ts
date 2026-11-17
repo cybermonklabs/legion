@@ -43,11 +43,13 @@ export type CallerMiseEnvironment = {
  *   - MISE_TRUSTED_CONFIG_PATHS, split on the path separator with its empty entries dropped
  *     (settings.toml:4364-4379, crates/mise-settings/src/lib.rs:504-511), each entry's leading `~`
  *     expanded (src/config/settings.rs:1103-1109), and read by is_trusted
- *     (src/config/config_file/mod.rs:688).
+ *     (src/config/config_file/mod.rs:688). A set but empty list ("" or ":") is an empty set to
+ *     mise, and it outranks the config files' trusted_config_paths (src/config/settings.rs:
+ *     1415-1427), so it is passed empty.
  * The last four are passed only when the caller names them: the system config directory does not
  * depend on HOME, so the child finds the same /etc/mise by itself.
- * mise reads an empty variable as unset, and expands a first path component of `~` (a bare `~`
- * too) against its HOME, keeping every `..` of the rest (var_path, env.rs:724-729, and
+ * mise reads an empty path variable as unset, and expands a first path component of `~` (a bare
+ * `~` too) against its HOME, keeping every `..` of the rest (var_path, env.rs:724-729, and
  * replace_path, crates/mise-util/src/file.rs:878-909). It appends `mise` to an XDG base with
  * PathBuf::join, which folds nothing either. The `~` is expanded here, against the caller's home:
  * in the child it would name the child's.
@@ -83,10 +85,14 @@ export function callerMiseEnvironment(
   const globalConfigFile = value("MISE_GLOBAL_CONFIG_FILE") ?? value("MISE_CONFIG_FILE");
   const systemConfigDir = value("MISE_SYSTEM_CONFIG_DIR") ?? value("MISE_SYSTEM_DIR");
   const systemConfigFile = value("MISE_SYSTEM_CONFIG_FILE");
-  const trustedConfigPaths = (env["MISE_TRUSTED_CONFIG_PATHS"] ?? "")
-    .split(path.delimiter)
+  // Unlike a path variable, a set but empty list is an answer: mise parses "" and ":" as no
+  // trusted paths, which outranks the config files' trusted_config_paths. So whether the caller
+  // sets it decides whether it is passed, not whether the list has an entry.
+  const trustedConfigPaths = env["MISE_TRUSTED_CONFIG_PATHS"]
+    ?.split(path.delimiter)
     .filter((entry) => entry !== "")
-    .map(expand);
+    .map(expand)
+    .join(path.delimiter);
   return {
     MISE_DATA_DIR: value("MISE_DATA_DIR") ?? under(dataHome, "mise"),
     MISE_CONFIG_DIR: value("MISE_CONFIG_DIR") ?? under(configHome, "mise"),
@@ -94,9 +100,7 @@ export function callerMiseEnvironment(
     ...(globalConfigFile === undefined ? {} : { MISE_GLOBAL_CONFIG_FILE: globalConfigFile }),
     ...(systemConfigDir === undefined ? {} : { MISE_SYSTEM_CONFIG_DIR: systemConfigDir }),
     ...(systemConfigFile === undefined ? {} : { MISE_SYSTEM_CONFIG_FILE: systemConfigFile }),
-    ...(trustedConfigPaths.length === 0
-      ? {}
-      : { MISE_TRUSTED_CONFIG_PATHS: trustedConfigPaths.join(path.delimiter) }),
+    ...(trustedConfigPaths === undefined ? {} : { MISE_TRUSTED_CONFIG_PATHS: trustedConfigPaths }),
   };
 }
 
