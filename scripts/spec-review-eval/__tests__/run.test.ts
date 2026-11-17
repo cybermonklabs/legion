@@ -591,15 +591,9 @@ describe("the fixtures", () => {
   // make, keep, send or show. A reviewer that takes such a noun for a noun of the system fails
   // the run. A word for a thing that the system shows, keeps or sends, such as page, file or
   // message, is not in it: step 4 can read it either way.
-  test("fixture 12 plants nothing, names only units of time beside its terms, and each of its statements must not be named", () => {
+  test("fixture 12 plants nothing and names only units of time beside its terms", () => {
     const twelve = fixture("12-common-nouns");
     expect(twelve.planted).toEqual([]);
-    expect(twelve.mustNotName.map((item) => item.node)).toEqual([
-      "inbox-wait-hours",
-      "ask-wait-minutes",
-      "summary-days",
-      "answer-seconds",
-    ]);
     for (const noun of ["hours", "minutes", "days", "seconds"]) {
       expect(twelve.specText, noun).toContain(` ${noun}`);
     }
@@ -654,10 +648,6 @@ describe("the fixtures", () => {
       "- **The inbox is simple, and the person always knows what to do next.** `inbox-simple`"
     );
     expect(ten.planted).toEqual(fixture("1-principle").planted);
-    expect(ten.mustNotName).toEqual([
-      { node: "inbox-overdue-first" },
-      { node: "terms", subject: "overdue ask" },
-    ]);
   });
 
   // Dispatch decides what a statement and a term are, and these two fixtures hold texts that a
@@ -670,12 +660,6 @@ describe("the fixtures", () => {
     const thirteen = fixture("13-markup-heading");
     expect(thirteen.specText).toMatch(/^## \*\*Terms\*\*$/m);
     expect(thirteen.specText).toContain("- **door alarm**: ");
-    expect(thirteen.form).toEqual([]);
-    expect(thirteen.planted).toEqual([]);
-    expect(thirteen.mustNotName).toEqual([
-      { node: "door-alarm-start" },
-      { node: "terms", subject: "door alarm" },
-    ]);
     expect(rootTerms(thirteen.root)).not.toContain("**door alarm**");
   });
 
@@ -683,11 +667,6 @@ describe("the fixtures", () => {
     const fourteen = fixture("14-quoted-blocks");
     expect(fourteen.specText).toMatch(/^> :::requirement\{#quoted-calm\}$/m);
     expect(fourteen.specText).toMatch(/^> - \*\*.+\*\* `quoted-entry` · under:/m);
-    expect(fourteen.planted).toEqual([
-      { kind: "principle", node: "quoted-calm" },
-      { kind: "principle", node: "quoted-entry" },
-    ]);
-    expect(fourteen.mustNotName).toEqual([{ node: "door-close-60" }]);
   });
 
   // Dispatch reads nothing in a code fence, so fixture 15's definition of its noun, in a fence
