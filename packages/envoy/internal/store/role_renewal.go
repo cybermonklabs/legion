@@ -193,9 +193,7 @@ func roleOfTopic(topic string) (string, bool) {
 // no process, so it can neither be a holder's heartbeat nor adopt what another process holds.
 // Once its holder has renewed a claim that names no process so, a registration that states a
 // process is no longer the claim's first heartbeat: it may be a second process that resumed the
-// session's id while the holder still answers, and it leaves the claim as it stands. Whether
-// such a renewal happened is read off that note and never off the claim's times, which a clock
-// that does not move, or two listeners whose clocks differ, make equal or reversed.
+// session's id while the holder still answers, and it leaves the claim as it stands.
 //
 // A claim marked handed back (RoleClaim.HandedBack) is renewed by nobody, its own process
 // included: the mark is the release's word that the holder gave the role up, so the claim ages

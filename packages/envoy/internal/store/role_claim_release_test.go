@@ -434,32 +434,6 @@ func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
 	}
 }
 
-// A hand-back stating no process against a claim that names none marks that claim and frees
-// nothing: an absent process matches nothing in a release (RoleReleaseAuthority.frees), so the
-// hand-back has the effect it has on a claim that names a process - the mark, and the role
-// claim reaper's free once the claim's renewal has lapsed - and nothing else of the record
-// changes. The role's lane topic stays on the record, the interest half of the claim that stands.
-func TestAHandBackMarksAClaimThatNamesNoProcessAndFreesNothing(t *testing.T) {
-	const (
-		role   = "legion-controller"
-		holder = "ses_handing_back_unnamed"
-	)
-	reg := releasableRoleClaim(t, role, holder, "")
-	seeded := storedRoleClaim(t, reg, role)
-
-	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
-		t.Fatalf("hand %s's role back from a release stating no process: %v", role, err)
-	}
-
-	marked := storedRoleClaim(t, reg, role)
-	want := seeded
-	want.HandedBack, want.Revision = true, marked.Revision
-	if marked.Revision == seeded.Revision || marked != want {
-		t.Fatalf("the claim after the hand-back is %+v (revision %d), want %+v marked handed back and nothing else changed", marked, marked.Revision, seeded)
-	}
-	assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic, contracts.RoleTopicPrefix+role)
-}
-
 // The mark meets the race the delete meets: pi-envoy registers outside the task queue a queued
 // task hands the role back in, so the holder's own renewal lands between the release's read of
 // the claim and the conditional write of the mark. That write loses its condition, and the

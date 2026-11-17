@@ -225,10 +225,8 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		// not standing as this session's.
 		return false, nil
 	}
-	// The claim that stands is one this release may not free - another session's, another
-	// process's, one that names no process, or no record at all - so the role is still its
-	// holder's, and the hand-back this release is leaves its mark on it. A hand-back sent no
-	// delete, so what stood is the claim it read.
+	// The claim that stands is one this release may not free, so the role is still its holder's,
+	// and a hand-back leaves its mark on it.
 	stands := stood.HolderSessionID == sessionID
 	if !release.handsBack {
 		return stands, nil
@@ -275,12 +273,7 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 	outcome, _, err := r.writeRoleClaim(ctx, read, roleClaimWrite{
 		role:     role,
 		attempts: roleClaimReleaseAttempts,
-		// The claim this hand-back read, and no other: its session and the moment it was
-		// granted at, still unmarked, naming the process the claim read named - or any process,
-		// where the claim read named none, since its session's first heartbeat adopts such a
-		// claim and carries the rest over. A renewal or an adoption under the write leaves it
-		// that claim, so the mark follows it; another session's claim, another process's, and a
-		// fresh grant are each another claim.
+		// The claim this hand-back read, through a renewal or an adoption, and no fresh grant.
 		writes: func(claim RoleClaim) bool {
 			return claim.HolderSessionID == sessionID && !claim.HandedBack && claim.ClaimedAt == read.ClaimedAt &&
 				(read.ClientInstanceID == "" || claim.ClientInstanceID == read.ClientInstanceID)

@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -17,20 +18,15 @@ import (
 )
 
 // claimRoleForPod is the claim a session pod's role claimer makes: POST /v1/roles/set with the
-// body it encodes, the session id and the role and nothing else.
-func (r *roleClaimHandBackRig) claimRoleForPod() *store.RoleClaim {
-	r.t.Helper()
-	body, err := json.Marshal(map[string]any{"session_id": r.session, "role": r.role})
-	if err != nil {
-		r.t.Fatalf("encode the claim-role body: %v", err)
+// session id and the role and nothing else. It fails t, the test running it, which may be a
+// subtest of the rig's own.
+func (r *roleClaimHandBackRig) claimRoleForPod(t *testing.T) store.RoleClaim {
+	t.Helper()
+	body := fmt.Sprintf(`{"session_id":%q,"role":%q}`, r.session, r.role)
+	if recorder := r.send(http.MethodPost, "/v1/roles/set", body); recorder.Code != http.StatusOK {
+		t.Fatalf("POST /v1/roles/set %s: status %d %s, want 200", body, recorder.Code, recorder.Body.String())
 	}
-	recorder := r.send(http.MethodPost, "/v1/roles/set", string(body))
-	if recorder.Code != http.StatusOK {
-		r.t.Errorf("POST /v1/roles/set %s: status %d %s, want 200", body, recorder.Code, recorder.Body.String())
-		return nil
-	}
-	claim := r.stored()
-	return &claim
+	return r.stored()
 }
 
 // handBackAs is POST /v1/interests/unsubscribe with body, which must answer 200; it answers the
@@ -80,11 +76,7 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 
 		var claimed store.RoleClaim
 		if !t.Run("POST /v1/roles/set with no client_instance_id is granted and names no process", func(t *testing.T) {
-			stored := rig.claimRoleForPod()
-			if stored == nil {
-				t.FailNow()
-			}
-			claimed = *stored
+			claimed = rig.claimRoleForPod(t)
 			if claimed.HolderSessionID != sessionID || claimed.ClientInstanceID != "" {
 				t.Fatalf("the claim is %+v, want %s's claim naming no process", claimed, sessionID)
 			}
@@ -138,11 +130,7 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 				t.Run("a pod's claim that names no process is marked and freed by nothing", func(t *testing.T) {
 					rig := newRoleClaimHandBackRig(t, sessionID, role)
 					rig.register(holdingProcess, fmtOwnTopics(handBackOwnTopic, podNoticeTopic))
-					stored := rig.claimRoleForPod()
-					if stored == nil {
-						t.FailNow()
-					}
-					claimed := *stored
+					claimed := rig.claimRoleForPod(t)
 
 					if removed := rig.handBackAs(body); slices.Contains(removed, lane) {
 						t.Fatalf("the hand-back reports %v removed, want the role's lane kept: its claim stands", removed)
@@ -167,12 +155,9 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 						if refused.Code != http.StatusConflict {
 							t.Fatalf("the agent's soft claim over the marked claim: status %d %s, want 409 while the marked claim's renewal is inside the live window", refused.Code, refused.Body.String())
 						}
-						again := rig.claimRoleForPod()
-						if again == nil {
-							t.FailNow()
-						}
+						again := rig.claimRoleForPod(t)
 						if again.HandedBack || again.HolderSessionID != sessionID || again.ClientInstanceID != "" || again.Revision == marked.Revision {
-							t.Fatalf("the claim after the outright claim is %+v (revision %d), want a fresh unmarked claim of %s past revision %d", *again, again.Revision, sessionID, marked.Revision)
+							t.Fatalf("the claim after the outright claim is %+v (revision %d), want a fresh unmarked claim of %s past revision %d", again, again.Revision, sessionID, marked.Revision)
 						}
 					})
 				})

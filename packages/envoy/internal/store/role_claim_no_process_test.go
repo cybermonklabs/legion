@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -118,40 +117,12 @@ func assertClaimFreed(t *testing.T, reg *Registry, role string) {
 	}
 }
 
-// racingFirstClaimWriteKeyValue runs race once, before the first conditional write the role
-// bucket is sent through it - a delete or an update, whichever comes first - so the claim a
-// release read can be moved under the write it sends next: a release that frees sends a delete,
-// and a hand-back that marks sends an update. race's own writes go through this wrapper too, and
-// are not raced again; every write is the real one, so a write that loses its condition loses
-// it at the server.
-type racingFirstClaimWriteKeyValue struct {
-	natsgo.KeyValue
-
-	race  func()
-	raced bool
-}
-
-func (kv *racingFirstClaimWriteKeyValue) first() {
-	if !kv.raced {
-		kv.raced = true
-		kv.race()
-	}
-}
-
-func (kv *racingFirstClaimWriteKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) error {
-	kv.first()
-	return kv.KeyValue.Delete(key, opts...)
-}
-
-func (kv *racingFirstClaimWriteKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
-	kv.first()
-	return kv.KeyValue.Update(key, value, revision)
-}
-
-// raceFirstClaimWrite has every role-bucket call of reg go through a racingFirstClaimWriteKeyValue
-// running race.
-func raceFirstClaimWrite(reg *Registry, race func()) *racingFirstClaimWriteKeyValue {
-	racing := &racingFirstClaimWriteKeyValue{KeyValue: reg.roleKV.Legacy(), race: race}
+// raceFirstMarkWith lands the write wins makes between a hand-back's read of the claim and the
+// first conditional update it sends, the write of its mark: a hand-back states no process and
+// frees nothing, so that update is its first write (racingUpdateKeyValue hooks the first update
+// alone, and wins's own writes are not hooked again).
+func raceFirstMarkWith(reg *Registry, wins func()) *racingUpdateKeyValue {
+	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy(), beforeFirstUpdate: wins}
 	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 	return racing
 }
@@ -197,8 +168,10 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 					releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
 
 					marked := storedRoleClaim(t, reg, role)
-					if !marked.HandedBack || marked.HolderSessionID != holder || marked.ClientInstanceID != "" || marked.ClaimedAt != seeded.ClaimedAt {
-						t.Fatalf("the claim after the hand-back is %+v (revision %d), want %s's claim of %d marked handed back and naming no process", marked, marked.Revision, holder, seeded.ClaimedAt)
+					want := seeded
+					want.HandedBack, want.Revision = true, marked.Revision
+					if marked.Revision == seeded.Revision || marked != want {
+						t.Fatalf("the claim after the hand-back is %+v (revision %d), want %+v marked handed back and nothing else changed", marked, marked.Revision, seeded)
 					}
 					assertInterestTopicsForSession(t, reg, holder, releaseKeptTopic, lane)
 
@@ -231,7 +204,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 						reg, advance := claimForRelease(t, path, role, holder, "")
 						seeded := storedRoleClaim(t, reg, role)
 						advance(beat)
-						racing := raceFirstClaimWrite(reg, func() {
+						racing := raceFirstMarkWith(reg, func() {
 							if _, err := reg.renewRoleClaim(context.Background(), role, holder, ""); err != nil {
 								t.Errorf("the holder's renewal that wins the race: %v", err)
 							}
@@ -240,7 +213,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 						releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
 
 						stood := storedRoleClaim(t, reg, role)
-						if !racing.raced {
+						if racing.updates == 0 {
 							t.Fatalf("the hand-back sent no write for the renewal to race")
 						}
 						if want := seeded.ClaimedAt + beat.Milliseconds(); !stood.HandedBack || stood.ClientInstanceID != "" || stood.RenewedAt != want || stood.ClaimedAt != seeded.ClaimedAt {
@@ -251,7 +224,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 						reg, advance := claimForRelease(t, path, role, holder, "")
 						seeded := storedRoleClaim(t, reg, role)
 						advance(beat)
-						racing := raceFirstClaimWrite(reg, func() {
+						racing := raceFirstMarkWith(reg, func() {
 							if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
 								t.Errorf("the first heartbeat that adopts the claim: %v", err)
 							}
@@ -260,7 +233,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 						releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
 
 						stood := storedRoleClaim(t, reg, role)
-						if !racing.raced {
+						if racing.updates == 0 {
 							t.Fatalf("the hand-back sent no write for the adoption to race")
 						}
 						if !stood.HandedBack || stood.ClientInstanceID != roleClaimInstance || stood.ClaimedAt != seeded.ClaimedAt {
@@ -276,7 +249,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 							reg, advance := claimForRelease(t, path, role, holder, "")
 							seeded := storedRoleClaim(t, reg, role)
 							var granted RoleClaim
-							racing := raceFirstClaimWrite(reg, func() {
+							racing := raceFirstMarkWith(reg, func() {
 								// An hour on, so the grant's moment is one the claim the
 								// hand-back read cannot share.
 								advance(time.Hour)
@@ -286,7 +259,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 
 							releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
 
-							if !racing.raced {
+							if racing.updates == 0 {
 								t.Fatalf("the hand-back sent no write for the grant to race")
 							}
 							if granted.ClaimedAt <= seeded.ClaimedAt {
@@ -366,9 +339,10 @@ var adoptionClocks = []adoptionClock{
 // adoptionListeners opens two registries over one fresh pair of buckets, standing for two
 // listeners that serve one session's registrations: first, whose clock the claim is written on,
 // and second, whose clock is clock.behind behind it. Neither has a role claim view, so a
-// registration weighs the roles of the session's interest record. The returned advance moves
-// both clocks on, where clock.moves says they move.
-func adoptionListeners(t *testing.T, clock adoptionClock) (first, second *Registry, advance func(time.Duration)) {
+// registration weighs the roles of the session's interest record. renewer is the listener the
+// registration that renews or adopts the claim goes to: second where clock.renewOnSecond, else
+// first. The returned advance moves both clocks on, where clock.moves says they move.
+func adoptionListeners(t *testing.T, clock adoptionClock) (first, second, renewer *Registry, advance func(time.Duration)) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
@@ -377,7 +351,11 @@ func adoptionListeners(t *testing.T, clock adoptionClock) (first, second *Regist
 	first.now = func() time.Time { return noProcessClaimed.Add(time.Duration(elapsed.Load())) }
 	second, _ = coldRegistry(t, conn)
 	second.now = func() time.Time { return noProcessClaimed.Add(time.Duration(elapsed.Load()) - clock.behind) }
-	return first, second, func(since time.Duration) {
+	renewer = first
+	if clock.renewOnSecond {
+		renewer = second
+	}
+	return first, second, renewer, func(since time.Duration) {
 		if clock.moves {
 			elapsed.Store(int64(since))
 		}
@@ -413,14 +391,10 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 	for _, clock := range adoptionClocks {
 		t.Run(clock.name, func(t *testing.T) {
 			t.Run("a claim a registration stating no process renewed is not taken by a second process", func(t *testing.T) {
-				first, second, advance := adoptionListeners(t, clock)
+				first, second, renewer, advance := adoptionListeners(t, clock)
 				registerSessionWithLane(t, first, holder, role)
 				claimRoleAs(t, first, holder, "example-host", role, "")
 				claimed := storedRoleClaim(t, first, role)
-				renewer := first
-				if clock.renewOnSecond {
-					renewer = second
-				}
 
 				advance(beat)
 				if renewal, err := renewRoleClaims(t, renewer, holder, ""); err != nil || len(renewal.Renewed) != 1 {
@@ -430,7 +404,6 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 				if renewed.ClientInstanceID != "" || renewed.ClaimedAt != claimed.ClaimedAt || renewed.Revision == claimed.Revision {
 					t.Fatalf("the claim after the holder's renewal is %+v (revision %d), want the claim of %d renewed and naming no process", renewed, renewed.Revision, claimed.ClaimedAt)
 				}
-				t.Logf("claimed at %d, renewed at %d", renewed.ClaimedAt, renewed.RenewedAt)
 
 				advance(2 * beat)
 				for name, listener := range map[string]*Registry{"the first listener": first, "the second listener": second} {
@@ -452,14 +425,10 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 			})
 
 			t.Run("control: a claim no registration renewed is adopted by the first registration stating a process", func(t *testing.T) {
-				first, second, advance := adoptionListeners(t, clock)
+				first, second, adopter, advance := adoptionListeners(t, clock)
 				registerSessionWithLane(t, first, holder, role)
 				claimRoleAs(t, first, holder, "example-host", role, "")
 				claimed := storedRoleClaim(t, first, role)
-				adopter := first
-				if clock.renewOnSecond {
-					adopter = second
-				}
 
 				advance(beat)
 				if _, err := renewRoleClaims(t, adopter, holder, roleClaimInstance); err != nil {
@@ -501,14 +470,10 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 					"one an earlier build renewed":              fmt.Sprintf(`{"holder_session_id":%q,"claimed_at":%d,"previous_session_id":"","renewed_at":%d}`, holder, noProcessClaimed.UnixMilli(), noProcessClaimed.Add(beat).UnixMilli()),
 				} {
 					t.Run(name, func(t *testing.T) {
-						first, second, advance := adoptionListeners(t, clock)
+						first, _, adopter, advance := adoptionListeners(t, clock)
 						registerSessionWithLane(t, first, holder, role)
 						if _, err := first.roles().Legacy().Put(role, []byte(record)); err != nil {
 							t.Fatalf("store the earlier build's record %s: %v", record, err)
-						}
-						adopter := first
-						if clock.renewOnSecond {
-							adopter = second
 						}
 
 						advance(2 * beat)
