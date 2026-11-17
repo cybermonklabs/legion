@@ -101,8 +101,10 @@ same way: a question in your Inbox that says what is blocked, the options, and w
 
 The issue's status tells you which phase is running (see [What each status means](#what-each-status-means)).
 The issue's events show each status change, and the architect's messages there say what changed
-and why. The pull request appears under the issue's external links, and its body carries the line
-`Dispatch: <KEY>` pointing back to the issue.
+and why. The implementer links the pull request from the issue as soon as it opens it, so the pull
+request appears under the issue's external links. Outside cybermonklabs/legion its body also carries
+the line `Dispatch: <KEY>` pointing back to the issue; in that public repository, no pull request
+title, body or commit message names a Dispatch key.
 
 ## Review the pull request
 
