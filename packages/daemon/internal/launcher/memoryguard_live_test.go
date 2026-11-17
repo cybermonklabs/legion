@@ -407,13 +407,18 @@ print("probe: done", flush=True)
 // above the reading at that kill, while a grower lived, the guard's next kill acted on the first
 // such reading; and each kill that followed a kill of the same rise (no reading of the guard's
 // below the mark between them), at a reading controllerLiveGrowerStep or more above that kill's
-// while a grower lived, ended a grower. The first kill of a rise may end a sleeping fork or the
-// parent: the guard orders by growth over its window, then by growth since the previous kill of
-// the rise, then by size (R1 of spec version 26), and a rise's first kill has no previous kill, so
-// where no grower grew over the window, as latepool's growers, which start after the band's last
-// reading, need not have, the largest goes first. Each prints every kill by what the probe says
-// the process is and, beside the verdict, the kills by kind, with each that ended no grower while
-// a grower lived marked first-of-rise or after-a-kill (`live: kinds …`, printKinds).
+// while a grower lived, ended a grower. In `latepool` the run's first kill, besides, ended a
+// grower: c-gvisor-real asks it of every latepool run at 4 GiB, and the guard ranks a process
+// started since its reading before right after growth over its window, the largest first, and at
+// the mark looks for those started since the band's last reading (R1 of spec version 27), so the
+// fresh growers go before the sleeping forks and the parent, which read larger. Otherwise the first
+// kill of a rise may end a sleeping fork or the parent: the guard orders by growth over its window,
+// then by start since its reading before, then by growth since the previous kill of the rise, then
+// by size, and a rise's first kill has no previous kill, so where no grower grew over the window
+// and none is new, as after a fall in sharedpool, the largest goes first. Each prints every kill
+// by what the probe says the process is and, beside the verdict, the kills by kind, with each that
+// ended no grower while a grower lived marked first-of-rise or after-a-kill (`live: kinds …`,
+// printKinds), and the run's highest readings (`live: highest …`, printHighest).
 //
 // `band` is a python3 that allocates until the pod's AnonPages is 5% of the limit below the mark,
 // in the middle of the band where the guard reads the sizes of what it may end at each reading,
@@ -434,12 +439,13 @@ print("probe: done", flush=True)
 // (`live: trace …`, printTrace): each of the guard's readings at or above the band's start, each
 // kill marked first of its rise or after a kill of it, each killed process's exit with the time to
 // it from the kill (`live: trace exit pid=… after=…`), and at the end the longest of those times
-// beside the settings' wait, and the kills by kind (`live: kinds …`); for `latepool`, the AnonPages
-// its block holds the pod at (`live: late held …`); for `band`, its measure (`live: band …`); and
-// for each, the time from the mark to the first kill (`live: mark_to_kill …`). The last is `live:
-// verdict PASS <reason>` or `live: verdict FAIL <reason>`. Once LEGION_MEMORY_GUARD_LIVE=1 the test
-// fails, and never skips, where it is not PID 1, finds no python3, or cannot read the cgroup's
-// files or meminfo.
+// beside the settings' wait, the kills by kind (`live: kinds …`) and the run's highest readings of
+// the guard's and of the test's own (`live: highest …`); for `latepool`, the AnonPages its block
+// holds the pod at (`live: late held …`); for `band`, its measure (`live: band …`); and for each,
+// the time from the mark to the first kill (`live: mark_to_kill …`). The last is `live: verdict
+// PASS <reason>` or `live: verdict FAIL <reason>`. Once LEGION_MEMORY_GUARD_LIVE=1 the test fails,
+// and never skips, where it is not PID 1, finds no python3, or cannot read the cgroup's files or
+// meminfo.
 func TestControllerPodMemoryGuardLiveSandbox(t *testing.T) {
 	if os.Getenv(memoryGuardLiveEnv) != "1" {
 		t.Skip("the live test runs only where " + memoryGuardLiveEnv + "=1: it runs the controller pod's guard on this machine's own memory, as the container's first process")
@@ -946,13 +952,16 @@ func (r *controllerLiveRun) awaitShared() (pass, fail string) {
 // in the band and starts the probe's growers (awaitLateHold). It waits for the guard's first kill,
 // then for the exit of every grower the probe started and of the probe itself (awaitGrowers), and
 // prints every kill, each by what the probe says the process is, and, beside the verdict, the
-// kills by kind (printKinds). It passes where all of these hold, and fails naming the first that
-// does not: every grower exited within controllerLivePoolBound, so the pod lived through the
-// guard's end of the last of them, and lived to the verdict line, and the shim and the agent live;
-// the guard's first kill came within one interval of its first reading at or above the mark
-// (markToKill); and the guard's trace holds, its go-on and its order after a kill of the same rise
-// (judgeTrace).
+// kills by kind (printKinds) and, whatever the verdict, the run's highest readings (printHighest).
+// It passes where all of these hold, and fails naming the first that does not: every grower exited
+// within controllerLivePoolBound, so the pod lived through the guard's end of the last of them, and
+// lived to the verdict line, and the shim and the agent live; the guard's first kill came within
+// one interval of its first reading at or above the mark (markToKill); in latepool, that first
+// kill ended a grower, since the guard ranks a process started since its reading before above a
+// sleeping fork or the parent that did not grow; and the guard's trace holds, its go-on and its
+// order after a kill of the same rise (judgeTrace).
 func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
+	defer r.printHighest()
 	if r.scenario == "latepool" {
 		if reason := r.awaitLateHold(); reason != "" {
 			return "", reason
@@ -979,6 +988,8 @@ func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
 	took, late := r.markToKill()
 	wentOn, wrong := r.judgeTrace(names)
 	kinds := r.printKinds(names)
+	t := r.watch.traceCopy()
+	first := t.kills[0]
 	switch {
 	case !controllerLiveAlive(r.shim):
 		return "", fmt.Sprintf("the shim pid=%d is gone", r.shim)
@@ -986,10 +997,12 @@ func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
 		return "", fmt.Sprintf("the agent pid=%d is gone", r.agent)
 	case late != "":
 		return "", late
+	case r.scenario == "latepool" && names[first.PID] != "grower":
+		return "", fmt.Sprintf("the guard's first kill in latepool ended pid=%d, the probe's %s (executable=%q, size=%d), at a reading of %.2f%% of the limit, and not one of its fresh growers",
+			first.PID, controllerLiveName(names, first.PID), first.Executable, first.SizeBytes, controllerLivePercent(first.ReadingBytes, first.LimitBytes))
 	case wrong != "":
 		return "", wrong
 	}
-	t := r.watch.traceCopy()
 	growers, ended := 0, 0
 	for _, name := range names {
 		if name == "grower" {
@@ -1001,10 +1014,9 @@ func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
 			ended++
 		}
 	}
-	first := t.kills[0]
 	longest, _, measured := controllerLiveLongestExit(t.kills)
-	return fmt.Sprintf("the guard ended %d processes of %s, %d of its %d growers, %s, and every grower and the probe exited; its first kill pid=%d at a reading of %d (%.2f%% of the limit) came %s after its first reading at or above the mark; %d times a killed process had exited and a later reading at or above the mark rose %d MiB or more above the reading at its kill while a grower lived, and each time the guard's next kill acted on the first such reading; each kill after a kill of the same rise at a reading %d MiB or more above that kill's, while a grower lived, ended a grower; the longest of %d measured times from a kill to its process's exit was %s, against the wait of %s; and the shim pid=%d and the agent pid=%d live",
-		len(t.kills), r.scenario, ended, growers, kinds, first.PID, first.ReadingBytes, controllerLivePercent(first.ReadingBytes, first.LimitBytes),
+	return fmt.Sprintf("the guard ended %d processes of %s, %d of its %d growers, %s, and every grower and the probe exited; its first kill pid=%d, the probe's %s, at a reading of %d (%.2f%% of the limit) came %s after its first reading at or above the mark; %d times a killed process had exited and a later reading at or above the mark rose %d MiB or more above the reading at its kill while a grower lived, and each time the guard's next kill acted on the first such reading; each kill after a kill of the same rise at a reading %d MiB or more above that kill's, while a grower lived, ended a grower; the longest of %d measured times from a kill to its process's exit was %s, against the wait of %s; and the shim pid=%d and the agent pid=%d live",
+		len(t.kills), r.scenario, ended, growers, kinds, first.PID, controllerLiveName(names, first.PID), first.ReadingBytes, controllerLivePercent(first.ReadingBytes, first.LimitBytes),
 		took, wentOn, controllerLiveGrowerStep>>20, controllerLiveGrowerStep>>20, measured, longest, r.settings.Wait, r.shim, r.agent), ""
 }
 
@@ -1359,10 +1371,11 @@ func (r *controllerLiveRun) printTrace() (stop func()) {
 // made at a reading controllerLiveGrowerStep or more above that kill's while a grower lived
 // (controllerLiveGrowerAt, at the kill), ended a grower, since a grower has grown since the
 // previous kill and the guard ranks growth since that kill before size. A first kill of a rise is
-// not judged by what it ended: before it no process has grown since a kill, and where no grower
-// grew over the guard's window its order puts the largest first, a sleeping fork or the parent
-// under gVisor. A kill after one, at a reading less than that above the kill's, is not judged
-// either, since the reading may have fallen and no grower need have grown.
+// not judged here by what it ended: before it no process has grown since a kill, and where no
+// grower grew over the guard's window and none started since its reading before, its order puts
+// the largest first, a sleeping fork or the parent under gVisor; latepool's first kill of the run
+// is judged apart (awaitTraced). A kill after one, at a reading less than that above the kill's,
+// is not judged either, since the reading may have fallen and no grower need have grown.
 func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail string) {
 	t := r.watch.traceCopy()
 	for i, k := range t.kills {
@@ -1607,17 +1620,26 @@ func (r *controllerLiveRun) commandStatus() (syscall.WaitStatus, bool) {
 // AnonPages and counter among them.
 func (r *controllerLiveRun) finish() {
 	samples := r.sampler.end()
-	var highest controllerLiveSample
-	var counter uint64
-	for _, s := range samples {
-		if s.anon > highest.anon {
-			highest = s
-		}
-		counter = max(counter, s.counter)
-	}
+	highest, counter := controllerLiveHighest(samples)
 	r.out.printf("end samples=%d highest_anon_pages=%d highest_anon_share=%.2f%% highest_anon_at=%s highest_counter=%d highest_counter_share=%.2f%% kills=%d",
-		len(samples), highest.anon, controllerLivePercent(highest.anon, r.limit), controllerLiveTime(highest.at), counter,
-		controllerLivePercent(counter, r.limit), len(r.frames.kills()))
+		len(samples), highest.anon, controllerLivePercent(highest.anon, r.limit), controllerLiveTime(highest.at), counter.counter,
+		controllerLivePercent(counter.counter, r.limit), len(r.frames.kills()))
+}
+
+// printHighest prints the run's highest readings in one line (`live: highest …`), each in bytes,
+// as a share of the limit and with its time: the guard's own highest reading (controllerLiveWatch),
+// and the highest AnonPages and the highest counter of the test's own readings, which it takes
+// every 100 ms beside the guard's (controllerLiveSampler). c-gvisor-real asks that no run's highest
+// reading come within 50 MiB of the kill point, the last AnonPages before the host's kill that the
+// guard-off grow-64 Job of the same limit measures and this test cannot read, so the line carries
+// what that margin is judged from, offline. The traced scenarios print it before the verdict.
+func (r *controllerLiveRun) printHighest() {
+	seen := r.watch.snapshot()
+	anon, counter, samples := r.sampler.highest()
+	r.out.printf("highest guard_reading=%d guard_share=%.2f%% guard_at=%s anon_pages=%d anon_share=%.2f%% anon_at=%s counter=%d counter_share=%.2f%% counter_at=%s samples=%d limit=%d",
+		seen.highest, controllerLivePercent(seen.highest, r.limit), controllerLiveTime(seen.highestAt),
+		anon.anon, controllerLivePercent(anon.anon, r.limit), controllerLiveTime(anon.at),
+		counter.counter, controllerLivePercent(counter.counter, r.limit), controllerLiveTime(counter.at), samples, r.limit)
 }
 
 // controllerLiveAlive is whether pid runs: it takes a signal and is no zombie.
@@ -2285,6 +2307,29 @@ func (s *controllerLiveSampler) failed() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.err
+}
+
+// highest is the test's reading with the highest AnonPages so far and the one with the highest
+// counter (controllerLiveHighest), and how many it has taken.
+func (s *controllerLiveSampler) highest() (anon, counter controllerLiveSample, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	anon, counter = controllerLiveHighest(s.samples)
+	return anon, counter, len(s.samples)
+}
+
+// controllerLiveHighest is the sample of samples with the highest AnonPages and the one with the
+// highest counter, the earliest of each where several are equal, and zero ones for none.
+func controllerLiveHighest(samples []controllerLiveSample) (anon, counter controllerLiveSample) {
+	for _, s := range samples {
+		if s.anon > anon.anon {
+			anon = s
+		}
+		if s.counter > counter.counter {
+			counter = s
+		}
+	}
+	return anon, counter
 }
 
 // fallAfter is the first reading taken after at whose AnonPages is below reading.
