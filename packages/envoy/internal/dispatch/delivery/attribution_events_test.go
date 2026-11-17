@@ -262,7 +262,7 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 // the cycle as a deadlock.
 func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	first, second := seedAttributionIssue(t, ctx, pool, 72), seedAttributionIssue(t, ctx, pool, 73)
+	first, second := seedHeadIssue(t, ctx, pool, 72), seedHeadIssue(t, ctx, pool, 73)
 	var firstSortsFirst bool
 	if err := pool.QueryRow(ctx, `select hashtext($1) < hashtext($2)`,
 		store.IssueOwner(first).LockKey(), store.IssueOwner(second).LockKey()).Scan(&firstSortsFirst); err != nil {

@@ -59,7 +59,6 @@ func (b *twoBuilds) startNamed(t *testing.T, previous bool, application string) 
 	url := b.databaseURL(t) + "&application_name=" + application
 	if previous {
 		options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
-		options.BindsItsPort = true
 		b.a = startDispatchProcessWith(t, url, options)
 		b.a.waitHealthy(t)
 		return b.a
@@ -291,7 +290,6 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 
 	options := builds.options(nil)
 	options.Binary, options.WebDist = builds.build.path("envoy-dispatch"), builds.build.path("web")
-	options.BindsItsPort = true
 	started := time.Now()
 	builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
 	previous := builds.a
@@ -480,7 +478,6 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	startPrevious := func() *dispatchProcess {
 		options := builds.options(nil)
 		options.Binary, options.WebDist = builds.build.path("envoy-dispatch"), noDashboard
-		options.BindsItsPort = true
 		builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
 		return builds.a
 	}

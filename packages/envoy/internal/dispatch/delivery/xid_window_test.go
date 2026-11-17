@@ -64,16 +64,15 @@ func TestXidWindowAttributionMoveRecorded(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	tracer := storetest.NewXidTracer()
 	traced := storetest.Traced(t, pool, tracer, nil)
-	left := seedAttributionIssue(t, ctx, traced, 76)
-	reached := seedAttributionIssue(t, ctx, traced, 77)
+	left := seedHeadIssue(t, ctx, traced, 76)
+	reached := seedHeadIssue(t, ctx, traced, 77)
 	broker := events.NewBroker()
-	// The row is credited to the issue it leaves first, whatever an earlier run of this database
-	// left it holding, so the measured write is a move; that first write may record a move off
-	// the issue the measured one reaches, whose events are cleared again behind it.
+	// The row is credited to the issue it leaves first, so the measured write is a move. The
+	// database is this test's own clone (deliveryTestPool), so the first write creates the row and
+	// records no move on the issue the measured one reaches.
 	if err := UpsertPullRequestHead(ctx, traced, broker, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", left, err)
 	}
-	seedAttributionIssue(t, ctx, traced, 77)
 
 	report := tracer.Measure(t, traced, func() {
 		if err := UpsertPullRequestHead(storetest.MarkXid(ctx), traced, broker, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
