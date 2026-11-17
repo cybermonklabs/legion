@@ -120,8 +120,8 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	// bound on the wait for a child that still holds the pipes once the command itself has gone
 	// (procgroup.Configure, which also answers whether that stop is what ended the command).
 	killed := procgroup.Configure(cmd)
-	// cmd.Run, with the start the caller chose. A start that failed leaves cmd.Process nil, as
-	// Run's own does, so a budget already spent before the start still reads as a timeout below.
+	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
+	// the start still reads as a timeout below.
 	err := procgroup.Run(cmd, start)
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,

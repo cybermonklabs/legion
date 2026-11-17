@@ -212,9 +212,8 @@ type ServedInstall struct {
 	Body []byte
 	// Log receives the install's one line where it replaced what Dir held. Nil logs nothing.
 	Log func(format string, args ...any)
-	// Start starts the install's one run of the check (verifyServed). The pod's launcher, its
-	// container's PID 1, passes the starter of its pidGuard, which holds the run out of the
-	// launcher's reaper until the run's own wait has read its exit; nil, any other caller's, is
+	// Start starts the install's one run of the check (verifyServed). The pod's launcher passes the
+	// starter that holds the run out of its PID 1 reaper (procgroup.Starter says why); nil is
 	// cmd.Start.
 	Start procgroup.Starter
 }

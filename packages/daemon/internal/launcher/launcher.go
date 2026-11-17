@@ -109,8 +109,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	// The pid guard comes before the managers: the pod's put-back of a released workspace starts
-	// its jj and git through it (newManagers), as the test database's script starts through it
-	// below.
+	// its jj and git through it, the leak-check install its run of the check, and each manager's
+	// drain of an exited generation reaps through it (newManagers), as the test database's script
+	// starts through it below.
 	pids := &pidGuard{}
 	managers, err := newManagers(cfg, pids)
 	if err != nil {

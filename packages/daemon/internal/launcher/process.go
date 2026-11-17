@@ -90,19 +90,17 @@ func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*mana
 		case <-ctx.Done():
 			return
 		case <-signals:
-			guard.mu.Lock()
-			skip := guard.held()
+			var skip []int
 			for _, m := range managers {
 				m.mu.Lock()
 				if m.child != nil {
 					skip = append(skip, m.child.pid)
 				}
 			}
-			_, err := reapNamespace(skip...)
+			_, err := guard.reap(skip...)
 			for _, m := range managers {
 				m.mu.Unlock()
 			}
-			guard.mu.Unlock()
 			switch {
 			case err == nil:
 			case !managers[0].namespaced:

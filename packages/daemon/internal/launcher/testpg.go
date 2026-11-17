@@ -255,10 +255,13 @@ func (g *pidGuard) held() []int {
 	return pids
 }
 
-// reap is one pass of reapNamespace that leaves the guard's children to their own waits, under the
-// guard's lock for the whole pass, and answers whether any other process of the namespace is left.
-func (g *pidGuard) reap() (bool, error) {
+// reap is one pass of reapNamespace that leaves the guard's children, and skip, to their own
+// waits, under the guard's lock for the whole pass, and answers whether any other process of the
+// namespace is left. Every reap of the launcher's process runs here: the orphan reaper's passes
+// (reapOrphans, which skips each manager's generation) and the controller pod's drain of an exited
+// generation (cleanExitedGeneration).
+func (g *pidGuard) reap(skip ...int) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return reapNamespace(g.held()...)
+	return reapNamespace(append(g.held(), skip...)...)
 }

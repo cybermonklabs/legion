@@ -68,6 +68,30 @@ func pidNamespace(t *testing.T) []string {
 	return prefix
 }
 
+// pidOneHelperEnv marks the test binary re-executed as PID 1 of a PID namespace of its own by
+// runAsPIDOne: TestMain leaves such a child the environment its test hands it
+// (helperChildVariables), and each helper it runs returns at once without it.
+const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
+
+// runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
+// (pidNamespace), with only PATH and pidOneHelperEnv in its environment, fails t unless the helper
+// ran and passed, and answers what it printed.
+func runAsPIDOne(t *testing.T, helper string) string {
+	t.Helper()
+	prefix := pidNamespace(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", pidOneHelperEnv+"=1",
+		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
+	output, err := exec.Command("sudo", args...).CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
+		t.Fatalf("%s as PID 1: %v\n%s", helper, err, output)
+	}
+	return string(output)
+}
+
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()
 	prefix := pidNamespace(t)
