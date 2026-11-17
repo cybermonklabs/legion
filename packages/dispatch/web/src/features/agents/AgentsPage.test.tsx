@@ -3217,9 +3217,10 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     expect(page.createBroadcast).toHaveBeenCalledTimes(1);
 
     for (const [index, wait] of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000].entries()) {
-      await tick(wait - 1);
+      // tick's last round moves the clock 1 ms: it stands at wait - 1 here, at wait after tick(0).
+      await tick(wait - 2);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 1);
-      await tick(1);
+      await tick(0);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 2);
       // 1 + 2 + 4 + 8 + 16 s is past the send's 30 s deadline: still the server's, not refused.
       if (index === 4) {
