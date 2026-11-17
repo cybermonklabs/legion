@@ -4655,7 +4655,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   — sends this route to the known-session store, while a read that did not answer is the `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` that asks the sender to try the same route again.
   The `404 {"error":"no live session <id>"}` a sender routes around the pane on is answered only when neither store knows the id.
   The target read, the sender stamp, the connection probe and the publish share one 3.5 s budget (`sendRequestBudget`) taken from the request's own context, so a bus this listener cannot reach is answered inside the caller's attempt instead of spending it, and a publish the bus did not serve is that same 503.
-  The envelope's `sender` (on this route and the publish route alike) is stamped from the sender's interest record and session entry (`senderStamp`), each of whose cache miss is read through to its bucket (`envoy_interests`, `envoy_sessions`) within one shared `senderStampReadTimeout` (1 s) of the same budget:
+
+- The envelope's `sender` (on this route and the publish route alike) is stamped from the sender's interest record and session entry (`senderStamp`), each of whose cache miss is read through to its bucket (`envoy_interests`, `envoy_sessions`) within one shared `senderStampReadTimeout` (1 s) of the same budget:
   the stamp is only enrichment, so a read that does not answer leaves it the session id and what this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
   Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
   before it, both named the listener the session first registered through).
