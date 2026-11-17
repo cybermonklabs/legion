@@ -288,7 +288,7 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, narrowing *secrets.GitHubNarrowing) (string, error) {
 	held := false
 	for _, g := range granted {
-		if kind, _, minted, err := policy.ParseTypeSource(g.source); err != nil || !minted || kind != policy.TypeGitHubApp {
+		if secretType, _, minted, err := policy.ParseTypeSource(g.source); err != nil || !minted || secretType != policy.TypeGitHubApp {
 			continue
 		}
 		held = true
@@ -421,7 +421,7 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
-	kind, source, minted, err := policy.ParseTypeSource(g.source)
+	secretType, source, minted, err := policy.ParseTypeSource(g.source)
 	if err != nil {
 		return secrets.Minted{}, fmt.Errorf("secret %s: %w", g.name, err)
 	}
@@ -432,12 +432,12 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		}
 		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
 	}
-	if kind == policy.TypeAzureLogin && g.decision != policy.Approval {
+	if secretType == policy.TypeAzureLogin && g.decision != policy.Approval {
 		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
 	}
-	mint := m.Minters[kind]
+	mint := m.Minters[secretType]
 	if mint == nil {
-		return secrets.Minted{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, kind)
+		return secrets.Minted{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, secretType)
 	}
 	// The version the policy lists for the value this release reads, which a refusal of that
 	// value below is keyed on: a load that lists a newer one meanwhile decodes that one itself.
@@ -446,16 +446,16 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, mintRequest(g.name, kind, served, trimmedValue(value, g.name), narrowing))
+	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name), narrowing))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
-		slog.Error(MintFailedMessage, "name", g.name, "type", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
+		slog.Error(MintFailedMessage, "name", g.name, "type", secretType, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
-			m.Policy.RefuseValue(ctx, g.name, version, kind)
+			m.Policy.RefuseValue(ctx, g.name, version, secretType)
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
