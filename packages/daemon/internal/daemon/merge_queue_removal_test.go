@@ -412,6 +412,7 @@ type dequeueIssue struct {
 func newDequeueRig(t *testing.T) *dequeueRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
+	recordOutboxWrites(t, pool)
 	natsURL := workflowNATS(t)
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -756,14 +757,15 @@ func (r *dequeueRig) readsWere(t *testing.T, issue dequeueIssue, mark, want int)
 }
 
 // nothingOwed holds that the workflow wrote issue's merger no message: no line of the row's write,
-// and no row.
+// and no row of it written (outboxWrites), whether the row would still wait in the outbox or would
+// have run already, as a row whose issue has left merging runs, and is deleted, within milliseconds.
 func (r *dequeueRig) nothingOwed(t *testing.T, issue dequeueIssue) {
 	t.Helper()
 	if owed := r.logged(t, dequeueMessageOwed, issue.key); len(owed) != 0 {
 		t.Fatalf("the workflow owed %s's merger a message %v, want none", issue.key, owed)
 	}
-	if rows := r.rows(t, issue.key, record.OutboxKindMergeQueueRemoval); rows != 0 {
-		t.Fatalf("the outbox holds %d merge-queue removal rows of %s, want none", rows, issue.key)
+	if written := outboxWrites(t, r.pool, issue.key, record.OutboxKindMergeQueueRemoval); written != 0 {
+		t.Fatalf("%d merge-queue removal rows of %s were written, want none", written, issue.key)
 	}
 }
 
