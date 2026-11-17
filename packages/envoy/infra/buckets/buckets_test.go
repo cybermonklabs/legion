@@ -34,7 +34,10 @@ type world struct {
 	runningErr  map[string]error
 	hostAnswers map[string][]string
 	hostErr     map[string]error
-	calls       []string
+	// hang names the programs ("kubectl", or the ssh program) whose calls never answer until
+	// their context ends, as a connected request that stops answering does.
+	hang  map[string]bool
+	calls []string
 }
 
 const noPods = `{"items":[]}`
@@ -43,12 +46,20 @@ func clean(processes int) string {
 	return fmt.Sprintf("processes=%d\n%s\n", processes, hostQueryDone)
 }
 
-func (w *world) run(_ context.Context, name string, args ...string) ([]byte, error) {
+func (w *world) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	w.calls = append(w.calls, name+" "+strings.Join(args, " "))
+	if w.hang[name] {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if name == "kubectl" {
 		if len(args) > 2 && args[0] == "--context" {
 			args = args[2:]
 		}
+		if !strings.HasPrefix(args[0], "--request-timeout=") {
+			return nil, fmt.Errorf("kubectl called without its request timeout: %v", args)
+		}
+		args = args[1:]
 		switch {
 		case args[0] == "get" && args[1] == "pods":
 			return []byte(w.pods), nil
@@ -73,6 +84,41 @@ func (w *world) run(_ context.Context, name string, args ...string) ([]byte, err
 	}
 	w.hostAnswers[host] = answers[1:]
 	return []byte(answers[0]), nil
+}
+
+// A kubectl or ssh call that stops answering is ended at subprocessTimeout and blocks the proof,
+// so the command answers, refused, rather than waiting until the operator interrupts it. At
+// 7b262c2e0a the calls had no deadline and the command never returned.
+func TestACallThatStopsAnsweringBlocksTheProofWithinItsBound(t *testing.T) {
+	saved := subprocessTimeout
+	subprocessTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { subprocessTimeout = saved })
+	uri, _ := server(t)
+	for _, c := range []struct {
+		program string
+		args    []string
+		blocked string
+	}{
+		{"kubectl", []string{"--kube-context", "prod"}, "kubernetes prod: list pods: kubectl did not finish within 200ms"},
+		{"ssh", []string{"--host", "box-1"}, "host box-1: unreachable or the query failed: ssh did not finish within 200ms"},
+	} {
+		t.Run(c.program, func(t *testing.T) {
+			w := &world{hang: map[string]bool{c.program: true}}
+			answered := make(chan [3]string, 1)
+			go func() {
+				code, stdout, stderr := runCommand(t, w, nil, append([]string{"check", "--nats", uri}, c.args...)...)
+				answered <- [3]string{strconv.Itoa(code), stdout, stderr}
+			}()
+			select {
+			case got := <-answered:
+				if got[0] != "1" || !strings.Contains(got[2], c.blocked) {
+					t.Fatalf("check with a %s call that never answers = %s, want refused naming %q\n%s%s", c.program, got[0], c.blocked, got[1], got[2])
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatalf("check with a %s call that never answers had not returned after 15s", c.program)
+			}
+		})
+	}
 }
 
 func podJSON(namespace, name, uid, node, container string, terminated bool) string {
@@ -139,7 +185,7 @@ func TestRecreateOnceEveryWriterIsProvenEnded(t *testing.T) {
 	if !info.Created.After(before) || info.Config.MaxAge != bus.SessionBucketMaxAge {
 		t.Fatalf("the bucket after recreate: created %s (before %s), max age %s; want a new stream with %s", info.Created, before, info.Config.MaxAge, bus.SessionBucketMaxAge)
 	}
-	for _, call := range []string{"kubectl --context prod get --raw /api/v1/nodes/node-a/proxy/runningpods/", "kubectl --context prod get --raw /api/v1/nodes/node-b/proxy/runningpods/"} {
+	for _, call := range []string{"kubectl --context prod --request-timeout=45s get --raw /api/v1/nodes/node-a/proxy/runningpods/", "kubectl --context prod --request-timeout=45s get --raw /api/v1/nodes/node-b/proxy/runningpods/"} {
 		if !strings.Contains(strings.Join(w.calls, "\n"), call) {
 			t.Fatalf("the proof never read %q; calls:\n%s", call, strings.Join(w.calls, "\n"))
 		}

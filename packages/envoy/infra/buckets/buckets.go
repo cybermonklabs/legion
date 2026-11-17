@@ -344,12 +344,35 @@ func prefixed(buckets []string) []string {
 	return streams
 }
 
-// kubectl runs kubectl in context kube ("" for the current one).
+// subprocessTimeout bounds each kubectl and ssh call the proof makes: a connected API request or
+// remote command that stops answering is killed at it (exec.CommandContext) and blocks the proof,
+// rather than holding the command until the operator interrupts it. kubectl's own request timeout
+// (kubectlRequestTimeout) sits inside it, so kubectl reports its own expiry first. A test lowers it.
+var subprocessTimeout = time.Minute
+
+// kubectlRequestTimeout is kubectl's --request-timeout, within subprocessTimeout.
+const kubectlRequestTimeout = "45s"
+
+// call runs name with args through the fence's runner within subprocessTimeout, and answers a call
+// that did not finish in it as an error naming the bound.
+func (f fence) call(ctx context.Context, name string, args ...string) ([]byte, error) {
+	bounded, cancel := context.WithTimeout(ctx, subprocessTimeout)
+	defer cancel()
+	out, err := f.run(bounded, name, args...)
+	if errors.Is(bounded.Err(), context.DeadlineExceeded) {
+		return out, fmt.Errorf("%s did not finish within %s: %w", name, subprocessTimeout, bounded.Err())
+	}
+	return out, err
+}
+
+// kubectl runs kubectl in context kube ("" for the current one), with kubectl's own request
+// timeout, within subprocessTimeout.
 func (f fence) kubectl(ctx context.Context, kube string, args ...string) ([]byte, error) {
+	args = append([]string{"--request-timeout=" + kubectlRequestTimeout}, args...)
 	if kube != "" {
 		args = append([]string{"--context", kube}, args...)
 	}
-	return f.run(ctx, "kubectl", args...)
+	return f.call(ctx, "kubectl", args...)
 }
 
 // podList is the part of a Kubernetes PodList the fence reads, from the API and from a kubelet's
@@ -461,7 +484,7 @@ func hostQuery(names []string) string {
 // one process, and found none named as a writer.
 func (f fence) proveHost(ctx context.Context, out io.Writer, host string) []string {
 	names := f.writerProcesses()
-	raw, err := f.run(ctx, f.ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, hostQuery(names))
+	raw, err := f.call(ctx, f.ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, hostQuery(names))
 	if err != nil {
 		return []string{fmt.Sprintf("host %s: unreachable or the query failed: %v", host, err)}
 	}
