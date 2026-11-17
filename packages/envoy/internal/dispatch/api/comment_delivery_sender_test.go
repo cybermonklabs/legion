@@ -1231,9 +1231,10 @@ func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *test
 	var released []mentionClaim
 	var releaseErr error
 	sender := newMentionSender(lifetime, time.Hour,
-		func(context.Context, mentionSend) {
+		func(context.Context, mentionSend) (mentionSend, bool) {
 			close(started)
 			<-finish
+			return mentionSend{}, false
 		},
 		func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil },
 		func(ctx context.Context, held []mentionClaim) error {

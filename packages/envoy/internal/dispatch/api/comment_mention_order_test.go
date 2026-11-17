@@ -107,10 +107,10 @@ func (v *sessionView) PublishAsync(item contracts.Envelope) <-chan error {
 
 // order is the order s1 takes the events of ids in: every copy of one of them, in the order the
 // copies reached s1, a repeat of an event s1 already took dropped, as its host drops one by its
-// event id. mentioned maps the comment bodies of mentions to their events. ownCopies counts the
-// copies of commentEvent that reached s1 on its own channels - the listener's mentions and the
-// outbox's publishes to s1's own subject - before any dedupe.
-func (v *sessionView) order(ids []int64, mentioned map[string]int64, commentEvent int64) (taken []int64, ownCopies int) {
+// event id. mentioned maps the comment bodies of mentions to their events. own is the channel of
+// each copy of commentEvent that reached s1 on its own channels - the listener's mentions
+// (mentionChannel) and the outbox's publishes to s1's own subject - before any dedupe.
+func (v *sessionView) order(ids []int64, mentioned map[string]int64, commentEvent int64) (taken []int64, own []string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	seen := map[int64]bool{}
@@ -123,14 +123,14 @@ func (v *sessionView) order(ids []int64, mentioned map[string]int64, commentEven
 			continue
 		}
 		if id == commentEvent && (copied.channel == mentionChannel || copied.channel == contracts.LegacyAgentSubject("s1")) {
-			ownCopies++
+			own = append(own, copied.channel)
 		}
 		if !seen[id] {
 			seen[id] = true
 			taken = append(taken, id)
 		}
 	}
-	return taken, ownCopies
+	return taken, own
 }
 
 // commentEventID is the id of the comment.created event of commentID.
@@ -184,21 +184,27 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 		name string
 		// backsOff is whether the stream refuses the topic family while event 1 is first sent.
 		backsOff bool
-		// fallback is whether the mention's send is held at the listener past a claim lease, the
-		// outbox holding s1's copy of the comment as a comment_fallback_copies row, and then fails,
-		// so the row is the copy s1 takes. The issue's route is s1 then, which is the copy the
-		// outbox holds; event 1, a session's comment, goes to the topic family alone either way.
+		// fallback is whether the mention's send is held past a claim lease, the outbox holding
+		// s1's copy of the comment as a comment_fallback_copies row, and then fails while event 1
+		// still backs off, so the row is the copy s1 takes. The issue's route is s1 then, which is
+		// the copy the outbox holds; event 1, a session's comment, goes to the topic family alone
+		// either way.
 		fallback bool
+		// channel is where the comment's one copy reaches s1: the listener's mention, or the
+		// outbox's publish of the row to s1's own subject.
+		channel string
 	}{
-		{name: "the API's send of the mention, event 1's topic send backed off", backsOff: true},
-		{name: "the outbox's fallback copy of the mention, event 1's topic send backed off", backsOff: true, fallback: true},
-		{name: "control: event 1's topic send published before the comment"},
+		{name: "the API's send of the mention, event 1's topic send backed off", backsOff: true, channel: mentionChannel},
+		{name: "the outbox's fallback copy of the mention, event 1's topic send backed off", backsOff: true, fallback: true, channel: contracts.LegacyAgentSubject("s1")},
+		{name: "control: event 1's topic send published before the comment", channel: mentionChannel},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			listener, state := newMentionListener(t)
+			// The deployment publishes its events through an outbox, which runs beside the server
+			// below, so a mention's send keeps its order behind the events that outbox still owes.
 			handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
+				envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "A mention after a backed-off event", "before")
 			if tc.fallback {
@@ -254,10 +260,18 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 				})
 				ageAttempts(t, database, mention.ID)
 				awaitHeldCopy(t, database, mention.ID, contracts.LegacyAgentSubject("s1"))
-				// The send fails once it is made, so the row is the copy s1 takes.
+				// The send fails while event 1 still backs off: here its attempt is written failed,
+				// as a send that found s1 no longer live records it with no try, and a send that
+				// does reach the listener is refused. The row is the copy s1 takes.
 				state.refuseSends("s1")
+				if _, err := database.Pool.Exec(context.Background(), `
+					update comment_deliveries set state = 'failed', error = 'no live session'
+					where comment_id = $1 and state = 'pending'
+				`, mention.ID); err != nil {
+					t.Fatalf("fail the mention's attempt: %v", err)
+				}
 				release()
-				// Long enough for the fallback pass to publish the row once the send has failed.
+				// Long enough for the fallback pass to publish a row that waits on nothing.
 				time.Sleep(3 * time.Second)
 			} else if tc.backsOff {
 				// Long enough for a send that waits on nothing to land; one that waits for event 1
@@ -280,13 +294,13 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			})
 
 			taken, own := view.order([]int64{first, comment}, map[string]int64{body: comment}, comment)
-			t.Logf("s1 takes %v (want %v), the comment's copies on s1's own channels: %d (want 1)", taken, []int64{first, comment}, own)
+			t.Logf("s1 takes %v (want %v), the comment's copies on s1's own channels: %v (want one, %s)", taken, []int64{first, comment}, own, tc.channel)
 			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 			if !slices.Equal(taken, []int64{first, comment}) {
 				t.Errorf("s1 took the issue's events as %v, want %v: event 1 targets s1 through the topic family it follows, so the mention's copy comes after it", taken, []int64{first, comment})
 			}
-			if own != 1 {
-				t.Errorf("the comment reached s1 on its own channels %d times, want once", own)
+			if !slices.Equal(own, []string{tc.channel}) {
+				t.Errorf("the comment reached s1 on its own channels as %v, want once, on %s", own, tc.channel)
 			}
 		})
 	}

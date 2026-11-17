@@ -141,6 +141,10 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
 	duplicateBound time.Duration
+	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
+	// mention's send waits for the earlier events of its owner the outbox still owes its session.
+	// False is the deployment with no outbox, which every test that runs none is.
+	outboxPublishes bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -274,6 +278,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:             options.files,
 		DashboardEntry:    options.dashboardEntry,
 		BuildCommit:       options.buildCommit,
+		OutboxPublishes:   options.outboxPublishes,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

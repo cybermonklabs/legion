@@ -325,6 +325,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
+			event.outcome.owed = owedKeys(event, event.outcome.reached)
 			outcomes = append(outcomes, event.outcome)
 			switch event.outcome.state {
 			case published:
@@ -551,6 +552,49 @@ type outcome struct {
 	// falls due at the earlier of the two.
 	delay *time.Duration
 	until *time.Time
+	// owed is what the event still owes once the batch settled it (owedKeys), which the record
+	// writes to events.owed_keys, and nil for an outcome that does not read the event's list - an
+	// event a batch chose and did not read (deferPastWindow) - whose owed_keys the record leaves as
+	// it is.
+	owed []string
+}
+
+// owedKeys is what event still owes once its batch has settled it, as events.owed_keys records it
+// for the two roads a mention's copy takes outside the chains (model.MentionCopyHeldSQL): the key
+// of every destination of its list that neither an earlier batch (batchEvent.delivered) nor this
+// one (reached) reached, by destination.key, the owner's topic family spelled
+// model.OwedTopicFamily. A copy that waits on a mention is owed, and holds its key as planChains
+// holds it. A copy a comment_fallback_copies row owns (destination.heldAsARow) and a role route
+// reached with nothing to send (roleForward.skip) are not: planChains reads neither as holding
+// anything back. An event whose list ends at a recipient read that failed owes
+// model.OwedAnySession beside its list, the sessions that read would name, as planChains holds the
+// owner's later events from every session key it does not name. An event that cannot be read owes
+// nothing, as it holds nothing back. The answer is never nil: an empty list is an event that owes
+// nothing, which the record writes as such.
+func owedKeys(event *batchEvent, reached []string) []string {
+	owed := []string{}
+	if event.failure != nil {
+		return owed
+	}
+	if event.incomplete {
+		owed = append(owed, model.OwedAnySession)
+	}
+	for _, dest := range event.destinationsOf {
+		if _, ok := event.delivered[dest.subject]; ok || slices.Contains(reached, dest.subject) {
+			continue
+		}
+		if dest.heldAsARow || (dest.forward != nil && dest.forward.skip != "") {
+			continue
+		}
+		key := dest.key()
+		if key == ownerTopicKey {
+			key = model.OwedTopicFamily
+		}
+		if !slices.Contains(owed, key) {
+			owed = append(owed, key)
+		}
+	}
+	return owed
 }
 
 // settleEvent returns what event, sent by its batch, came to. An event that could not be read is
@@ -760,10 +804,11 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // holds the hold is written regardless: the destinations an event reached are added to its
 // published_destinations, and an event that reached every destination is marked published, its
 // publish_error cleared. A back-off (next_attempt_at on the database's clock, the attempt count and
-// publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until)
-// and a release are written only while the hold is holder's and has not lapsed, checked in the
-// same statement, so a process that lost the hold mid-batch schedules nothing beside the holder
-// that took it. Each row is guarded on published_at is null.
+// publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until),
+// a release, and what the event still owes (owed_keys, from outcome.owed) are written only while
+// the hold is holder's and has not lapsed, checked in the same statement, so a process that lost
+// the hold mid-batch schedules nothing beside the holder that took it and leaves the owed keys to
+// that holder's record. Each row is guarded on published_at is null.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -780,8 +825,11 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 	delays := make([]*float64, 0, len(outcomes))
 	until := make([]*time.Time, 0, len(outcomes))
 	failures := make([]*string, 0, len(outcomes))
+	owedKnown := make([]bool, 0, len(outcomes))
 	var reachedIDs []int64
 	var reachedTopics []string
+	var owedIDs []int64
+	var owed []string
 	for _, result := range outcomes {
 		ids = append(ids, result.id)
 		states = append(states, string(result.state))
@@ -802,6 +850,11 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedIDs = append(reachedIDs, result.id)
 			reachedTopics = append(reachedTopics, topic)
 		}
+		owedKnown = append(owedKnown, result.owed != nil)
+		for _, key := range result.owed {
+			owedIDs = append(owedIDs, result.id)
+			owed = append(owed, key)
+		}
 	}
 	var holds bool
 	if err := deps.lanes.statement(func() error {
@@ -811,11 +864,15 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 				select 1 from duty_holds where name = $1 and holder = $2 and expires_at > now()
 			) as mine
 		), outcome as (
-			select * from unnest($3::bigint[], $4::text[], $5::int[], $6::float8[], $7::timestamptz[], $8::text[])
-				as o(id, state, attempts, delay, until, failure)
+			select * from unnest($3::bigint[], $4::text[], $5::int[], $6::float8[], $7::timestamptz[], $8::text[], $11::bool[])
+				as o(id, state, attempts, delay, until, failure, owed_known)
 		), reached as (
 			select id, array_agg(topic order by position) as topics
 			from unnest($9::bigint[], $10::text[]) with ordinality as r(id, topic, position)
+			group by id
+		), owed as (
+			select id, array_agg(key order by position) as keys
+			from unnest($12::bigint[], $13::text[]) with ordinality as w(id, key, position)
 			group by id
 		), recorded as (
 			update events e set
@@ -837,15 +894,21 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					when o.state = 'backed_off' then now() + make_interval(secs => o.delay)
 					when o.state = 'blocked' then least(now() + make_interval(secs => o.delay), o.until)
 					else null
+				end,
+				owed_keys = case
+					when o.owed_known and (h.mine or o.state = 'published') then coalesce(w.keys, '{}')
+					else e.owed_keys
 				end
 			from outcome o
 			cross join hold h
 			left join reached r on r.id = o.id
+			left join owed w on w.id = o.id
 			where e.id = o.id and e.published_at is null
 			  and (o.state = 'published' or h.mine or r.id is not null)
 		)
 		select mine from hold
-	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics).Scan(&holds)
+	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
+			owedKnown, owedIDs, owed).Scan(&holds)
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}

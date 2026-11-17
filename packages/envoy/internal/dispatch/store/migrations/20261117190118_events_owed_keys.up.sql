@@ -1,0 +1,38 @@
+-- 20261117190118_events_owed_keys.up.sql
+--
+-- What an event still owes, as the outbox last recorded it (outbox.recordBatch, owedKeys).
+--
+--   owed_keys   the destination keys of the sends the event still owes once the outbox's last
+--               record of it was written: the destination key (outbox's destination.key) of
+--               every destination of its list that no batch has reached, a copy that waits on
+--               a mention among them, and no copy a comment_fallback_copies row owns.
+--               The owner's topic family is spelled model.OwedTopicFamily, a session's own
+--               subject and a role with no known holder by their subjects, and an event whose
+--               list ends at a recipient read that failed owes model.OwedAnySession beside
+--               them. An event the outbox cannot read, and a published one, owe nothing (an
+--               empty array). Null is an event no record has written it for yet, which owes
+--               at least its owner's topic family, the first destination of every event.
+--
+-- A copy of a mention reaches its session outside the outbox's chains - the API's own send, and
+-- the outbox's fallback pass - so it is held behind the earlier events of its owner that still
+-- owe a send its session may take (model.MentionCopyHeldSQL), and this column is what says so:
+-- only the outbox computes an event's destinations. The read walks events_outbox_owner, whose
+-- rows are the owner's unpublished events.
+--
+-- An event written before this migration carries null here, which holds every mention copy of a
+-- later comment of its owner until the outbox publishes it or records it again. No backfill
+-- writes the column: a census that rewrites a row refuses the deploy (cmd/dispatch/README.md,
+-- "Pre-deploy census").
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on events, which every write appends to and the outbox reads, and holds
+-- it only for the catalog write. It must first wait for every transaction that holds the table:
+-- the runner bounds that wait at pgmigrate.LockTimeout (five seconds) and tries again up to
+-- pgmigrate.LockTimeoutAttempts times, after which the migration fails the boot, and every append
+-- queued behind the ALTER waits as long as it does.
+--
+-- The release before this one neither reads nor writes the column, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). An event a process of that release records
+-- keeps the value this release last wrote, or null. Rolling back past this migration is an image
+-- rollback alone; the column left behind is read by nothing.
+alter table events add column owed_keys text[];

@@ -40,6 +40,32 @@ const mentionDrainTimeout = 10 * time.Second
 // for the next delivery sweep pass, and it is short because the pool closes behind it.
 const mentionReleaseTimeout = 5 * time.Second
 
+// mentionOrderRetryFirst and mentionOrderRetryMax pace a lane whose head send waits for an earlier
+// event of its comment's owner (mentionHeldForOrder): the lane is parked, with no goroutine on
+// it, and ready again after mentionOrderRetryFirst, a wait that doubles at each park of the same
+// send up to mentionOrderRetryMax. The first is short because the outbox publishes an event some
+// milliseconds after it commits, so a comment written directly after another event of its issue
+// usually waits one retry. The longest is the outbox's own wait before it reads a copy it holds
+// for a mention again (mentionPendingDelay in internal/dispatch/outbox): a lane parked through an
+// outage reads once each two seconds. Nothing bounds the parks themselves: a bound would let the
+// send pass the earlier event, and the wait ends when the outbox sends that event, as the
+// outbox's own later sends of the owner wait for it.
+const (
+	mentionOrderRetryFirst = 50 * time.Millisecond
+	mentionOrderRetryMax   = 2 * time.Second
+)
+
+// mentionOrderRetry is how long a lane parks after its head send waited for an earlier event the
+// parks'th time: mentionOrderRetryFirst doubled for each park before it, at most
+// mentionOrderRetryMax.
+func mentionOrderRetry(parks int) time.Duration {
+	delay := mentionOrderRetryFirst
+	for park := 1; park < parks && delay < mentionOrderRetryMax; park++ {
+		delay *= 2
+	}
+	return min(delay, mentionOrderRetryMax)
+}
+
 // mentionSend is one comment mention for the mention sender to deliver.
 type mentionSend struct {
 	comment model.Comment
@@ -52,14 +78,19 @@ type mentionSend struct {
 	// claimed is the claim this process holds on that row: taken when the row was committed
 	// (createCommentFor) or when a keyed repeat put an owed row back on a lane (replayComment),
 	// written again while the send waits on its lane (refreshHeldClaims), given back when the
-	// sender refuses the send (enqueue), and taken over by the send itself when its lane starts
-	// it (claimCommentDeliveryAttempt).
+	// sender refuses the send (enqueue), taken over by the send itself when its lane starts it
+	// (claimCommentDeliveryAttempt), and handed back to the lane by a send that waited for an
+	// earlier event of its comment's owner (mentionHeldForOrder), which renewed it.
 	claimed time.Time
 	// takeover paces this send's tries at a listener being replaced. The send its comment queues
 	// carries the pacing that comment's own resolution started (resolveThroughTakeover), so the
 	// resolution and the send share one window; a send a keyed repeat queues starts a window of
-	// its own, as its resolution is the sender's own (replayComment).
+	// its own, as its resolution is the sender's own (replayComment), and so does a send that
+	// waited for an earlier event, which made no try.
 	takeover takeoverRetry
+	// parks is how many times this send has waited for an earlier event of its comment's owner,
+	// which paces its lane's next try (mentionOrderRetry).
+	parks int
 }
 
 // mentionKey names one attempt: its comment, its target and its number.
@@ -114,6 +145,15 @@ func (m mentionSend) lane() string {
 // once the lane's send lands, and publishes should that send fail (publishFallbackCopies in
 // internal/dispatch/outbox).
 //
+// A send also waits for every earlier event of its comment's owner that the outbox still owes the
+// mentioned session (mentionHeldForOrder, model.MentionCopyHeldSQL), so the session takes the
+// comment after them. Such a send makes no try: it hands its claim back, goes back to the head of
+// its lane, and the lane parks, with no goroutine on it and its later sends behind it, until
+// mentionOrderRetry of that send's parks has passed (park, unpark). A parked lane sends nothing,
+// so it counts against mentionSendLanes no more than a lane with nothing queued, and its sends stay
+// among the queued ones maxQueuedMentionSends bounds, their claims written again as every queued
+// send's are.
+//
 // The statements the sender makes go through its three functions, which register binds to the
 // server: send (sendCommentMention), refresh (refreshMentionClaims) and release
 // (releaseMentionClaims).
@@ -135,7 +175,9 @@ type mentionSender struct {
 	lifetime context.Context
 	ctx      context.Context
 	cancel   context.CancelFunc
-	send     func(context.Context, mentionSend)
+	// send makes one send, and answers the send to take up again and true when the send waited
+	// for an earlier event of its comment's owner and made no try (sendCommentMention).
+	send func(context.Context, mentionSend) (mentionSend, bool)
 	// refresh writes the claims of the sends that have not started again and answers what it
 	// wrote; release gives claims back.
 	refresh func(context.Context, []mentionClaim) ([]mentionClaim, error)
@@ -148,8 +190,11 @@ type mentionSender struct {
 
 	mu sync.Mutex
 	// lanes holds each lane's sends that have not started. A key is present while its lane is
-	// served or waiting in ready, even once its last send has started.
+	// served, waiting in ready or parked, even once its last send has started.
 	lanes map[string][]mentionSend
+	// parked is the lanes whose head send waits for an earlier event of its comment's owner: no
+	// goroutine serves one, and none is in ready, until unpark.
+	parked map[string]struct{}
 	// ready is the lanes waiting for a goroutine, in the order they started waiting.
 	ready []string
 	// serving is how many goroutines serve lanes.
@@ -178,7 +223,7 @@ func (s *server) startMentionSender() *mentionSender {
 func newMentionSender(
 	lifetime context.Context,
 	claimRefresh time.Duration,
-	send func(context.Context, mentionSend),
+	send func(context.Context, mentionSend) (mentionSend, bool),
 	refresh func(context.Context, []mentionClaim) ([]mentionClaim, error),
 	release func(context.Context, []mentionClaim) error,
 ) *mentionSender {
@@ -187,7 +232,8 @@ func newMentionSender(
 	m := &mentionSender{
 		lifetime: lifetime, ctx: ctx, cancel: cancel, send: send, refresh: refresh, release: release,
 		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, lanes: map[string][]mentionSend{},
-		claims: map[mentionKey]time.Time{}, held: map[mentionKey]struct{}{}, stopped: make(chan struct{}),
+		parked: map[string]struct{}{}, claims: map[mentionKey]time.Time{}, held: map[mentionKey]struct{}{},
+		stopped: make(chan struct{}),
 	}
 	m.done.Add(1)
 	go m.keepClaims()
@@ -261,7 +307,9 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 	return true, false
 }
 
-// serve sends lane's queue, then any lane waiting for a goroutine, until none waits.
+// serve sends lane's queue, then any lane waiting for a goroutine, until none waits. A send that
+// waited for an earlier event of its comment's owner parks its lane (park), and the goroutine
+// moves on to a lane that waits.
 func (m *mentionSender) serve(lane string) {
 	defer m.done.Done()
 	var finished mentionKey
@@ -271,15 +319,19 @@ func (m *mentionSender) serve(lane string) {
 			return
 		}
 		lane, finished = next, item.key()
-		m.send(m.ctx, item)
+		if again, waits := m.send(m.ctx, item); waits {
+			m.park(lane, again)
+			finished = mentionKey{}
+		}
 	}
 }
 
 // next releases finished, the attempt whose send the goroutine serving lane has just finished (the
 // zero key when it has finished none), and takes that goroutine's next send and the lane it now
 // serves. The send it takes leaves the claims this sender writes again: from here its attempt's
-// claim is the send's own. ok is false when the goroutine is done: the sender stopped, or no lane
-// has a send left for it.
+// claim is the send's own. A lane parked since its last send is no longer this goroutine's, which
+// takes a lane that waits instead. ok is false when the goroutine is done: the sender stopped, or
+// no lane has a send left for it.
 func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -288,17 +340,21 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 		m.serving--
 		return mentionSend{}, "", false
 	}
-	if len(m.lanes[lane]) > 0 && len(m.ready) > 0 {
+	_, parked := m.parked[lane]
+	if !parked && len(m.lanes[lane]) > 0 && len(m.ready) > 0 {
 		m.ready = append(m.ready, lane)
 		lane, m.ready = m.ready[0], m.ready[1:]
 	}
-	for len(m.lanes[lane]) == 0 {
-		delete(m.lanes, lane)
+	for parked || len(m.lanes[lane]) == 0 {
+		if !parked {
+			delete(m.lanes, lane)
+		}
 		if len(m.ready) == 0 {
 			m.serving--
 			return mentionSend{}, "", false
 		}
-		lane, m.ready = m.ready[0], m.ready[1:]
+		// A lane in ready is never parked: only unpark puts a parked lane there.
+		lane, m.ready, parked = m.ready[0], m.ready[1:], false
 	}
 	item := m.lanes[lane][0]
 	m.lanes[lane][0] = mentionSend{}
@@ -306,6 +362,42 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 	item.claimed = m.claims[item.key()]
 	delete(m.claims, item.key())
 	return item, lane, true
+}
+
+// park puts item, the send lane just started that waited for an earlier event of its comment's
+// owner, back at the head of lane under the claim it holds now, which this sender writes again
+// from here as it writes every queued send's (refreshHeldClaims), and leaves lane with no
+// goroutine until mentionOrderRetry of item's parks has passed (unpark). Its attempt stays held,
+// so a keyed repeat of the comment queues it no second time (queueLocked). A park once the sender
+// stopped still records the claim, which the drain gives back with the rest (wait).
+func (m *mentionSender) park(lane string, item mentionSend) {
+	item.parks++
+	delay := mentionOrderRetry(item.parks)
+	m.mu.Lock()
+	m.claims[item.key()] = item.claimed
+	m.lanes[lane] = append([]mentionSend{item}, m.lanes[lane]...)
+	m.parked[lane] = struct{}{}
+	m.mu.Unlock()
+	time.AfterFunc(delay, func() { m.unpark(lane) })
+}
+
+// unpark makes a parked lane ready again: a goroutine starts on it when fewer than
+// mentionSendLanes run, and otherwise it waits in ready behind the lanes already there. Once the
+// sender stopped it starts nothing, the lane's claims being the drain's to give back (wait).
+func (m *mentionSender) unpark(lane string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.parked, lane)
+	if m.stoppedLocked() {
+		return
+	}
+	if m.serving < mentionSendLanes {
+		m.serving++
+		m.done.Add(1)
+		go m.serve(lane)
+		return
+	}
+	m.ready = append(m.ready, lane)
 }
 
 // keepClaims writes the claims of the sends waiting on the lanes again every claimRefresh
@@ -406,15 +498,23 @@ func (m *mentionSender) wait() {
 // attempt the send was queued for, to the claim this sender holds on it, so it takes that
 // attempt over rather than opening another, and to the take-over pacing the send carries. A
 // failure is logged and leaves the attempt pending, as deliverBroadcast's does, for the delivery
-// sweep once the claim it took lapses.
-func (s *server) sendCommentMention(ctx context.Context, item mentionSend) {
-	if _, err := s.deliverResolvedCommentMention(
+// sweep once the claim it took lapses. A send that waited for an earlier event of its comment's
+// owner (mentionHeldForOrder) answers the send to take up again - the same attempt, under the
+// claim that send renewed, with a take-over window of its own - which its lane parks (park).
+func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (mentionSend, bool) {
+	_, err := s.deliverResolvedCommentMention(
 		store.WithTransactionTracking(ctx), item.comment, item.created, item.mention, item.actor,
 		attemptClaim{attempt: item.attempt, claimedAt: item.claimed}, item.takeover,
-	); err != nil {
+	)
+	if held, ok := errors.AsType[*mentionHeldForOrder](err); ok {
+		item.claimed, item.takeover = held.claim.claimedAt, s.newTakeoverRetry()
+		return item, true
+	}
+	if err != nil {
 		slog.Error("dispatch: comment mention delivery",
 			"comment", item.comment.ID, "target", item.mention.Target, "error", err)
 	}
+	return mentionSend{}, false
 }
 
 // mentionClaimArrays is claims as the four arrays the sender's statements match a comment_deliveries

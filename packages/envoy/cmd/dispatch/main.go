@@ -1686,6 +1686,10 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	// The outbox runs, and publishes the events, whenever NATS is configured (outbox.New beside
+	// the server, under natsClient): a mention's send then keeps its order behind the events the
+	// outbox still owes (api.Deps.OutboxPublishes).
+	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
 }
