@@ -125,13 +125,15 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 	return exitUsageError
 }
 
-// requireSecretBrokerURL refuses a non-https broker URL for the secret forms unless the broker's
-// host is loopback (127.0.0.0/8, ::1 or localhost). openSession calls it, so every secret form is
-// gated while the exec form and the machine and pod paths (the other newClient callers) keep
-// today's behaviour, and a form's -h, which never opens a session, is unaffected. The secret forms
-// trust the broker's settings to steer a write, so a plain-http broker a network attacker can answer
-// is refused before the first call; an unparseable URL is left to the client, which names it.
-func requireSecretBrokerURL(raw string) error {
+// requireTrustedBrokerURL refuses a non-https broker URL unless the broker's host is loopback
+// (127.0.0.0/8, ::1 or localhost), for the two paths that act on the broker's settings: the
+// secret forms, which openSession gates, and the machine source, which reads the audience its
+// identity token is minted for (machineSource). The exec form's other calls and the pod paths
+// keep today's behaviour, and a form's -h, which never opens a session, is unaffected. The
+// settings steer a write and choose whom the machine's identity token is good for, so a
+// plain-http broker a network attacker can answer is refused before the first call; an
+// unparseable URL is left to the client, which names it.
+func requireTrustedBrokerURL(raw string) error {
 	base := brokerclient.WithoutTrailingSlashes(raw)
 	if base == "" {
 		return nil
@@ -143,7 +145,7 @@ func requireSecretBrokerURL(raw string) error {
 	if u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): the secret forms trust the broker's settings, so a plain-http broker on the network is refused", redact.URL(base))}
+	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): this client acts on the broker's settings (the store a secret form writes, the audience of the identity token this machine mints), so a plain-http broker on the network is refused", redact.URL(base))}
 }
 
 // isLoopbackHost reports whether host is "localhost" (any case) or a loopback IP literal
@@ -764,7 +766,7 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 	if base == "" {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
 	}
-	if err := requireSecretBrokerURL(base); err != nil {
+	if err := requireTrustedBrokerURL(base); err != nil {
 		return nil, err
 	}
 	broker := newClient(base)

@@ -54,11 +54,10 @@ func roleMessageRows(t *testing.T, pool *store.Pool, issue string) []record.Outb
 	return held
 }
 
-// The holder applies a kill as one fact under the kill's own identity, so the same report sent
-// twice is one fact and one note; the note's row, run by the outbox's role message executor, is
-// published once, to the role topic of the role whose connection reported the kill, and to no
-// other topic.
-func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testing.T) {
+// boundMemoryGuardKills is a holder bound to a workflow over an isolated outbox pool that records
+// memoryGuardIssue in testing, and the claim token of that issue's tester.
+func boundMemoryGuardKills(t *testing.T) (*store.Pool, *memoryGuardKills, claim.Token) {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -75,6 +74,27 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	return pool, kills, token
+}
+
+// appliedMemoryGuardKills is how many facts the launcher source applied under eventID.
+func appliedMemoryGuardKills(t *testing.T, pool *store.Pool, eventID string) int {
+	t.Helper()
+	var applied int
+	if err := pool.QueryRow(context.Background(), `select count(*) from processed_events where source = 'launcher' and event_id = $1`,
+		eventID).Scan(&applied); err != nil {
+		t.Fatalf("read the applied facts: %v", err)
+	}
+	return applied
+}
+
+// The holder applies a kill as one fact under the kill's own identity, so the same report sent
+// twice is one fact and one note; the note's row, run by the outbox's role message executor, is
+// published once, to the role topic of the role whose connection reported the kill, and to no
+// other topic.
+func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testing.T) {
+	ctx := context.Background()
+	pool, kills, token := boundMemoryGuardKills(t)
 	report := memoryGuardKill()
 
 	for range 2 {
@@ -83,14 +103,10 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 		}
 	}
 
-	var applied int
-	if err := pool.QueryRow(ctx, `select count(*) from processed_events where source = 'launcher' and event_id = $1`,
-		"memory-guard-kill:guard-7f3a:3").Scan(&applied); err != nil {
-		t.Fatalf("read the applied facts: %v", err)
-	}
-	if applied != 1 {
+	if applied := appliedMemoryGuardKills(t, pool, "memory-guard-kill:guard-7f3a:3"); applied != 1 {
 		t.Fatalf("the kill is applied as %d facts under memory-guard-kill:guard-7f3a:3, want one", applied)
 	}
+
 	rows := roleMessageRows(t, pool, memoryGuardIssue)
 	if len(rows) != 1 {
 		t.Fatalf("the outbox holds %d role messages of %s, want the one note of the one kill", len(rows), memoryGuardIssue)
@@ -123,6 +139,37 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	}
 	if rows := roleMessageRows(t, pool, memoryGuardIssue); len(rows) != 2 {
 		t.Fatalf("the outbox holds %d role messages of %s after the guard's next kill, want two", len(rows), memoryGuardIssue)
+	}
+}
+
+// A kill the pod's kernel made reaches the workflow through the same holder, with its cause: it is
+// applied once under the same identity a guard's kill is, memory-guard-kill:<guard>:<sequence>,
+// and the role is told the kernel's note rather than the guard's.
+func TestMemoryGuardAKernelKillReachesIntakeWithItsCauseUnderTheSameEventID(t *testing.T) {
+	ctx := context.Background()
+	pool, kills, token := boundMemoryGuardKills(t)
+	report := memoryGuardKill()
+	report.Cause = shimwire.MemoryKillCauseKernel
+
+	if err := kills.killed(ctx, memoryGuardIssue, token, "pod-209", report); err != nil {
+		t.Fatalf("apply the kill: %v", err)
+	}
+	if applied := appliedMemoryGuardKills(t, pool, "memory-guard-kill:guard-7f3a:3"); applied != 1 {
+		t.Fatalf("the kernel's kill is applied as %d facts under memory-guard-kill:guard-7f3a:3, want one", applied)
+	}
+	rows := roleMessageRows(t, pool, memoryGuardIssue)
+	if len(rows) != 1 {
+		t.Fatalf("the outbox holds %d role messages of %s, want the one note of the one kill", len(rows), memoryGuardIssue)
+	}
+	publisher := &outboxPublisher{}
+	runner := &outbox{log: quietLogger(), notices: publisher}
+	if err := runner.execute(ctx, rows[0]); err != nil {
+		t.Fatalf("run the note's row: %v", err)
+	}
+	message := publisher.publishes()[0].message
+	if !strings.HasPrefix(message, "The pod's kernel stopped one of your processes because the pod ran out of memory: `python3` (pid 4242)") ||
+		strings.Contains(message, "SIGKILL") {
+		t.Fatalf("the note is %q, want the kernel's note of `python3` (pid 4242), not the guard's", message)
 	}
 }
 
