@@ -70,25 +70,30 @@ shared role state behind all of this are `src/registration-state.ts`, beside the
 other `src/` modules: a queued task acts through a handle that refuses every step past the
 task's deadline, or once its session is no longer the open session.
 
-A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, which
-agent-infra's sessions workload sets once t-e-32 renames its `RoleEnv` (it sets
-`AGENT_SESSION_ROLE` today). While the session's own records name no other role, every
-pass that registers the session — its start, each session event and each heartbeat — claims that
-role for it outright, last-claim-wins, under the session's own credential, which the listener
-holds to that very session. A holder that is another session is stale or wrong, such as an
-evicted pod's session the registry still lists as live for some minutes, so the role comes back
-to the live session at its next registration. The claim writes its transcript record once: a
-later claim the newest record already names writes none. A move the model makes with
-`envoy_role_set` is a record of its own, which no pass undoes. Without the variable no pass
-claims a role the session's records do not name.
+A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
+session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
+--session-id`). agent-infra's sessions workload sets both once t-e-32 lands (it sets
+`AGENT_SESSION_ROLE` today). While the named session's own records name no other role, every
+pass that registers it — its start, each session event and each heartbeat — claims that role for
+it outright, last-claim-wins, under the session's own credential, which the listener holds to
+that very session. A holder that is another session is stale or wrong, such as an evicted pod's
+session the registry still lists as live for some minutes, so the role comes back to the live
+session at its next registration. The claim writes its transcript record once: a later claim the
+newest record already names writes none. A move the model makes with `envoy_role_set` is a
+record of its own, which no pass undoes. Without the variables no pass claims a role the
+session's records do not name.
 
-When it loads, the extension takes the role into a slot every extension instance of the process
-reads, and leaves the variable set to the empty string, which names no role. A delete would not
-do: it reaches `process.env` alone, and the C environment the process started with keeps the
-value, which a child Oh My Pi starts in a PTY begins from. The empty string lies over that value
-in every environment built from `Bun.env`, the PTY's and the plain shell's, so an `omp` an agent
-starts inside the pod claims none of the pod's roles. A `Bun.spawn` that names no `env` still
-hands a child the value, since it passes the environment the process started with.
+The role is that one session's alone. Nothing takes the variables out of the environment, so
+every process the agent starts in the pod gets them, such as an `omp -p` review, whether it was
+started from the shell's environment or by a `Bun.spawn` that names no `env`; so does every other
+extension instance of the process, a `task` subagent's or an ACP host's other session. Each of
+those is another session id, as is an id a `/new` or a `/fork` mints, and none of them claims the
+role by any path: not at a registration, not from a fork's record of the claim, and not through
+`envoy_role_set` or the Legion plugin's claim, which refuse it. A launch that names the role and
+no session names no holder, and no session claims it. The first time a session the process
+decides for is refused the role, the process logs one line, and only once:
+`envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this session <id> claims
+nothing`.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
