@@ -22,10 +22,11 @@ import (
 
 // GET /v1/sessions lists every live session the session bucket holds, even one whose id the
 // interest bucket refuses as a key (bus.ErrRefused): the listing joins the interest copy
-// (store.Registry.Cached) and reads no key of the bucket, so there is no read to refuse and the
-// session is listed with no roles and its topics as the empty list, never null, which a client
-// iterating the row's topics would have to check for. A null decodes into a nil []string and an
-// empty list into a non-nil one, so the rows' topics are held non-nil as well as empty. An
+// (store.Registry.Cached) and reads no key of the bucket, so there is no read to refuse, and a
+// session the copy holds no record for, as each one here, is listed with no roles and its topics
+// as the empty list, never null, which a client iterating the row's topics would have to check
+// for. A null decodes into a nil []string and an empty list into a non-nil one, so the rows'
+// topics are held non-nil as well as empty. An
 // earlier listener stored session ids past this one's write bound (testnats.LegacyKeys); the
 // unreadable one, 3,987 bytes in envoy_sessions, is past envoy_interests' 3,974-byte get bound,
 // so a read of its interest record would be bus.ErrTooLarge, while the readable one, 3,969 bytes,

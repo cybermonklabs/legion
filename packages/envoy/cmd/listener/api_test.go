@@ -4629,10 +4629,9 @@ func rowSessionID(t *testing.T, row map[string]json.RawMessage) string {
 // seedNoInterestRecordSession registers the session the fixture's after row describes, and writes
 // no interest record for it: a session with no record is the state under test, so the entry is
 // written here rather than through setupSessionsTest's live list, which would give it that
-// helper's own machine id and directory instead of the fixture's. The row's delivery is seeded
-// with the rest of the entry, since the listener reports the delivery the entry carries. Its
-// state is not: the listener judges it when it answers, from the registration time Put stamps
-// (session.StateOf), so a session written here is live.
+// helper's own machine id and directory instead of the fixture's. Every field of the entry is
+// seeded from the row, but not its state: the listener judges it when it answers, from the
+// registration time Put stamps (session.StateOf), so a session written here is live.
 func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry, row map[string]json.RawMessage) string {
 	t.Helper()
 	var listed session.ListEntry

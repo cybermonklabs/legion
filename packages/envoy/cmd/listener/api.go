@@ -1709,9 +1709,10 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, d *lis
 // An id the session bucket refuses as a key is the caller's to fix, the 413 or 400
 // writeBusUnavailable writes. A live session whose id only the interest bucket refuses (a legacy id
 // past envoy_interests' get bound that envoy_sessions still serves, or one outside nats.go's key
-// alphabet) is answered 200 with topics as the empty list, as GET /v1/sessions lists it, and
-// logged at WARN: Dispatch reads a 413 or 400 here as a session that cannot exist. A read that
-// did not answer — the session's, its interest record's, or the claims view's (sessionInfoFor),
+// alphabet) and that this listener's interest copy holds no record for is answered 200 with
+// topics as the empty list, as GET /v1/sessions lists it, and logged at WARN: Dispatch reads a
+// 413 or 400 here as a session that cannot exist. A read that did not answer — the session's,
+// its interest record's, or the claims view's (sessionInfoFor),
 // all within sendRequestBudget — is a 503 to retry and never a row: neither a session a caller
 // may take for ended, nor one whose empty topics and roles it may take for a session that holds
 // none. An interest record this build cannot decode is the 500 writeInterestRecordUnreadable
