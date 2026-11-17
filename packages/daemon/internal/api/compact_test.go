@@ -132,9 +132,13 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 
 // The compaction carries the instructions that make Oh My Pi's summary text: without them it
 // archives the history onto snapcompact's images, which a worker resumed on them needs a vision
-// model to read back (shimwire.Compact). They keep the sentence that names a reviewer's entry
-// (reviewround.EntryLabel) word for word, since a reviewer whose summary dropped it writes no
-// entry. The bound it is asked within is the operation's own ten minutes, not the RPC timeout.
+// model to read back (shimwire.Compact). They keep word for word the newest sentence that names a
+// reviewer's entry by a number (reviewround.EntryLabel), since a reviewer whose summary dropped it
+// writes no entry. A task can end with `Review entry: none.` after one that named the round's
+// number, and `none` does not change the entry of the round, so the sentence kept is the newest
+// that names a number and not merely the newest that starts with the label; the instruction that
+// asked for the newest would keep the `none`. The bound it is asked within is the operation's own
+// ten minutes, not the RPC timeout.
 func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -152,9 +156,14 @@ func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	if !strings.Contains(asked[0].CustomInstructions, "Write the summary as text.") {
 		t.Errorf("the compaction's instructions are %q, want them to ask for a text summary", asked[0].CustomInstructions)
 	}
-	keepsTheEntry := "Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given."
+	keepsTheEntry := "Keep word for word the newest sentence in the tasks you were given that starts \"" + reviewround.EntryLabel + ":\" and names a number."
 	if !strings.Contains(asked[0].CustomInstructions, keepsTheEntry) {
 		t.Errorf("the compaction's instructions are %q, want them to keep %q", asked[0].CustomInstructions, keepsTheEntry)
+	}
+	// The instruction before this one asked for the newest sentence that starts with the label,
+	// which a later `Review entry: none.` is.
+	if old := "Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given."; strings.Contains(asked[0].CustomInstructions, old) {
+		t.Errorf("the compaction's instructions still say %q: after a task naming entry 3 and a later one ending %q, that keeps the `none`", old, reviewround.Sentences("", 0))
 	}
 	if asked[0].Bound != runtime.CompactTimeout {
 		t.Errorf("the compaction was bounded at %s, want the operation's own %s", asked[0].Bound, runtime.CompactTimeout)

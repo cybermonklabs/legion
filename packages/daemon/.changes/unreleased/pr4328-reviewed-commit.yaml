@@ -4,7 +4,7 @@ body: |-
   reviews read, so the reviewer reads the difference from that commit to the head instead of the
   whole change. The last two sentences of each task a reviewer is sent are always the daemon's,
   in every phase and whatever queued the task: ` Last reviewed commit: <sha>.`, or
-  ` Last reviewed commit: none.` in a round no review of the reviewer's own recorded one for, and
+  ` Last reviewed commit: none.` where the task names no commit, and
   then ` Review entry: <n>.`, the round it is for, or ` Review entry: none.`. The reviewer writes
   that number into its review's Legion footer (`"entry":"<n>"`), and only an approval or a request
   for changes of the reviewer's own session whose footer names the entry that stands moves the

@@ -77,10 +77,13 @@ const (
 // instructions (shimwire.Compact), and a worker resumed on images needs a vision model to read
 // its own past, so these instructions are what make the summary text.
 //
-// They keep the sentence that names a reviewer's entry (reviewround.EntryLabel) word for word:
-// the reviewer copies the number of the newest one its session was given into the footer of its
-// review, and a summary that dropped it leaves the reviewer no entry to write, so its review
-// moves no commit (workflow's review).
+// They keep word for word the newest sentence that names a reviewer's entry by a number
+// (reviewround.EntryLabel): the reviewer copies that number into the footer of its review, and a
+// summary that dropped it leaves the reviewer no entry to write, so its review moves no commit
+// (workflow's review). A task can end with `Review entry: none.` after one that named the round's
+// number (supervise's Delivery.message, workflow's namingTheReviewRound), and `none` does not
+// change the entry of the round, so the sentence kept is the newest that names a number, not the
+// newest that starts with the label.
 //
 // A model reads it, so it follows ASD-STE100: one instruction per sentence, active voice, and no
 // word with a second reading.
@@ -88,7 +91,7 @@ const compactInstructions = "Write the summary as text. " +
 	"Keep what the rest of this task needs: the task itself, the decisions you made, the files you changed, " +
 	"the commands you ran and what they answered, and what is still open. " +
 	"Keep every issue key, file path, branch name, commit id and pull request number you still need. " +
-	"Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given. " +
+	"Keep word for word the newest sentence in the tasks you were given that starts \"" + reviewround.EntryLabel + ":\" and names a number. " +
 	"Drop the full text of a file you read and the full output of a command that passed."
 
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors
