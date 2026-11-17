@@ -93,6 +93,9 @@ type testServerOptions struct {
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
+	// documents wraps the document service the server's routes call, for a test that watches what
+	// a route hands one of its operations; nil serves the service itself.
+	documents func(*docs.Service) docs.API
 	// agentStream is the live agent conversation relay; nil is the deployment with no NATS,
 	// where an agent view is refused STREAM_UNAVAILABLE.
 	agentStream agentstream.Source
@@ -233,6 +236,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
+	var documentAPI docs.API = documentService
+	if options.documents != nil {
+		documentAPI = options.documents(documentService)
+	}
 	seedPeople(t, database, "alice", "bob")
 	var people identity.Identity = headerIdentity(database)
 	if options.identity != nil {
@@ -246,7 +253,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		NewIssueLabel:          options.newIssueLabel,
 		NewIssueSession:        options.newIssueSession,
 		ServerURL:              testServerURL,
-		Docs:                   documentService,
+		Docs:                   documentAPI,
 		Events:                 broker,
 		App:                    options.app,
 		GitHubAPIBase:          options.githubAPIBase,
