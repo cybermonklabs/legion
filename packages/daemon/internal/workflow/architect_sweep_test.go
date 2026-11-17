@@ -15,12 +15,12 @@ import (
 
 // The reach of the entry sweep over a root's own architect, read from the record alone
 // (ArchitectAtWork). It is wider than record.AtWork at admitted — a root whose design gate has
-// opened is still a root whose own architect is the only role of its tree at work — and it is no
-// wider than the work the rule has to send: a root past admitted under its own power has a phase
-// role that owns its work, the hand-over row of this generation is what says a root stands in the
-// run a hand-over carried it into (record.Store.HandedOverRoot), and the one entry such a root's
-// architect is owed past admitted is a resume's its claim was not given, which the admission
-// pass that resumed the root can have promoted past admitted.
+// opened is still a root whose own architect is the only role at work on the root itself — and it
+// is no wider than the work the rule has to send: a root past admitted under its own power has a
+// phase role that owns its work, the hand-over row of this generation is what says a root stands
+// in the run a hand-over carried it into (record.Store.HandedOverRoot), and the one entry such a
+// root's architect is owed past admitted is a resume's its claim was not given, which the
+// admission pass that resumed the root can have promoted past admitted.
 //
 // The design gate is read by none of it, which the two admitted cases below hold: one with no
 // gate row at all and one whose gate stands open are both inside the rule.
@@ -62,7 +62,7 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 		},
 		{
 			name: "a root at admitted whose gate has opened", issue: root("LEGION-802", phase.Admitted, 1), gateOpen: true, reaches: true,
-			why: "record.AtWork answers false here, and the architect is still the only role of the tree at work: this is the measured defect",
+			why: "record.AtWork answers false here, and the architect is still the only role at work on the root itself: this is the measured defect",
 		},
 		{
 			name: "a child at admitted", issue: func() record.Issue {
@@ -70,7 +70,7 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 				parent := "LEGION-800"
 				child.Tree, child.Parent = "LEGION-800", &parent
 				return child
-			}(), why: "a child's own sub-architect claim is outside the rule: no daemon start creates one",
+			}(), why: "a child's own sub-architect claim is outside the rule: its start carries no task and raises no entry",
 		},
 		{
 			name:  "a root a hand-over carried in, in the phase that came with it",
@@ -179,7 +179,7 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 		},
 		{
 			name: "no claim and a start still queued", run: record.RoleRun{Queued: queued}, entry: rowEntry, pending: true,
-			why: "that row is the start, and a second would start two architects of one tree",
+			why: "that row is the start, and a second would start the root's one architect claim again",
 		},
 		{
 			name: "a claim still starting", run: record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateLaunching}}, entry: rowEntry,

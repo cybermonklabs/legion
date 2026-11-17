@@ -235,7 +235,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // came back and would hold that pod from idle release the whole time; the bound caps what such an
 // early end costs. A row that climbed its backoff instead would try again every 64 s and log a
 // Warn at every attempt from the seventh (settle), about once a minute for as long as the turn is
-// away; this wait is routine (parkedWakeWait), so its attempts stay at debug. A turn already past
+// away; this wait is routine (routineWaiting), so its attempts stay at debug. A turn already past
 // when the row settles — the row ran a moment before the machine's own timer — is the backoff's
 // (retry). A released claim this call resumes answers no turn, even where the resume parks: the
 // row waits on its backoff, and its next attempt reads the park.
@@ -313,26 +313,17 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 // parkedWait is the wait of a delivery row whose role's launch the wake pacing has parked over no
 // process (wakeForDelivery's turn), with text as its message: the row runs again at turn, or
 // parkedWakeBound from now when that comes first, and reads the claim again then. A turn already
-// past is the backoff's, as every moment a wait.Until names is once it has passed (retry).
+// past is the backoff's, as every moment a wait.Until names is once it has passed (retry). The
+// wait is routine (routineWaiting): the launch's turn ends it, or an earlier end of the park the
+// row's next read finds, so nobody has to act on it, and a park of an hour would otherwise be
+// logged as a warning at every attempt from the seventh (waitWarnAttempts).
 func (r *outbox) parkedWait(turn time.Time, text string) error {
 	at := r.now().UTC().Add(parkedWakeBound)
 	if turn.Before(at) {
 		at = turn
 	}
-	return parkedWakeWait{err: wait.Until(at, text)}
+	return routineWaiting{err: wait.Until(at, text)}
 }
-
-// parkedWakeWait is the wait parkedWait builds. It is routine (routineWait): the launch's turn
-// ends it, or an earlier end of the park the row's next read finds, so nobody has to act on it,
-// and a park of an hour would otherwise be logged as a warning at every attempt from the seventh
-// (waitWarnAttempts).
-type parkedWakeWait struct{ err error }
-
-func (p parkedWakeWait) Error() string { return p.err.Error() }
-
-func (p parkedWakeWait) Unwrap() error { return p.err }
-
-func (parkedWakeWait) Routine() bool { return true }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
 // worker of the pod's open phase (workflow.OpenPhaseRole). An architect gets none — nothing of
