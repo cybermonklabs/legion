@@ -112,7 +112,7 @@ const (
 	// sweep starts must stand to raise the episode number (riseAt).
 	volumeRisePoints = 5.0
 	// volumeFaultLimit is how many recovered panics in a row stop the trimmer for the life of
-	// the launcher process.
+	// the launcher process, a row that only a sweep run to its end ends (fault, tick).
 	volumeFaultLimit = 3
 	// volumeSettingsWait is how often a trimmer with no settings it can run asks for settings
 	// again (awaitSettings). It is no part of how fast an operator's change reaches the pod:
@@ -246,7 +246,7 @@ type trimmer struct {
 	// how many the bound on a report's list left out, which that report says.
 	refusedReads   []string
 	refusedDropped int
-	consecutive    int // recovered panics in a row, which volumeFaultLimit bounds
+	consecutive    int // recovered panics since the last sweep run to its end (fault), which volumeFaultLimit bounds
 	held           *shimwire.LauncherVolumeReport
 	walk           walkResult // the last size walk, which a report between walks carries
 	// said is the last standing state the trimmer wrote, which says keeps so that a state it is
@@ -339,13 +339,14 @@ const (
 // recovered (fault), and the last report.
 //
 // A panic of the work is a fault as tick's are (fault): written with its stack, kept for the next
-// report and counted toward volumeFaultLimit in a row. The work then starts again from its wait
-// for settings, unless that fault is the third in a row, which switches the trimmer off as tick's
-// third does. A panic of the last report ends the trimmer, written with its stack, and that
-// report is not tried again: nothing is left to carry a fault to the daemon or to count it
-// toward, and a report that panicked once can panic again. Each step runs inside contain and
-// none inside a deferred handler, so a panic raised while another is being handled, in tick's
-// handler or in the counting here, meets a recovery too and never escapes.
+// report and added to the same row of faults, toward volumeFaultLimit, which only a sweep run to
+// its end ends (tick). The work then starts again from its wait for settings, unless that fault is
+// the third in a row, which switches the trimmer off as tick's third does. A panic of the last
+// report ends the trimmer, written with its stack, and that report is not tried again: nothing is
+// left to carry a fault to the daemon or to count it toward, and a report that panicked once can
+// panic again. Each step runs inside contain and none inside a deferred handler, so a panic raised
+// while another is being handled, in tick's handler or in the counting here, meets a recovery too
+// and never escapes.
 func (t *trimmer) run(ctx context.Context) {
 	ending := trimGoesOn
 	for ending == trimGoesOn {
@@ -554,16 +555,23 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // PID 1 of the roles container: its panic takes the container down and costs six live roles their
 // round, over a cache sweep that nothing depends on. The fault is logged with its stack and
 // carried into the next report, and three in a row stop the trimmer until the launcher process
-// restarts (fault, run), which no other ending of the four does. The rest of the goroutine, this
-// recovery's own handler included, is run's to contain (run).
+// restarts (fault, run), which no other ending of the four does. A row is ended only by a tick
+// whose sweep, and its report where it makes one, runs to its end; a tick that only reads the
+// volume, in a pause or below the high mark, neither ends it nor adds to it (fault). A panic
+// leaves restart as the settings of this tick set it, so a tick that changed interval_seconds and
+// then panicked still has the interval clock made again at the new period. The rest of the
+// goroutine, this recovery's own handler included, is run's to contain (run).
 func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim) (restart bool, ending trimEnding) {
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
-			t.consecutive = 0
 			return
 		}
-		restart, ending = false, trimGoesOn
+		// restart is left as it stands: true only where these settings changed interval_seconds
+		// before the panic, and inForce already holds the new period then, so a clock kept at the
+		// old one would tick at a period no settings name any more for the rest of the loop. Every
+		// other restart is set by a return, which a panic never reaches.
+		ending = trimGoesOn
 		if t.fault(recovered, debug.Stack()) {
 			ending = trimOff
 		}
@@ -628,6 +636,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		// of up to a minute (sizes) from a trimmer that is off. What the settings do to a held
 		// report is the wait's (awaitSettings).
 		t.logf(volumeTrimLog + "the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it")
+		t.consecutive = 0 // a sweep run to its end, which makes no report: it ends a row of faults, as below
 		return false, trimWaits
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
@@ -659,6 +668,14 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	} else {
 		t.carryRefused(out.refused)
 	}
+	// The sweep, and its report where it made one, ran to their end, which ends a row of faults
+	// (fault), and nothing else does: a tick that only read the volume, in a pause, below the high
+	// mark or with a reading that failed, returned above without touching the row. So a volume
+	// that is healthy between two faults ends the row only through a sweep run to its end, and a
+	// trimmer whose every report panics, with the pause after each sweep, still switches itself
+	// off at its third panic and tries its switched-off report (R1: "after three in a row it stays
+	// off and sends one last report saying so").
+	t.consecutive = 0
 	return true, trimGoesOn
 }
 
@@ -777,6 +794,13 @@ func (t *trimmer) riseAt(start float64) {
 // is volumeFaultLimit in a row: tick then ends the interval loop with trimOff, and run switches
 // the trimmer off and makes its last report (switchOff), outside any deferred handler. It counts
 // the panic before it writes its line, so a panic of the line leaves the fault counted (run).
+//
+// The row counts the ticks that do the trimmer's work. Every panic of that work adds to it, one
+// tick recovered and one run contained alike, and only a tick whose sweep, and its report where it
+// makes one, runs to its end ends it (tick). A tick that only reads the volume, in a pause or
+// below the high mark, does neither, so a trimmer whose every report panics, with the pause after
+// each sweep, switches itself off at its third panic instead of faulting for the life of the pod
+// with nothing beyond its log to show for it.
 //
 // Only the newest shimwire.VolumeReportFaults stacks are kept, and what they displace is
 // counted (keepNewestFaults).
@@ -963,9 +987,10 @@ type sweepOutcome struct {
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
-	// handle is open from the moment the listing reads this directory until the sweep ends,
-	// whichever way it ends (closeDirs), and every read of an entry listed here goes through
-	// it, as does the deleter's own removal: the child is handed this very descriptor.
+	// handle is open from the moment the listing opens this directory until the sweep ends,
+	// whichever way it ends, a panic in the listing included (closeDirs, sweep), and every read
+	// of an entry listed here goes through it, as does the deleter's own removal: the child is
+	// handed this very descriptor.
 	handle *dirHandle
 }
 
@@ -1044,11 +1069,16 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		return out
 	}
 
-	entries, dirs, cut, bySettings := t.list(ctx, used, cutoff, deadline, passed)
-	// The handles the listing opened are closed when the sweep ends, whichever way it ends: the
-	// sweep runs in the launcher process, which is PID 1 of the roles container for the life of
-	// the pod, and a descriptor leaked once an interval is a descriptor leaked for ever.
-	defer closeDirs(dirs)
+	// The handles the listing opens are closed when the sweep ends, whichever way it ends, a panic
+	// in the listing itself included (tick and run recover one): dirs is the sweep's before the
+	// listing begins, and the listing adds each handle to it the moment the handle is opened
+	// (list, listShard), so no handle is ever open outside it. The closure reads dirs as it stands
+	// when the sweep ends. The sweep runs in the launcher process, which is PID 1 of the roles
+	// container for the life of the pod, and a descriptor leaked once an interval is a descriptor
+	// leaked for ever.
+	var dirs []*sweepDir
+	defer func() { closeDirs(dirs) }()
+	entries, cut, bySettings := t.list(ctx, used, cutoff, deadline, passed, &dirs)
 	if cut != "" {
 		out.reason = cut
 		out.settingsStop = bySettings
@@ -1312,8 +1342,9 @@ func (p *passedOver) said() {
 }
 
 // list is every eligible entry of every root, in root order, with the newest modification time
-// anywhere in it, and every directory it opened to read them (sweepDir), which the sweep closes
-// when it ends. cut is the reason the listing was ended early, and bySettings that it was the
+// anywhere in it. Every directory it opens to read them (sweepDir) is added to dirs the moment it
+// is opened, and the sweep closes them when it ends, however the listing ends, a panic in it
+// included (sweep). cut is the reason the listing was ended early, and bySettings that it was the
 // settings that ended it; a cut listing ends the sweep, since the three things that cut it —
 // the budget, a stop and the container's stop — are each a reason to stop deleting as well.
 // They are asked before each entry, before each directory of an entry's walk and before each
@@ -1327,7 +1358,7 @@ func (p *passedOver) said() {
 // entry listed carries the directory it came from, which the delete loop asks the held question
 // of again on each refreshed reading. An entry passed over is said through passed, which names
 // the first of each root's and counts the rest (passedOver).
-func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline time.Time, passed *passedOver) (entries []sweepEntry, dirs []*sweepDir, cut string, bySettings bool) {
+func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline time.Time, passed *passedOver, dirs *[]*sweepDir) (entries []sweepEntry, cut string, bySettings bool) {
 	halt := t.haltCheck(ctx, deadline)
 	add := func(from *sweepDir, name string, isDir bool) bool {
 		if reason, settingsStop := t.halted(ctx, deadline); reason != "" {
@@ -1408,7 +1439,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 			continue
 		}
 		root := &sweepDir{root: reclaimable, handle: handle}
-		dirs = append(dirs, root) // closed when the sweep ends, whichever way it ends
+		*dirs = append(*dirs, root) // closed when the sweep ends, whichever way it ends
 		if used.Holds(reclaimable.Path) {
 			// A process holds a descriptor open on the root itself, which is what a `flock` on
 			// it holds and what the rendered bun install takes on its cache root for the length
@@ -1450,17 +1481,16 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 				if !child.IsDir() || !isGoCacheShard(child.Name()) {
 					continue
 				}
-				listed, shard := t.listShard(root, child.Name())
+				listed, shard := t.listShard(root, child.Name(), dirs)
 				if shard == nil {
 					continue
 				}
-				dirs = append(dirs, shard) // closed when the sweep ends, as the roots are
 				for _, name := range listed {
 					if !strings.HasSuffix(name.Name(), "-a") && !strings.HasSuffix(name.Name(), "-d") {
 						continue
 					}
 					if !add(shard, name.Name(), name.IsDir()) {
-						return entries, dirs, cut, bySettings
+						return entries, cut, bySettings
 					}
 				}
 				continue
@@ -1470,11 +1500,11 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 				}
 			}
 			if !add(root, child.Name(), child.IsDir()) {
-				return entries, dirs, cut, bySettings
+				return entries, cut, bySettings
 			}
 		}
 	}
-	return entries, dirs, cut, bySettings
+	return entries, cut, bySettings
 }
 
 // isGoCacheShard is whether name is a shard directory's name as Go names its 256: two lowercase
@@ -1519,8 +1549,10 @@ func goCacheNotShards(children []fs.DirEntry) int {
 // listShard opens one shard directory of a Go build cache root and reads its names, through the
 // root's own handle: the shard is a directory of the root, so the sweep reaches it as it reaches
 // an entry, by its name in a directory it holds open. The handle it returns is the one every
-// read and the removal of the entries below will go through, and the sweep closes it with the
-// rest; a shard that cannot be opened or read is skipped and reported, and no name comes back.
+// read and the removal of the entries below will go through. It is added to dirs the moment it is
+// opened, before its names are read, so the sweep closes it with the rest however the listing
+// ends, a panic in this read included (sweep); a shard that cannot be opened or read is skipped
+// and reported, and no name comes back.
 //
 // A shard the listing meets is a directory as the root's own listing read it (child.IsDir, which
 // is the directory's own record of the kind and no symbolic link). One a role swapped for a link
@@ -1532,7 +1564,7 @@ func goCacheNotShards(children []fs.DirEntry) int {
 // `0f -> zz/sh` beside `zz -> /bait` left the sweep listing and deleting in /bait/sh — measured
 // against this very code on 2026-11-12, kernel 4.19.0-gvisor, under go1.27.3
 // (TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped; INFRA-2009, review 7).
-func (t *trimmer) listShard(root *sweepDir, name string) ([]fs.DirEntry, *sweepDir) {
+func (t *trimmer) listShard(root *sweepDir, name string, dirs *[]*sweepDir) ([]fs.DirEntry, *sweepDir) {
 	path := root.pathOf(name)
 	handle, err := root.handle.open(name)
 	if err != nil {
@@ -1540,6 +1572,7 @@ func (t *trimmer) listShard(root *sweepDir, name string) ([]fs.DirEntry, *sweepD
 		return nil, nil
 	}
 	shard := &sweepDir{root: root.root, shard: name, handle: handle}
+	*dirs = append(*dirs, shard) // closed when the sweep ends, as the roots are
 	children, err := handle.ReadDir()
 	if err != nil {
 		t.logf(volumeTrimLog+"the shard %q could not be listed and is skipped: %v", path, err)
@@ -1548,7 +1581,7 @@ func (t *trimmer) listShard(root *sweepDir, name string) ([]fs.DirEntry, *sweepD
 	return children, shard
 }
 
-// closeDirs closes every handle the listing opened.
+// closeDirs closes every handle the listing opened (sweep).
 func closeDirs(dirs []*sweepDir) {
 	for _, dir := range dirs {
 		_ = dir.handle.Close()

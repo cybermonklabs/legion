@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -6255,6 +6256,221 @@ func TestASweepWhoseWalkPanicsLeavesItsRefusedReadsForTheNextReport(t *testing.T
 	}
 }
 
+// "Three in a row" counts the ticks that do the trimmer's work (R1, as the architect read it in
+// round 35 of INFRA-2009): a tick that only reads the volume, in a pause or below the high mark,
+// neither ends the row nor adds to it, and only a tick whose sweep and report run to their end
+// ends it. So a trimmer whose every report panics, with the ten-interval pause after each sweep,
+// switches itself off at its third panic and tries its switched-off report. The case's sweeps free
+// nothing, so each one pauses, and the send of each sweep's report panics, where the send of the
+// switched-off report goes through. At c3874f11 every interval of a pause ended the row, so each
+// fault was the first in a row and the trimmer faulted after every sweep for the life of the pod,
+// with nothing beyond its log to show for it.
+func TestATrimmerWhoseEveryReportPanicsSwitchesItselfOffAcrossItsPauses(t *testing.T) {
+	const fell = "the connection fell over sending the report"
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if !report.SwitchedOff {
+			panic(fell)
+		}
+		return f.send(report)
+	}
+	_, done := f.start(tr)
+
+	// Written out rather than read off volumeFaultLimit, as the case of three faults with nothing
+	// between them counts them (TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff).
+	const faultLimit = 3
+	for sweep := 1; sweep < faultLimit; sweep++ {
+		f.tick("the sweep ended")
+		for range volumeQuietIntervals {
+			f.tick("no sweep for another")
+		}
+		if row := fmt.Sprintf("(%d in a row)", sweep); f.logged(row) != 1 {
+			t.Fatalf("after sweep %d and its pause the trimmer wrote %q, want the panic of each report so far counted, this one %s: an interval of the pause only reads the volume, which neither ends the row nor adds to it",
+				sweep, f.linesWritten(), row)
+		}
+		if f.logged("off for the life of this launcher process") != 0 {
+			t.Fatalf("the trimmer switched itself off after %d panics, want it on until the %dth", sweep, faultLimit)
+		}
+	}
+	f.tick("the sweep ended")
+	awaitClosed(t, done, "the trimmer's loop to return once the third report's panic switched it off and its last report was sent")
+
+	if off := f.logged("off for the life of this launcher process"); off != 1 {
+		t.Errorf("the trimmer wrote %d lines saying it is off, want one", off)
+	}
+	reports := f.reports()
+	if len(reports) != 1 {
+		t.Fatalf("the trimmer sent %d reports, want the one last report of a trimmer that switched itself off", len(reports))
+	}
+	report := reports[0]
+	switch {
+	case !report.SwitchedOff:
+		t.Error("the last report does not say the trimmer switched itself off")
+	case !strings.Contains(report.StopReason, fmt.Sprintf("%d panics in a row", faultLimit)):
+		t.Errorf("the last report's stop reason is %q, want the %d panics in a row that stopped it", report.StopReason, faultLimit)
+	case len(report.Faults) != faultLimit || report.FaultsOmitted != 0:
+		t.Errorf("the last report carries the faults %q and counts %d more, want the %d panics of the reports, each given back to the trimmer by the report whose send panicked (deliver)",
+			report.Faults, report.FaultsOmitted, faultLimit)
+	}
+	for at, fault := range report.Faults {
+		if !strings.HasPrefix(fault, fell) {
+			t.Errorf("fault %d of the last report is %q, want the panic %q", at+1, fault, fell)
+		}
+	}
+	if err := report.Validate(); err != nil {
+		t.Errorf("the daemon would refuse the last report: %v", err)
+	}
+}
+
+// A panic in the interval whose settings changed interval_seconds leaves the interval clock at the
+// new period: tick puts the new settings in force before it reads the volume, and the loop makes
+// its clock again whenever the period changed (intervals). The case's first interval runs at
+// thirty seconds; the daemon then shortens the period to ten, and the reading of the interval that
+// takes the change falls over. The trimmer must ask for no clock but those two periods, stop the
+// thirty-second one and take its next interval on the ten-second one. At c3874f11 tick's recovery
+// cleared restart, so the loop went on ticking every thirty seconds under settings that said ten.
+func TestAPanicInTheIntervalThatChangedThePeriodLeavesTheClockAtTheNewOne(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	f.setOnRead(func(call int) {
+		if call == 2 {
+			panic("the volume reader fell over in the interval that changed the period")
+		}
+	})
+	f.useVolume(steady(50))
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+	f.tick("nothing to sweep")
+
+	started := settingsInterval(*trimSettings())
+	shorter := *trimSettings()
+	shorter.IntervalSeconds = 10
+	f.setSettings(&shorter)
+	offerTickOf(t, f, started, "the clock of the period it started with")
+	testwait.Eventually(t, "the panic of the interval that changed the period to be recovered", func() bool {
+		return f.logged("recovered a panic") == 1
+	})
+	if f.logged("new settings:") != 1 {
+		t.Fatalf("the trimmer wrote %q, want the interval that panicked to have put the new settings in force first", f.linesWritten())
+	}
+	testwait.Eventually(t, "the trimmer to wait on a clock of the new period", func() bool {
+		_, running := f.ticks.live(settingsInterval(shorter))
+		return running
+	})
+	if _, running := f.ticks.live(started); running {
+		t.Errorf("the trimmer still runs its clock of %s, want it stopped once the settings say %s", started, settingsInterval(shorter))
+	}
+
+	f.tick("nothing to sweep") // on the clock of the period the settings in force name (f.interval)
+	var asked []time.Duration
+	for at := range f.ticks.count() {
+		asked = append(asked, f.ticks.periodOf(at))
+	}
+	if want := []time.Duration{started, settingsInterval(shorter)}; !slices.Equal(asked, want) {
+		t.Errorf("the trimmer asked for clocks of %v, want %v: the one it started with, and one of the new period once the interval that changed it panicked", asked, want)
+	}
+}
+
+// A panic inside the listing or inside a walk measurement closes every directory handle the work
+// opened, as the handles' comments say they are closed whichever way the work ends (sweepDir,
+// sweep, measureTarget): the trimmer runs in the process that is PID 1 of the roles container for
+// the life of the pod, and it recovers such a panic and goes on (tick), so a handle a panic left
+// open is a descriptor leaked for as long as the pod lives. Each subtest counts the descriptors of
+// this process open under the volume before the interval and after its panic is recovered, with
+// the collector off between the two so that a leaked handle's finaliser cannot close it out of
+// sight, and reads at the panic that handles were open. At c3874f11 the listing's handles were
+// closed by the sweep only once the listing had returned them, and the handle on a target's child
+// only once its measurement had returned.
+func TestAPanicInTheListingOrAWalkMeasurementLeavesNoHandleOpen(t *testing.T) {
+	// realRoot is the volume root of f as a descriptor's link names it.
+	realRoot := func(t *testing.T, f *trimFixture) string {
+		t.Helper()
+		root, err := filepath.EvalSymlinks(f.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	t.Run("a panic inside the listing", func(t *testing.T) {
+		f := newTrimFixture(t, 2)
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		root := realRoot(t, f)
+		tmp, shard := filepath.Join(root, "scratch", "tmp"), filepath.Join(root, "go", "build", "00")
+		// The settings read the listing makes before each entry falls over at the first entry of
+		// a Go build cache shard, once the listing holds the shard open, the cache root above it
+		// and $TMPDIR's root before them.
+		var atPanic []string
+		tr.trimming = func() bool {
+			if atPanic == nil {
+				if open := descriptorsUnder(t, root); slices.Contains(open, shard) {
+					atPanic = open
+					panic("the settings read fell over while the listing held a shard open")
+				}
+			}
+			return f.trimming()
+		}
+		defer debug.SetGCPercent(debug.SetGCPercent(-1))
+		before := descriptorsUnder(t, root)
+		set := *trimSettings()
+		if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+			t.Fatalf("the interval whose listing panicked ended the trimmer (%v), want it passed over", ending)
+		}
+		if !slices.Contains(atPanic, tmp) || f.logged("recovered a panic") != 1 {
+			t.Fatalf("at the panic the listing held %q open and the trimmer wrote %q, want $TMPDIR's root %s and the shard %s open and the panic recovered", atPanic, f.linesWritten(), tmp, shard)
+		}
+		if left := descriptorsUnder(t, root); !slices.Equal(left, before) {
+			t.Errorf("after the listing's panic was recovered the trimmer holds %q open under the volume, want %q as before the interval: the listing's handles are the sweep's to close however the listing ends", left, before)
+		}
+	})
+
+	t.Run("a panic inside a walk measurement", func(t *testing.T) {
+		f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and reports, and its report walks
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		root := realRoot(t, f)
+		scratch := filepath.Join(root, "scratch")
+		// The first target is a directory under /scratch, which the walk measures first, so the
+		// measurement is given a handle opened on /scratch for it alone.
+		var atPanic []string
+		tr.measure = func(context.Context, *dirHandle, string, time.Time) measured {
+			atPanic = descriptorsUnder(t, root)
+			panic("the walk fell over measuring a target")
+		}
+		defer debug.SetGCPercent(debug.SetGCPercent(-1))
+		before := descriptorsUnder(t, root)
+		set := *trimSettings()
+		if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+			t.Fatalf("the interval whose walk panicked ended the trimmer (%v), want it passed over", ending)
+		}
+		if !slices.Contains(atPanic, scratch) || f.logged("recovered a panic") != 1 {
+			t.Fatalf("at the panic the walk held %q open and the trimmer wrote %q, want the handle on %s the measurement was given open and the panic recovered", atPanic, f.linesWritten(), scratch)
+		}
+		if left := descriptorsUnder(t, root); !slices.Equal(left, before) {
+			t.Errorf("after the walk's panic was recovered the trimmer holds %q open under the volume, want %q as before the interval: a measurement's handle is closed however the measurement ends", left, before)
+		}
+	})
+}
+
+// descriptorsUnder is every descriptor of this process open on root or on a path under it, by the
+// path each names (openDescriptors), sorted.
+func descriptorsUnder(t *testing.T, root string) []string {
+	t.Helper()
+	var under []string
+	for _, target := range openDescriptors(t) {
+		if target == root || strings.HasPrefix(target, root+"/") {
+			under = append(under, target)
+		}
+	}
+	slices.Sort(under)
+	return under
+}
+
 // A report that replaces a held one is bounded twice — where it is made, and again with the held
 // report's faults and refused reads in it — and the pod's log says once what it leaves out, with
 // the counts of the report as it is held: a person counting those lines counts reports. The case
@@ -6358,13 +6574,16 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	const planted = 4000
 	plantWalkTargets(t, filepath.Join(f.root, "scratch"), planted)
 	f.useVolume(func(call int) volumeUsage {
-		if call <= 8 {
-			return usageAt(50) // the eight interval readings of the fault phase, below the high mark
+		switch {
+		case call == 5:
+			return usageAt(90) // the interval between the second fault and the third, which sweeps
+		case call <= 10:
+			return usageAt(50) // the rest of the fault phase, below the high mark, and that sweep's last reading
 		}
 		return usageAt(90) // the interval that sweeps, and every reading the sweep takes
 	})
 	f.setOnRead(func(call int) {
-		if call <= 7 && call%2 == 1 {
+		if call == 1 || call == 3 || call == 7 || call == 9 {
 			panic(fmt.Sprintf("the volume reader fell over on call %d", call))
 		}
 	})
@@ -6383,12 +6602,18 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	}
 	f.start(tr)
 
-	// Four faults, never three in a row: a clean interval between them resets the count, so the
-	// trimmer goes on and the sweep's report is what carries them.
+	// Four faults, never three in a row: the sweep between the second and the third runs to its
+	// end, which ends the row (tick), where an interval that only reads the volume below the high
+	// mark neither ends it nor adds to it. That sweep deletes the one entry of each root and leaves
+	// the volume under the low mark, so it sends no report and the faults stay with the trimmer;
+	// the trimmer goes on, and the last sweep's report is what carries all four.
 	const faults = 4
-	for range faults {
+	for fault := range faults {
 		f.tick("recovered a panic")
 		f.tick("nothing to sweep")
+		if fault == 1 {
+			f.tick("the sweep ended")
+		}
 	}
 	f.tick("the sweep ended")
 	testwait.Eventually(t, "the report of the sweep that followed the faults", func() bool { return len(f.reports()) == 1 })

@@ -503,8 +503,8 @@ func TestEveryListOfAReportOneEntryPastItsCapIsCutToItAndOneAtItIsCarriedWhole(t
 // faults of TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes reach the
 // report as three and one counted either way — and what the trimmer holds is read here, after
 // each fault. The faults are not in a row, as that case's four are not, since three in a row
-// switch the trimmer off: tick clears the run on every interval that recovers nothing, which is
-// done here by hand. Three is written out rather than read off shimwire.VolumeReportFaults.
+// switch the trimmer off: a sweep run to its end ends the row (tick), which is done here by hand
+// between each two. Three is written out rather than read off shimwire.VolumeReportFaults.
 func TestTheTrimmerHoldsTheNewestThreeFaultsAndCountsAFourth(t *testing.T) {
 	const most = 3
 	tr := newTrimFixture(t, 0).trimmer()
@@ -512,7 +512,7 @@ func TestTheTrimmerHoldsTheNewestThreeFaultsAndCountsAFourth(t *testing.T) {
 		if off := tr.fault(fmt.Sprintf("panic %d", at), []byte("the stack")); off {
 			t.Fatalf("fault %d switched the trimmer off, want it on: no two of them are in a row", at+1)
 		}
-		tr.consecutive = 0 // the clean interval between two faults (tick)
+		tr.consecutive = 0 // the sweep run to its end between two faults, which ends the row (tick)
 		held, dropped := min(at+1, most), max(0, at+1-most)
 		if len(tr.faults) != held || tr.faultsDropped != dropped {
 			t.Errorf("after %d faults the trimmer holds %d and counts %d more, want %d held and %d counted", at+1, len(tr.faults), tr.faultsDropped, held, dropped)

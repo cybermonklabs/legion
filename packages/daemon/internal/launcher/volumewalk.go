@@ -283,19 +283,13 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 			w.cut(&result, targets[from:])
 			return result
 		}
-		dir, name, err := w.openTarget(handle, target)
+		one, err := w.measureTarget(ctx, handle, target, result.At)
 		if err != nil {
 			// The child the target lies in is gone, or is no longer a directory this walk may
 			// read through the handle it holds on the root. It is named as unmeasured and the
 			// walk goes on, as a directory it cannot list is (targets).
 			result.miss(w.pathOf(target), unreadReason(err))
 			continue
-		}
-		one := w.measure(ctx, dir, name, result.At)
-		if dir != handle {
-			// The handle on the child, which is this target's alone; the root's own is the
-			// walk's and is closed when the walk ends.
-			_ = dir.Close()
 		}
 		if one.cut {
 			w.cut(&result, targets[from:])
@@ -318,19 +312,23 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 	return result
 }
 
-// openTarget is the handle on the directory that holds one target and the target's own name in
-// it, which is all a measurement is given: the root's handle for a target that is an immediate
-// child of the root, and a handle opened on that child by its single name for one a level
-// below. The caller closes the handle when it is not the root's own.
-func (w sizeWalk) openTarget(handle *dirHandle, target walkTarget) (*dirHandle, string, error) {
+// measureTarget is one measurement (measure) of one target, which is given the handle on the
+// directory that holds the target and the target's own name in it and nothing else: the root's
+// handle for a target that is an immediate child of the root, and a handle opened on that child by
+// its single name for one a level below. That handle is this measurement's alone and is closed
+// when the measurement ends, whichever way it ends, a panic in it included (tick and run recover
+// one); the root's own is the walk's and is closed when the walk ends (run). err is the open of
+// the child, which measured nothing.
+func (w sizeWalk) measureTarget(ctx context.Context, root *dirHandle, target walkTarget, at time.Time) (measured, error) {
 	if target.inside == "" {
-		return handle, target.child, nil
+		return w.measure(ctx, root, target.child, at), nil
 	}
-	child, err := handle.open(target.child)
+	child, err := root.open(target.child)
 	if err != nil {
-		return nil, "", err
+		return measured{}, err
 	}
-	return child, target.inside, nil
+	defer func() { _ = child.Close() }()
+	return w.measure(ctx, child, target.inside, at), nil
 }
 
 // pathOf is the absolute path of one target, which the report's sizes and its missing list are
@@ -480,10 +478,11 @@ func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget,
 
 // readChild is every name in one immediate child of the volume root, read through a handle
 // opened on that child by its own name in the root the walk holds open: the one read no element
-// of the path is resolved by. The handle is this listing's alone and is closed with it; a
-// measurement opens the child again when it reaches a target under it (openTarget), because the
-// walk holds names and not handles between the listing and the measurements (walkTarget). The
-// names are read in batches, asking ctx between them, as the root's are (readBatched).
+// of the path is resolved by. The handle is this listing's alone and is closed with it, however
+// the listing ends; a measurement opens the child again when it reaches a target under it
+// (measureTarget), because the walk holds names and not handles between the listing and the
+// measurements (walkTarget). The names are read in batches, asking ctx between them, as the
+// root's are (readBatched).
 func (w sizeWalk) readChild(ctx context.Context, handle *dirHandle, name string) (entries []os.DirEntry, cut bool, err error) {
 	child, err := handle.open(name)
 	if err != nil {
@@ -596,8 +595,8 @@ func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time)
 // it, so a safe descent is a descent that keeps its ancestors open. What bounds the descriptors
 // is the depth it descends to: the target and volumeWalkDepth levels below it, sixty-five levels
 // of three, beside the handle run holds on the volume root and, for a target two levels down,
-// the one openTarget holds on its child, so 199 descriptors at most. What bounds its time is the
-// walk's own budget, asked before each entry; a level the kernel refuses for any reason is a
+// the one measureTarget holds on its child, so 199 descriptors at most. What bounds its time is
+// the walk's own budget, asked before each entry; a level the kernel refuses for any reason is a
 // refused reading like any other and the walk goes on.
 func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day time.Time, out *measured) {
 	under, err := dir.open(name)
