@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bustest"
 )
 
 // bucketConfig is the config the listener creates each bucket with when it finds none
@@ -183,6 +184,14 @@ func runSeed(args []string) error {
 		return err
 	}
 	defer conn.Close()
+	if *create {
+		// A copied bucket is created only on a server a fixture provisioned, through a connection
+		// marked as the fixture's (internal/bustest): no command creates one elsewhere.
+		if err := bustest.RequireFixtureServer(js); err != nil {
+			return err
+		}
+		bustest.Fixture(conn)
+	}
 	for _, kind := range list {
 		config, _ := bucketConfig(kind)
 		if kind == "sessions" && *ttl > 0 {
@@ -190,6 +199,12 @@ func runSeed(args []string) error {
 		}
 		if *create {
 			_, err = bus.EnsureKeyValue(conn, js, config)
+			if err == nil && kind == "sessions" && *ttl > 0 {
+				// A fixture provisions the bucket with the listener's 5 minutes first, and an
+				// existing bucket keeps its age, so -ttl sets it on the bucket there is: no
+				// listener runs yet on this fixture's server.
+				_, err = bus.SetKeyValueMaxAge(js, config.Bucket, *ttl)
+			}
 		} else {
 			_, err = js.KeyValue(config.Bucket)
 		}
