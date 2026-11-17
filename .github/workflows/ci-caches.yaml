@@ -133,7 +133,7 @@ jobs:
       # /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi,
       # uv, container images and a Postgres service, and the build cache this entry holds is what
       # a compile leaves.
-      # typecheck's darwin vet is the one build left out: its darwin objects, about 1 GB of build
+      # typecheck's darwin vet is the one build left out: its darwin objects, about 1.65 GB of build
       # cache on a devbox, would ride in an entry every job that restores go-daemon downloads, and
       # the step builds them in about two minutes (run 43990864191).
       - name: Build what typecheck and daemon-go build of the daemon module

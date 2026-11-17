@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from go_build_tags import constraint_names, go_files, go_skips_dir, is_tag, platforms
+from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
 from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -384,17 +384,6 @@ class Session:
                 reads += [Read(rel(info["GOMOD"]), why), Read(rel(str(Path(info["GOMOD"]).parent / "go.sum")), why)]
             self.cache[key] = [r for r in reads if r.glob]
         return self.cache[key]
-
-
-def decode_stream(text: str) -> list:
-    decoder, index, out = json.JSONDecoder(), 0, []
-    while True:
-        while index < len(text) and text[index].isspace():
-            index += 1
-        if index >= len(text):
-            return out
-        obj, index = decoder.raw_decode(text, index)
-        out.append(obj)
 
 
 def rel(path: str) -> str | None:
@@ -2446,8 +2435,9 @@ def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
     """The files go list compiles in `dirs`, each named as a directory and not as a pattern, under
     the Run's platform and `tags`, as repository paths: GoFiles, CgoFiles and the test files,
     which a vet reads too. A directory whose every file is excluded is still listed, with an
-    error -e keeps."""
-    args = ["list", "-e", "-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles"]
+    error -e keeps. `-find` lists the directories alone and resolves no import, as
+    go_build_tags.compiled does: the file lists are the same, and the rule reads nothing else."""
+    args = ["list", "-e", "-find", "-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles"]
     if tags:
         args += ["-tags", tags]
     patterns = [f"./{Path(d).relative_to(r.workdir).as_posix()}" if d != r.workdir else "." for d in dirs]

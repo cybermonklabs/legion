@@ -128,6 +128,19 @@ def go_files(directory: Path):
             yield path
 
 
+def decode_stream(text: str) -> list:
+    """The JSON objects of a stream such as `go list -json` prints, one after another. The one
+    copy: ci_filter_coverage.py's closure engine and rule 20 read it from here too."""
+    decoder, index, out = json.JSONDecoder(), 0, []
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            return out
+        obj, index = decoder.raw_decode(text, index)
+        out.append(obj)
+
+
 def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list) -> set:
     """The files, as resolved paths, that go list compiles in `dirs` (each named as a directory,
     not a pattern, so a directory whose every file is excluded is still listed) for goos/goarch
@@ -137,14 +150,8 @@ def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list) -> se
     patterns = ["." if d.resolve() == base else f"./{d.resolve().relative_to(base).as_posix()}" for d in dirs]
     out = go(module, ["list", "-e", "-find", f"-json=Dir,{','.join(LISTED)}", "-tags", ",".join(tags), *patterns],
              GOOS=goos, GOARCH=goarch)
-    files, decoder, at = set(), json.JSONDecoder(), 0
-    while at < len(out):
-        if out[at].isspace():
-            at += 1
-            continue
-        package, at = decoder.raw_decode(out, at)
-        files |= {str((Path(package["Dir"]) / name).resolve()) for field in LISTED for name in package.get(field) or []}
-    return files
+    return {str((Path(package["Dir"]) / name).resolve())
+            for package in decode_stream(out) for field in LISTED for name in package.get(field) or []}
 
 
 def tag_sets(module: Path, goos: str, goarch: str) -> list:
