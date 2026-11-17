@@ -49,8 +49,11 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
     port to no `bind` to port 0 on any address and no `connect`. It cannot stop a program that
     binds the same number itself with `SO_REUSEADDR`. The kernel keeps a reserved port from a
     `bind` to port 0 only while `net.ipv4.ip_autobind_reuse` is 0, its default, so `reservePorts`
-    checks it and refuses to run otherwise. Other kernels' bind rules differ, and a host without
-    IPv6 fails the reservation loudly.
+    checks it and refuses to run otherwise. A host with no such setting reads as 0: a kernel
+    before Linux 5.7, which added it, never makes the second search, and in gVisor, which has no
+    such file either, 4,000 reservations were given to none of 8,000 binds to port 0 and 4,000
+    connects. Other kernels' bind rules differ, and a host without IPv6 fails the reservation
+    loudly.
 - A server's listening log line prints the bound address (`ln.Addr()`), never the configured one,
   or a port-0 server reports port 0.
 - A port someone sets explicitly is used as given and fails with `address already in use` when it

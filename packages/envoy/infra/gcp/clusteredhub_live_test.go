@@ -558,7 +558,7 @@ func startLogged(t *testing.T, name string, cmd *exec.Cmd) *cmdtest.Process {
 // port 0 that finds no free port searches again with relax true and may share a reservation's port
 // (inet_csk_find_open_port; Documentation/networking/ip-sysctl.rst). reservePorts refuses to run
 // on such a host rather than hand out ports another socket can be given, and does not change the
-// host's setting.
+// host's setting. A host with no such setting reads as 0 (autobindReuseOff has why).
 func reservePorts(t *testing.T, n int) []int {
 	t.Helper()
 	requireNoAutobindReuse(t)
@@ -569,14 +569,62 @@ func reservePorts(t *testing.T, n int) []int {
 	return ports
 }
 
-// requireNoAutobindReuse fails the test when net.ipv4.ip_autobind_reuse is not 0, or cannot be
+// autobindReuseSetting is where Linux keeps net.ipv4.ip_autobind_reuse.
+const autobindReuseSetting = "/proc/sys/net/ipv4/ip_autobind_reuse"
+
+// requireNoAutobindReuse fails the test when net.ipv4.ip_autobind_reuse is not 0 or cannot be
 // read, since a reservation then does not keep the kernel from giving its port to another socket.
 func requireNoAutobindReuse(t *testing.T) {
 	t.Helper()
-	value, err := os.ReadFile("/proc/sys/net/ipv4/ip_autobind_reuse")
-	require.NoError(t, err, "read net.ipv4.ip_autobind_reuse, which a port reservation depends on")
-	require.Equal(t, "0", strings.TrimSpace(string(value)),
-		"net.ipv4.ip_autobind_reuse must be 0 for a reserved port to be given to no other socket (see reservePorts)")
+	require.NoError(t, autobindReuseOff(autobindReuseSetting))
+}
+
+// autobindReuseOff returns nil when the setting at path reads 0, or when path does not exist,
+// and an error for any other value or read error. A missing setting reads as 0 because a kernel
+// without it behaves as 0 does: Linux added the setting in 5.7, and before it
+// inet_csk_find_open_port never searched again with relax true. gVisor, which Legion's worker pods
+// run, has no such file either, and a reservation holds there.
+func autobindReuseOff(path string) error {
+	value, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read net.ipv4.ip_autobind_reuse, which a port reservation depends on: %w", err)
+	}
+	if setting := strings.TrimSpace(string(value)); setting != "0" {
+		return fmt.Errorf("net.ipv4.ip_autobind_reuse is %q; it must be 0 for a reserved port to be given to no other socket (see reservePorts)", setting)
+	}
+	return nil
+}
+
+// The reservation's check reads a missing net.ipv4.ip_autobind_reuse as 0 and refuses a 1 and a
+// setting it cannot read. The absent row fails when a missing file is an error, as it was before;
+// the 1 and unreadable rows fail when the check accepts whatever it reads.
+func TestTheReservationsCheckReadsAMissingAutobindSettingAsZero(t *testing.T) {
+	dir := t.TempDir()
+	setting := func(name, value string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(value), 0o600))
+		return path
+	}
+	for _, row := range []struct {
+		name, path, refusal string
+	}{
+		{"absent", filepath.Join(dir, "absent"), ""},
+		{"0", setting("zero", "0\n"), ""},
+		{"1", setting("one", "1\n"), `net.ipv4.ip_autobind_reuse is "1"`},
+		{"unreadable", dir, "read net.ipv4.ip_autobind_reuse"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := autobindReuseOff(row.path)
+			if row.refusal == "" {
+				require.NoError(t, err, "the setting at %s", row.path)
+				return
+			}
+			require.ErrorContains(t, err, row.refusal, "the setting at %s", row.path)
+		})
+	}
 }
 
 // reservePort reserves one port, as reservePorts describes, and returns it: a reservation
