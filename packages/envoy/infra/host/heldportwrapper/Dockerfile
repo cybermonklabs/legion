@@ -24,11 +24,10 @@ WORKDIR /src/packages/envoy/infra
 ENV GOPROXY=https://proxy.golang.org|direct
 
 # The module builds in the workspace of packages/envoy/infra/go.work, as the envoy-infra-go job
-# builds it, which settles the two modules' requirements.
-COPY packages/envoy/go.mod packages/envoy/go.sum /src/packages/envoy/
-COPY packages/envoy/listenfd /src/packages/envoy/listenfd
-COPY packages/envoy/infra/go.mod packages/envoy/infra/go.sum packages/envoy/infra/go.work packages/envoy/infra/go.work.sum ./
-COPY packages/envoy/infra/host/heldportwrapper ./host/heldportwrapper
+# builds it, which settles the two modules' requirements. Both modules are copied whole, so a new
+# import of the wrapper builds with no edit to this file; Dockerfile.dockerignore beside this file
+# leaves out what no build compiles.
+COPY packages/envoy /src/packages/envoy
 RUN CGO_ENABLED=0 go build -o /out/envoy-listener-heldport ./host/heldportwrapper
 
 FROM ${BASE}

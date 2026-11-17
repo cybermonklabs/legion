@@ -1,5 +1,5 @@
 ---
-title: "A shared Go package or helper script joins every Dockerfile COPY and CI path list that builds or runs it"
+title: "A shared Go package or helper script joins every CI path list that builds or runs it; a Dockerfile copies its module whole"
 category: github
 tags:
   - path-filters
@@ -15,7 +15,7 @@ related_issues:
   - "sjawhar/legion#2434"
 ---
 
-# A shared Go package or helper script joins every Dockerfile COPY and CI path list that builds or runs it
+# A shared Go package or helper script joins every CI path list that builds or runs it; a Dockerfile copies its module whole
 
 Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-init-container-runs.md.
 
@@ -23,11 +23,11 @@ Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-ini
 
 - A Go package another module imports lives outside `internal/`: Go refuses an import of another
   module's `internal/`.
-- A new top-level package of `packages/envoy` goes into every Dockerfile that builds a binary
-  importing it. `packages/envoy/docker/Dockerfile` copies only the directories it names (`cmd/`,
-  `internal/` and each shared package), so a new sibling directory is missing from the image build
-  even though `go build` passes locally. Check it as the build sees it: copy those directories and
-  the module files to a scratch directory and run `GOWORK=off go build ./cmd/listener` there.
+- A Dockerfile that builds a Go binary copies the binary's module whole (`COPY packages/envoy ./`),
+  never one package directory at a time, and leaves out what no image compiles with the
+  `.dockerignore`. A copy of named directories (`cmd/`, `internal/` and each shared package) misses
+  every new sibling package, so the image build fails although `go build` passes locally. The Envoy
+  image, the worker image and the held-port wrapper image all copy whole.
 - A CI job's path filter lists the packages its binary compiles in. Derive the list from
   `go list -deps ./cmd/<binary>` and add every repository package it names, not just the new one.
   Check every Go job's filter, not only those whose binary reaches the new package: an import
@@ -66,3 +66,8 @@ Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-ini
   the Dispatch filters lacked. A review then matched each compiled file, test files included,
   against every Go job's filter and found `broker_multiprocess` lacked `internal/redact` too
   (#2441: `cmd/broker` and `internal/broker/config` import it).
+- `packages/envoy/brokeraddr` repeated it in #2856, and nothing failed until its merge group (run
+  44041307089): envoy-smoke, the one ci.yaml job that builds the Envoy image, runs on a pull
+  request only under the `full-ci` label. After the third slip, #4307 made the Envoy image and the
+  held-port wrapper copy the module whole, as the worker image already did, so no new package needs
+  a `COPY` line.
