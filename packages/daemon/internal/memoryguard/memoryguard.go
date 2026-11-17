@@ -1,8 +1,9 @@
-// Package memoryguard ends a process it may end when a container nears its memory limit, the one
-// that grew the most or, where none grew, the largest, so that the kernel does not end the whole
-// sandbox instead (INFRA-3557, by the rules of INFRA-3531). Under gVisor the host kernel sees one
-// sandbox and not its processes: a container that passes its limit loses every process at once,
-// which in an issue pod is every role's turn.
+// Package memoryguard ends a process it may end when a container nears its memory limit, the
+// process that grew the most over its last few reads, else the largest one that just started, else
+// the one that grew the most since the previous kill, else the largest, so that the kernel does not
+// end the whole sandbox instead (INFRA-3557, by the rules of INFRA-3531). Under gVisor the host
+// kernel sees one sandbox and not its processes: a container that passes its limit loses every
+// process at once, which in an issue pod is every role's turn.
 //
 // The guard reads the pod's anonymous memory, AnonPages of /proc/meminfo, and the container's
 // limit, the cgroup's memory.limit_in_bytes, once each interval. The cgroup's counter,
@@ -26,14 +27,15 @@
 // first, so where none grew and none is new the largest ends first. The fresh tier is there
 // because this issue's tester measured, at e3a1923c, the latepool probe at 4 GiB (six growers
 // starting together while a parent and three sleeping forks of a shared block held the pod at 84%)
-// end a sleeping fork first in 7 of 7 runs, the closest run 2.4 MiB from the kernel's kill point.
-// The tier of growth since the kill is there because a throttled pod reads 170 to over 300 ms
-// apart, so the window can hold one read of each process: in the latepool and sharedpool probes
-// under gVisor (INFRA-3531 T17) the guard went on after a kill by ending the largest, a sleeping
-// fork, while the growers lived. Under gVisor each forked process reports the pages it shares with
-// its parent as its own, and no smaps field tells them apart, so the largest can be a sleeping fork
-// whose end frees nothing while another process fills the pod; for the same reason a process with
-// no earlier read in the window, a fresh fork among them, counts as not grown.
+// end a process that shares the block, a sleeping fork or the parent, first in 7 of 7 runs, the
+// closest run's highest reading 2.4 MiB below the kernel's kill point. The tier of growth since the
+// kill is there because a throttled pod reads 170 to over 300 ms apart, so the window can hold one
+// read of each process: in the latepool and sharedpool probes under gVisor (INFRA-3531 T17) the
+// guard went on after a kill by ending the largest, a sleeping fork, while the growers lived. Under
+// gVisor each forked process reports the pages it shares with its parent as its own, and no smaps
+// field tells them apart, so the largest can be a sleeping fork whose end frees nothing while
+// another process fills the pod; for the same reason a process with no earlier read in the window,
+// a fresh fork among them, counts as not grown.
 //
 // So that it knows what grew when the reading reaches the mark, an armed guard reads those sizes
 // at each interval already in the band, the bandPercent (10%) of the limit below the mark, keeps
@@ -822,9 +824,10 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 // held processes: the largest of them comes before the largest held process (INFRA-3531 R1 of
 // spec version 27). This issue's tester measured, at e3a1923c, the latepool probe at 4 GiB, six
 // growers starting together between the band's last reading and the mark while a parent and three
-// sleeping forks of a shared block held the pod at 84%, end a sleeping fork first in 7 of 7 runs,
-// the closest run 2.4 MiB from the kernel's kill point. Where none started, the largest held
-// process is first, as where nothing grew at all.
+// sleeping forks of a shared block held the pod at 84%, end a process that shares the block, a
+// sleeping fork or the parent, first in 7 of 7 runs, the closest run's highest reading 2.4 MiB
+// below the kernel's kill point. Where none started, the largest held process is first, as where
+// nothing grew at all.
 //
 // The reads again and the reads of the processes started since share half the interval from now
 // by the guard's clock, each reading one process at least. The floor is read on the held sizes,
@@ -1521,12 +1524,13 @@ func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool, 
 // The fresh tier is there because a runaway can begin between two readings, and then has no
 // earlier read to grow from: this issue's tester measured, at e3a1923c, the latepool probe at 4 GiB
 // (six growers starting together while a parent and three sleeping forks of a shared block held
-// the pod at 84%) end a sleeping fork first in 7 of 7 runs, the closest run 2.4 MiB from the
-// kernel's kill point. The tier of growth since the kill is there because a throttled pod's
-// readings come 170 to over 300 ms apart, so the window can hold one read of each process and
-// show no growth at all: in the latepool and sharedpool probes under gVisor (INFRA-3531 T17), the
-// guard then went on after a kill by ending the largest, a sleeping fork whose end frees nothing,
-// while the growers lived. Growth since the kill still shows who grew.
+// the pod at 84%) end a process that shares the block, a sleeping fork or the parent, first in
+// 7 of 7 runs, the closest run's highest reading 2.4 MiB below the kernel's kill point. The tier of
+// growth since the kill is there because a throttled pod's readings come 170 to over 300 ms apart,
+// so the window can hold one read of each process and show no growth at all: in the latepool and
+// sharedpool probes under gVisor (INFRA-3531 T17), the guard then went on after a kill by ending
+// the largest, a sleeping fork whose end frees nothing, while the growers lived. Growth since the
+// kill still shows who grew.
 func rank(cs []candidate) {
 	slices.SortFunc(cs, func(x, y candidate) int {
 		return cmp.Or(cmp.Compare(y.growth, x.growth), cmp.Compare(ordinal(y.fresh), ordinal(x.fresh)),

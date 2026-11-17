@@ -207,14 +207,15 @@ type MemoryGuardConfig struct {
 // MemoryGuardPodConfig is one kind of pod's memory guard: whether it runs at all, and the four
 // numbers it runs by (shimwire.LauncherMemoryGuard, which a launcher is handed on the answer to
 // its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
-// ActPercent of the container's memory limit it ends a process it may end, the one that grew the
-// most or the largest where none grew, where those processes hold at least FloorPercent of the
-// limit between them; after a kill it ends no other until the killed process has exited or
-// WaitSeconds has passed, and it gives the rise up once WaitSeconds has passed with the reading not
-// fallen and nothing it may end grown since the kill. With Enabled false the daemon hands the
-// launchers no settings: each guard runs at its defaults from its launcher's start, as it does
-// while no daemon has answered, and turns off at its launcher's first acknowledgement, after which
-// it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
+// ActPercent of the container's memory limit it ends, of the processes it may end, the process
+// that grew the most over its last few reads, else the largest one that just started, else the one
+// that grew the most since the previous kill, else the largest, where those processes hold at least
+// FloorPercent of the limit between them; after a kill it ends no other until the killed process
+// has exited or WaitSeconds has passed, and it gives the rise up once WaitSeconds has passed with
+// the reading not fallen and nothing it may end grown since the kill. With Enabled false the daemon
+// hands the launchers no settings: each guard runs at its defaults from its launcher's start, as it
+// does while no daemon has answered, and turns off at its launcher's first acknowledgement, after
+// which it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
 // alone.
 type MemoryGuardPodConfig struct {
 	Enabled              bool

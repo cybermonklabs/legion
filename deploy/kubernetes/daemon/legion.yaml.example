@@ -398,14 +398,14 @@ runtime:
     # memory_guard:                    # the memory guard in each issue pod's launcher: when the pod's anonymous
     #   issue_pods:                    # memory reaches act_percent (50 to 95) of the container's memory limit
     #     enabled: true                # and the processes it may end hold at least floor_percent (1 to 50) of
-    #     act_percent: 85              # it, it ends with SIGKILL the one that grew the most, or the largest
-    #     floor_percent: 10            # where none grew, and tells the role whose process it was. Legion's own
-    #     wait_seconds: 5              # processes and each role's agent are never ended. After a kill it waits
-    #     interval_milliseconds: 100   # for that process to exit, at most wait_seconds (1 to 60), and it reads
-    #   controller_pod:                # every interval_milliseconds (50 to 5000). controller_pod is the same
-    #     enabled: true                # guard in the controller's pod (controller: daemon), which waits at most
-    #     act_percent: 85              # 1 second after a kill.
-    #     floor_percent: 10
+    #     act_percent: 85              # it, it ends with SIGKILL the process that grew the most over its last
+    #     floor_percent: 10            # few reads, else the largest one that just started, else the one that
+    #     wait_seconds: 5              # grew the most since the previous kill, else the largest, and tells the
+    #     interval_milliseconds: 100   # role whose process it was. Legion's own processes and each role's agent
+    #   controller_pod:                # are never ended. After a kill it waits for that process to exit, at most
+    #     enabled: true                # wait_seconds (1 to 60), and it reads every interval_milliseconds (50 to
+    #     act_percent: 85              # 5000). controller_pod is the same guard in the controller's pod
+    #     floor_percent: 10            # (controller: daemon), which waits at most 1 second after a kill.
     #     wait_seconds: 1
     #     interval_milliseconds: 100
     #                                  # These are the defaults, for each kind. enabled: false sends that kind's
