@@ -1,6 +1,7 @@
 package secrets_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -72,12 +73,14 @@ const pastTheCap = 8 << 20
 // every one as live as GitHub would, and its revoke route forgets the one it is given, unless
 // refuseRevokes has GitHub answer every revoke 500. client is the transport a minter reaches it
 // through, which fails each answerUnreachable request before it is sent and reports an error for
-// the write of each answerWriteFails one. Every other route is the stand-in's own. minted is every
-// token it minted, in order.
+// the write of each answerWriteFails one; silentClient is the same but for its last step, a
+// transport of its own that tells a request's trace nothing, as a transport a caller injects need
+// not. Every other route is the stand-in's own. minted is every token it minted, in order.
 type breakingGitHub struct {
-	service *airlocktest.Service
-	client  *http.Client
-	faults  []tokenAnswerFault
+	service      *airlocktest.Service
+	client       *http.Client
+	silentClient *http.Client
+	faults       []tokenAnswerFault
 	// received is told each time GitHub has received an answerWriteFails request whole.
 	received chan struct{}
 
@@ -107,6 +110,7 @@ func newBreakingGitHub(t *testing.T, refuseRevokes bool, faults ...tokenAnswerFa
 	}}
 	t.Cleanup(transport.CloseIdleConnections)
 	g.client = &http.Client{Transport: unreachableFirst{github: g, next: transport}}
+	g.silentClient = &http.Client{Transport: unreachableFirst{github: g, next: silentTransport{}}}
 	service.AnswerWith(func(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
 		if seen.Method == http.MethodDelete && seen.Path == "/installation/token" {
 			g.mu.Lock()
@@ -186,6 +190,48 @@ func (u unreachableFirst) RoundTrip(request *http.Request) (*http.Response, erro
 		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 	}
 	return u.next.RoundTrip(request)
+}
+
+// silentTransport sends each request over a connection of its own, one request to a connection,
+// and tells the request's trace nothing: no GotConn, no WroteRequest, since it writes a copy of
+// the request whose context holds no trace. A transport a caller injects into the minter
+// (GitHubApp.HTTP) owes the trace nothing, so the minter cannot read a silent trace as a request
+// that never left.
+type silentTransport struct{}
+
+func (silentTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	connection, err := (&net.Dialer{}).DialContext(request.Context(), "tcp", request.URL.Host)
+	if err != nil {
+		return nil, err
+	}
+	stop := context.AfterFunc(request.Context(), func() { _ = connection.Close() })
+	if err := request.Clone(context.Background()).Write(connection); err != nil {
+		stop()
+		_ = connection.Close()
+		return nil, err
+	}
+	response, err := http.ReadResponse(bufio.NewReader(connection), request)
+	if err != nil {
+		stop()
+		_ = connection.Close()
+		return nil, err
+	}
+	response.Body = closingBody{ReadCloser: response.Body, connection: connection, stop: stop}
+	return response, nil
+}
+
+// closingBody closes its connection once the answer's body is closed.
+type closingBody struct {
+	io.ReadCloser
+	connection net.Conn
+	stop       func() bool
+}
+
+func (b closingBody) Close() error {
+	b.stop()
+	err := b.ReadCloser.Close()
+	_ = b.connection.Close()
+	return err
 }
 
 // writeFailing is a connection to the stand-in whose write of the last bytes of an answerWriteFails
@@ -369,6 +415,8 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		faults    []tokenAnswerFault
 		// refuseRevokes has GitHub answer every revoke 500.
 		refuseRevokes bool
+		// silent has the minter reach GitHub through a transport that tells the trace nothing.
+		silent bool
 		// deadline ends the caller's context that long after the run starts, and zero leaves it
 		// the test's own.
 		deadline time.Duration
@@ -417,6 +465,12 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			faults: []tokenAnswerFault{answerWriteFails, answerWriteFails, answerWriteFails}, requests: 1, live: 1},
 		{name: "a token request GitHub received whole though its write reported an error, to a release", narrowing: wide,
 			faults: []tokenAnswerFault{answerWriteFails, answerWriteFails, answerWriteFails}, requests: 3, live: 3},
+		{name: "an answer lost through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
+			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
+		{name: "an answer lost through a transport that reports no connection, to a release", narrowing: lean, silent: true,
+			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 3, live: 3},
+		{name: "a token request that never reached GitHub through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
+			faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
 		{name: "an undecodable answer whose revoke GitHub refuses, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "an undecodable answer whose revoke GitHub refuses, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "a release of two accounts whose second answer is undecodable", faults: []tokenAnswerFault{answerWhole, answerUndecodable}, requests: 2},
@@ -428,7 +482,11 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 			github := newBreakingGitHub(t, tc.refuseRevokes, tc.faults...)
 			retry, _, _ := testRetry(atTheBottom)
-			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: github.client, Retry: retry}
+			client := github.client
+			if tc.silent {
+				client = github.silentClient
+			}
+			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: client, Retry: retry}
 
 			ctx := t.Context()
 			if tc.deadline > 0 {
