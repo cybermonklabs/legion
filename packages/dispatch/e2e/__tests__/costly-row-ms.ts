@@ -23,10 +23,11 @@
 /** The per-test limit of every row that criterion covers.
  *
  *  What it bounds is a direct `bun test <file>` run of those files, where Bun's unwritten 5 s
- *  default would otherwise apply. In the lane, `bun test --parallel --timeout 60000 e2e/__tests__`
- *  (this package's `test` script, from cybermonklabs/legion#2894), an explicit per-test limit
- *  wins over that flag, so these rows run at 90 s there rather than at the lane's 60 s. In either
- *  shape this number is a hang guard rather than a sized limit.
+ *  default would otherwise apply. In the lane, `bun run test:harness e2e/__tests__` (this
+ *  package's `test` script; `test:harness` carries the `--timeout 60000` that
+ *  cybermonklabs/legion#2894 set), an explicit per-test limit wins over that flag, so these rows
+ *  run at 90 s there rather than at the lane's 60 s. In either shape this number is a hang guard
+ *  rather than a sized limit.
  *
  *  Measured on the fast pod shape (2 CPUs, gVisor, under 6 busy loops, 3 x nproc), 8 runs of the
  *  whole lane: the worst reading of the rows this limit covers is 3.15 s, by

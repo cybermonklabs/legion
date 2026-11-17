@@ -42,8 +42,8 @@ expect.extend(reportableJestDomMatchers());
 // flag of `package.json`'s test scripts rather than a line of this file, and both are explained
 // here, since this file is what every `web/src` test loads.
 //
-// The per-test deadline is `--timeout 60000`, carried by both command lines that run tests: the
-// `test:web` script for `web/src`, and the `bun test --parallel e2e/__tests__` run beside it.
+// The per-test deadline is `--timeout 60000`, carried by both of package.json's scripts that run
+// tests: `test:web` for `web/src`, and `test:harness` for `e2e/__tests__`.
 // Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
 // ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
 // pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
@@ -51,23 +51,35 @@ expect.extend(reportableJestDomMatchers());
 // The number is twice the slowest loaded test, and it is sized on the slower of the two pod
 // shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
 // differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
-// a factor of 2.15, which puts that same test at about 29.7 s there - inside a 30 s deadline by
-// 0.3 s, which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is
-// 59.4 s, so 60 s, and it is kept as small as that rule allows, because every hung test costs
-// the whole budget on CI as well as in a pod. The flag carries it rather than a
-// `jest.setTimeout` here, for two measured reasons: a preload's deadline is not dependable,
-// since a 6 s probe in a directory run started by hand ended "this test timed out after 5000ms"
-// three times of three with two scratch files beside it and passed with one, and what file of a
-// run kept it and what file lost it did not reproduce the same way twice; and the
-// `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
-// files get. It cuts no deadline a row sets for itself, measured rather than assumed: a row
-// carrying `}, 5_000)` slept 1.2 s and passed under `bun test --timeout 200`, so a row's own
-// number wins over the flag whichever is larger. Rows that set one today are
-// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:43` and
-// `psql-session.test.ts:61,70` at 60 s, equal to the flag, and `MarkdownBody.test.tsx`'s 40 s,
-// above the 25 s wait that row must let run out. The list is not a superlative and is not
-// checked by anything: a row added tomorrow may set more, as dispatch://INFRA-1571 does with
-// a 90 s limit of its own. What lowering the flag would cut is every row that sets none.
+// a factor of 2.15. That puts the same test at about 29.7 s there - a figure derived as the
+// 13.83 s measured here times 2.15, and not read on that pod - inside a 30 s deadline by 0.3 s,
+// which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is 59.4 s,
+// so 60 s, and it is kept as small as that rule allows, because every hung test costs the whole
+// budget on CI as well as in a pod. The flag carries it rather than a `jest.setTimeout` here, for
+// two measured reasons: a preload's deadline is not dependable, since a 6 s probe in a directory
+// run started by hand ended "this test timed out after 5000ms" three times of three with two
+// scratch files beside it and passed with one, and what file of a run kept it and what file lost
+// it did not reproduce the same way twice; and the `e2e/__tests__` lane loads no preload at all,
+// so there the flag is the only deadline a row gets unless it sets its own. The flag neither
+// cuts nor raises a deadline a row sets for itself, measured in both directions rather than
+// assumed: a row carrying `}, 500)` that slept 1.2 s failed at 500 ms under
+// `bun test --timeout 60000`, and a row carrying `}, 5_000)` that slept 1.2 s passed under
+// `bun test --timeout 200`. So a row's own deadline takes the flag's place whether it is larger
+// or smaller. Rows that set 60 s, equal to the flag, are
+// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:29`,
+// `playwright-argv.test.ts:29`, `replace-blocks-guard.test.ts:47` and
+// `outside-path-reach-fixtures.ts:46`, and the two hooks at `psql-session.test.ts:62,74`. Rows
+// that set less are not protected by the flag: `web/src/features/refs/MarkdownBody.test.tsx:1911`
+// sets 40 s, above the 25 s wait that row must let run out, and 30 s is set at
+// `web/src/features/refs/fixture-table-readings.test.ts:128`, and at
+// `e2e/__tests__/delivery-live-probe.test.ts:53`, `local-instance-support.test.ts:95` and
+// `replace-blocks-guard.test.ts:45`. Rows that set more get more than the flag: 90 s at
+// `e2e/__tests__/costly-row-ms.ts:57`, `row-configurations.test.ts:114`, `row-map.test.ts:24`
+// and `pull-request-lane.test.ts:52`, 180 s at `no-browser-rows.test.ts:68`, and 30 minutes at
+// `second-global-setup.test.ts:47`. The list is checked by nothing: a row added tomorrow may set
+// any number, as dispatch://INFRA-1571 does with a 90 s limit of its own. What lowering the flag
+// would cut is every row that sets none, and what raising it would not reach is every row that
+// sets one.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed

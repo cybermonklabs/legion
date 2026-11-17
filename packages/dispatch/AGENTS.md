@@ -1656,13 +1656,15 @@ bun run check:classes
 bun run typecheck
 bun run lint
 bun run test
+bun run test:harness
+bun run test:repeat
 bun run dispatch:local
 ```
 
 `bun run test` runs the suite in two halves, because only the web half wants a DOM:
 `bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
-`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
-as the node processes those harness tests are.
+`web/src/__tests__/setup.ts`, and then `bun run test:harness e2e/__tests__`, which preloads
+neither and runs as the node processes those harness tests are.
 The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
 DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
 global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds
@@ -1671,6 +1673,30 @@ An import written first inside one file does not hold that order; Bun evaluated 
 ahead of a relative one written above it.
 To run one file, `bun run test:web web/src/path/to/file.test.tsx`: a bare `bun test <file>` loads
 no preload and fails with no DOM.
+
+The suite runs in random order, which this package's `bunfig.toml` sets.
+Bun reads that file from the working directory only, not from a parent directory, and
+`bun run <script>` runs in this package's directory.
+So the file reaches `bun run test`, `test:web`, `test:harness` and `test:repeat` from any
+directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run.
+It also reaches a `bun test <file>` started in this package, but not one started from the
+repository root or from a subdirectory.
+Each lane prints its own ` --seed=<n>` in its summary.
+To reproduce a failing row, run its file alone with that seed:
+`bun run test:web web/src/<file> --seed=<n>` or
+`bun run test:harness e2e/__tests__/<file> --seed=<n>`, with `--rerun-each=2` added for a row
+that fails only on a rerun.
+This works because the order of the tests in a file depends only on the seed and on that file,
+not on the other files of the run.
+Random order cannot be turned off: `--randomize=false` is refused, and `--no-randomize` still
+shuffles.
+A row is never pinned to an order or skipped to make it pass.
+It is fixed at its cause.
+Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
+from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
+`bun run test:repeat --lane <web|harness> --reruns 20 [--seed <n>] --out <dir>` runs one lane
+repeatedly (`--rerun-each`) and writes a report of the rows that failed.
+`.github/workflows/dispatch-unit-repeat.yaml` runs it weekly.
 
 Every request a unit test makes is answered by something the test set up or it fails that test,
 reads included.
