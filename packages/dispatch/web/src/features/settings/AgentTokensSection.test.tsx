@@ -248,9 +248,7 @@ async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswer
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
     .mockResolvedValue(listed);
-  // The lost mint's answer is held until the press is out, then given inside `act`: on a held
-  // clock Testing Library's wait after a press drains no further than its own zero-delay timer,
-  // so an answer already given when the press lands would update the section outside `act`.
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
   const lostMint = Promise.withResolvers<never>();
   const createAgentToken = spyOn(api, "createAgentToken")
     .mockReturnValueOnce(lostMint.promise)

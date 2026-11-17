@@ -140,9 +140,7 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { listProjectArtifacts, view } = renderList([]);
-  // The lost upload's answer is held until the press is out, then given inside `act`: on a held
-  // clock Testing Library's wait after a press drains no further than its own zero-delay timer,
-  // so an answer already given when the press lands would update the list outside `act`.
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
   const lostUpload = Promise.withResolvers<never>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(lostUpload.promise);
 

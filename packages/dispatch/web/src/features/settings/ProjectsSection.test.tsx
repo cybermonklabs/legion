@@ -25,9 +25,7 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
-  // The lost create's answer is held until the press is out, then given inside `act`: on a held
-  // clock Testing Library's wait after a press drains no further than its own zero-delay timer,
-  // so an answer already given when the press lands would update the section outside `act`.
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
   const lostCreate = Promise.withResolvers<never>();
   const createProject = spyOn(api, "createProject").mockReturnValue(lostCreate.promise);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -165,9 +165,7 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
   const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
     credentials: live,
   }));
-  // The revoke's answer is held until the press is out, then given inside `act`: on a held clock
-  // Testing Library's wait after a press drains no further than its own zero-delay timer, so an
-  // answer already given when the press lands would update the page outside `act`.
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
   const revokeAnswer = Promise.withResolvers<void>();
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async (id) => {
     await revokeAnswer.promise;

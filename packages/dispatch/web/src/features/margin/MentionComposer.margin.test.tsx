@@ -866,9 +866,7 @@ test("a refusal no document binds for ends at the wait's bound, telling the read
       return { markId: "m-2", placement: null, quote: MARK_ANCHOR.quote };
     },
   });
-  // The refusal is held until the press is out, then given inside `act`: on a held clock Testing
-  // Library's wait after a press drains no further than its own zero-delay timer, so a refusal
-  // already given when the press lands would update the composer outside `act`.
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
   const refusal = Promise.withResolvers<never>();
   const createComment = spyOn(api, "createComment").mockReturnValue(refusal.promise);
   jest.useFakeTimers();
