@@ -54,8 +54,9 @@ evidence for the tester and reviewer to re-run.
   sjawhar/105` (the slug `sjawhar105` names the private tmux socket `legion-sjawhar105`), `port`
   and `worker_stream_port` of your own, `state_dir` under the scratch dir, `nats_urls` pointing at
   a scratch JetStream container (`docker run -d --name legion105-nats -p 127.0.0.1:14224:4222
-  nats:2.10 -js`; create the `ENVOY_NOTIFICATIONS` stream with subjects `notifications.>` before
-  publishing), a project key that does not exist in Dispatch (`LEGSMOKE`), `envoy_url:
+  <the image testnats.HubImage names> -js`, a nats-server at or after the floor the daemon holds,
+  since it refuses every 2.10; create the `ENVOY_NOTIFICATIONS` stream with subjects
+  `notifications.>` before publishing), a project key that does not exist in Dispatch (`LEGSMOKE`), `envoy_url:
   http://127.0.0.1:9` (unroutable: no wake ever reaches the real listener), the production
   `omp_invocation`, `github_apps`, and `instructions` verbatim. `daemon_url` stays the default
   loopback — the tmux guard refuses anything else. `legion start … --check-config` first.

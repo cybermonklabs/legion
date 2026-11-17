@@ -176,13 +176,16 @@ export class ProductionDispatch {
       let response: Response;
       let text: string;
       try {
+        // One deadline for the credential and the read: a broker credential waiting on a pod's
+        // missing registration stops at it, naming the session.
+        const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
           headers: {
             Accept: "application/json",
-            ...(await this.#credential.headers("GET", url.toString())),
+            ...(await this.#credential.headers("GET", url.toString(), undefined, deadline)),
           },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: deadline,
         });
         text = await response.text();
       } catch (error) {
