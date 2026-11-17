@@ -250,12 +250,12 @@ func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, err
 }
 
 // owningArchitect is specs.owner: the architect that owns c, a claim on an issue that is not its
-// tree's root, as the store records the architect claims of the issue's tree now. It is the end
-// of the owner walk (record.OwningArchitect) over those claims (record.ArchitectRuns) for a
-// worker-died about c's role: the architect the daemon tells when this claim fails is the one it
-// answers to. For a phase worker the walk starts at its issue, so it is the issue's own architect
-// while that claim holds its role, else the nearest one above it that does, else the tree root's;
-// for the issue's own architect it starts at the issue's parent, which is the architect above it.
+// tree's root, as the store records the architect claims of the issue's tree now
+// (record.ReadOwnerWalk). It is where a worker-died about c's role goes, so the architect the
+// daemon tells when this claim fails is the one it answers to. For a phase worker the walk starts
+// at its issue, so it is the issue's own architect while that claim holds its role, else the
+// nearest one above it that does, else the tree root's; for the issue's own architect it starts
+// at the issue's parent (record.NoticeStartsAtParent), which is the architect above it.
 // An issue the workflow does not record, such as an operator's claim, has no tree to walk, so its
 // claim is its tree's architect's. project is the claim project token every token of the launch is
 // spelled in. It reads in a read-only transaction of its own, as the supervisor's predicates read
@@ -270,16 +270,11 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		if err != nil || issue == nil {
 			return err
 		}
-		members, err := w.records.TreeIssues(ctx, tx, issue.Tree)
+		walk, err := record.ReadOwnerWalk(ctx, w.records, tx, project, issue.Tree)
 		if err != nil {
 			return err
 		}
-		tree := record.TreeByKey(members)
-		runs, err := record.ArchitectRuns(ctx, w.records, tx, project, tree)
-		if err != nil {
-			return err
-		}
-		owner, err = record.OwningArchitect(project, tree, *issue, "worker-died", c.Role, runs)
+		owner, err = walk.Architect(*issue, c.Role == claim.RoleArchitect)
 		return err
 	}); err != nil {
 		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)

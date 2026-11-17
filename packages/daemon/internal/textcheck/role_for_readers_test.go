@@ -45,9 +45,8 @@ type roleForReader struct {
 // worker, or names the role an admitted root's entry numbers are of, or answers the issue's own
 // phase for the architect's completion there, as its reader took the issue's phase while RoleFor
 // named no role (phase.Of), or never reads admitted at all because a check before it refuses that
-// phase or it asks of reviewing alone (awaitingAcceptance), or hands the answer to the owner walk
-// for a phase-finished notice, for which that walk weighs no role (record.OwningIssue reads it only
-// for a worker-died or a worker-stalled), which is what each named test holds it to.
+// phase, which is what each named test holds it to. The owner walk reads no role: where it starts
+// is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -60,7 +59,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/phase/phase.go", fn: "Of"}:                              {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                  {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:  {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
-	{file: "internal/workflow/catch_up.go", fn: "awaitingAcceptance"}:        {calls: 1, test: "TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:    {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                 {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                    {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
@@ -73,7 +71,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                   {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/engine.go", fn: "Engine.phaseEnded"}:           {calls: 1, test: "TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:          {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
-	{file: "internal/workflow/review.go", fn: "Engine.owningArchitect"}:      {calls: 1, test: "TestASettlementOfAChildTellsTheArchitectThatOwnsIt"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:           {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}: {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}:                  {calls: 1, test: "TestStrandedNamesTheClaimsNothingWillWake"},

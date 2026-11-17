@@ -315,29 +315,23 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
-// walk from issue (record.OwningIssue), as the outbox routes a notice of issue's phase, over the
-// architect claims of issue's tree this transaction reads (record.ArchitectRuns). That is issue's
-// own architect while its claim holds its role, else the nearest one above it whose claim does,
-// else the tree root's. A tree root, and an issue whose key makes no claim token, which no walk
-// passes through (awaitingAcceptance), are the tree root's without a read.
+// walk from issue itself, as the outbox routes a notice of issue's phase, over the architect
+// claims of issue's tree this transaction reads (record.ReadOwnerWalk). That is issue's own
+// architect while its claim holds its role, else the nearest one above it whose claim does, else
+// the tree root's. A tree root is its own without a read.
 func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
-	if claim.IsTreeRoot(issue.Key, issue.Tree) || !claim.IsIssueKey(issue.Key) {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return issue.Tree, nil
 	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
 	}
-	members, err := e.store.TreeIssues(ctx, tx, issue.Tree)
+	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, project, issue.Tree)
 	if err != nil {
 		return "", err
 	}
-	tree := record.TreeByKey(members)
-	runs, err := record.ArchitectRuns(ctx, e.store, tx, project, tree)
-	if err != nil {
-		return "", err
-	}
-	return record.OwningIssue(project, tree, issue, "phase-finished", RoleFor(issue.Phase), runs), nil
+	return walk.Owner(issue, false), nil
 }
 
 // answerSkew bounds how far GitHub's clock, which stamps a review's submission, and the daemon's,

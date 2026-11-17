@@ -348,26 +348,23 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			accepting = append(accepting, member)
 		}
 	}
-	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, members, accepting)
+	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, accepting)
 	if err != nil {
 		return record.CatchUp{}, nil, err
 	}
 	return catchUp, awaiting, nil
 }
 
-// awaitingAcceptance is the keys, in the order given, of accepting — issues of members, issue's
-// tree, that wait in accepting and are still in the workflow — whose acceptance is issue's
-// architect's: the architect the phase-finished notice that moved each there goes to, which is the
-// owner walk from the issue itself (record.OwningArchitect, for the reviewer's notice of the one
-// move into accepting, from reviewing) over the architect claims this transaction reads
-// (record.ArchitectRuns). So a root's architect is not asked to accept an issue whose own
-// architect, or an architect between the two, holds its role, and is asked to accept one whose
-// architects up to the root have all failed, retired, never started, or been suspended by the
-// workflow or an operator (a claim the idle release suspended still holds its role). An issue
-// whose key makes no claim token has no architect and is no walk's to pass through (the daemon's
-// noticeRoute leaves it out), so it is the tree root's to accept. No claim is read when nothing
-// waits.
-func awaitingAcceptance(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, members, accepting []record.Issue) ([]string, error) {
+// awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that
+// wait in accepting and are still in the workflow — whose acceptance is issue's architect's: the
+// architect the phase-finished notice that moved each there goes to, which is the owner walk from
+// the issue itself over the architect claims this transaction reads (record.ReadOwnerWalk). So a
+// root's architect is not asked to accept an issue whose own architect, or an architect between
+// the two, holds its role, and is asked to accept one whose architects up to the root have all
+// failed, retired, never started, or been suspended by the workflow or an operator (a claim the
+// idle release suspended still holds its role). An issue whose key makes no claim token has no
+// architect, so the walk makes it the tree root's to accept. No claim is read when nothing waits.
+func awaitingAcceptance(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, accepting []record.Issue) ([]string, error) {
 	if len(accepting) == 0 {
 		return nil, nil
 	}
@@ -379,20 +376,13 @@ func awaitingAcceptance(ctx context.Context, tx pgx.Tx, store record.Store, issu
 	if err != nil {
 		return nil, err
 	}
-	tree := record.TreeByKey(members)
-	runs, err := record.ArchitectRuns(ctx, store, tx, project, tree)
+	walk, err := record.ReadOwnerWalk(ctx, store, tx, project, issue.Tree)
 	if err != nil {
 		return nil, err
 	}
 	awaiting := make([]string, 0, len(accepting))
 	for _, waiting := range accepting {
-		if !claim.IsIssueKey(waiting.Key) {
-			if claim.IsTreeRoot(issue.Key, issue.Tree) {
-				awaiting = append(awaiting, waiting.Key)
-			}
-			continue
-		}
-		owner, err := record.OwningArchitect(project, tree, waiting, "phase-finished", phase.RoleFor(phase.Reviewing), runs)
+		owner, err := walk.Architect(waiting, false)
 		if err != nil {
 			return nil, err
 		}

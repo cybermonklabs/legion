@@ -11,7 +11,7 @@ import (
 // starts the child's own architect beside it, of its leave or its re-entry, of its joining the
 // tree, or of its hold under an accepted parent, and a child-closed tells of its close. So the
 // owner walk of either starts at the child's parent and never ends at the child's own architect
-// (OwningIssue's own rule). A child of a tree whose recorded parent is nil — a person moved it out
+// (NoticeStartsAtParent). A child of a tree whose recorded parent is nil — a person moved it out
 // from under its parent in Dispatch, and admission kept it in its tree (admit's recordObservation) —
 // has no parent to start the walk at, so the architect above it is the tree root's. The outbox can
 // publish such a notice while the child's own architect holds its role (one just started with the
@@ -30,7 +30,7 @@ func TestAParentlessChildsCloseAndStatusChangeReachTheTreeRoot(t *testing.T) {
 	}
 	for _, kind := range []NoticeKind{"child-closed", "child-status"} {
 		t.Run(string(kind), func(t *testing.T) {
-			if got := OwningIssue("legion", tree, tree[orphan], kind, claim.RoleArchitect, runs); got != root {
+			if got := OwningIssue("legion", tree, tree[orphan], NoticeStartsAtParent(kind, claim.RoleArchitect), runs); got != root {
 				t.Fatalf("a %s notice of the parentless child %s goes to the architect of %s, want the tree root %s's", kind, orphan, got, root)
 			}
 		})

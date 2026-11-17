@@ -68,6 +68,25 @@ func TestAnArchitectHoldsItsRoleInATransactionByTheClaimTheStoreRecords(t *testi
 	})
 }
 
+// An issue whose key makes no claim token has no architect and owns nothing (TreeByKey), so the
+// owner walk that starts at it ends at the tree root, from the issue or from its parent: not at
+// its own key, which names no claim, and not at the architect above it, though that one holds its
+// role.
+func TestAWalkFromAnIssueWhoseKeyMakesNoClaimTokenEndsAtTheTreeRoot(t *testing.T) {
+	root, parent, keyless := "LEGION-1", "LEGION-2", "legion-3"
+	start := Issue{Key: keyless, Tree: root, Parent: &parent}
+	tree := TreeByKey([]Issue{{Key: root, Tree: root}, {Key: parent, Tree: root, Parent: &root}, start})
+	runs := func(token claim.Token) bool {
+		return token == architectToken(t, root) || token == architectToken(t, parent)
+	}
+	for _, fromParent := range []bool{false, true} {
+		got, err := OwningArchitect("legion", tree, start, fromParent, runs)
+		if want := architectToken(t, root); err != nil || got != want {
+			t.Errorf("the walk from %s (from its parent: %t) ends at %s, %v; want the tree root's %s", keyless, fromParent, got, err, want)
+		}
+	}
+}
+
 // architectToken is the claim token of issue's architect in project legion.
 func architectToken(t *testing.T, issue string) claim.Token {
 	t.Helper()

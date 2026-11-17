@@ -75,7 +75,7 @@ func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 			for issue, state := range tc.states {
 				states[mustClaimToken(t, issue, claim.RoleArchitect)] = state
 			}
-			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], tc.kind, tc.role, func(token claim.Token) bool {
+			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(tc.kind, tc.role), func(token claim.Token) bool {
 				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
 			})
 			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {

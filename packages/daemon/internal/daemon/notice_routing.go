@@ -166,14 +166,15 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 // will not hold its role again or, for a child's catch-up, once the child is out of the workflow
 // (deliverNotice), since a park leaves that claim suspended rather than ended; a root's ends with
 // its tree's linger. Every other notice goes to the architect that owns its issue
-// (record.OwningArchitect), by runs. The publish (deliverNotice), the fence (earlierNoticeFor)
-// and a ready's release (releaseWaiting) all ask this, so each finds a notice the same architect.
-// project is the tree's claim project token.
+// (record.OwningArchitect), by runs, from the issue's parent for a notice the architect above it
+// must hear (record.NoticeStartsAtParent). The publish (deliverNotice), the fence
+// (earlierNoticeFor) and a ready's release (releaseWaiting) all ask this, so each finds a notice
+// the same architect. project is the tree's claim project token.
 func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
 	if notice.CatchUp != nil {
 		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
 	}
-	return record.OwningArchitect(project, tree, issue, notice.Kind, notice.Role, runs)
+	return record.OwningArchitect(project, tree, issue, record.NoticeStartsAtParent(notice.Kind, notice.Role), runs)
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's

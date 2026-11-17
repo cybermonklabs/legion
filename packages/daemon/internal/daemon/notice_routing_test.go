@@ -189,7 +189,7 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 			if kind == "" {
 				kind = "phase-finished"
 			}
-			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], kind, "", func(token claim.Token) bool {
+			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(kind, ""), func(token claim.Token) bool {
 				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
 			})
 			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {
