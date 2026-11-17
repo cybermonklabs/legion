@@ -73,7 +73,7 @@ The broker reads each typed secret’s value once for each new version or type, 
 - `internal/webhook` — the GitHub, Slack and Ghost Wispr webhook handlers, and the `ENVOY_WEBHOOKS` read at start-up
 - `internal/verify` — GitHub, Slack and Ghost Wispr signature verification
 - `cmd/listener` — per-machine listener service, which serves the webhook routes
-- `docker/Dockerfile` — the one image, holding the listener, Dispatch, the broker and `agent-secrets`
+- `docker/Dockerfile` — the one released image, holding the listener, Dispatch, the broker and `agent-secrets`
 - `deploy` — compose files and deploy scripts
 - `docs` — architecture, constraints, external repo touchpoints
 
