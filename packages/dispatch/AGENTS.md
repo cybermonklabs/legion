@@ -1723,8 +1723,9 @@ lists as `(fail) (unnamed)` under the file; the hook order this rests on, and wh
 charged to the next row or to the file rather than to the row that printed it, are in the comment
 above the last block of `web/src/__tests__/setup.ts`.
 `__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
-the four `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
-its row.
+the five `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
+its row; four draw React's act messages, and `act-rule-quiet-restore.fixture.tsx` proves that the
+preload puts back a spy of `quietConsoleError()` that a row leaves in place.
 The failure names each message's kind, its component when React names one, and up to three
 frames when the stack holds them, the test's own first (a `*.test.*` file or one under
 `web/src/__tests__/`) and then the product code under `web/src/`, as
@@ -1746,11 +1747,12 @@ after that wait, outside `act`.
 Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
 `quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
 puts `console.error` back after the row, and still records each act message, so the rule still
-fails the row; after a row whose own `afterEach` throws, `console.error` comes back only when the
-next row starts, and after a file's last row it stays quiet through that file's `afterAll`, yet the
-act messages are still recorded, so the file still fails; any other replacement of `console.error`,
-or a spy on it with a `mockImplementation`, is not allowed, because it drops the message before the
-rule reads it.
+fails the row; after a row in which an `afterEach` before the preload's restore throws (the row's
+own, or the preload's `reportReachedNetwork`), `console.error` comes back only when the next row
+starts, and when that row is a file's last, it stays quiet through that file's `afterAll`, yet the
+act messages are still recorded, so the file still fails; any other replacement of
+`console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the
+message before the rule reads it.
 Setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment` is not a fix either, and
 neither is a `user-event` call inside `act`: React then prints "The current testing environment
 is not configured to support act(...)" and the row fails on that.
