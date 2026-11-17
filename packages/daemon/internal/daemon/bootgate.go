@@ -689,7 +689,7 @@ func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pl
 	// that is not Oh My Pi: its own refusal, since "not loaded" would send the operator to
 	// `omp plugin list` when the fix is the prefix or the invocation.
 	if r.exit != 0 && !strings.Contains(r.output, notLoadedMarker) {
-		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (exit %d) for launch command %q", r.exit, launch)))}, loaded{}
+		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.ending(), launch)))}, loaded{}
 	}
 	return bootprobe.Outcome{Refusal: lane.notLoaded(version)}, loaded{}
 }
@@ -754,7 +754,7 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 			return bootprobe.Outcome{Passed: true}
 		}
 		if r.exit != 0 && available && !answeredNo {
-			return bootprobe.Outcome{Detail: fmt.Sprintf("launch command %q exited %d after Oh My Pi answered: %s", launch, r.exit, r.tail)}
+			return bootprobe.Outcome{Detail: fmt.Sprintf("launch command %q %s after Oh My Pi answered: %s", launch, r.ended(), r.tail)}
 		}
 		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("the OMP launch command %q does not expose pi.agents", launch)))}
 	})
@@ -793,7 +793,7 @@ func (g pluginGate) verifySessionStorage(ctx context.Context) error {
 			return bootprobe.Outcome{Refusal: fmt.Errorf("OMP launch command %q started with %s=%s (exit 0): this build predates the session.storage setting and would silently keep sessions on files under a sql session store; pin a fork release that carries the setting",
 				launch, sessionStorageVariable, sessionStorageProbeValue)}
 		}
-		return bootprobe.Outcome{Detail: r.quoting(fmt.Sprintf("launch command %q exited %d without naming %s", launch, r.exit, sessionStorageVariable))}
+		return bootprobe.Outcome{Detail: r.quoting(fmt.Sprintf("launch command %q %s without naming %s", launch, r.ended(), sessionStorageVariable))}
 	})
 }
 
@@ -871,14 +871,34 @@ func (g pluginGate) writeProbe(pattern string, source []byte) (string, string, e
 	return dir, probe, nil
 }
 
-// ran is one probe command's run: its exit code (-1 when killed), its stderr, its stdout, stderr
-// and stdout together, the tail of stderr a refusal quotes, and whether the budget killed it.
+// ran is one probe command's run: its exit code (-1 when killed), the signal that ended it when
+// one did (signal: killed), its stderr, its stdout, stderr and stdout together, the tail of stderr
+// a refusal quotes, and whether the budget killed it.
 type ran struct {
 	exit                   int
+	signal                 string
 	stderr, stdout, output string
 	tail                   string
 	timedOut               bool
 	elapsed                time.Duration
+}
+
+// ending is how the probe's command ended, as a message's parenthesis names it: `exit 3`, or the
+// signal that ended it, which left it no status.
+func (r ran) ending() string {
+	if r.signal != "" {
+		return r.signal
+	}
+	return fmt.Sprintf("exit %d", r.exit)
+}
+
+// ended is how the probe's command ended, as a message's verb says it: `exited 3`, or `was ended
+// by signal: killed`.
+func (r ran) ended() string {
+	if r.signal != "" {
+		return "was ended by " + r.signal
+	}
+	return fmt.Sprintf("exited %d", r.exit)
 }
 
 // quoting is message followed by the stderr tail, after ": ", when stderr said anything.
@@ -907,7 +927,8 @@ func (r ran) killed(launch string, budget time.Duration) string {
 // the terminal's foreground job (terminalJob). It errs when the command could not be run at all,
 // when ctx ended, whose attempt is then not judged, and when the terminal's Ctrl-C ended the
 // attempt. A probe some other signal ended (Oh My Pi crashing, the kernel's out-of-memory kill)
-// is no error: it is judged as a run that exited -1, which each probe reads as its doc says.
+// is no error: it is judged as a run that exited -1, which each probe reads as its doc says, and
+// its messages name the signal (ran.ending, ran.ended).
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
 	attempt, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
@@ -936,9 +957,8 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	// grace is the budget killing it, judged below like any other budget kill, not a probe that
 	// could not be run.
 	timedOut := killed()
-	// Err's only *exec.ExitError is a signal's death, which is judged below (the doc above).
-	var died *exec.ExitError
-	if runErr := procgroup.Err(err); runErr != nil && !timedOut && !errors.As(runErr, &died) {
+	end := procgroup.Ended(err)
+	if runErr := procgroup.Err(err); runErr != nil && !timedOut && end.Signal == "" {
 		return ran{}, runErr
 	}
 	tail := strings.TrimSpace(stderr.String())
@@ -947,6 +967,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	}
 	return ran{
 		exit:     cmd.ProcessState.ExitCode(),
+		signal:   end.Signal,
 		stderr:   stderr.String(),
 		stdout:   stdout.String(),
 		output:   stderr.String() + "\n" + stdout.String(),

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // selectors is every repository a command's selectors name, and every owner one names with no
@@ -688,12 +689,13 @@ func gitLines(args ...string) ([]string, error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	var exit *exec.ExitError
+	end := procgroup.Ended(err)
 	switch {
 	case errors.Is(err, exec.ErrNotFound):
 		return nil, nil
 	case errors.As(err, &exit) && strings.Contains(stderr.String(), "not a git repository"):
 		return nil, nil
-	case errors.As(err, &exit) && args[0] == "config" && exit.ExitCode() == 1:
+	case args[0] == "config" && end.Exited != nil && end.Exited.ExitCode() == 1:
 		return nil, nil
 	case err != nil:
 		return nil, fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))

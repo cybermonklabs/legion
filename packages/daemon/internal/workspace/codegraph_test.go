@@ -1137,6 +1137,55 @@ esac
 	})
 }
 
+// TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing: CodeGraph 1.5.0 dies
+// of the warm-up's own SIGTERM rather than exiting, and the kernel's out-of-memory kill ends one the
+// same way, so a signal's death is an ordinary end for a codegraph. A `status` so ended answered
+// nothing, and the warm-up falls back to the directory as for a `status` that exited non-zero: on a
+// workspace whose `.codegraph/` was there, `index`. A build so ended logs the signal and that the
+// next launch's warm-up repairs the index, which it does: a build CodeGraph 1.5.0 was killed in
+// leaves `state: "indexing"` and a lock naming a dead process (measured with SIGTERM and SIGKILL),
+// which nextCodegraphStep repairs with `index`. Read as a status, each was `exit -1`.
+func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t *testing.T) {
+	fake := func(t *testing.T, callLog, cases string) {
+		t.Helper()
+		binDir := t.TempDir()
+		script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + callLog + "'\ncase \"$1\" in\n" + cases + "esac\n"
+		if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	t.Run("a status a signal ended: the fallback's repair", func(t *testing.T) {
+		callLog := filepath.Join(t.TempDir(), "calls.log")
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		fake(t, callLog, "status) kill -KILL $$ ;;\nindex) exit 0 ;;\n")
+
+		warmCodegraphIndex(context.Background(), dir, time.Now())
+		calls, err := os.ReadFile(callLog)
+		if err != nil {
+			t.Fatalf("read codegraph call log: %v", err)
+		}
+		if lines := strings.Split(strings.TrimSpace(string(calls)), "\n"); !slices.Equal(lines, []string{"status", "index"}) {
+			t.Fatalf("codegraph calls = %v, want status then index: a status a signal ended answered nothing, as one that exited non-zero", lines)
+		}
+	})
+	t.Run("a build a signal ended: the signal named", func(t *testing.T) {
+		callLog := filepath.Join(t.TempDir(), "calls.log")
+		dir := t.TempDir()
+		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; kill -KILL $$ ;;\n")
+		captured := captureStderr(t)
+
+		warmCodegraphIndex(context.Background(), dir, time.Now())
+		want := "[legion] codegraph init for " + dir + " was ended by signal: killed; the next launch's warm-up repairs the index: parsing 512 files\n"
+		if stderr := captured(); !strings.Contains(stderr, want) {
+			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
+		}
+	})
+}
+
 // TestNextCodegraphStep table-tests the pure decision warmCodegraphIndex runs on: a parsed
 // status decides outright (its `initialized:false` always means init, even when `.codegraph/`
 // exists); dirExists is consulted only when status failed or didn't parse; and a live lock

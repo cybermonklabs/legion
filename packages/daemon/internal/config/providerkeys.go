@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -159,15 +159,15 @@ func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
+		end := procgroup.Ended(err)
+		if end.String() == "" {
 			return nil, fmt.Errorf("provider_keys.%s: could not run secrets %s: %w", key.Env, strings.Join(args, " "), err)
 		}
 		detail := ""
 		if text := strings.TrimSpace(stderr.String()); text != "" {
 			detail = ": " + text
 		}
-		return nil, fmt.Errorf("provider_keys.%s: secrets %s failed (exit %d)%s", key.Env, strings.Join(args, " "), exit.ExitCode(), detail)
+		return nil, fmt.Errorf("provider_keys.%s: secrets %s failed (%s)%s", key.Env, strings.Join(args, " "), end, detail)
 	}
 	return stdout.Bytes(), nil
 }

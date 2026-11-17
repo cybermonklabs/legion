@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -641,16 +642,19 @@ func daemonEnvironment() []string {
 	return filtered
 }
 
+// commandError is a configured command's failure: how it ended (its exit, or the signal that ended
+// it, procgroup.Ended) and the stderr its run kept, or that it could not run at all.
 func commandError(field string, err error) error {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		stderr := strings.TrimSpace(string(exit.Stderr))
-		if stderr != "" {
-			return fmt.Errorf("%s failed (exit %d): %s", field, exit.ExitCode(), stderr)
-		}
-		return fmt.Errorf("%s failed (exit %d)", field, exit.ExitCode())
+	end := procgroup.Ended(err)
+	if end.String() == "" {
+		return fmt.Errorf("%s could not run: %w", field, err)
 	}
-	return fmt.Errorf("%s could not run: %w", field, err)
+	var ended *exec.ExitError
+	errors.As(err, &ended)
+	if stderr := strings.TrimSpace(string(ended.Stderr)); stderr != "" {
+		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
+	}
+	return fmt.Errorf("%s failed (%s)", field, end)
 }
 
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {

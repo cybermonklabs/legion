@@ -165,6 +165,43 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 	}
 }
 
+// Ended answers an exit of the command's own as its *exec.ExitError, with the status it chose, and
+// a signal's death as the signal's words and no ExitError, wrapped or not; anything else is
+// neither. Its String is the slot a failure's message fills: `exit 3`, or the signal's words. An
+// Ended that answered a signal's ExitError would hand its caller the status -1, which every such
+// caller once printed as `exit -1` or took for an answer.
+func TestEndedTellsAnExitOfTheCommandsOwnFromASignalsDeath(t *testing.T) {
+	exitedThree := exec.Command("sh", "-c", "exit 3").Run()
+	terminated := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	for _, row := range []struct {
+		name       string
+		err        error
+		wantStatus int // -2: no *exec.ExitError
+		wantSignal string
+		wantString string
+	}{
+		{"no error", nil, -2, "", ""},
+		{"an exit of its own", exitedThree, 3, "", "exit 3"},
+		{"a wrapped exit of its own", fmt.Errorf("run widget: %w", exitedThree), 3, "", "exit 3"},
+		{"a signal's death", terminated, -2, "signal: terminated", "signal: terminated"},
+		{"a wrapped signal's death", fmt.Errorf("run widget: %w", terminated), -2, "signal: terminated", "signal: terminated"},
+		{"a start that failed", exec.Command("/nonexistent/widget").Run(), -2, "", ""},
+		{"exec.ErrWaitDelay", exec.ErrWaitDelay, -2, "", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			end := Ended(row.err)
+			status := -2
+			if end.Exited != nil {
+				status = end.Exited.ExitCode()
+			}
+			if status != row.wantStatus || end.Signal != row.wantSignal || end.String() != row.wantString {
+				t.Errorf("Ended(%v) = status %d, signal %q, String %q; want status %d (-2: no ExitError), signal %q, String %q",
+					row.err, status, end.Signal, end.String(), row.wantStatus, row.wantSignal, row.wantString)
+			}
+		})
+	}
+}
+
 // Run starts cmd through the caller's Starter and calls its done only once the wait has read the
 // exit, which is what keeps a PID 1 reaper's hold on the child until then; a start that fails is
 // answered as it is, with no wait and no done; NoReaper is cmd.Run's own start; and no Starter at

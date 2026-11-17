@@ -9,6 +9,7 @@ package procgroup
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sync/atomic"
@@ -170,20 +171,45 @@ func KilledByContext(cmd *exec.Cmd) (killed func() bool) {
 // never started, or Run failed some other way) is returned unchanged too, for the caller to
 // propagate as its own.
 func Err(err error) error {
-	if err == nil {
-		return nil
-	}
-	var exited *exec.ExitError
-	if errors.As(err, &exited) {
-		if exited.ProcessState != nil && !exited.ProcessState.Exited() {
-			return err
-		}
-		return nil
-	}
-	if errors.Is(err, exec.ErrWaitDelay) {
+	if err == nil || Ended(err).Exited != nil || errors.Is(err, exec.ErrWaitDelay) {
 		return nil
 	}
 	return err
+}
+
+// Ending is how a command ended, read out of its run's error (Ended).
+type Ending struct {
+	// Exited is the run's *exec.ExitError when the command exited on its own, so that its
+	// ExitCode is the status the command chose, and nil otherwise.
+	Exited *exec.ExitError
+	// Signal is the signal's own words (`signal: killed`) when a signal ended the command, which
+	// leaves it no status: its ExitCode answers -1.
+	Signal string
+}
+
+// String is the ending as a failure's message names it: `exit 3`, the signal's words, or "" for
+// a run's error that says neither.
+func (e Ending) String() string {
+	if e.Exited != nil {
+		return fmt.Sprintf("exit %d", e.Exited.ExitCode())
+	}
+	return e.Signal
+}
+
+// Ended reads err, the error a command's run answered, as how the command ended. Both of the
+// Ending's fields are empty for any err that says neither: nil, a start that failed,
+// exec.ErrWaitDelay. Code that reads a status or a signal out of a run's error reads it here, never
+// through errors.As, so a signal's death is never read as the status -1; a caller that reads the
+// status from cmd.ProcessState passes the run's error through Err instead.
+func Ended(err error) Ending {
+	var ended *exec.ExitError
+	if !errors.As(err, &ended) || ended.ProcessState == nil {
+		return Ending{}
+	}
+	if ended.Exited() {
+		return Ending{Exited: ended}
+	}
+	return Ending{Signal: ended.String()}
 }
 
 // Starter starts cmd and answers done, which the caller calls once cmd.Wait has read cmd's exit,

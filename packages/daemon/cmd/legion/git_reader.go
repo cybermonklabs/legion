@@ -1,13 +1,14 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // This file holds the reads that the helper git answers for a commit: the git 2.47.3 commands that
@@ -70,8 +71,7 @@ func (g gitReader) atLeast(major, minor int) bool {
 // before --get. found is false when name is unset, which git answers with exit 1.
 func (g gitReader) config(name string, typ ...string) (value string, found bool, err error) {
 	out, err := g.output("", slices.Concat([]string{"config"}, typ, []string{"--get", name})...)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+	if end := procgroup.Ended(err); end.Exited != nil && end.Exited.ExitCode() == 1 {
 		return "", false, nil
 	}
 	if err != nil {
@@ -176,8 +176,7 @@ type commitConfig struct {
 func (g gitReader) commitConfig() (cfg commitConfig, ok bool) {
 	cfg = commitConfig{includeStatus: true, comment: "#"}
 	out, err := g.output("", "config", "-z", "--get-regexp", `^(commit\.(cleanup|status)|core\.comment(char|string)|trailer\..+\.(command|cmd))$`)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+	if end := procgroup.Ended(err); end.Exited != nil && end.Exited.ExitCode() == 1 {
 		return cfg, true
 	}
 	if err != nil {
