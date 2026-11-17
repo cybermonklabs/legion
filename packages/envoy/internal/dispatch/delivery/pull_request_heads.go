@@ -520,17 +520,22 @@ const headWriteRollback = 2 * time.Second
 // build's own reads a value that did not change as a write that named none. Two reads of one row
 // that begin in one microsecond are the one exception, and it errs the safe way: the row loses its
 // mark and is read again. github_read_order is that read's place in the order of every read of
-// GitHub (PullRequestHead.GitHubReadOrder, startRead), and null where github_read_at is.
+// GitHub (PullRequestHead.GitHubReadOrder, startRead), null on a row the release before inserted.
+// A write of the release before over a row a read of this build wrote clears github_read_at and
+// leaves github_read_order (pull_request_heads_unread_write), which that release names nowhere.
 //
 // A write of GitHub's answer wins over a row no read of GitHub wrote, whatever the two times
-// (the guard's last arm): a stored time a caller set must never refuse GitHub. But that row may
-// hold GitHub's newer answer, which the release before stored from an envelope while it served
-// beside this build, and a slower read of this build can land an older answer after it. So where
-// the write replaces such a row and the row's time is later than the answer's, the trigger
-// pull_request_heads_older_read records, inside this statement, that the pull request is owed a
-// read of kind failure: the reconcile's next pass reads it before any refusal and whatever its
-// state, a closed or merged row included, and writes GitHub's answer then, which is newer than
-// both.
+// (the guard's last arm): a stored time a caller set must never refuse GitHub. The one answer it
+// does not win with is one of the row's own second over a row the release before wrote over,
+// whose read took an earlier place than the one the row keeps (below); that write owed a read,
+// which writes GitHub's head at the first reconcile pass that reaches it. A row no read of GitHub
+// wrote may also hold GitHub's newer answer, which the release before stored from an envelope
+// while it served beside this build, and a slower read of this build can land an older answer
+// after it. So where the write replaces such a row and the row's time is later than the answer's,
+// the trigger pull_request_heads_older_read records, inside this statement, that the pull request
+// is owed a read of kind failure: the reconcile's next pass reads it before any refusal and
+// whatever its state, a closed or merged row included, and writes GitHub's answer then, which is
+// newer than both.
 //
 // GitHub's updated_at is whole seconds, so the order two answers of one second arrive in says
 // nothing of which is the newer: a read that began first and was answered slowly would land its
@@ -558,7 +563,12 @@ const headWriteRollback = 2 * time.Second
 // this pull request committed after that read, so the issue the write carries was judged from
 // links that no longer stand, and the first reconcile pass that reaches the row judges it again
 // (MarkHeadsLinked). The mark is a count on the row the write lands on, compared in the statement
-// that holds that row's lock, so no order of the two commits loses it.
+// that holds that row's lock, so where the row is stored before the link is written no order of
+// the two commits loses it. An insert compares nothing: a link written while the pull request's
+// first row is written, or while its row moves from a repository's old name to the canonical one
+// (upsertHeadUnderCanonicalName), marks no row, and the insert stamps the row read with the issue
+// judged from the links before. The tasks of the attribution rule, which judge a pull request's
+// issue from its stored facts at each read, replace the mark.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
@@ -929,12 +939,18 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 // request merged left the row with the issue the merge's read gave it for as long as the row
 // stood. The first reconcile pass that reaches a marked row reads it from GitHub, the unread rows
 // first by (repository, number), PullRequestHeadBatch rows a pass, and attributes it with the
-// links as they stand then.
+// links as they stand then, where GitHub answers each read of that attribution: a pass whose read
+// of the commit messages fails stamps the row read with the issue it held (RefreshPullRequestHead),
+// and the link is not followed.
 //
 // The count is what a head write in flight compares: its attribution read link_mark before it
 // read the links (linkMarkOf), and its upsert leaves the row unread where the count has moved
-// since (upsertHeadRow), so a write that judged from links this write changed does not stamp the
-// row read again, whichever of the two commits first.
+// since (upsertHeadRow), so where the row is stored before this write, a write that judged from
+// links this write changed does not stamp the row read again, whichever of the two commits first.
+// Where no row is stored yet, as at a pull request's first head write or a write that moves the row
+// from a repository's old name, this marks no row and the link is not followed. The tasks of the
+// attribution rule, which judge a pull request's issue from its stored facts at each read, replace
+// the mark.
 //
 // The mark owes no read (pull_request_reads_owed): the head is not in doubt, only its issue, and
 // the row's head, state and mark of a read of GitHub stay as they are, so neither trigger of the
@@ -942,9 +958,9 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 // GitHub issue the pull request's body cites, an issue named later, a new parent and a changed
 // repository mapping change an attribution too, but a head row stores none of them, so those are
 // followed at the pass that reaches the open row, at the pull request's next event, or at a
-// results read of a commit the row heads (api's comparisonReader.readThroughHead). The URLs are
-// compared lowercased, as the attribution compares them, over every row of the table, which holds
-// a row per pull request Dispatch has seen.
+// results read of a commit a merged row heads and no open row does (api's
+// comparisonReader.readThroughHead). The URLs are compared lowercased, as the attribution compares
+// them, over every row of the table, which holds a row per pull request Dispatch has seen.
 //
 // The rows are locked in (repository, number) order, after the issue rows the caller's
 // transaction holds: a head write that moves a row takes those issue rows before the head row too
@@ -1482,7 +1498,14 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		}
 		return headRead{}, markHeadNotStored(fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err))
 	}
-	began, err := startRead(ctx, in.pool)
+	// The place is a value of the owed table's revision sequence, which a migration that alters
+	// that sequence, or sets the table logged or unlogged, holds locked until it commits: it waits
+	// no longer than the owe beside it does (owedTableBound), so such a migration holds the
+	// delivery, and one of the slots its repository shares, for seconds and not for the message's
+	// whole deadline (the review of cybermonklabs/legion#4209 at 5ea6b2ffb2, N1).
+	placing, cancelPlace := owedTableBound(ctx)
+	began, err := startRead(placing, in.pool)
+	cancelPlace()
 	if err != nil {
 		return headRead{}, markHeadNotStored(err)
 	}

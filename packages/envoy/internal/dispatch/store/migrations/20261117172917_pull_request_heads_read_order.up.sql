@@ -7,14 +7,16 @@
 --   github_read_order  the place the read whose answer the row holds took: a value of
 --                      pull_request_reads_owed_revision_seq (20261116163445), which each reader of
 --                      GitHub takes with one statement, nextval, just before its request goes out
---                      (delivery.startRead). Null where github_read_at is null, and on every row a
---                      release before this one wrote.
+--                      (delivery.startRead). Null on every row a release before this one
+--                      inserted, and left as it was by that release's update (below).
 --   link_mark          how many writes of a link to the row's pull request have marked the row
 --                      unread (delivery.MarkHeadsLinked). Each head write reads it before its
 --                      attribution reads the links, and its upsert leaves the row unread where the
---                      count has moved since (delivery.upsertHeadRow): a write that judged the
---                      row's issue from links a later write changed does not stamp the row read
---                      again. Null on a row no such write has marked.
+--                      count has moved since (delivery.upsertHeadRow): where the row is stored
+--                      before the link is written, a write that judged the row's issue from links
+--                      a later write changed does not stamp the row read again. A link written
+--                      while a write inserts the row marks nothing. Null on a row no such write
+--                      has marked.
 --
 -- 20261117114124 ordered the two answers by github_read_at, the clock of each process that read.
 -- A stored read start ahead of a reader's clock, from two replicas whose clocks differ or a clock
@@ -32,11 +34,15 @@
 -- an earlier place than the stored row's. A row with no place, which the release before and the
 -- earlier builds of this change wrote, is never skipped onto, since `new < null` is never true;
 -- and the release before names no github_read_order in its statements, so its update leaves the
--- place as it was, which is never earlier than itself. A read that took the later place can still
--- be answered with the older state, where its request reached GitHub first, or where its first
--- request failed and a later try was answered, so two answers of one second that differ in a fact
--- GitHub answers owe a read whichever of the two the row keeps, and the next read writes what
--- GitHub holds then.
+-- place as it was, which is never earlier than itself. That update of a row a read of this build
+-- wrote clears github_read_at and keeps the place (pull_request_heads_unread_write), so an answer
+-- of GitHub of the same second whose read took an earlier place than the one the row keeps is
+-- skipped there, over a row no read of GitHub wrote; the update owed a read in the same
+-- statement, so the first reconcile pass that reaches that owed read writes GitHub's head. A read
+-- that took the later place can still be answered with the older state, where its request reached
+-- GitHub first, or where its first request failed and a later try was answered, so two answers of
+-- one second that differ in a fact GitHub answers owe a read whichever of the two the row keeps,
+-- and the next read writes what GitHub holds then.
 --
 -- The migration also widens pull_request_heads_merged_unread to every merged row no read has
 -- reached, credited or not (`state = 'merged' and checked_at is null`), which the reconcile's merged

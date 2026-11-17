@@ -268,24 +268,32 @@ func poolWithLockTimeout(t *testing.T, ctx context.Context, pool *store.Pool, ti
 // own, as a migration of the table holds it, until the function it answers ends the hold.
 func lockOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (release func()) {
 	t.Helper()
+	return holdOwedReads(t, ctx, pool, "lock table pull_request_reads_owed in access exclusive mode")
+}
+
+// holdOwedReads runs statement, a migration's statement on pull_request_reads_owed or its
+// revision sequence, in a transaction of a connection of its own, and holds the locks it takes
+// until the function it answers rolls the transaction back.
+func holdOwedReads(t *testing.T, ctx context.Context, pool *store.Pool, statement string) (release func()) {
+	t.Helper()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
 	if err != nil {
-		t.Fatalf("connect to hold pull_request_reads_owed locked: %v", err)
+		t.Fatalf("connect to hold %q: %v", statement, err)
 	}
 	tx, err := conn.Begin(ctx)
 	if err == nil {
-		_, err = tx.Exec(ctx, "lock table pull_request_reads_owed in access exclusive mode")
+		_, err = tx.Exec(ctx, statement)
 	}
 	if err != nil {
-		t.Fatalf("lock pull_request_reads_owed: %v", err)
+		t.Fatalf("hold %q: %v", statement, err)
 	}
 	release = sync.OnceFunc(func() {
 		ended := context.WithoutCancel(ctx)
 		if err := tx.Rollback(ended); err != nil {
-			t.Errorf("end the lock of pull_request_reads_owed: %v", err)
+			t.Errorf("end the hold of %q: %v", statement, err)
 		}
 		if err := conn.Close(ended); err != nil {
-			t.Errorf("close the connection that held pull_request_reads_owed locked: %v", err)
+			t.Errorf("close the connection that held %q: %v", statement, err)
 		}
 	})
 	t.Cleanup(release)

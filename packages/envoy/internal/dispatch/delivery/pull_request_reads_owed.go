@@ -114,16 +114,18 @@ const (
 const RefusedReadsPerPass = 50
 
 // owedReadWriteTimeout bounds each statement of the intake that can wait on a lock of
-// pull_request_reads_owed (owedTableBound), so a lock of that table, as a migration of it holds
-// one, holds a delivery, and one of the intakeMaxAckPending slots its repository shares, for
-// seconds and not for the message's whole deadline (acceptance of cybermonklabs/legion#4209 at
-// 3a21edb2c9; its review at ac562e9837, N1).
+// pull_request_reads_owed or of its revision sequence (owedTableBound), so a lock of that table,
+// as a migration of it holds one, holds a delivery, and one of the intakeMaxAckPending slots its
+// repository shares, for seconds and not for the message's whole deadline (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9; its reviews at ac562e9837 and 5ea6b2ffb2, N1).
 const owedReadWriteTimeout = 5 * time.Second
 
 // owedTableBound is ctx bounded by owedReadWriteTimeout, for one statement of the intake that can
-// wait on a lock of pull_request_reads_owed: the owe of a read (owePullRequestRead, whose two
-// statements share it), the settle of the read owed before a head read (Intake.recordPullRequestHead),
-// and the head write, whose trigger can owe a read (Intake.writeHead). The intake opens no
+// wait on a lock of pull_request_reads_owed or of its revision sequence: the owe of a read
+// (owePullRequestRead, whose two statements share it), the read's place, a value of that sequence
+// (startRead, which a migration that alters the sequence or sets the table logged or unlogged
+// holds), the settle of the read owed before a head read (Intake.recordPullRequestHead), and the
+// head write, whose trigger can owe a read (Intake.writeHead). The intake opens no
 // transaction those statements share, so the bound is one per statement and not one
 // `SET LOCAL lock_timeout`. The owe runs it on the handling context where the message's own
 // deadline may be the delivery's failure (Intake.oweEnvelopesRead), and on the message's context

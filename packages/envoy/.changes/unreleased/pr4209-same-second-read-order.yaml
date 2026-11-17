@@ -9,7 +9,10 @@ body: |-
     older head stood until the next reconcile pass; no clock of a process decides the order, so two
     replicas whose clocks differ order their reads as the reads began. A read whose place cannot be
     taken does not start. `pull_request_heads.github_read_at` is the reader's clock as the read began,
-    and orders nothing. Two answers of one second that differ still owe a read.
+    and orders nothing. Two answers of one second that differ still owe a read. A row an earlier
+    release changes while it serves beside this one keeps the place of the read it replaced, so an
+    answer of the same second whose read took an earlier place is refused over it too; that change
+    owes a read, so the pass that reaches it writes GitHub's head.
 time: 2026-11-17T12:16:12.000000000Z
 custom:
     Issue: pr4209
