@@ -1945,11 +1945,15 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 #### Rolling back the release that keeps the commit a reviewer last read
 
 The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
+Each task of the reviewer now ends with two sentences of the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.`, and a stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
+Both statements run in the migration's one transaction: the add takes a short lock on `phases` and rewrites no row, and the update writes the reviewer's rows that store a task.
 An earlier release boots with the column in place: its phases read and its phases write name each column they touch, so it never reads the column, and every row it inserts takes the default, the empty string.
 At the rollback, with the daemon stopped, run the way back that the migration's header gives: it drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That way back is owed to the roll-forward, not to the earlier release.
 An earlier release does not clear the column when it opens a new generation of an issue, so a column left in place could tell the first reviewer of that generation after the roll-forward a commit that a review of the generation before read, where this release names none.
 What the drop costs is the commit each reviewer's row held: the next round of each issue then in review reads the whole change.
+The way back leaves the two sentences in the stored tasks, since the earlier release sends a stored task as text and reads nothing in it.
+The roll-forward appends them again, so a task stored before the first upgrade and still owed then ends with them twice, and still ends with the daemon's two sentences.
 
 #### Rolling back the release that tells the merger of a merge-queue removal
 
@@ -2600,7 +2604,7 @@ The migrations recorded above this one are these.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
-20261116234034_phase_reviewed_head adds `phases.reviewed_head` and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the column again at its default.
+20261116234034_phase_reviewed_head adds `phases.reviewed_head` and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the column again at its default and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

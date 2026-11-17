@@ -737,15 +737,21 @@ const phaseReviewedHeadVersion = 20261116234034
 // comes through both with the rest of its record and reads no commit, so the next round of its
 // issue reads the whole change. Without the drop, the roll-forward's add of a column that stands
 // fails; without the delete, Migrate finds the version recorded and never adds the column again,
-// and every phases read, which names the column, fails. The test is in this package because
-// headerWayBack, the reader of a header's way back, is a test helper here, which internal/store's
-// own tests cannot import.
+// and every phases read, which names the column, fails. The way back leaves the round's sentences
+// in the task the row stores, which the earlier release sends as text, and the roll-forward appends
+// them again, the commit `none` and the row's entry: the task still ends with the daemon's two
+// sentences, its own two before them. The test is in this package because headerWayBack, the
+// reader of a header's way back, is a test helper here, which internal/store's own tests cannot
+// import.
 func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	const key, reviewed = "LEGION-860", "2222222222222222222222222222222222222222"
+	sentences := func(commit string) string {
+		return " " + workflow.ReviewedCommitLabel + ": " + commit + ". " + workflow.ReviewEntryLabel + ": 2."
+	}
 	held := record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Entry: 2,
-		EntryTask: "Continue " + key + ". Issue: " + key + ". Phase: reviewing.", ReviewedHead: reviewed}
+		EntryTask: "Continue " + key + ". Issue: " + key + ". Phase: reviewing." + sentences(reviewed), ReviewedHead: reviewed}
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: key, Tree: key, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "A", HandedOver: true})
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -787,8 +793,9 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 		t.Fatalf("the roll-forward applied %d migrations, want 1: the way back re-arms its own migration and no other", applied)
 	}
 	got := phaseRow(t, pool, key, claim.RoleReviewer)
-	if got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != held.EntryTask || got.ReviewedHead != "" {
+	if want := held.EntryTask + sentences("none"); got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != want || got.ReviewedHead != "" {
 		t.Fatalf("the reviewer's row after the roll-forward = claim %q, entry %d, task %q, reviewed commit %q; want the row as it was "+
-			"with no reviewed commit, the column's default", got.Claim, got.Entry, got.EntryTask, got.ReviewedHead)
+			"with no reviewed commit, the column's default, and the task ending with the daemon's two sentences again: %q",
+			got.Claim, got.Entry, got.EntryTask, got.ReviewedHead, want)
 	}
 }

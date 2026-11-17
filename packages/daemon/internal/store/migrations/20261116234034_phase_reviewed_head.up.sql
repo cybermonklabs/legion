@@ -19,7 +19,20 @@
 -- Every row the table already holds takes the default, the empty string, and nothing fills it: the
 -- release before this one kept no such commit, since the decision that held one was cleared at each
 -- entry into a phase. So the first round after the upgrade of an issue already in review names no
--- commit, and its reviewer reads the whole change, as it did before.
+-- commit, `none`, and its reviewer reads the whole change, as it did before.
+--
+-- Each task of the reviewer ends with two sentences of the daemon's, the commit and then the entry
+-- (workflow's namingTheReviewRound), and the task of an entry is stored with them
+-- (phases.entry_task), so a stored task is sent as it stands (workflow's sendOwedEntry). The release
+-- before stored the reviewer's task with neither, so the update below appends them to each task a
+-- reviewer's row stores, in the words namingTheReviewRound writes for a row that holds no commit:
+-- ` Last reviewed commit: none.`, since the column added here is empty on every row, then
+-- ` Review entry: <the row's entry>.`. A test holds the update's text to the function's
+-- (TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences in
+-- internal/workflow). It reads no task's text, and a row of another role, or a reviewer's row
+-- that stores no task, is left as it is. Both statements run in store.apply's one transaction,
+-- under its advisory lock: the add takes a short ACCESS EXCLUSIVE lock on phases and rewrites no
+-- row, and the update writes the reviewer's rows that store a task.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the transaction below, run with the daemon stopped:
@@ -38,5 +51,11 @@
 -- this file again, which adds the column again at its default. The drop is also what lets this
 -- file run again at all, since an add of a column that stands fails. What the drop costs is the
 -- commit each reviewer's row held, so the next round of each issue then in review reads the whole
--- change.
+-- change. The way back leaves the sentences in the stored tasks: the release before sends a stored
+-- task as text and reads nothing in it. The roll-forward appends them again, so a task stored
+-- before the first upgrade and still owed then ends with them twice, and still ends with the
+-- daemon's two sentences.
 alter table phases add column reviewed_head text not null default '';
+
+update phases set entry_task = entry_task || ' Last reviewed commit: none. Review entry: ' || entry || '.'
+where role = 'reviewer' and entry_task <> '';
