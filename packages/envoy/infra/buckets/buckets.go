@@ -1,15 +1,17 @@
 // Package buckets is `envoy-infra buckets`: the one command that creates the buckets a listener
-// copies (bus.CopiedBuckets), and recreates one, once it has proven that no writer of them runs.
+// copies (bus.CopiedBuckets), and recreates one, once it has checked that no writer of them runs.
 //
 // A write such a bucket acknowledged is lost when the bucket is deleted and created again, and the
 // listener that made it told its caller it landed: the ack names the stream and its sequence, never
 // the bucket's incarnation. So no listener creates one (INFRA-4094), and this command refuses
-// while any listener of the deployment runs, and, for the CI state bucket, any envoy-dispatch,
-// which writes it too. A listener that finds a bucket missing serves its writes 503 and names the
-// bucket on /healthz until this command recreates it.
+// while a listener of the deployment it can see runs, and, for the CI state bucket, an
+// envoy-dispatch, which writes it too. A listener that finds a bucket missing serves its writes 503
+// and names the bucket on /healthz until this command recreates it.
 //
-// The proof that each writer ended is the process-end evidence of dispatch://INFRA-4015's plan
-// (section 6), as far as it is built here, and never a /connz count alone:
+// The check is best effort, observation of the places the operator names, and every run says so
+// (bestEffortWarning). dispatch://INFRA-4015's hold (t-10) will replace it with exclusion at the
+// server: while it holds, the auth callout refuses every connection but the operator's, every other
+// connection is kicked, and every server's connz shows the operator alone. Until then it reads:
 //
 //   - Kubernetes, for each --kube-context: no pod the API lists runs a writer container that has
 //     not terminated, and no node's kubelet runtime list (/api/v1/nodes/<node>/proxy/runningpods/)
@@ -87,18 +89,19 @@ func operatorEnvironment(name string) (string, bool) {
 // would receive every other client's replies, a session's push deliveries among them.
 const InboxPrefix = "_INBOX_envoy_buckets"
 
-// bestEffortWarning is printed on every run, to standard error, before anything else: the proof
-// is observation, not a barrier, until dispatch://INFRA-4015's maintenance transition gives the
-// command an authoritative inventory, executable identity and an admission barrier held from proof
-// through mutation. Each way it names is a test that asserts today's outcome and must flip then
-// (buckets_test.go, TestBestEffortProof...).
+// bestEffortWarning is printed on every run, to standard error, before anything else: the check
+// is observation, not exclusion, until dispatch://INFRA-4015's hold (t-10) excludes every writer
+// at the server - the auth callout refusing every connection but the operator's and every other
+// connection kicked - from the check through the change. Each way it names is a test that asserts
+// today's outcome and must flip then (buckets_test.go, TestBestEffort...).
 const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it four ways:
   - an omitted host or dev box: only the --kube-context and --host you name are checked;
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
   - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
 Before you run it, stop every envoy-listener of the deployment (and every envoy-dispatch, for
-envoy_ci_state) and confirm on each host that it has ended. INFRA-4015's barrier replaces this.
+envoy_ci_state) and confirm on each host that it has ended. INFRA-4015's server-side hold, which
+leaves no writer a connection, replaces this.
 `
 
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]

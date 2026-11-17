@@ -527,10 +527,11 @@ func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. A writer on a host the operator
-// did not name gets past the proof: the command creates the bucket while it runs. Today's outcome,
-// asserted so the barrier change, whose authoritative inventory must refuse here, has to invert it.
-// The same writer named with --host refuses, so the pass is not vacuous.
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10). A
+// writer on a host the operator did not name gets past the check: the command creates the bucket
+// while it runs. Today's outcome, asserted so that the hold, which excludes every writer at the
+// server whatever host it runs on, has to invert it. The same writer named with --host refuses, so
+// the pass is not vacuous.
 func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilINFRA4015BarrierLands(t *testing.T) {
 	uri, js := server(t)
 	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
@@ -548,10 +549,10 @@ func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilINFRA4015BarrierLands(t
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. A writer whose binary was renamed
-// gets past the host check, which reads process names: the command creates the bucket while the
-// renamed writer runs on the named host. The barrier's executable identity must refuse here. The
-// stand-in runs throughout, so the pass is not vacuous.
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10). A
+// writer whose binary was renamed gets past the host check, which reads process names: the command
+// creates the bucket while the renamed writer runs on the named host. The hold refuses and kicks
+// its connection whatever its name. The stand-in runs throughout, so the pass is not vacuous.
 func TestBestEffortProofMissesARenamedBinaryUntilINFRA4015BarrierLands(t *testing.T) {
 	uri, js := server(t)
 	renamed := startStandIn(t, "renamed-writer")
@@ -569,10 +570,11 @@ func TestBestEffortProofMissesARenamedBinaryUntilINFRA4015BarrierLands(t *testin
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. A writer that starts after the
-// final scan and before the create gets past the proof: here it starts the moment the host query
-// returns clean, and the command still creates the bucket. The barrier, held from proof through
-// mutation, must keep it out. The writer runs when the create completes, so the pass is not vacuous.
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10). A
+// writer that starts after the final scan and before the create gets past the check: here it starts
+// the moment the host query returns clean, and the command still creates the bucket. The hold, kept
+// from the check through the change, refuses its connection. The writer runs when the create
+// completes, so the pass is not vacuous.
 func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilINFRA4015BarrierLands(t *testing.T) {
 	uri, js := server(t)
 	ssh := localSSH(t)
@@ -598,10 +600,11 @@ func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilINFRA4015Barri
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. check holds nothing once it
-// returns: a writer starts after it, and the operator's restore (here the bucket created as `nats
-// stream restore` creates it) goes ahead under that writer with nothing refusing it. The barrier's
-// protected restore must refuse here. A second check now refuses, so the writer is real.
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10).
+// check holds nothing once it returns: a writer starts after it, and the operator's restore (here
+// the bucket created as `nats stream restore` creates it) goes ahead under that writer with nothing
+// refusing it. The hold, kept through the restore, refuses the writer's connection. A second check
+// now refuses, so the writer is real.
 func TestBestEffortCheckHoldsNothingThroughARestoreUntilINFRA4015BarrierLands(t *testing.T) {
 	uri, js := server(t)
 	ssh := localSSH(t)
