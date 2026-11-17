@@ -787,12 +787,6 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 	// opens then. The hold ends once the writer has forked from the room, which it does with the
 	// writer slot taken (afterForkRead), or once it waits for the retirement (awaitingRetirement).
 	forked, waiting := make(chan struct{}, 1), make(chan struct{}, 1)
-	signal := func(c chan struct{}) {
-		select {
-		case c <- struct{}{}:
-		default:
-		}
-	}
 	r.service.afterForkRead = func(room string) {
 		if room == r.room {
 			signal(forked)
@@ -857,6 +851,96 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 		}
 	default:
 		t.Fatal("the write that opened as the room retired published nothing, so nothing here is tested")
+	}
+}
+
+// A settlement that starts on the document while the room a late departure's settlement loaded
+// retires - past the retirement's last look at the room's record, before ygo's close of the room -
+// takes up no room the close then takes away: it waits for the close to return (awaitRetirement)
+// and then takes the room ygo holds, loading the document again where the close took the room, so
+// it settles what the document owes on a room ygo still holds. A settlement holds the room it
+// settles without being inside an Apply on it, so ygo's own checks before its close cannot see it.
+// The settlement is an issue's synchronous one (settleOwedNow), which, as every caller of
+// settleRoomWithin does, holds the room's record while it runs.
+func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+
+	// The retirement holds once it has reserved the record (afterRetireReserved): the document
+	// is made to owe a settlement, and one starts then. The hold ends once that settlement has
+	// taken its room and the document's lock (afterSettleLock), or once it waits for the
+	// retirement (awaitingRetirement). settledOn is the room it took.
+	locked, waiting := make(chan struct{}, 1), make(chan struct{}, 1)
+	var started atomic.Bool
+	var settledOn atomic.Pointer[crdt.Doc]
+	r.service.afterSettleLock = func(room string) {
+		if room == r.room && started.Load() {
+			settledOn.CompareAndSwap(nil, r.service.srv.GetDoc(room))
+			signal(locked)
+		}
+	}
+	r.service.awaitingRetirement = func(room string) {
+		if room == r.room {
+			signal(waiting)
+		}
+	}
+	settled := make(chan error, 1)
+	var reserved atomic.Bool
+	r.service.afterRetireReserved = func(room string) {
+		if room != r.room || reserved.Swap(true) {
+			return
+		}
+		if _, err := r.service.store.Pool.Exec(context.Background(), `insert into doc_settlements_pending (artifact_id) values ($1)`, r.room); err != nil {
+			t.Errorf("owe the document's settlement: %v", err)
+			return
+		}
+		started.Store(true)
+		go func() { settled <- r.service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))) }()
+		select {
+		case <-locked:
+		case <-waiting:
+		case <-time.After(roomWait(t)):
+			t.Error("the settlement neither took the retiring room nor waited for its retirement")
+		}
+	}
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letDeparture()
+	r.awaitSocketEnd("the second room's browser")
+	if !reserved.Load() {
+		t.Fatal("no retirement reserved the room the late departure's settlement loaded, so nothing here is tested")
+	}
+	var settleErr error
+	select {
+	case settleErr = <-settled:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the settlement that started as the room retired never ended")
+	}
+	room := settledOn.Load()
+	if room == nil {
+		t.Fatalf("the settlement that started as the room retired took no room (it ended: %v), so nothing here is tested", settleErr)
+	}
+	if got := r.service.srv.GetDoc(r.room); got != room {
+		t.Errorf("the settlement that started as the room retired settled on room %p, and ygo holds %p once it has ended: the retirement closed the room under the settlement holding it", room, got)
+	}
+	owed, err := settlementPending(context.Background(), r.service.store.Pool, r.room)
+	if settleErr != nil || err != nil || owed {
+		t.Errorf("the settlement that started as the room retired ended with %v, and the document still owes a settlement: %v (%v); want the debt settled", settleErr, owed, err)
+	}
+}
+
+// signal sends on c, a channel with room for one value, unless it already holds one.
+func signal(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
 	}
 }
 
