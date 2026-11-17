@@ -65,6 +65,12 @@
 #    without one the step exits 127 and the job carries on: that is what left every legion
 #    release's "## Worker image" section unwritten until release.yaml's worker_image_release,
 #    a job that checked nothing out, got its checkout.
+# 7. A job that calls a reusable workflow (`uses:` and no `steps:`) names no secret but
+#    GITHUB_TOKEN in its text, and carries no `secrets: inherit`, which hands it every secret,
+#    unless its `uses:` is `./` and the path of a workflow on WORKFLOWS: the called workflow's jobs
+#    are what run the secret, and this check reads only those. So a names job pointed at
+#    worker-image.yaml, which runs a docker build, or a `secrets:` block added to worker_image, is
+#    refused here rather than passing unread.
 #
 # "Runs dependency code" is a tripwire over named patterns, not a proof that no other code runs: a
 # step runs dependency code when its `uses:` starts with one of DEPENDENCY_USES, when the shell its
@@ -132,8 +138,9 @@
 # and 6 read every job that has `steps:`; a job that calls a reusable workflow (`uses:` and no
 # steps: those names jobs, and release.yaml's worker_image) is out of their scope, since what it
 # runs is that workflow's own jobs, which this check reads when the workflow is on WORKFLOWS
-# (release-notes-names.yaml is; worker-image.yaml, which builds the worker image, is not).
-# Rule 4 reads the job it names. Rule 5 reads every job's `if:`, steps or not.
+# (release-notes-names.yaml is; worker-image.yaml, which builds the worker image, is not). Rule 7
+# reads every such job. Rule 4 reads the job it names. Rule 5 reads every job's `if:`, steps or
+# not.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -886,6 +893,30 @@ def check_conditions(path: Path, jobs: Mapping) -> None:
                 f"job it reads",
             )
 
+# 7. A job that calls a reusable workflow hands a secret only to one this check reads.
+LOCAL_CALLS = {f"./{workflow}" for workflow in WORKFLOWS}
+
+
+def check_call(path: Path, name: str, job: Mapping, job_line: int) -> None:
+    uses = job.get("uses")
+    if not isinstance(uses, str) or uses in LOCAL_CALLS:
+        return
+    named = [
+        (line, secret.group(0))
+        for _, line, text in texts_of(job, line=job_line)
+        if (secret := OTHER_SECRET.search(text))
+    ]
+    if job.get("secrets") == "inherit":
+        named.append((job.lines.get("secrets", job_line), "every secret ('secrets: inherit')"))
+    for line, secret in named:
+        problem(
+            path, line,
+            f"job '{name}' calls {uses}, a workflow this check does not read, but its text names "
+            f"{secret}; a job that calls a reusable workflow hands a secret but GITHUB_TOKEN only "
+            f"to a workflow on WORKFLOWS, called as './' and its path",
+        )
+
+
 
 loaded: dict[Path, tuple[Mapping, Mapping]] = {}
 for path in WORKFLOWS:
@@ -905,7 +936,10 @@ for path in WORKFLOWS:
         continue
     loaded[path] = (doc, jobs)
     for name, job in jobs.items():
-        if not isinstance(job, Mapping) or not isinstance(job.get("steps"), list):
+        if not isinstance(job, Mapping):
+            continue
+        if not isinstance(job.get("steps"), list):
+            check_call(path, str(name), job, jobs.lines.get(name, 1))
             continue
         check_job(path, str(name), job, jobs.lines.get(name, 1), job["steps"], doc)
 

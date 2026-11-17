@@ -238,6 +238,14 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+  notes_names:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-envoy-notes
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 YAML
   cat > "$dir/release-envoy-listener.yaml" <<'YAML'
 name: Release Envoy Listener
@@ -438,6 +446,32 @@ rm "$root/$NOTES_NAMES"
 run_check "$root"
 check "exits 1, so the release workflows' calls cannot reach a workflow this check never read" \
   "$(is "$status:$(contains "$out" "^::error::$NOTES_NAMES is missing\$")" 1:true)"
+
+echo "case: a names job pointed at a workflow this check does not read, still handing it the term list"
+# The job has no steps, so rules 1-3 and 6 never read it; rule 7 is what sees where the list goes.
+root=$(fixture names-call-elsewhere)
+mutate "$root/$RELEASE" '    uses: ./.github/workflows/release-notes-names.yaml' '    uses: ./.github/workflows/worker-image.yaml'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the call and the secret at the secret's line" \
+  "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" '^      PRIVATE_NAME_TERMS:'): job 'notes_names' calls ./.github/workflows/worker-image.yaml, a workflow this check does not read, but its text names secrets.PRIVATE_NAME_TERMS")"
+
+echo "case: worker_image, which calls a workflow this check does not read, is handed a secret"
+root=$(fixture worker-image-secret)
+mutate "$root/$RELEASE" $'    uses: ./.github/workflows/worker-image.yaml\n' $'    uses: ./.github/workflows/worker-image.yaml\n    secrets:\n      DEPLOY_TOKEN: ${{ secrets.PRIVATE_NAME_TERMS }}\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names worker_image and the secret" \
+  "$(contains "$out" "job 'worker_image' calls ./.github/workflows/worker-image.yaml, a workflow this check does not read, but its text names secrets.PRIVATE_NAME_TERMS")"
+root=$(fixture worker-image-inherit)
+mutate "$root/$RELEASE" $'    uses: ./.github/workflows/worker-image.yaml\n' $'    uses: ./.github/workflows/worker-image.yaml\n    secrets: inherit\n'
+run_check "$root"
+check "secrets: inherit, which hands it every secret, is refused too" \
+  "$(is "$status:$(contains "$out" "job 'worker_image' calls .*, but its text names every secret ('secrets: inherit')")" 1:true)"
+root=$(fixture worker-image-github-token)
+mutate "$root/$RELEASE" $'    uses: ./.github/workflows/worker-image.yaml\n' $'    uses: ./.github/workflows/worker-image.yaml\n    secrets:\n      TOKEN: ${{ secrets.GITHUB_TOKEN }}\n'
+run_check "$root"
+check "GITHUB_TOKEN alone, which every job holds, passes" "$(is "$status" 0)"
 
 echo "case: a credentialed job runs bun install"
 root=$(fixture bun-install)
