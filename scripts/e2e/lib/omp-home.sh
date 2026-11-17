@@ -67,13 +67,14 @@ make_omp_home() {
 # its own home, the setting that keeps Oh My Pi's first-run setup wizard shut. An interactive Oh My
 # Pi in a terminal (`legion controller start` in a tmux pane, a person's session) opens the wizard
 # ("Setup step 1 of 5", "Sign in to your providers") while the profile's setupVersion is below the
-# build's CURRENT_SETUP_VERSION, so on a fresh profile it holds the pane and the session never starts
-# (runInteractiveMode in packages/coding-agent/src/main.ts and selectSetupScenes in
-# packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard: false` shuts it whatever setup
-# version the build counts to; `--mode rpc` never opens it. A named profile's own settings file is
-# its agent/config.yml, and it inherits no other config.yml of the home (getProfileConfigRoot in
-# @oh-my-pi/pi-utils dirs.ts). Only the working directory's project settings and PI_CONFIG_FILES
-# overlays merge over it, so each profile the run writes carries the line.
+# build's CURRENT_SETUP_VERSION, so on a fresh profile the wizard blocks the initial controller
+# command and normal editor interaction (runInteractiveMode in packages/coding-agent/src/main.ts
+# and selectSetupScenes in packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard:
+# false` shuts it whatever setup version the build counts to; `--mode rpc` never opens it. A named
+# profile's own settings file is its agent/config.yml, and it inherits no other config.yml of the
+# home (getProfileConfigRoot in @oh-my-pi/pi-utils dirs.ts). Only the working directory's project
+# settings and PI_CONFIG_FILES overlays merge over it, so each profile the run writes carries the
+# line.
 omp_setup_wizard_off() {
   printf 'startup:\n  setupWizard: false\n' >>"$1"
 }
