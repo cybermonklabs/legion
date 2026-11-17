@@ -46,9 +46,12 @@ every interface.
 
 ## Layout
 
-- `compose/listener.compose.yml` — host-network listener container.
-- `compose/single-node.compose.yml` — Envoy on one machine: a JetStream NATS of its own and the
-  listener, both on loopback, for sessions that need to reach only each other. The site's Envoy
+- `compose/listener.compose.yml` — host-network listener container, on a shared NATS whose
+  key-value buckets the deployment's operator makes (Listener configuration, below).
+- `compose/single-node.compose.yml` — Envoy on one machine: a JetStream NATS of its own, a
+  one-shot `buckets` service that makes the key-value buckets the listener copies
+  (`envoy-infra buckets create`, built from this checkout by `compose/buckets.Dockerfile`), and
+  the listener, all on loopback, for sessions that need to reach only each other. The site's Envoy
   page ("Running Envoy on one machine") walks through it.
 - `compose/dispatch.compose.yml` — the production Dispatch server against an external database
   (`DATABASE_URL`).
@@ -179,6 +182,16 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 
 ## Listener configuration
 
+A listener creates none of the key-value buckets it keeps a copy of (`envoy_interests`,
+`envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, and `envoy_ci_state` with the GitHub
+route): a bucket deleted and created again under a running listener loses every write the deleted
+one acknowledged. So before `scripts/up-listener.sh` first starts one on a NATS server, the
+deployment's operator makes them with `envoy-infra buckets create`
+([`../infra/README.md`](../infra/README.md#envoy-infra-buckets)). A start that finds one missing
+waits, every route answering 503 and `/healthz` 503 `waiting` (its health check fails), and logs
+the ERROR `listener KV bucket is missing` until the bucket exists. `compose/single-node.compose.yml`
+runs that command itself, as its `buckets` one-shot, since its NATS is its own.
+
 | Var | Required | Notes |
 | --- | --- | --- |
 | `ENVOY_MACHINE_ID` | yes | Logical machine name used in published metadata. |
@@ -281,4 +294,5 @@ restore tooling. `scripts/autodeploy.sh` still takes its own pre-deploy dump of
 ```
 
 This ships only `deploy/`; the remote runs a pinned image and does not build
-the listener or Dispatch image locally.
+the listener or Dispatch image locally. `compose/single-node.compose.yml` is not
+for such a host: its `buckets` image builds from the whole checkout.

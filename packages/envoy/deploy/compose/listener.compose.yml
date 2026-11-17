@@ -1,4 +1,9 @@
 services:
+  # The key-value buckets this listener copies (envoy_interests, envoy_roles, envoy_sessions,
+  # envoy_known_sessions, and envoy_ci_state with the GitHub route) come from the deployment's
+  # operator, `envoy-infra buckets create` (packages/envoy/infra/README.md#envoy-infra-buckets),
+  # never from the listener. A start that finds one missing waits, /healthz answering 503
+  # "waiting" and the health check below failing, until the bucket exists.
   listener:
     image: ghcr.io/cybermonklabs/legion/envoy:${ENVOY_IMAGE_TAG:?set ENVOY_IMAGE_TAG (see deploy/README.md)}
     build:

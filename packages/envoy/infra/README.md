@@ -41,17 +41,23 @@ does. A listener that finds one missing fails closed:
   30-day record cannot be written included (only that ungranted case stays best effort), and serves
   reads from its last copy for at most the copy's stale bound, two minutes for these buckets
   (`internal/kvwatch/serving.go`), after which they answer 503 too;
-- `/healthz` answers 200 `"degraded"` naming the bucket under `"missing_buckets"` while every
-  other check passes, and 503 when any other check fails; and every check, every 30 seconds, logs
-  the ERROR `listener KV bucket is missing` with the bucket's name, until a read confirms the bucket
-  is back. The AWS listener's `bucket-missing` alarm pages on that line, and the listener's
+- `/healthz` answers 503 `"waiting"` naming the buckets under `"missing_buckets"` while a start
+  waits for them, so every probe that reads its status takes the listener out of service: a Docker
+  or compose health check reads it unhealthy, `docker compose up --wait` and the docker provider's
+  wait fail, and a readiness probe takes it out of rotation. A running listener whose bucket goes
+  missing answers 200 `"degraded"` naming it under `"missing_buckets"` while every other check
+  passes, and 503 when any other check fails. Every check, every 30 seconds, logs the ERROR
+  `listener KV bucket is missing` with the bucket's name, until a read confirms the bucket is back.
+  The AWS listener's `bucket-missing` alarm pages on that line, and the listener's
   `envoy_kv_buckets_missing` gauge counts the buckets missing.
 
 A deployment's buckets therefore come from the operator. **The command's proof is best effort**
-until the coming server-side hold lands: it checks only the Kubernetes contexts
-and hosts it is given, by process name, and holds nothing once it has checked. Before each step
-below, stop every listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and
-confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buckets)).
+until the coming server-side hold lands: it checks only the Kubernetes contexts, hosts and
+machine (`--this-machine`) it is given, by process name, and holds nothing once it has checked.
+Before each step below, stop every listener of the deployment (and every envoy-dispatch, for
+`envoy_ci_state`) and confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buckets)).
+A `create` that finds every bucket it names already there changes nothing and takes no proof, so it
+needs nothing stopped.
 
 - **A first deployment:** once the NATS server is up and before any listener or envoy-dispatch
   starts, run `envoy-infra buckets create --first-deployment` with the inventory of every place a
@@ -1936,10 +1942,15 @@ envoy-infra:gcp:Dispatch needs a "random" provider in its providers option
 
 By default the docker provider waits up to 90 seconds for the container's health check to pass,
 and `pulumi up` fails if it does not. The check passes once `/healthz` answers `200`, which it does
-from `starting` on, before the listener has connected to NATS. A listener is connected when
-`/healthz` answers `"status":"healthy"` or `"status":"degraded"`: a degraded answer is a
-dependency that repairs itself, such as a role claim view whose first scan has not delivered every
-claim, and the listener behind it is connected and serving. The answers are listed under
+from `starting` on, before the listener has connected to NATS, with one exception: while the start
+waits for a key-value bucket it copies that the server does not hold, `/healthz` answers 503
+`"waiting"` and every route 503, so the wait fails and `pulumi up` with it. Make the bucket with
+[`envoy-infra buckets create`](#envoy-infra-buckets), and the start goes on; apply again once it
+serves. A listener is connected when `/healthz` answers `"status":"healthy"` or
+`"status":"degraded"`. A degraded answer is either a dependency that repairs itself, such as a role
+claim view whose first scan has not delivered every claim, or, under `"missing_buckets"`, a copied
+bucket that went missing while the listener ran, which only `envoy-infra buckets create` repairs;
+either way the listener behind it is connected and serving. The answers are listed under
 [Health and readiness](https://cybermonklabs.github.io/legion/dispatch/envoy/#health-and-readiness).
 
 `waitForHealthy: false` creates the container without waiting on its health check. Use it for a
@@ -2673,13 +2684,14 @@ envoy-dispatch when `envoy_ci_state` is among the buckets.
 **The check is best effort.** Every run but a break-glass create prints so first, on standard
 error. A writer gets past it four ways: a host or dev box you do not name, a binary renamed to a
 name the check does not know, a writer that starts between the final scan and the create, and a
-restore after `check` that nothing holds. So before every run of the normal `create`, `recreate`
-or `check`, stop every listener of the deployment (and every envoy-dispatch, for
+restore after `check` that nothing holds. So before every run of the normal `create` that makes a
+bucket, `recreate` or `check`, stop every listener of the deployment (and every envoy-dispatch, for
 `envoy_ci_state`) and confirm on each host that it has ended; the check confirms what you did,
-and does not replace it. The break-glass create
-([Until the cutover](#until-the-cutover-create---break-glass)) is the one run that needs no
-listener stopped: it creates only a bucket the server reports missing, which loses nothing to a
-create. The coming server-side hold will exclude writers at the server instead: while it holds,
+and does not replace it. Two runs need no listener stopped. A `create` that finds every bucket it
+names already there changes nothing and takes no proof (below). The break-glass create
+([Until the cutover](#until-the-cutover-create---break-glass)) creates only a bucket the server
+reports missing, which loses nothing to a create.
+The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
 every server's connz shows the operator alone, and a server it cannot reach stops the hold. Four
 tests (`TestBestEffort...`) assert today's outcome of each way, and must be inverted when the
@@ -2712,9 +2724,15 @@ This static user lasts until the cutover to the auth service's callout, which re
 `create` creates every copied bucket that is missing (or each `--bucket`), with its configuration
 (file storage, `--replicas` copies or else `ENVOY_NATS_REPLICAS`, each 1 to 5 and refused with exit
 2 outside it, and the session bucket's 5 minutes, the known sessions' 30 days and the CI state's 7
-days of age), and leaves a bucket that exists as it is. `recreate` deletes each `--bucket`, checks
-again that no writer runs, since one started between the check and the delete may have written to
-the deleted bucket, and only then creates it.
+days of age), and leaves a bucket that exists as it is. It reads each named bucket first: a read
+the server does not answer fails the run with exit 1, and when every bucket exists it prints
+`every bucket named exists (<buckets>): nothing to create, so no writer proof is taken` and exits 0
+with no proof, since the run changes nothing. That is what lets a provisioning step that runs on
+every start, such as the single-node compose file's `buckets` service, run beside the listener it
+provisioned. A `create` with any bucket missing takes the whole check, and `--first-deployment`,
+which says the server holds no bucket, always takes its check. `recreate` deletes each `--bucket`,
+checks again that no writer runs, since one started between the check and the delete may have
+written to the deleted bucket, and only then creates it.
 `check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
 restore`.
 
@@ -2733,6 +2751,13 @@ The check needs an inventory of every place a writer runs, and refuses with exit
   `dispatch` and `dispatch-<build>`) - read from each `/proc/<pid>/comm`. An unreachable machine
   blocks, and so does a query that did not run to its end or read no process. A dev box whose
   listener connects to the hub is such a machine.
+- `--this-machine`, the machine the command runs on: the same query as `--host`, run here through
+  `sh -c` with no ssh, judged as a host's, and its blockers name `this machine`. In a container it
+  reads only the processes of the container's PID namespace, so give the container the machine's
+  (`docker run --pid host`, compose's `pid: host`); without it the query reads the container's own
+  processes, finds no listener among them and passes, proving nothing. The single-node compose file
+  (`packages/envoy/deploy/compose/single-node.compose.yml`) runs `create --this-machine` this way,
+  as a one-shot before its listener.
 - `--connz <url>`, a hub server's monitoring URL, adds to the check: each page of its
   `/connz?auth=true` is read, and an open connection named `envoy-role-lane` (every listener opens
   one) or `envoy-session-consumers` (or `dispatch`) blocks. An empty census proves nothing absent: a
@@ -2746,6 +2771,11 @@ command exits 1. A refusal before any change changes nothing; a refusal of `recr
 check comes after its delete, and leaves each `--bucket` deleted and not created: stop the writer it
 names, then run `create`. A check that holds prints what it read: the nodes and machines it checked
 and how many processes it read.
+
+A usage error exits 2 and echoes no word the command could not read, since an nkey seed may have
+been pasted there: a stray argument is named by its position (`word 6 after "buckets"`), a value
+its flag cannot parse by the flag, and an unknown flag not at all. A flag value that holds an nkey
+seed is refused the same way, naming the flag, before anything reads it.
 
 ### Until the cutover: `create --break-glass`
 
@@ -2776,7 +2806,7 @@ on a clustered hub), and does nothing else:
 - it logs one line to standard error for each bucket, naming the operator (`--operator`, required),
   the hub, the bucket and `break-glass`;
 - it is refused with `recreate` or `check`, beside a proof flag (`--kube-context`, `--host`,
-  `--ssh`, `--connz`, `--first-deployment`), and without a `--bucket`.
+  `--this-machine`, `--ssh`, `--connz`, `--first-deployment`), and without a `--bucket`.
 
 The pull request that removes the create grant from the listener users at the cutover deletes the
 flag and this section.

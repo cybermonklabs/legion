@@ -524,7 +524,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
 | `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
-| `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
+| `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream with this many copies, and so each bucket it opens that it keeps no copy of (`legion_agents`, and `envoy_dpop_proofs` on a listener that takes broker tokens). It never creates a bucket it copies (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions` and `envoy_ci_state`): `envoy-infra buckets create` makes those, with this many copies when the variable is set for it or `--replicas` says so. The listener raises the stream and every bucket it opens, the copied ones included, when it finds fewer copies, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener, in Dispatch's server and in each `envoy-infra buckets create`. |
 | `ENVOY_STREAM_MAX_BYTES` | The `ENVOY_NOTIFICATIONS` stream's size limit, a positive whole number of bytes. Once the stream holds that much it refuses every new message and keeps every one it holds, which leaves only when it is 72 hours old, and the sender gets an error it can retry: the listener answers a GitHub webhook `503`, which Dispatch's redelivery sweep has GitHub send again (on a doubling backoff, until GitHub records the delivery or 72 hours after its first failed attempt); Dispatch's outbox retries its event; an agent's send or publish fails with `stream ENVOY_NOTIFICATIONS is full`. Size the limit above what the stream takes in 72 hours at its busiest, with room to spare. Unset, the listener creates the stream with no limit and keeps a limit the stream already has; set, it raises a smaller limit, or none, to its own at start and every 30 seconds, and never lowers one ([Keeping the stream](#keeping-the-stream)). A limit larger than the NATS server can reserve makes the listener exit at start with an error naming the variable. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_SESSION_LIVE_WINDOW` | How long after its last registration a session reads `live`, as a Go duration; default `5m`. Past it the session reads `unresponsive`, which is not dead ([Live, unresponsive, gone](#live-unresponsive-gone)). It is also how long a role claim stands renewed after its holder's last registration: a claim renewed inside it is kept, and the process that holds it keeps the role. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value. |
 | `ENVOY_SESSION_GONE_HORIZON` | How long after its last registration a session reads `unresponsive` before it reads `gone`, as a Go duration; default `1h`. Only a `gone` session loses its role claim, and then only when nobody renewed that claim inside the live window; the one claim released while its holder's session still answers is one a hand-back marked. Keep it at or below `ENVOY_SESSION_MAX_AGE`, or a record the bucket expires first reads `gone` before the horizon. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value: a horizon only the listener carries has Dispatch count an event sent to a holder the listener still calls `unresponsive`, with nothing sent ([Live, unresponsive, gone](#live-unresponsive-gone)). |
@@ -674,7 +674,8 @@ install it, what each component deploys and which settings it sets.
 | --- | --- |
 | `200` `starting` | The listener is still binding its durable consumer. |
 | `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
-| `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
+| `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. Also a running listener whose check found a key-value bucket it copies missing, while every other check passes: the body names the bucket under `missing_buckets` and the repair in `error`. Only `envoy-infra buckets create` repairs it, since no listener creates a bucket it copies, and until then the listener answers each write that needs the bucket `503`, serves reads from its copy for at most 2 minutes, serves every other route, and logs the ERROR `listener KV bucket is missing` every 30 seconds. The answer stays a `200` because taking this listener out of service would bring in one that waits at its start for the same bucket and serves nothing. |
+| `503` `waiting` | The listener's start found a key-value bucket it copies missing (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, and `envoy_ci_state` on a listener with the GitHub route) and waits for it: every `/v1` route and webhook answers `503` `service starting` until `envoy-infra buckets create` makes it. The body names the buckets under `missing_buckets` and the repair in `error`, and the listener logs the ERROR `listener KV bucket is missing` every 30 seconds. A probe or health check that reads `/healthz`'s status takes the listener out of service, and `docker compose up --wait` fails; a liveness or startup probe on `/livez` restarts nothing. |
 | `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
@@ -700,7 +701,7 @@ watch the timestamp's age. No setting changes the minute or the 2-minute bound.
 `GET /livez` needs no credential either. It answers `204` and reads nothing: no flush to NATS, no
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus
 outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
-a starting listener from a serving one.
+a starting or waiting listener from a serving one.
 
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
 rebuild that fails is tried again within seconds, so one that fails and then succeeds inside that
@@ -711,10 +712,12 @@ the health check: the health check and the readiness probe act on `/healthz` the
 listener taken out for a stalled rebuild is replaced by one that rebuilds into the same failure
 with caches that warm up empty and drop the messages the running one still delivers.
 
-`/v1` opens before `/healthz` leaves `starting`: as soon as NATS is connected and the session and
-subscription caches are loaded. Until then `/v1` answers `503` `service starting`. During a rolling
-deploy the new listener therefore serves `/v1` while the old one still holds the durable consumer,
-and takes the consumer within two seconds of the old one exiting.
+`/v1` opens before `/healthz` leaves `starting`: as soon as NATS is connected, every key-value
+bucket the listener copies exists, and the session and subscription caches are loaded. Until then
+`/v1` answers `503` `service starting`, and while the start waits for a missing bucket `/healthz`
+answers `503` `waiting`. During a rolling deploy the new listener therefore serves `/v1` while the
+old one still holds the durable consumer, and takes the consumer within two seconds of the old one
+exiting.
 
 The two list reads, `GET /v1/sessions` and `GET /v1/interests/`, answer `503` with
 `Retry-After: 5` and the code `refilling` whenever the listener cannot stand behind its session or
@@ -730,17 +733,21 @@ deliveries in progress finish, then exits with a non-zero code so a restart poli
 ## Running Envoy on one machine
 
 `packages/envoy/deploy/compose/single-node.compose.yml` runs a NATS server with JetStream of its
-own and the listener in front of it, both on `127.0.0.1` only. The agent sessions on that machine
-register, subscribe, claim roles and send each other messages through it. Nothing on another
-machine reaches it, and no GitHub or Slack webhook arrives, so no pull request or check events
-reach the sessions. NATS takes no credential, so every user on the machine can read and send
-messages through it: run it on a machine whose users you trust.
+own and the listener in front of it, both on `127.0.0.1` only, and between them a one-shot
+`buckets` service that makes the key-value buckets the listener copies before it starts. The agent
+sessions on that machine register, subscribe, claim roles and send each other messages through
+it. Nothing on another machine reaches it, and no GitHub or Slack webhook arrives, so no pull
+request or check events reach the sessions. NATS takes no credential, so every user on the
+machine can read and send messages through it: run it on a machine whose users you trust.
 
 You need Linux with Docker Engine and the Compose plugin (`docker compose version` answers), and a
-checkout of this repository; the images are public. The two services listen on `4222` (NATS),
-`8222` (NATS monitoring) and `9020` (the listener). When something else on the machine uses one,
-move it in `.env` (`NATS_PORT`, `NATS_MONITOR_PORT`, `ENVOY_LISTENER_PORT`) and use that port
-wherever a command or the `envoy.json` below names the default.
+checkout of this repository. The NATS and listener images are public. The `buckets` service runs
+`envoy-infra`, which the published image does not carry, so `up` builds its image from the
+checkout, on the pinned Go image from `ghcr.io` with the Go modules from `proxy.golang.org`. The
+services listen on `4222` (NATS), `8222` (NATS monitoring) and `9020` (the listener). When
+something else on the machine uses one, move it in `.env` (`NATS_PORT`, `NATS_MONITOR_PORT`,
+`ENVOY_LISTENER_PORT`) and use that port wherever a command or the `envoy.json` below names the
+default.
 
 The file pins NATS 2.15.1 by digest, the image the hub runs, because the consumer cap the
 listener sets replaces a limit only that version applies: from 2.15 a stream that sets no cap is
@@ -784,11 +791,15 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    curl http://127.0.0.1:9020/healthz
    ```
 
-   `--wait` returns once both containers pass their health checks. The answer's `status` is then
-   `healthy`, or `starting` for a few seconds ([Health and readiness](#health-and-readiness)). Both
-   restart with Docker unless you stop them. `up` refuses an empty `ENVOY_MACHINE_ID` and an
-   `ENVOY_IMAGE_TAG` that was never published; when a container stays unhealthy instead (a port
-   already in use, say), `docker compose -f single-node.compose.yml logs --tail 50` says why.
+   The first `up` builds the `buckets` image from the checkout, which takes a minute or so; each
+   later `up` rebuilds it from cached layers in seconds. `up` starts NATS, then runs `buckets`,
+   which makes the buckets and exits, then starts the listener. `--wait` returns once `buckets`
+   has exited 0 and NATS and the listener pass their health checks. The answer's `status` is then
+   `healthy`, or `starting` for a few seconds ([Health and readiness](#health-and-readiness)). NATS
+   and the listener restart with Docker unless you stop them. `up` refuses an empty
+   `ENVOY_MACHINE_ID` and an `ENVOY_IMAGE_TAG` that was never published; when `buckets` fails or a
+   container stays unhealthy instead (a port already in use, say),
+   `docker compose -f single-node.compose.yml logs --tail 50` says why.
 
 3. Point the sessions at it in `~/.config/legion/envoy.json` (`mkdir -p ~/.config/legion` first):
 
@@ -821,6 +832,41 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    session with its `session_id`. Start a second session, and the two can message each other with
    `envoy_send`.
 
+No listener creates a key-value bucket it keeps a copy of: a bucket deleted and created again
+under a running listener loses every write the deleted one acknowledged. Only
+`envoy-infra buckets create` makes one, once it has checked that no listener runs, and a listener
+that starts with one missing waits, answering `/healthz` `503` `waiting` and every route `503`
+([Health and readiness](#health-and-readiness)). The `buckets` service runs that command for the
+four buckets this listener copies: `envoy_interests`, `envoy_roles`, `envoy_sessions` and
+`envoy_known_sessions` (it mounts no GitHub route, so it opens no `envoy_ci_state`). Its check is
+`--this-machine`: it reads the name of every process on the machine and refuses while one runs as
+`envoy-listener` or `listener`, and it reads the NATS server's open connections for a listener's
+(`--connz`). The service runs with `pid: host`, which is what lets it read the machine's processes
+rather than only its own container's; without it the check would find no listener and prove
+nothing.
+
+Every `up` runs `buckets` again, an upgrade's included. When every bucket exists it changes
+nothing, takes no check and exits 0, and its log (`docker compose -f single-node.compose.yml logs
+buckets`) says `every bucket named exists (...): nothing to create, so no writer proof is taken`,
+so `up -d --wait` goes on while the listener serves. When a bucket is missing, such as one deleted
+by hand under the running listener, `buckets` refuses while the listener runs, and `up` fails with
+`service "buckets" didn't complete successfully: exit 1`. Its log names the listener:
+
+```text
+envoy-infra buckets create: refused: a writer of the buckets may still run, and a bucket created under it loses every write the deleted one acknowledged
+  blocked: this machine: process 65543 envoy-listener runs
+  blocked: connz http://127.0.0.1:8222: connection "envoy-role-lane" from 127.0.0.1:37246 as "" is open
+```
+
+Stop the listener, then run `up` again, which makes the missing bucket and starts the listener:
+
+```sh
+docker compose -f single-node.compose.yml stop listener
+docker compose -f single-node.compose.yml up -d --wait
+```
+
+`down -v` deletes the buckets with the rest of the volume, and the next `up` makes them again.
+
 NATS keeps the event stream and Envoy's key-value buckets in the `envoy-single-node_nats-data`
 volume. A restart keeps the last 72 hours of events, and the subscriptions and role claims of every
 session still running; once NATS is back, each session shows what was sent to it, or published on
@@ -832,7 +878,7 @@ it follows them again and recovers what the stream kept for them.
 
 | Task | Command, from `packages/envoy/deploy/compose` |
 | --- | --- |
-| Upgrade to the newest published image | `docker compose -f single-node.compose.yml pull && docker compose -f single-node.compose.yml up -d --wait` |
+| Upgrade to the newest published image | `docker compose -f single-node.compose.yml pull && docker compose -f single-node.compose.yml up -d --wait` (`pull` skips `buckets`, whose image `up` builds from the checkout, so update the checkout first) |
 | Read the logs | `docker compose -f single-node.compose.yml logs -f` |
 | Stop it, keeping its data | `docker compose -f single-node.compose.yml down` |
-| Stop it and delete its data | `docker compose -f single-node.compose.yml down -v` |
+| Stop it and delete its data | `docker compose -f single-node.compose.yml down -v` (the next `up` makes the buckets again) |
