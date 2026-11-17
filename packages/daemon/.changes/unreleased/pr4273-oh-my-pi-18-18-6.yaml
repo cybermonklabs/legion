@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The worker image carries Oh My Pi `18.18.6-sami.20261117-013345` of cybermonklabs/oh-my-pi,
+    The worker image carries Oh My Pi `18.18.6-sami.20261117-203324` of cybermonklabs/oh-my-pi,
     which `.omp-pin` now names as `github:cybermonklabs/oh-my-pi@<version>`. It drops the abort
     listeners the 18.16.0 build kept on each model call. On this build a resume under
     `--model @default` writes a `model_change` naming the model the role resolved to, so a later
