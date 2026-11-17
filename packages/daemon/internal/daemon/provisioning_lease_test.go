@@ -192,7 +192,8 @@ func provisioningRefusal(w http.ResponseWriter) {
 // clone, a fetch and a repository cache need (INFRA-1254, INFRA-513).
 // Four installations, one per case, so no case's mints or cached leases reach another's:
 //
-//   - one granted the implement App's whole set: the one request names the reading set and no
+//   - one granted writeSet, the implement App's write set less issues, security events and
+//     attestations: the one request names the reading set cut to that grant (readingSet) and no
 //     repository, and that token is served;
 //   - one not granted Actions: the mint asks for what the installation is granted of the reading
 //     set, so the one request leaves actions out and the adapter is served that token, with no

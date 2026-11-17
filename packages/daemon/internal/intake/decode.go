@@ -873,8 +873,8 @@ func rawStatuses(value json.RawMessage) ([]record.CommitStatus, string) {
 		return nil, ""
 	}
 	var incoming []struct {
-		Context string `json:"context"`
-		State   string `json:"state"`
+		Context string                   `json:"context"`
+		State   record.CommitStatusState `json:"state"`
 	}
 	if err := json.Unmarshal(value, &incoming); err != nil {
 		return nil, "is not a list of commit statuses"

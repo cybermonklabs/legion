@@ -297,7 +297,7 @@ func namedStatuses(statuses []record.CommitStatus) string {
 	}
 	named := make([]string, len(statuses))
 	for i, status := range statuses {
-		named[i] = strconv.Quote(status.Context) + " " + status.State
+		named[i] = strconv.Quote(status.Context) + " " + string(status.State)
 	}
 	return "; commit statuses: " + strings.Join(named, ", ")
 }

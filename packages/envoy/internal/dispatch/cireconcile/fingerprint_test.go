@@ -574,7 +574,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 // link or its time is not. A new time, link or description of a recorded status is news, since
 // the record keeps each of them. It is read from the answer with statuses in testdata.
 func TestTheFingerprintTakesEveryFieldOfARecordedStatusAndNoPendingOne(t *testing.T) {
-	head := headOf(capturedStatusPull(t), false, false)
+	head := headOf(statusPagePull(t), false, false)
 	for _, change := range []struct {
 		what  string
 		apply func([]graphQLStatusContext) []graphQLStatusContext
@@ -604,7 +604,7 @@ func TestTheFingerprintTakesEveryFieldOfARecordedStatusAndNoPendingOne(t *testin
 		}, false},
 	} {
 		t.Run(change.what, func(t *testing.T) {
-			pull := capturedStatusPull(t)
+			pull := statusPagePull(t)
 			commit := pull.Commits.Nodes[0].Commit
 			commit.Status.Contexts = change.apply(commit.Status.Contexts)
 			changed := headOf(pull, false, false)

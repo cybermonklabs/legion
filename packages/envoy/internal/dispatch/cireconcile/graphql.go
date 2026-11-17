@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"hash/maphash"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 const (
@@ -436,9 +435,14 @@ func headOf(pull *graphQLPull, refused, statusesRefused bool) queryHead {
 // in success, failure or error. GraphQL's PENDING and EXPECTED say the context has not finished
 // (contracts.TerminalStatusState), and contracts.GithubStatusObservation maps neither of the two
 // nor a status with no context, so none of them enters the objects the pass records or the
-// fingerprint.
+// fingerprint. The state is GraphQL's upper-case enum, which is ASCII, so it is matched without
+// case rather than lowered first: for ASCII that is the same test, and it takes no copy.
 func recordedStatus(entry graphQLStatusContext) bool {
-	return entry.Context != "" && contracts.TerminalStatusState(strings.ToLower(entry.State))
+	if entry.Context == "" {
+		return false
+	}
+	state := entry.State
+	return strings.EqualFold(state, "success") || strings.EqualFold(state, "failure") || strings.EqualFold(state, "error")
 }
 
 // statusObject is one commit status the query answered, in the shape GitHub's REST listing of the
@@ -660,15 +664,7 @@ var statusField = []any{"commits", "nodes", float64(0), "commit", "status"}
 // underStatus reports whether field, an error path after its pull request node's index, is the
 // head commit's status field or a field under it.
 func underStatus(field []any) bool {
-	if len(field) < len(statusField) {
-		return false
-	}
-	for i, step := range statusField {
-		if field[i] != step {
-			return false
-		}
-	}
-	return true
+	return len(field) >= len(statusField) && slices.Equal(field[:len(statusField)], statusField)
 }
 
 // errorText is GitHub's errors array as one line of a log, each entry's type and message: the

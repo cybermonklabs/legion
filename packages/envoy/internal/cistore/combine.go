@@ -164,7 +164,7 @@ func (s *Store) writeBatch(ctx context.Context, key string, c *keyCombiner, own 
 			panic(recovered)
 		}
 	}()
-	written = s.write(ctx, identity, b)
+	written = s.write(ctx, identity, &b)
 	return b.answer(slices.Index(b.pending, own), written)
 }
 
@@ -186,7 +186,7 @@ type batch struct {
 // caller afresh, since a retry applies the batch to a record it has read again, and a write at a
 // bound applies it again without its statuses (write), so what the apply whose record was written
 // left is what each caller is told; a status left out changed nothing.
-func (b batch) apply(st *State, statuses bool) bool {
+func (b *batch) apply(st *State, statuses bool) bool {
 	changed := false
 	for i, pending := range b.pending {
 		b.changed[i] = (statuses || pending.status == "") && pending.mutate(st)
@@ -197,7 +197,7 @@ func (b batch) apply(st *State, statuses bool) bool {
 
 // statuses returns the contexts of the commit statuses that changed the record at the batch's
 // last apply, in arrival order.
-func (b batch) statuses() []string {
+func (b *batch) statuses() []string {
 	var contexts []string
 	for i, pending := range b.pending {
 		if pending.status != "" && b.changed[i] {
@@ -211,7 +211,7 @@ func (b batch) statuses() []string {
 // record, which is false whenever err is non-nil, and err. A commit status that rode a write the
 // bounds refused for its checks (bus.ErrTooLarge, the record written marked Overflowed) answers no
 // change and no error instead: at a bound a status is not recorded, which is no failure (write).
-func (b batch) answer(i int, err error) (bool, error) {
+func (b *batch) answer(i int, err error) (bool, error) {
 	if err != nil && b.pending[i].status != "" && errors.Is(err, bus.ErrTooLarge) {
 		return false, nil
 	}

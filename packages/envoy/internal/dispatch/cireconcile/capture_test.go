@@ -160,9 +160,10 @@ func TestGitHubsQueryAndItsRESTListingsMapToOneSetOfObservations(t *testing.T) {
 	}
 }
 
-// capturedStatusPull is the one open pull request of the GraphQL page that carries commit
-// statuses (testdata/graphql-page-statuses.json), as GitHub answers it.
-func capturedStatusPull(t *testing.T) *graphQLPull {
+// statusPagePull is the one open pull request of the GraphQL page that carries commit statuses
+// (testdata/graphql-page-statuses.json), built from the fields GitHub documents for a
+// StatusContext rather than captured.
+func statusPagePull(t *testing.T) *graphQLPull {
 	t.Helper()
 	var answer graphQLAnswer
 	if err := json.Unmarshal([]byte(captured(t, "graphql-page-statuses.json")), &answer); err != nil {
@@ -186,12 +187,14 @@ func statusObservationsOf(items []object) map[string]contracts.StatusObservation
 	return mapped
 }
 
-// GitHub's query and GitHub's REST listing of one head's commit statuses map to the very same
-// status observations, field for field, and to no more than the statuses in success, failure
-// or error: a pending status, and GraphQL's EXPECTED, map to none either way. A status field
-// GitHub refused costs the head its statuses alone: its check objects map as before.
+// One head's commit statuses in the shape of GitHub's query and in that of its REST listing, both
+// built from the fields GitHub documents for a StatusContext and for the combined status of a
+// reference (testdata/graphql-page-statuses.json, testdata/rest-commit-statuses.json), map to the
+// very same status observations, field for field, and to no more than the statuses in success,
+// failure or error: a pending status, and GraphQL's EXPECTED, map to none either way. A status
+// field GitHub refused costs the head its statuses alone: its check objects map as before.
 func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t *testing.T) {
-	head := headOf(capturedStatusPull(t), false, false)
+	head := headOf(statusPagePull(t), false, false)
 	if head.overflow != "" || head.sha != headSHA {
 		t.Fatalf("the answer's head is %q, read over REST for %q; want %s answered whole", head.sha, head.overflow, headSHA)
 	}
@@ -220,7 +223,7 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 		t.Errorf("a status with no link and no description maps to %+v, want both empty and its time kept", license)
 	}
 
-	refused := headOf(capturedStatusPull(t), false, true)
+	refused := headOf(statusPagePull(t), false, true)
 	if refused.overflow != "" || len(refused.statuses) != 0 {
 		t.Fatalf("a head whose status field GitHub refused is read over REST for %q with statuses %v; want it answered whole with none", refused.overflow, refused.statuses)
 	}

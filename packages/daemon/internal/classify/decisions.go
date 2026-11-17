@@ -1006,8 +1006,9 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // head). A settlement of a head below it merges its runs and the conclusions of them, and leaves
 // the recorded head's numbering as it was. The commit statuses are taken the same way, and whole:
 // the candidate's list, each stamped with the candidate's head (stampedStatuses), replaces the
-// list the record keeps, since the reconcile reads every status of the head from GitHub, and a
-// settlement this does not apply leaves the kept list as it is.
+// list the record keeps, since the candidate's list is the whole list the head's CI record holds
+// (which can be fewer than GitHub holds, as record.PullRequest.Statuses says), and a settlement
+// this does not apply leaves the kept list as it is.
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	if ClassifySettlement(pr, candidate) != SettlementNewer {
 		return pr, false

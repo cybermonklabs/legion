@@ -57,7 +57,7 @@ const (
 // holds drops them. A write past its bound with no status left to give way is refused: the record
 // is written as it was, marked Overflowed, so it never settles on the checks it could not hold.
 // Each rule judges the write as its batch carries it, every caller's observation applied.
-func (s *Store) write(ctx context.Context, identity State, b batch) error {
+func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 	key := Key(identity.Owner, identity.Repo, identity.Number, identity.SHA)
 	deadline := time.Now().Add(recordBudget)
 	var retryErr error
@@ -130,7 +130,7 @@ func (s *Store) write(ctx context.Context, identity State, b batch) error {
 				bounded.logged()
 				return bounded.refused
 			}
-			st, buf, refused, landed = bounded.state, bounded.buf, bounded.refused, bounded.logged
+			buf, refused, landed = bounded.buf, bounded.refused, bounded.logged
 		} else if err != nil {
 			return err
 		}
@@ -180,10 +180,9 @@ func sealRecord(key string, st *State, existing bool, hash string, generation ui
 
 // boundWrite is what a write past a bound writes in its place (atBounds).
 type boundWrite struct {
-	// write says there is a record to write, state encoded as buf. Without one the record stays
-	// as it was.
+	// write says there is a record to write, encoded as buf. Without one the record stays as it
+	// was.
 	write bool
-	state State
 	buf   []byte
 	// refused is the write's answer: nil where it fits once commit statuses gave way, and the
 	// bound's refusal where the record is marked Overflowed or already was.
@@ -210,7 +209,7 @@ type boundWrite struct {
 //
 // stored is the record as the write's attempt read it, decoded afresh at each call, and existing
 // says the attempt read one.
-func (s *Store) atBounds(key string, identity State, stored func() (State, error), existing bool, b batch, refused error) (boundWrite, error) {
+func (s *Store) atBounds(key string, identity State, stored func() (State, error), existing bool, b *batch, refused error) (boundWrite, error) {
 	statuses, cause := b.statuses(), refused
 	dropped := 0
 	var droppedFor error
@@ -253,7 +252,7 @@ func (s *Store) atBounds(key string, identity State, stored func() (State, error
 		case err != nil:
 			return boundWrite{}, false, err
 		}
-		return boundWrite{write: true, state: st, buf: buf, logged: logged}, true, nil
+		return boundWrite{write: true, buf: buf, logged: logged}, true, nil
 	}
 	if len(statuses) > 0 {
 		if bounded, ok, err := fit(false); err != nil || ok {
@@ -282,7 +281,7 @@ func (s *Store) atBounds(key string, identity State, stored func() (State, error
 	if err != nil {
 		return boundWrite{}, err
 	}
-	return boundWrite{write: true, state: st, buf: buf, refused: refused, logged: logged}, nil
+	return boundWrite{write: true, buf: buf, refused: refused, logged: logged}, nil
 }
 
 // boundsRefusal is the refusal of a write to key's record of record bytes whose settlement is

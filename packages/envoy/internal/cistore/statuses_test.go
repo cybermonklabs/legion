@@ -48,22 +48,6 @@ func recordStatus(s *Store, observation contracts.StatusObservation) (bool, erro
 	}
 }
 
-// waitCache polls the WatchAll cache until h's record satisfies ok.
-func waitCache(t *testing.T, s *Store, h head, what string, ok func(State) bool) {
-	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		if st, held := s.cachedState(h.key()); held && ok(st) {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("the cache never held %s for %s", what, h.key())
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
-}
-
 // lastSettlement decodes the payload of pub's last settlement, and returns it with its one line.
 func lastSettlement(t *testing.T, pub *recPub) (Summary, string) {
 	t.Helper()
@@ -97,7 +81,7 @@ func TestAStatusIsAnEntryApartFromACheckRunOfItsName(t *testing.T) {
 			t.Fatalf("record the status %s: changed %v, %v", status.Context, changed, err)
 		}
 	}
-	waitCache(t, s, h, "three statuses", func(st State) bool { return len(st.Statuses) == 3 })
+	waitCached(t, s, h.key(), func(st State) bool { return len(st.Statuses) == 3 })
 	runSummaryTick(s, pub, 0, logging.New("test"))
 	if pub.count() != 0 {
 		t.Fatalf("a head holding statuses alone published %d settlements, want none: a status is no check run", pub.count())
@@ -250,7 +234,7 @@ func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 			t.Fatalf("%s left the head settled %v at generation %d, last event %d; want it re-armed past generation %d and last event %d",
 				what, st.SettledEmitted, st.Generation, st.LastEventAt, before.Generation, lastEvent)
 		}
-		waitCache(t, s, h, what, func(st State) bool { return st.Statuses[status.Context].State == status.State && !st.SettledEmitted })
+		waitCached(t, s, h.key(), func(st State) bool { return st.Statuses[status.Context].State == status.State && !st.SettledEmitted })
 		published := pub.count()
 		runSummaryTick(s, pub, 0, logger)
 		if pub.count() != published+1 {
@@ -297,7 +281,7 @@ func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 		t.Fatalf("a newer status in the same state left the head settled %v at generation %d, snapshot %s, last event %d; want it settled at %d, %s, %d",
 			st.SettledEmitted, st.Generation, st.Hash(), st.LastEventAt, third.Generation, third.Snapshot, settled.LastEventAt)
 	}
-	waitCache(t, s, h, "the newer link", func(st State) bool { return st.Statuses["ci/preview"].URL == newer.URL })
+	waitCached(t, s, h.key(), func(st State) bool { return st.Statuses["ci/preview"].URL == newer.URL })
 	published := pub.count()
 	runSummaryTick(s, pub, 0, logger)
 	if pub.count() != published {
@@ -449,7 +433,7 @@ func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 			}
 		}
 		waitCacheChecks(t, s, plain.owner, plain.repo, plain.number, plain.sha, 4)
-		waitCache(t, s, named, "four checks and three statuses", func(st State) bool { return len(st.Checks) == 4 && len(st.Statuses) == 3 })
+		waitCached(t, s, named.key(), func(st State) bool { return len(st.Checks) == 4 && len(st.Statuses) == 3 })
 		runSummaryTick(s, pub, 0, logging.New("test"))
 		settlements := map[string]Summary{}
 		payloads := map[string]string{}

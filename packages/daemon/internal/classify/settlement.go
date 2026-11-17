@@ -41,8 +41,9 @@ type SettlementCandidate struct {
 	Failing    []string            `json:"failing"`
 	Cancelled  []string            `json:"cancelled"`
 	// Statuses are the commit statuses the settlement names for Head, in context order and with
-	// no stamp (record.CommitStatus): the whole list GitHub holds for that head, which replaces the
-	// list the pull request keeps wherever the settlement applies to the checked head
+	// no stamp (record.CommitStatus): the whole list the head's CI record holds, which can be fewer
+	// than GitHub holds (record.PullRequest.Statuses says why), and which replaces the list the
+	// pull request keeps wherever the settlement applies to the checked head
 	// (ApplySettlement). They are no check runs and decide nothing of the fence, its order or what
 	// fails in it.
 	Statuses []record.CommitStatus `json:"statuses,omitempty"`

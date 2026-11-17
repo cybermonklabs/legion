@@ -65,17 +65,19 @@ const (
 // list (Settlement.Statuses) carries no stamp: the settlement names its head, and the stamp is put
 // on where the list is kept (classify.ApplySettlement).
 type CommitStatus struct {
-	Context string `json:"context"`
-	State   string `json:"state"`
-	Head    string `json:"head,omitempty"`
+	Context string            `json:"context"`
+	State   CommitStatusState `json:"state"`
+	Head    string            `json:"head,omitempty"`
 }
 
-// The states a settlement names a commit status in. GitHub's other states, pending and expected,
-// are never recorded, so no settlement names one.
+// CommitStatusState is the state a settlement names a commit status in. GitHub's other states,
+// pending and expected, are never recorded, so no settlement names one.
+type CommitStatusState string
+
 const (
-	CommitStatusSuccess = "success"
-	CommitStatusFailure = "failure"
-	CommitStatusError   = "error"
+	CommitStatusSuccess CommitStatusState = "success"
+	CommitStatusFailure CommitStatusState = "failure"
+	CommitStatusError   CommitStatusState = "error"
 )
 
 // Failed is whether the status is a failed one: in failure or in error.
@@ -778,12 +780,14 @@ type PullRequest struct {
 	Snapshot   string
 	// Statuses are the commit statuses the last settlement applied for the checked head named,
 	// in context order, each stamped with that head (CommitStatus.Head). A settlement's list is the
-	// whole list GitHub holds for the head, so each applied settlement of the checked head replaces
-	// it, one that names none with an empty list (classify.ApplySettlement); a settlement the daemon
-	// does not apply leaves it as it is. A settlement of a new checked head, a reopen and a new
-	// generation clear it with the check runs (classify.SettlementFor, the reopen step of a head
-	// run, Store.ClearGeneration). A move of the head leaves it stamped with the head it was of, so
-	// no text names it for the new head (workflow's headChecks).
+	// whole list the head's CI record holds, which can be fewer than GitHub holds: pending statuses
+	// are not recorded, a token without Commit statuses names none, and the record's size bound can
+	// drop them. Each applied settlement of the checked head replaces it, one that names none with
+	// an empty list (classify.ApplySettlement); a settlement the daemon does not apply leaves it as
+	// it is. A settlement of a new checked head, a reopen and a new generation clear it with the
+	// check runs (classify.SettlementFor, the reopen step of a head run, Store.ClearGeneration). A
+	// move of the head leaves it stamped with the head it was of, so no text names it for the new
+	// head (workflow's headChecks).
 	Statuses []CommitStatus
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a

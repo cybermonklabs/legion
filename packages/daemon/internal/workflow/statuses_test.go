@@ -22,7 +22,7 @@ func naming(fact intake.Fact, statuses ...record.CommitStatus) intake.PullReques
 }
 
 // status is the commit status context in state, as a settlement names it.
-func status(context, state string) record.CommitStatus {
+func status(context string, state record.CommitStatusState) record.CommitStatus {
 	return record.CommitStatus{Context: context, State: state}
 }
 
@@ -177,11 +177,12 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 	}
 }
 
-// A settlement's list is the whole list GitHub holds for the head, so a later settlement that
-// names a context as success replaces the failure the record kept for it: the pull request keeps
-// no failed status, and the CI message names the context as success and nothing as failed. A
-// settlement after it whose list the daemon could not read keeps the green list as it is, so no
-// red name comes back, and says nothing new, so nobody is told again.
+// A settlement's list is the whole list the head's CI record holds (which can be fewer than GitHub
+// holds, as record.PullRequest.Statuses says), so a later settlement that names a context as
+// success replaces the failure the record kept for it: the pull request keeps no failed status,
+// and the CI message names the context as success and nothing as failed. A settlement after it
+// whose list the daemon could not read keeps the green list as it is, so no red name comes back,
+// and says nothing new, so nobody is told again.
 func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
