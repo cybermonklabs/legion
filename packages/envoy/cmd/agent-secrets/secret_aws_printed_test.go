@@ -1,0 +1,153 @@
+// packages/envoy/cmd/agent-secrets/secret_aws_printed_test.go
+//
+// What the AWS store forms print about the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE
+// names: the file holds a token, and the variable is where a person who pasted the token itself
+// puts it, so a file the forms cannot read is refused naming the variable and the system's reason,
+// never the path the AWS SDK's own error quotes.
+package main
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
+)
+
+// useAWSWebIdentity leaves the rest of t with the real awsClients, signing in with a web identity:
+// AWS_ROLE_ARN set and AWS_WEB_IDENTITY_TOKEN_FILE naming tokenFile, with no other source the SDK
+// could take (no keys, no profile, empty shared config and credentials files, no instance
+// metadata), and every STS call sent to a local stand-in that refuses AssumeRoleWithWebIdentity,
+// so nothing reaches AWS. It answers the tokens the stand-in was sent.
+func useAWSWebIdentity(t *testing.T, tokenFile string) func() []string {
+	t.Helper()
+	for _, name := range []string{
+		"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_SESSION_TOKEN",
+		"AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ENDPOINT_URL",
+	} {
+		t.Setenv(name, "")
+	}
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AWS_CONFIG_FILE", empty)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_MAX_ATTEMPTS", "1")
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::111122223333:role/agent")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+	var mu sync.Mutex
+	var sent []string
+	stsStandIn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		sent = append(sent, r.PostForm.Get("WebIdentityToken"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>InvalidIdentityToken</Code><Message>the stand-in refuses every token</Message></Error><RequestId>stand-in</RequestId></ErrorResponse>`))
+	}))
+	t.Cleanup(stsStandIn.Close)
+	t.Setenv("AWS_ENDPOINT_URL_STS", stsStandIn.URL)
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), sent...)
+	}
+}
+
+// TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath: a web identity token file the forms
+// cannot read - none at the path, a directory there - is refused, before any STS call, naming
+// AWS_WEB_IDENTITY_TOKEN_FILE and the system's reason, never the path, which the AWS SDK's own
+// error quotes ("unable to read file at <path>: open <path>: ..."). A file that holds a token is
+// still read and its token sent to STS (the control: the stand-in is the endpoint the form reached).
+func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
+	const secret = "hunter2pw-webidentity-6d1f08"
+	for _, row := range []struct {
+		name  string
+		place func(t *testing.T) string
+		want  string
+	}{
+		{"no file at the path", func(t *testing.T) string {
+			return filepath.Join(t.TempDir(), secret, "token")
+		}, "read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"},
+		{"the variable holds the token itself", func(*testing.T) string {
+			return secret
+		}, "read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"},
+		{"a directory at the path", func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), secret)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return dir
+		}, "read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: read: is a directory"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			sent := useAWSWebIdentity(t, row.place(t))
+
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			requireSays(t, "stderr", stderr, []string{secret, "unable to read file at"}, []string{row.want})
+			if got := sent(); len(got) != 0 {
+				t.Errorf("STS was sent %d tokens for a file that cannot be read, want none", len(got))
+			}
+		})
+	}
+	t.Run("control: a file that holds a token", func(t *testing.T) {
+		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		startSecretBroker(t, servedBy(local))
+		file := filepath.Join(t.TempDir(), "token")
+		if err := os.WriteFile(file, []byte("not-a-secret-web-identity-token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sent := useAWSWebIdentity(t, file)
+
+		_, stderr, code := runSecret("list")
+		if code != 1 || !strings.Contains(stderr, "InvalidIdentityToken") {
+			t.Fatalf("exit %d, stderr %q; want 1 with the stand-in's InvalidIdentityToken", code, stderr)
+		}
+		if got := sent(); len(got) == 0 || got[0] != "not-a-secret-web-identity-token" {
+			t.Fatalf("STS was sent %q, want the file's token", got)
+		}
+	})
+	// A token file a long form read at its start and that is gone when the SDK reads it again, as
+	// it does at each refresh of the credentials: that read is the SDK's, through the retriever
+	// awsClients gives it, and it too names the variable alone.
+	t.Run("a later read of the file, by the SDK", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), secret, "token")
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("not-a-secret-web-identity-token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		useAWSWebIdentity(t, file)
+		_, st, _, err := awsClients(context.Background(), "us-east-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(file); err != nil {
+			t.Fatal(err)
+		}
+		_, err = st.GetCallerIdentity(context.Background(), &sts.GetCallerIdentityInput{})
+		if err == nil {
+			t.Fatal("the SDK signed in with a token file that is gone")
+		}
+		requireSays(t, "the error", err.Error(), []string{secret, "unable to read file at"}, []string{"read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"})
+	})
+}

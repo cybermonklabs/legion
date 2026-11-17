@@ -20,6 +20,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // secretsAPI is the Secrets Manager calls the secret forms make: ListSecrets and DescribeSecret to
@@ -63,9 +65,21 @@ var (
 // not hold is refused, as R1 refuses a source that is present but fails: the SDK refuses such an
 // AWS_PROFILE itself, and ignores such an AWS_DEFAULT_PROFILE
 // (config.loadSharedConfigIgnoreNotExist), which would sign in under the rest of its chain - an
-// instance role among them - while the profile was the caller's choice. Tests replace it.
+// instance role among them - while the profile was the caller's choice. Where the sign-in is the
+// web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, the file is read here first, and the
+// SDK reads it through webIdentityToken every time after, so a file that cannot be read is refused
+// naming the variable, never the path the SDK's own error quotes. Tests replace it.
 var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	options := []func(*config.LoadOptions) error{config.WithRegion(region)}
+	if file := awsWebIdentityTokenFile(); file != "" {
+		if _, err := file.GetIdentityToken(); err != nil {
+			return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
+		}
+		options = append(options, config.WithWebIdentityRoleCredentialOptions(func(o *stscreds.WebIdentityRoleOptions) {
+			o.TokenRetriever = file
+		}))
+	}
+	cfg, err := config.LoadDefaultConfig(ctx, options...)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
 	}
@@ -77,6 +91,32 @@ var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, [
 		sources = provider.ProviderSources()
 	}
 	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), sources, nil
+}
+
+// webIdentityToken is the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, as the AWS
+// SDK's stscreds.IdentityTokenRetriever reads it: a file that cannot be read is refused naming the
+// variable and the system's reason alone (redact.File). The SDK's own IdentityTokenFile quotes the
+// path twice ("unable to read file at <path>: open <path>: ..."), with %v, so no redaction of its
+// error can reach the path, and the variable is where a person who pasted the token itself puts it.
+type webIdentityToken string
+
+func (f webIdentityToken) GetIdentityToken() ([]byte, error) {
+	data, err := os.ReadFile(string(f))
+	if err != nil {
+		return nil, fmt.Errorf("read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: %w", redact.File(err))
+	}
+	return data, nil
+}
+
+// awsWebIdentityTokenFile is the file AWS_WEB_IDENTITY_TOKEN_FILE names where it is the source the
+// SDK signs in with (awsSourceOf: no access keys in the environment outrank it), else "".
+func awsWebIdentityTokenFile() webIdentityToken {
+	idVar, _ := firstSet("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY")
+	secretVar, _ := firstSet("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY")
+	if idVar != "" && secretVar != "" {
+		return ""
+	}
+	return webIdentityToken(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE"))
 }
 
 // loadedProfile reports whether the SDK found the profile it looked for in the shared config and
@@ -193,7 +233,11 @@ func firstSet(names ...string) (name, value string) {
 // source profile or credential source) chooses nothing either: the SDK goes on to a container's
 // credentials endpoint or the instance's role (resolveCredsFromProfile), and sources, the ones it
 // resolved, then start with that one (profileFellThrough), so the phrase names it too. The phrase
-// names no key and no token, only the variables and the file's path.
+// names no key and no token, only the variables and the file's path. The path, and the prefix
+// that carries it, print only once STS took the token the file holds (the "using" line and a
+// store's refusal follow requireAccount): the file was read and signed in with, so its path is no
+// token pasted in its place. A file that cannot be read is refused before then, naming the
+// variable alone (webIdentityToken).
 func awsSourceOf(sources []aws.CredentialSource) awsSource {
 	profileVar, profile := firstSet("AWS_PROFILE", "AWS_DEFAULT_PROFILE")
 	outranks := func(verb string) string {
