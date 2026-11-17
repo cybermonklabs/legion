@@ -162,10 +162,16 @@ func readEnrollment(path, file string) (string, error) {
 	return id, nil
 }
 
+// signInStoreWords is how the chain's refusal names the sign-in store, in internal/brokerclient's
+// words for it: a record holds a refresh token and a box key, so the store is a credential file's
+// place, and its directory - AGENT_SECRETS_SIGNIN_DIR's value, or one under XDG_STATE_HOME or HOME -
+// is never printed.
+const signInStoreWords = "the sign-in store (" + brokerclient.SignInDirVar + ", or $XDG_STATE_HOME/agent-secrets/signins where it is unset)"
+
 // signInSource is the sign-in of the person this process acts for (signInSigner).
 func signInSource() signerSource {
 	noSignIn := func() error {
-		return absent("nobody has signed in on this machine with `%s` (%s)", brokerclient.SignInCommand, brokerclient.SignIns(homeGetenv).Dir)
+		return absent("nobody has signed in on this machine with `%s` (%s holds no sign-in)", brokerclient.SignInCommand, signInStoreWords)
 	}
 	return signerSource{
 		name: "sign-in",

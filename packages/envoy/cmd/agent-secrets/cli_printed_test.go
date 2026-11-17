@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // useBareEnvironment gives the rest of t an environment of its own: HOME, XDG_STATE_HOME and
@@ -683,6 +684,59 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 			if err := checkGoogleAudience(base, "agent-secrets-vm"); err != nil {
 				t.Fatal(err)
 			}
+		}
+	})
+}
+
+// TestTheSignInStoreIsNamedByItsSettingNeverItsPath: the sign-in store holds each person's refresh
+// token and box key, so the chain's refusal of a machine nobody has signed in on names the store
+// as internal/brokerclient names it, by AGENT_SECRETS_SIGNIN_DIR or its default's expression, never
+// by the directory, whether the variable names it or XDG_STATE_HOME places it. A store that holds a
+// sign-in still signs (the control).
+func TestTheSignInStoreIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	const secret = "hunter2pw-signindir-5b08e3"
+	const store = "the sign-in store (AGENT_SECRETS_SIGNIN_DIR, or $XDG_STATE_HOME/agent-secrets/signins where it is unset)"
+	for _, row := range []struct {
+		name  string
+		place func(t *testing.T)
+	}{
+		{"AGENT_SECRETS_SIGNIN_DIR names it", func(t *testing.T) {
+			t.Setenv("AGENT_SECRETS_SIGNIN_DIR", filepath.Join(t.TempDir(), secret))
+		}},
+		{"XDG_STATE_HOME places it", func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), secret))
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			useBareEnvironment(t)
+			row.place(t)
+			stdout, stderr, code := runIn(signArgs...)
+			if code != 1 {
+				t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
+			}
+			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"sign-in: nobody has signed in on this machine with `agent-secrets login`", store})
+		})
+	}
+	t.Run("control: a store that holds a sign-in", func(t *testing.T) {
+		useBareEnvironment(t)
+		t.Setenv("AGENT_SECRETS_SIGNIN_DIR", filepath.Join(t.TempDir(), secret))
+		key, err := proof.NewKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		thumbprint, err := proof.Thumbprint(&key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := brokerclient.SignIns(os.Getenv).Write(brokerclient.SignInRecord{
+			Person: "ada@example.com", Issuer: "https://accounts.google.com", ClientID: "device-client", RefreshToken: "not-a-secret-refresh-token",
+			BoxKey: string(keyPEM(key)), Thumbprint: thumbprint, EnrollmentID: "signin-enrollment", SignedInAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := runIn(signArgs...)
+		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
 		}
 	})
 }
