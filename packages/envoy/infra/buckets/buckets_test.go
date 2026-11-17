@@ -1334,4 +1334,25 @@ func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 	}
 }
 
+// A --bucket named twice is one bucket: a break-glass create reads, logs and creates it once, as
+// one named once. At 47e78cf03a each name was a bucket of its own: the run read the bucket twice
+// before its create, and the second create, through the create-only open, found the first's bucket
+// and refused the run.
+func TestABucketNamedTwiceIsOneBucket(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	uri, seed := listenerUserServer(t)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	watcher, _ := jetStream(t, uri)
+	requests := watchStreamRequests(t, watcher)
+	stream := "KV_" + bus.SessionBucket
+	code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--bucket", bus.SessionBucket, "--nats", uri)
+	if code != 0 || stdout != "created "+bus.SessionBucket+" (1 copies)\n" || strings.Count(stderr, "break-glass: operator op creates") != 1 {
+		t.Fatalf("create --break-glass with %s named twice = %d, want it created and logged once\n%s%s", bus.SessionBucket, code, stdout, stderr)
+	}
+	// The run's read, the create's own lookup, the create and the handle open, once each.
+	if got, want := requests.take(t), []string{"INFO." + stream, "INFO." + stream, "CREATE." + stream, "INFO." + stream}; !slices.Equal(got, want) {
+		t.Fatalf("create --break-glass with %s named twice sent %v, want %v", bus.SessionBucket, got, want)
+	}
+}
+
 var _ = io.Discard

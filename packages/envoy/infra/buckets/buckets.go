@@ -219,6 +219,13 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 			return 2
 		}
 	}
+	// A bucket named twice is one bucket: it is read, logged and created or recreated once.
+	named := map[string]bool{}
+	buckets = slices.DeleteFunc(buckets, func(bucket string) bool {
+		again := named[bucket]
+		named[bucket] = true
+		return again
+	})
 	if refusal := breakGlassUsage(flags, action, breakGlass, operator, len(buckets)); refusal != "" {
 		fmt.Fprintf(stderr, "envoy-infra buckets: %s\n", refusal)
 		return 2
