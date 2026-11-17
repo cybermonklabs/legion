@@ -1,14 +1,34 @@
 kind: Changed
 body: |-
     The memory guard in an issue pod's launcher now ends first the process that grew the most over
-    the last 300 ms, by 1 MiB or more, and the largest only where none grew. Under gVisor a forked
+    the last 300 ms, by 1 MiB or more; then, of those that did not, the one that grew the most since
+    the previous kill of the rise, by 1 MiB or more; and the largest only where neither grew. The
+    controller's pod's guard, new in this release, follows the same rules. Under gVisor a forked
     child reports the pages it shares with its parent as its own, so the largest could be a
-    sleeping fork whose end freed nothing while another process filled the pod. To know what grew,
-    the guard reads the sizes of what it may end at each reading in the band of 10% of the limit
-    below the mark and after a kill, and none below the band. After a kill that lowered nothing
-    within `wait_seconds`, it ends the next process only while one it may end still grows and they
-    hold the floor between them; otherwise it stops for that rise with `reason=not fallen`, as
-    before. The `issue_pods` settings, their defaults and the guard's lines are unchanged.
+    sleeping fork whose end freed nothing while another process filled the pod; and a pod short of
+    CPU takes its readings 170 to more than 300 ms apart, so the 300 ms window can hold one read
+    and show no growth, which is why growth since the kill comes before size. To know what grew, the
+    guard reads the sizes of what it may end at each reading in the band of 10% of the limit below
+    the mark and after a kill, and none below the band. At the first reading at or above the mark
+    it chooses the process by the sizes it read in the band and sends the kill before it lists a
+    process, and reads every size only after the kill. Where none of the processes the band found
+    grew, it first reads again the `smaps` of those processes alone, with no descriptor read, since
+    the step that takes the reading over the mark comes after the band's last reading: deciding on
+    the band's sizes alone ended a sleeping fork first in a gVisor run at 4 GiB and at 8 GiB. With
+    six processes growing at once the host throttled the whole pod's CPU, and a reading at the mark
+    that read every size again put the kill 194 ms after it, where choosing by the band's sizes put
+    it 1.3 to 71.8 ms after it in 9 of 9 runs. Where the band holds no size, where the process it
+    would end first has exited, its pid names another process or its kill fails, or where the
+    band's sizes or the sizes read again are under the floor, the guard reads every size at that
+    reading and acts on them, as before. After a kill the guard waits only until the killed process
+    has exited, and at most `wait_seconds`. Then, where the reading has fallen and is still at or
+    above the mark, it ends the next process; where it has not fallen, it ends the next at once
+    while a process it may end has grown by 1 MiB or more since the kill and the processes it may
+    end hold the floor between them, and it stops for that rise with `reason=not fallen` only once
+    the wait has passed with nothing grown. A killed process that has not exited is never ended or
+    reported again. The hourly line's high and low, its counter read and its scan for the largest
+    process now come only after the guard has decided on the reading. The settings, their defaults
+    and the guard's lines are unchanged.
 time: 2026-11-17T09:37:25Z
 custom:
     Issue: pr4273

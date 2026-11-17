@@ -4875,8 +4875,9 @@ Each interval, `interval_milliseconds` (100 ms by default), the guard reads two 
 Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md (`infra-3557-19g-readcost-fbf6z`, 2026-11-14).
 The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
 in the tester's `wc-gvisor` result at `bebc420b` a file mapped and read raised the counter to 97.2% to 105.4% of the limit, and an LMDB map larger than the limit raised it to 107.4% to 134.9%, while `AnonPages` stayed under 11% and the guard ended neither process.
-One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
-In the band below the mark and after a kill it also lists the container's processes and reads the sizes of those it may end, by which it chooses what to end ("What it ends", below).
+One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, never between a reading and the kill it sends at that reading, and never each interval.
+In the band below the mark, at or above the mark and after a kill it also lists the container's processes and reads the sizes of those it may end, by which it chooses what to end ("What it ends", below);
+at the first reading at or above the mark, where the band read sizes, it lists them only after its kill, and before the kill it reads at most the `smaps` of the processes the band found.
 Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
 
 **What it ends.**
@@ -4896,32 +4897,55 @@ A map of a file on disk adds nothing, which is why a process that maps a databas
 A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
 The guard keeps the sizes it reads of each process for 300 ms, by the process's pid and start time, so a process that takes the pid of one that ended has no earlier read.
 It ends the most grown process first.
-A process's growth is its size at this reading less its size at its oldest read in the last 300 ms, and a growth under 1 MiB is none.
+A process's growth over the window is its size at this reading less its size at its oldest read in the last 300 ms, and a growth under 1 MiB is none.
 A process with no earlier read in that window, a fresh fork among them, has not grown.
-The processes that did not grow come after the ones that grew, largest first, so where none grew the guard ends the largest.
-At an `interval_milliseconds` above 300 no earlier read is in the window, so the guard always ends the largest.
+Of the processes that did not grow over the window, the ones that grew by 1 MiB or more since the previous kill of the rise come next, the most grown first ("After a kill: the rise rule", below); before a rise's first kill there is no previous kill, and no process has grown since one.
+The processes that grew by neither measure come last, largest first, so where none grew the guard ends the largest.
+Growth since the kill is in the order because a pod short of CPU takes its readings 170 to more than 300 ms apart, so the window can hold one read of each process and show no growth at all:
+at `a55c6e50`, before growth since the kill was in the order, 8 kills after a kill in INFRA-3531's runs ended a sleeping fork or a parent while a grower lived (dispatch://INFRA-3531/comment/13452df7-caa9-462a-9d26-49614851a66b).
+At an `interval_milliseconds` above 300 no earlier read is in the window, so the guard ends the largest at a rise's first kill, and after a kill the most grown since that kill, or the largest where none grew.
 Of two processes of the same growth and size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
 Growth comes first because under gVisor a forked child reports the pages it shares with its parent as its own, and no line of its smaps tells them apart, so the largest process can be a sleeping fork whose end frees nothing while another process fills the pod.
 INFRA-3531's tester measured that on 2026-11-17 in gVisor pods of 4 GiB and 8 GiB (dispatch://INFRA-3531/comment/487c6241-44e5-4be8-8fcf-394c3eb67209):
 a Python parent wrote a block of 3/8 of the limit and forked three children that only sleep, and a separate Python process then grew beside them.
 Each sleeper read larger than the grower, so the guard, which then ended the largest first, ended one sleeper at 4 GiB and two at 8 GiB, freed almost nothing and never ended the grower, and both pods ended `OOMKilled`.
 The guard reads the sizes in the band so that it knows what grew when the reading reaches the mark: the fastest rise the tester measured, six growers at once at about 1.5 GiB a second, crosses the band of a 4 GiB limit, about 410 MiB, in about 267 ms, which is two readings or more at the default interval.
-At the first reading at or above the mark it acts on that reading's sizes and the ones it kept, with no wait for another reading, so the first kill comes within one interval of the memory reaching the mark.
+At the first reading at or above the mark it chooses the process by the sizes it read in the band, and sends the kill before it lists a process:
+at that reading it reads `/proc/meminfo`, puts the processes the band found in its order, opens the first through a pidfd, reads that process's start time and kills it, and only then lists the processes and reads their sizes, which are the sizes as of the kill.
+Where one of the processes the band found grew over the window by the band's sizes, it reads no `smaps` before the kill.
+Where none of them grew, it first reads again the `smaps` of those processes, and of no other, and orders them by those reads:
+it lists no process, asks no rule of "What it protects, and why" and reads no descriptor there, and to each size read again it adds the memfds that process's descriptors held as the band's reading counted them.
+The order there is taken at the time of the reading at the mark: a process's growth is its newest size, the band's last or the one read again, less its oldest size kept within 300 ms of the reading at the mark, so a rise older than that is no growth, and the floor below is read on those sizes.
+It reads the `smaps` again where none grew because the step that takes the reading over the mark comes between the band's last reading and the reading at the mark, so no size the band read shows it:
+at `a55c6e50`, which decided on the band's sizes alone, INFRA-3531's `shared` probe, a process that grew in steps beside three sleeping forks of a shared block, had its first kill end a sleeping fork rather than the grower at 4 GiB and at 8 GiB (dispatch://INFRA-3531/comment/13452df7-caa9-462a-9d26-49614851a66b).
+It chooses by the band's sizes because under gVisor, with six processes growing at once, the host throttles the whole pod's CPU, and a band reading that costs about 2 ms of work at times took 80 to 270 ms:
+INFRA-3531's tester measured 194 ms from the reading at the mark to the kill where that reading read every size again, and choosing by the band's sizes put the kill 1.3 to 71.8 ms after the reading in 9 of 9 runs (dispatch://INFRA-3531/comment/76e592d0-e3ea-4d22-96d1-b27738dd8e5a).
+So the first kill comes within one interval of the reading reaching the mark.
+Where the band holds no size (the reading crossed the whole band within one interval, or at the reading before the guard had just started or was off), where the process its order puts first has exited, its pid now names another process or its kill fails, or where the band's sizes, or the sizes read again, are under the floor or name no process, the guard lists the processes and reads their sizes at the reading at the mark and acts on those, as at any later reading of a rise;
+it never gives a rise up on the band's sizes alone.
 The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
 It then holds the first process in its order through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
 Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
 A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
 When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
-A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next in the order.
+A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the guard ends the next in the order: at that same reading, by its own sizes, where it chose the process before it listed the processes, and otherwise at the next reading.
 
 **After a kill: the rise rule.**
-After a kill the guard takes a reading each interval and reads the sizes at each one.
-The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
-When it has fallen and is still at or above the mark, the guard ends the next process in its order, by that reading's sizes, once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
+After a kill the guard takes a reading each interval, and lists the processes and reads their sizes at each one.
+It waits only while the killed process has not exited, and no longer than `wait_seconds` (5 by default): until the process has exited or the wait has passed it ends nothing, since the reading can still fall as that process's memory goes.
+A killed process that has not exited is never ended or reported again: the guard leaves it out of its order, of the sum it holds against the floor and of the growth since the kill (below).
+A reading below the mark ends the rise.
+Once the killed process has exited, or once the wait has passed where it has not, the guard decides at each reading by that reading's sizes, in the order of "What it ends" above.
+The reading has fallen when it is below the reading at the kill by any amount, at that reading or at an earlier one since the kill.
+When it has fallen and is still at or above the mark, the guard ends the next process in its order.
 So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
-When the wait passes and the kill has not lowered the reading at all, the guard ends the next process in its order only while a process it may end grew over the last 300 ms and the processes it may end hold at least the floor between them.
+When it has not fallen, the guard ends the next process in its order at once, but only while a process it may end has grown by 1 MiB or more since the previous kill and the processes it may end hold at least the floor between them.
+A process's growth since the kill is its size at this reading less its size at the reading the kill was sent at, or less its first size read after the kill for a process the guard first read then, which has not grown at that first read.
+Growth since the kill decides this, not the 300 ms window, so a process that grows in steps wider than the window counts as grown, and several processes that together grow faster than one kill frees are ended one after another, each once the one before has exited.
+It also orders the processes that did not grow over the window, so where the readings come more than 300 ms apart a process that grew since the kill still comes before a larger one that did not.
+Where neither holds, the guard ends nothing at that reading and reads again, and once the wait has passed it gives the rise up with a `stopped for this rise` line, `reason=not fallen`.
 So a rise that is a protected process's own, such as an agent's, in which nothing the guard may end grows, costs at most one kill.
-Otherwise the guard gives the rise up with a `stopped for this rise` line, `reason=not fallen`, and it gives it up with `reason=nothing to end` when the processes it may end hold less than the floor at a reading it would end one at.
+It gives the rise up with `reason=nothing to end` when the processes it may end hold less than the floor at a reading it would end one at.
 A stop that repeats writes that line at most once a minute ("The lines", below), and once a rise is given up the guard ends nothing more for it:
 it acts again only after the reading has gone below the mark.
 
@@ -5005,7 +5029,8 @@ launcher: memory guard: kill failed pid=<pid> reason=<why>
 ```
 
 `started` comes once, with the first reading, and `settings` once for each change of the settings.
-`ended` comes once for each kill: `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+`ended` comes once for each kill: `size` is the size the guard chose the process by, `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+For a first kill chosen by the band's sizes, `size` is the size the band's last reading read where one of the processes the band found grew, and otherwise its `smaps` read again at the mark plus the memfds its descriptors held at the band's reading.
 `stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
 `endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
 `protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
@@ -5018,6 +5043,7 @@ The sizes of the protected and unread processes are read only for a line written
 the process scan and the smaps of the processes the guard may end still run at each reading in the band, at or above the mark and after a kill, since they decide whether it acts and what it ends.
 `hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
 The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
+It takes the reading into the hour's highest and lowest, reads the counter every 5 seconds and starts that measure only once it has decided on the reading, so none of them comes between a reading at the mark and its kill.
 `off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
 `unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
@@ -5075,19 +5101,21 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
   The guard can then end a holder whose end frees less than its size said.
 
-- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait while nothing it may end grows.
-  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing and nothing it may end grew over the last 300 ms, or what it may end holds less than the floor, `reason=not fallen`.
-  Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
+- It does not act again while memory it may not end holds the pod above the mark, or once the wait after a kill has passed with the reading not fallen and nothing it may end grown since that kill.
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing and nothing it may end grew since it, or what it may end holds less than the floor, `reason=not fallen`.
+  Either way it ends nothing more until the reading has gone below the mark: a process that grows meanwhile is not ended, and the kernel can still stop the sandbox before then.
   A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.5% to 99.4% of the limit in the tester's result at `bebc420b` and as low as 95.4% in an earlier run (above), the guard must take a reading at or above the mark and end the process.
-  A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  A process that crosses that margin before the guard's kill is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  That time is one interval and the band reading's scan before the reading at the mark, with, where none of the processes the band found grew, the reads again of their `smaps`, and, where the band held no size, that reading's own scan before its kill.
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
   the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
 
 - It does not bound the reads of its sizes by what a process holds.
   Each reading in the band, at or above the mark and after a kill walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to each of those readings.
+  At the first reading at or above the mark that walk comes after the kill where the band's sizes chose the process, since the `smaps` it reads again there add the memfds the band counted and read no descriptor, but the band reading's walk before it still delays that reading.
   It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
   What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them.
 
@@ -5103,7 +5131,8 @@ The launcher of that container runs the same memory guard as an issue pod's laun
 When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the process that grew the most, or the largest where none grew, of those that are neither Legion's own nor the agent's own, and the daemon tells the controller why.
 The rest of the pod goes on: the guard never ends the launcher, the shim or Oh My Pi, so the controller's turn does not end for the kill, and the command that was ended fails in the turn that ran it.
 The launcher runs the guard with the controller pod's rules (`serveMemoryGuard` and `controllerClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
-"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, the order of ends and the band among them, with the controller pod's own list of what the guard spares (below) and its own wait after a kill, 1 second by default ("The settings", below).
+"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, among them the order of ends with growth since the previous kill in it, the band, and the first kill chosen by the band's sizes with the `smaps` read again where none grew.
+The controller's pod has its own list of what the guard spares (below) and its own longest wait after a kill, 1 second by default ("The settings", below).
 
 **What gVisor measured.**
 Measured on 2026-11-17 in gVisor pods of 4 GiB and of 8 GiB, each with its memory request equal to its limit, by `TestControllerPodMemoryGuardLiveSandbox` (`packages/daemon/internal/launcher/memoryguard_live_test.go`), whose binary was the container's PID 1 and ran the launcher's single-role form at the controller pod's defaults, with the test binary in the shim's place, run as `worker-shim`, and a copy of it in Oh My Pi's place, run as Oh My Pi is run (dispatch://INFRA-3531/comment/002dd114-e24d-45aa-b1de-a8d0ffa9ecac).
@@ -5179,7 +5208,9 @@ runtime:
 
 Those are the defaults, and the guard is on in the controller's pod wherever the file says nothing.
 The block has the five members of `issue_pods`, with the same ranges and the same defaults but the wait, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 95`).
-The wait after a kill is 1 second here, where an issue pod's is 5: in the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, before a wait of 5 seconds had passed, and a wait of 1 second has the guard decide on the next process before that end.
+The wait after a kill is 1 second here, where an issue pod's is 5.
+It is the most the guard waits: it decides at each reading once the killed process has exited, so the wait holds it back only while that process has not exited, and the wait bounds how long it reads on with no fall and no growth since the kill before it gives the rise up.
+In the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, and a wait of 1 second has the guard decide on the next process before such an end, also where the killed process has not exited.
 Each block is settled from its own members and its own defaults: a value under `issue_pods` never moves the controller's pod, and a value under `controller_pod` never moves an issue pod.
 The daemon hands the controller pod's launcher this block alone, on its answer to each hello (`memoryGuard` in `launcher_hello_ack`, `launcherHelloAck` in `packages/daemon/internal/runtime/sandbox/launcher_auth.go`).
 So a change applies at the launcher's next connection, which every daemon restart gives it, and replaces no pod.

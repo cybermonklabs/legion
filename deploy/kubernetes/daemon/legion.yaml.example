@@ -378,10 +378,10 @@ runtime:
     #     act_percent: 85              # it, it ends with SIGKILL the one that grew the most, or the largest
     #     floor_percent: 10            # where none grew, and tells the role whose process it was. Legion's own
     #     wait_seconds: 5              # processes and each role's agent are never ended. After a kill it waits
-    #     interval_milliseconds: 100   # up to wait_seconds (1 to 60) for the reading to fall, and it reads every
-    #   controller_pod:                # interval_milliseconds (50 to 5000). controller_pod is the same guard in
-    #     enabled: true                # the controller's pod (controller: daemon), which waits 1 second after a
-    #     act_percent: 85              # kill.
+    #     interval_milliseconds: 100   # for that process to exit, at most wait_seconds (1 to 60), and it reads
+    #   controller_pod:                # every interval_milliseconds (50 to 5000). controller_pod is the same
+    #     enabled: true                # guard in the controller's pod (controller: daemon), which waits at most
+    #     act_percent: 85              # 1 second after a kill.
     #     floor_percent: 10
     #     wait_seconds: 1
     #     interval_milliseconds: 100

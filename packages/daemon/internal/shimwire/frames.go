@@ -197,8 +197,9 @@ type LauncherHelloAck struct {
 // LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
 // memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends a process
 // it may end, the one that grew the most or the largest where none grew, where those processes
-// hold at least FloorPercent of the limit between them; after a kill it waits up to WaitSeconds
-// for the reading to fall before it ends another.
+// hold at least FloorPercent of the limit between them; after a kill it ends no other until the
+// killed process has exited or WaitSeconds has passed, and it gives the rise up once WaitSeconds
+// has passed with the reading not fallen and nothing it may end grown since the kill.
 //
 // It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
 // which is the same absence a daemon that does not know the guard sends, so one rule in the
