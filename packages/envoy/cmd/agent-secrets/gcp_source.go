@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // gcpSource is one Google credential source, in the order newGCPBackend tries them.
@@ -127,11 +129,13 @@ func gcloudConfigurationList() string {
 // callback), so a person's empty configuration would read as the machine's: measured on a
 // developer's Compute Engine VM on 2026-11-15, where `config list --configuration=<name>` for a
 // person's configuration named the VM's account and `config configurations describe <name>` named
-// none. A file it cannot read is an error.
+// none. A file it cannot read is an error, with the system's reason alone (redact.File): the name
+// is one this machine holds (newGCPBackend refuses any other first), and the path is gcloud's
+// directory's.
 func gcloudConfigurationAccount(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))
 	if err != nil {
-		return "", fmt.Errorf("read the gcloud configuration %s: %w", name, err)
+		return "", fmt.Errorf("read the gcloud configuration %s: %w", name, redact.File(err))
 	}
 	section, account := "", ""
 	for _, line := range strings.Split(string(data), "\n") {

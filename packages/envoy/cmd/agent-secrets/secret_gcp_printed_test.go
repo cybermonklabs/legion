@@ -438,3 +438,69 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 		}
 	})
 }
+
+// TestARefusedGcloudSelectorIsNotPrinted: CLOUDSDK_CORE_ACCOUNT naming a login gcloud does not hold,
+// and CLOUDSDK_ACTIVE_CONFIG_NAME naming a configuration this machine does not hold, are refused
+// naming the variable and what gcloud does hold, never the value: the variable is where a person
+// who pasted a credential in the wrong place puts it. A login and a configuration gcloud holds
+// still sign in (the controls).
+func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw-selector-5f21a8"
+	t.Run("CLOUDSDK_CORE_ACCOUNT", func(t *testing.T) {
+		fake := newFakeSecretManager()
+		startFakeSecretManager(t, fake)
+		useNoADC(t)
+		useGcloud(t, "ada@example.com", "grace@example.com")
+		t.Setenv("CLOUDSDK_CORE_ACCOUNT", secret+"@example.com")
+		startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+
+		_, stderr, code := runSecret("list")
+		if code != 1 {
+			t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+		}
+		requireSays(t, "stderr", stderr, []string{secret}, []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed; it holds ada@example.com, grace@example.com)"})
+	})
+	t.Run("control: CLOUDSDK_CORE_ACCOUNT naming a login gcloud holds", func(t *testing.T) {
+		fake := newFakeSecretManager()
+		startFakeSecretManager(t, fake)
+		useNoADC(t)
+		useGcloud(t, "ada@example.com", "grace@example.com")
+		t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
+		startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+		if _, stderr, code := runSecret("list"); code != 0 {
+			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+		}
+	})
+	for _, gcloud := range []bool{true, false} {
+		t.Run(fmt.Sprintf("CLOUDSDK_ACTIVE_CONFIG_NAME, gcloud on PATH %v", gcloud), func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			holdScratchTest(fake)
+			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+			useGcloudConfigurations(t, "box", orderConfigurations)
+			if !gcloud {
+				t.Setenv("PATH", t.TempDir())
+			}
+			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", secret)
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+
+			_, stderr, code := runSecret("show", "SCRATCH_TEST")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			requireSays(t, "stderr", stderr, []string{secret}, []string{"CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: box, person)"})
+		})
+	}
+	t.Run("control: CLOUDSDK_ACTIVE_CONFIG_NAME naming a configuration this machine holds", func(t *testing.T) {
+		fake := newFakeSecretManager()
+		startFakeSecretManager(t, fake)
+		holdScratchTest(fake)
+		startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+		useGcloudConfigurations(t, "box", orderConfigurations)
+		t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person")
+		startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+		if _, stderr, code := runSecret("show", "SCRATCH_TEST"); code != 0 {
+			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+		}
+	})
+}

@@ -353,7 +353,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
 				t.Setenv("CLOUDSDK_CORE_ACCOUNT", "nobody@example.com")
 			},
-			code: 1, says: []string{"CLOUDSDK_CORE_ACCOUNT names nobody@example.com"},
+			code: 1, says: []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed;"},
 		},
 		{
 			name: "credentials file does not parse",
@@ -398,7 +398,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
 				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "missing")
 			},
-			code: 1, says: []string{"the gcloud configuration missing (CLOUDSDK_ACTIVE_CONFIG_NAME): read the gcloud configuration missing"},
+			code: 1, says: []string{"CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: box, person)"},
 		},
 		{
 			name: "active gcloud refresh fails",

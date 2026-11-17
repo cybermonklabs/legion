@@ -225,7 +225,7 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 		// The SDK ignores a missing AWS_DEFAULT_PROFILE and would reach lent.
 		for _, variable := range []string{"AWS_DEFAULT_PROFILE", "AWS_PROFILE"} {
 			stderr, code := run(t, []string{variable + "=missing", "AWS_CONTAINER_CREDENTIALS_FULL_URI=" + lent.URL}, "", "show", "MOTO_TEST")
-			if want := "load your AWS sign-in: failed to get shared config profile, missing"; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, ": using ") {
+			if want := "load your AWS sign-in: " + variable + " names a profile the shared config and credentials files do not hold (not printed)"; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, "missing") || strings.Contains(stderr, ": using ") {
 				t.Fatalf("%s=missing: exit %d, stderr %q; want 1, %q and no using line", variable, code, stderr, want)
 			}
 		}

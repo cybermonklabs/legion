@@ -1125,8 +1125,8 @@ func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 			startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 
 			_, stderr, code := runSecret("list")
-			if code != 1 || !strings.Contains(stderr, "CLOUDSDK_CORE_ACCOUNT names linus@example.com") {
-				t.Fatalf("exit %d, stderr %q; want 1 naming the account CLOUDSDK_CORE_ACCOUNT names", code, stderr)
+			if code != 1 || !strings.Contains(stderr, "CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed;") || strings.Contains(stderr, "linus@example.com") {
+				t.Fatalf("exit %d, stderr %q; want 1 naming CLOUDSDK_CORE_ACCOUNT, never the account it names", code, stderr)
 			}
 			for _, account := range accounts {
 				if !strings.Contains(stderr, account) {

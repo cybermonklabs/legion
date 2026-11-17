@@ -80,17 +80,29 @@ var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, [
 		}))
 	}
 	cfg, err := config.LoadDefaultConfig(ctx, options...)
+	var missing config.SharedConfigProfileNotExistError
+	if errors.As(err, &missing) && missing.Profile != "" && missing.Profile == os.Getenv("AWS_PROFILE") {
+		return nil, nil, nil, missingAWSProfile("AWS_PROFILE")
+	}
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
 	}
 	if named := os.Getenv("AWS_DEFAULT_PROFILE"); named != "" && os.Getenv("AWS_PROFILE") == "" && !loadedProfile(cfg) {
-		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w (AWS_DEFAULT_PROFILE names it)", config.SharedConfigProfileNotExistError{Profile: named})
+		return nil, nil, nil, missingAWSProfile("AWS_DEFAULT_PROFILE")
 	}
 	var sources []aws.CredentialSource
 	if provider, ok := cfg.Credentials.(aws.CredentialProviderSource); ok {
 		sources = provider.ProviderSources()
 	}
 	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), sources, nil
+}
+
+// missingAWSProfile is the refusal of variable naming a profile the shared config and credentials
+// files do not hold. The profile is not printed, though the AWS SDK's own error quotes it: a
+// profile the files do not hold is the caller's text, and a variable meant for a name is where a
+// pasted credential lands. A profile they hold is a label, and the using line prints it.
+func missingAWSProfile(variable string) error {
+	return fmt.Errorf("load your AWS sign-in: %s names a profile the shared config and credentials files do not hold (not printed)", variable)
 }
 
 // webIdentityToken is the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, as the AWS

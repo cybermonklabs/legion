@@ -336,7 +336,9 @@ func chooseGcloudAccount(chosen string, accounts []string, active, configured st
 	}
 	if named := os.Getenv("CLOUDSDK_CORE_ACCOUNT"); named != "" {
 		if !slices.Contains(accounts, named) {
-			return "", fmt.Errorf("CLOUDSDK_CORE_ACCOUNT names %s, and gcloud holds no login for it (it holds %s): sign in as %s with `gcloud auth login`, or name another login gcloud holds", named, held, named)
+			// The account is not printed: an account gcloud holds no login for is the caller's
+			// text, and a variable meant for an account is where a pasted credential lands.
+			return "", fmt.Errorf("CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed; it holds %s): sign in as that account with `gcloud auth login`, or name another login gcloud holds", held)
 		}
 		return named, nil
 	}
@@ -643,6 +645,12 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 	skip(sourceCredentialsFile, "unset")
 
 	if config, account := os.Getenv("CLOUDSDK_ACTIVE_CONFIG_NAME"), os.Getenv("CLOUDSDK_CORE_ACCOUNT"); config != "" || account != "" {
+		// A configuration this machine does not hold is refused before anything reads or prints
+		// it: its name is the caller's text, and a variable meant for a name is where a pasted
+		// credential lands. A configuration it holds is a label, and prints as one.
+		if config != "" && !slices.Contains(gcloudConfigurations(), config) {
+			return fmt.Errorf("CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: %s)", gcloudConfigurationList())
+		}
 		phrase := fmt.Sprintf("the gcloud configuration %s (CLOUDSDK_ACTIVE_CONFIG_NAME)", config)
 		if account != "" {
 			phrase = "the gcloud account (CLOUDSDK_CORE_ACCOUNT)"

@@ -151,3 +151,55 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 		requireSays(t, "the error", err.Error(), []string{secret, "unable to read file at"}, []string{"read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"})
 	})
 }
+
+// TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted: AWS_PROFILE or AWS_DEFAULT_PROFILE naming a
+// profile the shared config and credentials files do not hold is refused naming the variable,
+// never the profile, which the AWS SDK's own error quotes: the variable is where a person who
+// pasted a credential in the wrong place puts it. A profile the files hold still loads (the
+// control).
+func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw-awsprofile-3d90c4"
+	useProfiles := func(t *testing.T) {
+		t.Helper()
+		for _, name := range []string{
+			"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_SESSION_TOKEN",
+			"AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+		} {
+			t.Setenv(name, "")
+		}
+		dir := t.TempDir()
+		configFile := filepath.Join(dir, "config")
+		if err := os.WriteFile(configFile, []byte("[profile work]\nregion = us-east-1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		credentialsFile := filepath.Join(dir, "credentials")
+		if err := os.WriteFile(credentialsFile, []byte("[work]\naws_access_key_id = AKIAEXAMPLE\naws_secret_access_key = not-a-secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("AWS_CONFIG_FILE", configFile)
+		t.Setenv("AWS_SHARED_CREDENTIALS_FILE", credentialsFile)
+		t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	}
+	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
+		t.Run(variable, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			useProfiles(t)
+			t.Setenv(variable, secret)
+
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			requireSays(t, "stderr", stderr, []string{secret}, []string{"load your AWS sign-in: " + variable + " names a profile the shared config and credentials files do not hold (not printed)"})
+		})
+		t.Run("control: "+variable+" naming a profile the files hold", func(t *testing.T) {
+			useProfiles(t)
+			t.Setenv(variable, "work")
+			if _, _, _, err := awsClients(context.Background(), "us-east-1"); err != nil {
+				t.Fatalf("awsClients refused a profile the files hold: %v", err)
+			}
+		})
+	}
+}
