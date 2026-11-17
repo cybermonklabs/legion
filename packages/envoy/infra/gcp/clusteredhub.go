@@ -242,8 +242,9 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 // from routes or authorization, makes each server log every route URL it removes, password
 // included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"), so the password must be
 // changed after such a rollback, and authorization fences no process that joined as a route
-// before it applied, which can then read the password, so the rollout reads each pod's /routez
-// after it (docs/nats-hub.md, Route authorization).
+// before it applied, which can then read the password, so after it the rollout checks each pod's
+// /routez and its log since env against the pods' own IPs and server ids (docs/nats-hub.md, Route
+// authorization).
 type ClusteredHubRouteAuthorizationArgs struct {
 	SecretName string `pulumi:"secretName"`
 	SecretKey  string `pulumi:"secretKey"`

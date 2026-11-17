@@ -489,9 +489,6 @@ func (s *hubServer) commandArgs() []string {
 	)
 }
 
-// routeRemotes is the set of servers the server's /routez names at the other end of its routes.
-func (s *hubServer) routeRemotes() (map[string]bool, error) { return routeRemotesAt(s.monitor) }
-
 // routeRemotesAt is the set of servers the /routez of the server whose monitoring port is monitor
 // names at the other end of its routes. Every live test reads a server's routes through it.
 func routeRemotesAt(monitor int) (map[string]bool, error) {
@@ -1079,7 +1076,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 			if varz.ServerName != s.name || varz.Cluster.Name != clusterName[1] {
 				return fmt.Errorf("%s's /varz names server %q in cluster %q", s.name, varz.ServerName, varz.Cluster.Name)
 			}
-			remotes, err := s.routeRemotes()
+			remotes, err := routeRemotesAt(s.monitor)
 			if err != nil {
 				return err
 			}

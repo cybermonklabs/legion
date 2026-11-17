@@ -1137,14 +1137,33 @@ server dialed the address such a process named with the user and the password; w
 it sent no credential. So `authorization` fences a process that tries to join after it, and not one
 that joined before.
 
-So once `authorization` has reached every pod, read each pod's `/routez` (`kubectl port-forward`
-to 8222) and require every `remote_name` to be one of the hub's own servers, `<n>-0`, `<n>-1` and
-`<n>-2`. Any other name means a process joined during `env` or `routes`: treat the password as
-read, cut that process's reach, and change the password, below. A change of the password goes
-back to `env`, which drops `authorization` from `nats.conf`, so the routes are open again during
-its `env` and `routes` applies, and the same `/routez` check follows its own `authorization`
-apply. The component cannot make that check, since it runs at an apply and reads no pod; the
-rollout that applies the stages runs it.
+So once `authorization` has reached every pod, check every pod's routes, in one pass over the
+three pods (`kubectl port-forward` to each pod's 8222): read each pod's IP from the API server and
+each server's `server_id` from its `/varz`, then read each pod's `/routez` and require every
+route's `ip` to be one of the three pod IPs and every `remote_id` to be one of the three
+`server_id`s. A route's `remote_name` proves nothing: a peer chooses its own name, and nats-server
+refuses an accepted route's name only when it equals the accepting server's own
+(`server/route.go:745-751`; `isDuplicateServerName` runs for gateways alone, `gateway.go:1090`,
+`:1166`), so the process this check looks for can join as `<n>-1` and pass a check of names.
+Do not require the route's `port` to be 6222 either: `/routez` gives the TCP peer's port, and a
+route a peer opened comes from an ephemeral one, so one server's four routes to another showed four
+ports.
+
+`/routez` shows only who still holds a route, so a process that read the password and then left
+passes it. In the same pass, read each pod's nats container log since the `env` roll (`routes`
+and `authorization` are reloads, so that one log covers the rollout) and require the IP of every
+`Route connection created` peer (`server/route.go:2104`; each log line names the peer's address)
+to be one of the three pod IPs, by IP alone, since a peer-opened connection's port is ephemeral.
+Any other address or id in either read means a process joined during `env` or `routes`, and a pod
+that restarted since `env` keeps no log of its routes before the restart, so neither can be ruled
+out. Either way, treat the password as read, cut that process's reach, and change the password,
+below. One process neither read can see: one in a hub pod's own network namespace, such as the
+reloader or the exporter, has that pod's IP, so the log check passes it, and `remote_id` catches
+it only while it holds a route. A change of the password goes back to `env`, which drops
+`authorization` from `nats.conf`, so the routes are open again during its `env` and `routes`
+applies, and the same two reads follow its own `authorization` apply. The component cannot make
+that check, since it runs at an apply and reads no pod; the rollout that applies the stages runs
+it.
 
 Lowering `stage` below `routes`, or removing `routeAuthorization` from a hub at `routes` or
 `authorization`, makes each server log every route URL it removes with the route password in it
