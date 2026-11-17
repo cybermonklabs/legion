@@ -1,11 +1,15 @@
 package workflow
 
 // A process an issue pod's memory guard ended is told to the role whose process it was, on that
-// role's own topic, and to nobody else (dispatch://INFRA-3557).
+// role's own topic, and to nobody else (dispatch://INFRA-3557). One the controller pod's guard
+// ended is told to the project's controller alone, in a controller notice of its own for each kill
+// (dispatch://INFRA-3531).
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +85,99 @@ func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *te
 	}
 	if text := logs.String(); !strings.Contains(text, "names an issue the daemon does not record") || !strings.Contains(text, "issue=LEGION-404") {
 		t.Fatalf("log = %q, want one line naming the issue the kill was dropped for", text)
+	}
+}
+
+// allOutboxRows is how many outbox rows of any kind and any issue the outbox holds.
+func allOutboxRows(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(t.Context(), "select count(*) from outbox").Scan(&rows); err != nil {
+		t.Fatalf("count the outbox rows: %v", err)
+	}
+	return rows
+}
+
+// applyControllerKill applies one kill of the controller pod's process, credited to token, under
+// the id the daemon applies such a report under.
+func applyControllerKill(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token, report shimwire.LauncherMemoryKill) {
+	t.Helper()
+	id := fmt.Sprintf("memory-guard-kill:%s:%d", report.Guard, report.Sequence)
+	if _, err := intake.ApplyFact(t.Context(), pool, "launcher", id, intake.ControllerMemoryGuardKill{
+		Token: token, PodUID: "pod-controller", Report: report,
+	}, engine, admissionStub{}); err != nil {
+		t.Fatalf("apply the controller's kill %s: %v", id, err)
+	}
+}
+
+// A kill of one of the controller's own processes is told to the project's controller as one
+// controller notice of kind memory-guard-kill, filed under the project key as a tick is. Its
+// reason names the process by its executable alone, with none of its arguments, its pid, its size,
+// the pod's reading and its limit, says that the controller's session goes on and that the same
+// program is not to be run again unchanged, and points to the controller's wakes reference.
+// Nothing else is queued. A second kill is a second notice, though the first is still unsent: each
+// is a program the controller lost.
+func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *testing.T) {
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	token := claim.ControllerToken("legion")
+	first := memoryGuardKillReport()
+
+	applyControllerKill(t, pool, engine, token, first)
+
+	reason := "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: " +
+		"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
+		"Your session and the pod's other processes go on. " +
+		"Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
+		"or send heavy work where your deployment's instructions say. " +
+		"Read skill://legion-controller/references/wakes.md before you run it again."
+	told := record.ControllerNotice{Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: reason}
+	if got := noticeRows(t, pool); !reflect.DeepEqual(got, []record.OutboxPayload{told}) {
+		t.Fatalf("notice rows = %+v, want the one controller notice %+v", got, told)
+	}
+	if rows, all := outboxRowsOf(t, pool, "LEGION"), allOutboxRows(t, pool); rows != 1 || all != 1 {
+		t.Fatalf("the outbox holds %d rows under the project key LEGION and %d in all, want the one notice under it and nothing else", rows, all)
+	}
+
+	second := first
+	second.Sequence, second.PID, second.Executable = 4, 5151, "node"
+	applyControllerKill(t, pool, engine, token, second)
+	got := noticeRows(t, pool)
+	if len(got) != 2 || !reflect.DeepEqual(got[0], record.OutboxPayload(told)) {
+		t.Fatalf("notice rows after the second kill = %+v, want the first notice and a second one", got)
+	}
+	next, ok := got[1].(record.ControllerNotice)
+	if !ok || next.Kind != record.MemoryGuardKillNotice || next.Role != claim.RoleController ||
+		!strings.Contains(next.Reason, "`node` (pid 5151)") {
+		t.Fatalf("the second notice = %+v, want a memory-guard-kill controller notice naming `node` (pid 5151)", got[1])
+	}
+	if rows := outboxRowsOf(t, pool, "LEGION"); rows != 2 {
+		t.Fatalf("the outbox holds %d rows under the project key after two kills, want two", rows)
+	}
+}
+
+// A kill whose token is not this project's controller's is no kill of this controller's program:
+// another project's controller token and an issue role's token each queue nothing, and each says
+// so in one line.
+func TestMemoryGuardAControllerKillOfATokenThatIsNotTheControllersIsLoggedAndDropped(t *testing.T) {
+	pool := migratedPool(t)
+	var logs bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
+	report := memoryGuardKillReport()
+	for i, token := range []claim.Token{claim.ControllerToken("other"), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleTester))} {
+		report.Sequence = uint64(i + 1)
+		applyControllerKill(t, pool, engine, token, report)
+	}
+
+	if rows := allOutboxRows(t, pool); rows != 0 {
+		t.Fatalf("the outbox holds %d rows, want none for a token that is not the controller's", rows)
+	}
+	text := logs.String()
+	if got := strings.Count(text, "names a token that is not this project's controller"); got != 2 {
+		t.Fatalf("log = %q, want one line for each of the two dropped kills", text)
+	}
+	if !strings.Contains(text, "role=legion-other-controller") || !strings.Contains(text, "role=legion-legion-legion-209-tester") {
+		t.Fatalf("log = %q, want each line to name the token the kill was dropped for", text)
 	}
 }
 

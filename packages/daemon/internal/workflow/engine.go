@@ -254,6 +254,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionStoreFault(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
+	case intake.ControllerMemoryGuardKill:
+		return e.controllerMemoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
 	case intake.RestartPhase:
@@ -1092,6 +1094,62 @@ func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
 		"The pod's other processes and your session go on. "+
 		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: "+
 		"read skill://legion-worker/references/tools.md before you run it again.",
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// controllerMemoryGuardKill tells the project's controller which of its own programs the memory
+// guard of the controller's pod ended, and why (intake.ControllerMemoryGuardKill): one controller
+// notice of kind memory-guard-kill, filed under the project key as a tick is, and enqueued in the
+// fact's transaction, so a fact that rolls back tells nobody and the outbox carries the telling
+// across a restart. No architect is told: the controller's pod is of no issue, and the program
+// was the controller's.
+//
+// Each kill is a row of its own, written here and never through admission's wakeController,
+// whose rule keeps one unsent notice per kind and project: a second kill while the first one's
+// notice waits is a second program ended, and the controller must hear of each. What keeps one
+// kill to one row however often its report arrives is the fact's event id (the daemon's
+// memoryGuardKillEventID), which ApplyFact applies once.
+//
+// The token is the session's, the claim the launcher's connection authenticated for. A token that
+// is not this project's controller's (claim.ControllerToken of the project as every token spells
+// it, claim.ProjectToken, which is how the sandbox names the controller pod's claim) is no kill of
+// this controller's program: the runtime hands only the controller's pod a session of no issue, so
+// it is logged and dropped rather than told to a reader whose program it was not.
+func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.ControllerMemoryGuardKill) (intake.Result, error) {
+	report := fact.Report
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if fact.Token != claim.ControllerToken(project) {
+		e.logOnCommit(ctx, "workflow: a controller memory guard kill names a token that is not this project's controller, so nobody is told",
+			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+		return intake.Result{}, nil
+	}
+	if err := e.enqueue(ctx, tx, e.cfg.Project, record.ControllerNotice(record.Notice{
+		Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: controllerMemoryGuardNote(report)})); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: the controller whose program the memory guard ended is told why",
+		"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+		"sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "limitBytes", report.LimitBytes)
+	return intake.Result{}, nil
+}
+
+// controllerMemoryGuardNote is the reason of the notice the controller reads when the memory guard
+// of its pod ended one of its programs: which process, how much it held, how near the limit the
+// pod was, that its session and the pod's other processes go on, and what to run in place of the
+// same program. It is written as memoryGuardNote is: sizes in binary units (binarySize), and the
+// process by its executable alone in a code span (codeSpan), with none of its arguments. The
+// controller has no worker's tools reference, so it is pointed to its own wakes reference, whose
+// memory-guard-kill section says the same at more length.
+func controllerMemoryGuardNote(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: "+
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
+		"Your session and the pod's other processes go on. "+
+		"Do not run the same program again unchanged: bound its output (a page, a limit, a stream), "+
+		"or send heavy work where your deployment's instructions say. "+
+		"Read skill://legion-controller/references/wakes.md before you run it again.",
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
 }
 

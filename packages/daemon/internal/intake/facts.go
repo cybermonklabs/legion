@@ -1073,6 +1073,25 @@ type MemoryGuardKill struct {
 
 func (MemoryGuardKill) isFact() {}
 
+// ControllerMemoryGuardKill is one process the controller pod's memory guard ended with SIGKILL
+// because the pod was near its memory limit, as that pod's launcher reported it on the
+// controller's connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the
+// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
+// report under the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`,
+// which names the kill once, so a report the launcher sent twice is applied once.
+//
+// Token and PodUID are the launcher session's own (the claim the connection authenticated for and
+// its pod), never anything the report says. The controller's pod is of no issue, so the fact names
+// none. The workflow tells the project's controller, in a controller notice of its own for each
+// kill, which of its programs was ended and why (workflow's controllerMemoryGuardKill).
+type ControllerMemoryGuardKill struct {
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (ControllerMemoryGuardKill) isFact() {}
+
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
 // prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds a tree's root

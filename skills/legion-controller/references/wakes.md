@@ -541,6 +541,23 @@ request and that a second read finds no longer working or gone once more are ref
 answers; a claim that moved is otherwise answered as that second read finds it. A claim under a relaunch the wake pacing parks is refused
 `CLAIM_UNSETTLED` too.
 
+## `memory-guard-kill on <PROJECT>` (`{kind: "memory-guard-kill", role: "controller", reason}`)
+
+The memory guard of your own pod stopped one of your programs with SIGKILL, because the pod was
+near its memory limit. `reason` names the program by its executable and its pid, how much memory
+it held, how much the pod held, and the pod's limit. It names none of the program's arguments.
+Your session and the pod's other processes go on, and the guard touched no pod of any tree.
+
+Do not run the same program again unchanged, because it would end the same way. Bound its output:
+read a page at a time, set a limit on what it returns, or stream it to a file and read only the
+part you need. Send heavy work where your deployment's instructions say, never to your own pod.
+
+An `eval` cell that answers "Kernel died during execution; completion is uncertain", with such a
+notice beside it, is this kill: the guard stopped the cell's kernel. Some of the cell's work may
+have run and some may not, so check what it was to change before you run a bounded form of it.
+
+Each kill is a notice of its own, even while an earlier one is still unsent.
+
 ## GitHub mentions
 
 Read the mention and its artifact. Answer a mention that asks you for triage or for information

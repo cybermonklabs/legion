@@ -660,6 +660,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // two arms read raises two and neither hides the other. Nobody inside the tree is told: the
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
+//
+// A memory-guard-kill notice names one of the controller's own programs that the memory guard of
+// the controller's pod ended with SIGKILL because the pod was near its memory limit. Its issue is
+// the project key, as a tick's is, its Role is the controller, and its Reason names the process,
+// its pid, its size, the pod's reading and the limit, with none of the process's arguments, and
+// says what to run instead (workflow's controllerMemoryGuardKill). Each kill is a row of its own,
+// written by the workflow in the kill's own fact and never through admit.Admission.wakeController,
+// whose rule keeps one unsent notice per kind: two kills are two programs ended, and the second
+// must not be dropped behind the first.
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -672,6 +681,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -757,8 +767,10 @@ type ArchitectStall struct {
 // as the first tree's waited in the outbox, and no pass could tell the controller of it until
 // that first notice was published.
 //
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
+// Every other kind that wakeController queues says something about the project — a free slot, a
+// todo issue, the day's tick — which one wake carries however many facts find it pending. A
+// memory-guard-kill notice never passes through that rule: the workflow writes one row for each
+// kill.
 func NoticePerClaim(kind NoticeKind) bool {
 	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
@@ -1831,7 +1843,7 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice:
 		return true
 	default:
 		return false

@@ -315,6 +315,13 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
+	// ControllerMemoryGuardKilled takes one process the controller pod's memory guard ended, as
+	// that pod's launcher reported it on the controller's connection
+	// (runtime.ControllerMemoryGuardKilled): the daemon turns it into the notice that tells the
+	// project's controller which of its programs ended and why. A runtime given none drops such a
+	// report as MemoryGuardKilled's absence drops an issue pod's: it logs a warning naming where
+	// the daemon sets this field, and keeps the connection open.
+	ControllerMemoryGuardKilled runtime.ControllerMemoryGuardKilled
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

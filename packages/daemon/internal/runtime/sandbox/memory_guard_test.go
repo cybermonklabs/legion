@@ -188,6 +188,26 @@ func recordedMemoryKills() (runtime.MemoryGuardKilled, <-chan memoryKillCall) {
 	}, calls
 }
 
+// controllerMemoryKillCall is one call of a runtime's ControllerMemoryGuardKilled receiver, and
+// whether the context it was called with carried a deadline.
+type controllerMemoryKillCall struct {
+	token   claim.Token
+	podUID  string
+	report  shimwire.LauncherMemoryKill
+	bounded bool
+}
+
+// recordedControllerMemoryKills is a ControllerMemoryGuardKilled receiver that records each call
+// on the channel it answers.
+func recordedControllerMemoryKills() (runtime.ControllerMemoryGuardKilled, <-chan controllerMemoryKillCall) {
+	calls := make(chan controllerMemoryKillCall, 8)
+	return func(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+		_, bounded := ctx.Deadline()
+		calls <- controllerMemoryKillCall{token: token, podUID: podUID, report: report, bounded: bounded}
+		return nil
+	}, calls
+}
+
 // memoryKillReport is a kill report the frame's own rule accepts.
 func memoryKillReport(sequence uint64) shimwire.LauncherMemoryKill {
 	return shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: sequence, PID: 4242, Executable: "python3",
@@ -236,7 +256,7 @@ func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCal
 func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueRoleAndPod(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
+	launchers := newLaunchers(nil, nil, nil, killed, nil, slogTo(&logs))
 	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
@@ -273,28 +293,72 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 	}
 }
 
-// A kill report from a launcher of no issue (the controller's pod, whose role has no issue to
-// hold a note) and one a runtime with no receiver reads are dropped with a warning naming the
-// launcher, and the connection stays open: the launcher's frames after them are read.
-func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing.T) {
+// A kill report from the controller's launcher, a session of no issue, reaches the controller's
+// receiver with the session's own token and pod, under a bounded context, and the issue pods'
+// receiver is not called: the controller's pod is of no issue, so there is no issue to name.
+func TestMemoryGuardServeLauncherHandsAControllerKillToTheControllerReceiverWithTheSessionsOwnTokenAndPod(t *testing.T) {
+	var logs lockedLog
+	issueKilled, issueCalls := recordedMemoryKills()
+	controllerKilled, controllerCalls := recordedControllerMemoryKills()
+	launchers := newLaunchers(nil, nil, nil, issueKilled, controllerKilled, slogTo(&logs))
+	session := launchers.accept(controllerToken, "", rigNow, shimwire.LauncherHello{PodUID: "pod-c", LauncherID: "l-c"})
+	w, done := serveLauncherPipe(t, session)
+
+	report := memoryKillReport(1)
+	sendFrame(t, w, report)
+	var call controllerMemoryKillCall
+	select {
+	case call = <-controllerCalls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the controller's receiver was never called with the report")
+	}
+	if call != (controllerMemoryKillCall{token: controllerToken, podUID: "pod-c", report: report, bounded: true}) {
+		t.Fatalf("the controller's receiver was called with %+v, want the session's %s and pod-c, the report %+v, and a bounded context", call, controllerToken, report)
+	}
+	// The write returns once the loop has read it, so the state's write returns only once the
+	// report has been handled.
+	sendFrame(t, w, shimwire.LauncherState{})
+	select {
+	case call := <-issueCalls:
+		t.Fatalf("the issue pods' receiver was called with %+v, want only the controller's", call)
+	case <-done:
+		t.Fatal("the frame loop ended, want the connection open after the report")
+	default:
+	}
+	if text := logs.String(); strings.Contains(text, "launcher memory guard") {
+		t.Fatalf("log = %q, want no warning for a report a receiver took", text)
+	}
+}
+
+// A kill report a runtime with no receiver for its pod's kind reads is dropped with a warning
+// naming the launcher and the line that sets the missing receiver, and the connection stays open:
+// the launcher's frames after it are read. The other kind's receiver, which the runtime has, is
+// not called with it.
+func TestMemoryGuardServeLauncherDropsAKillNoReceiverCanTake(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		receiver bool
-		token    claim.Token
-		issue    string
-		warning  string
+		name    string
+		token   claim.Token
+		issue   string
+		warning string
 	}{
-		{"a launcher of no issue", true, controllerToken, "", "a launcher of no issue reported a kill"},
-		{"a runtime with no receiver", false, workerToken, testTree, "this runtime has no receiver for it"},
+		{"an issue pod's launcher", workerToken, testTree, "this runtime has no receiver for it, which is dropped; " +
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.MemoryGuardKilled)"},
+		{"the controller's launcher", controllerToken, "", "this runtime has no receiver for it, which is dropped; " +
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.ControllerMemoryGuardKilled)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs lockedLog
-			var killed runtime.MemoryGuardKilled
-			var calls <-chan memoryKillCall
-			if tc.receiver {
-				killed, calls = recordedMemoryKills()
+			// The runtime has the receiver of the other kind alone.
+			var issueKilled runtime.MemoryGuardKilled
+			var controllerKilled runtime.ControllerMemoryGuardKilled
+			var issueCalls <-chan memoryKillCall
+			var controllerCalls <-chan controllerMemoryKillCall
+			if tc.issue == "" {
+				issueKilled, issueCalls = recordedMemoryKills()
+			} else {
+				controllerKilled, controllerCalls = recordedControllerMemoryKills()
 			}
-			launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
+			launchers := newLaunchers(nil, nil, nil, issueKilled, controllerKilled, slogTo(&logs))
 			session := launchers.accept(tc.token, tc.issue, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 			w, done := serveLauncherPipe(t, session)
 
@@ -305,8 +369,10 @@ func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing
 			sendFrame(t, w, shimwire.LauncherState{})
 
 			select {
-			case call := <-calls:
-				t.Fatalf("the receiver was called with %+v, want the report dropped", call)
+			case call := <-issueCalls:
+				t.Fatalf("the issue pods' receiver was called with %+v, want the report dropped", call)
+			case call := <-controllerCalls:
+				t.Fatalf("the controller's receiver was called with %+v, want the report dropped", call)
 			case <-done:
 				t.Fatal("the frame loop ended, want the connection open after the report")
 			default:

@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, architect-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, architect-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors, memory-guard-kill), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -81,6 +81,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
+| `memory-guard-kill on <PROJECT>` | Your pod's memory guard ended one of your programs: do not run it again unchanged; bound its output or send heavy work where your deployment's instructions say (`skill://legion-controller/references/wakes.md`) |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |

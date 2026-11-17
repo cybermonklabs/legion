@@ -282,6 +282,19 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // and the guard's kill line in the pod's own log is then the one record of the kill.
 type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
 
+// ControllerMemoryGuardKilled is the daemon's reading of one process the controller pod's launcher
+// ended with SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the
+// controller's own pod runs a guard as an issue pod does, and the daemon tells the project's
+// controller which of its programs ended and why. The session gives it the claim token its
+// connection authenticated for, the uid of the pod the launcher runs in and the report, the first
+// two the session's own and never the report's. The controller's pod is of no issue, so there is
+// no issue to name, and MemoryGuardKilled, whose note is told to a role of an issue, has nothing
+// to take it with.
+//
+// It takes the wire's own frame for the reason MemoryGuardKilled does, and an error is returned
+// to the session, which logs it and drops the report, as MemoryGuardKilled's is.
+type ControllerMemoryGuardKilled func(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
 // with zero after, so the one computation is the deadline's.

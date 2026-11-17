@@ -552,9 +552,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
 		// launcher names a tag with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI)
-		// Each process an issue pod's memory guard ends reaches the daemon through the kill
-		// holder (memoryGuardKills).
+		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
+		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
+		opts.ControllerMemoryGuardKilled = kills.controllerKilled
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -576,13 +577,14 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 	}
 }
 
-// memoryGuardKills turns one process an issue pod's memory guard ended, as the pod's launcher
-// reported it, into the fact the workflow applies (intake.MemoryGuardKill). It is the seam between
-// the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the workflow
-// opens, and the fact path, which exists only after it: prepareSandbox makes one and hands it to
-// the factory, and the boot fills it the moment the workflow is open (plan.memoryGuardKills,
-// daemon.run). A holder nobody filled refuses every report with errMemoryGuardKillsUnbound, which
-// the launcher session logs with the report it drops.
+// memoryGuardKills turns one process a pod's memory guard ended, as the pod's launcher reported
+// it, into the fact the workflow applies: intake.MemoryGuardKill for an issue pod's (killed) and
+// intake.ControllerMemoryGuardKill for the controller pod's (controllerKilled). It is the seam
+// between the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the
+// workflow opens, and the fact path, which exists only after it: prepareSandbox makes one and
+// hands it to the factory, and the boot fills it the moment the workflow is open
+// (plan.memoryGuardKills, daemon.run). A holder nobody filled refuses every report with
+// errMemoryGuardKillsUnbound, which the launcher session logs with the report it drops.
 //
 // It is filled once, in the boot's own goroutine, before the runtime is built and so before any
 // launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
@@ -593,11 +595,11 @@ type memoryGuardKills struct {
 
 // errMemoryGuardKillsUnbound is what a holder the boot never filled answers every report with. Its
 // text names the line that fills it, since a log line is then the only place the drop shows: the
-// role whose process was ended is told nothing. An unbound holder can only be a boot bug, never a
-// daemon that runs no workflow: prepareSandbox makes the holder only under runtime: kubernetes, and
-// configuration load refuses a runtime: kubernetes file that names no dispatch_url (config's
-// checkKubernetesKeys, "the workflow is what launches every pod"), so every daemon with a holder
-// opens the workflow whose boot fills it.
+// role or the controller whose process was ended is told nothing. An unbound holder can only be a
+// boot bug, never a daemon that runs no workflow: prepareSandbox makes the holder only under
+// runtime: kubernetes, and configuration load refuses a runtime: kubernetes file that names no
+// dispatch_url (config's checkKubernetesKeys, "the workflow is what launches every pod"), so every
+// daemon with a holder opens the workflow whose boot fills it.
 var errMemoryGuardKillsUnbound = errors.New("the daemon's memory guard kill holder was never bound to the workflow " +
 	"(daemon.go, plan.memoryGuardKills.bind), so this report and every later one is dropped")
 
@@ -633,6 +635,27 @@ func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim
 	fact := intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}
 	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
 		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, issue, podUID, err)
+	}
+	return nil
+}
+
+// controllerKilled applies one kill of the controller's pod as one intake fact
+// (runtime.ControllerMemoryGuardKilled), crediting it to token, the claim whose connection carried
+// the report, and to podUID, the pod that launcher runs in, both the session's and never the
+// report's. It runs where killed runs, under the same bounded context and hold mark, and answers
+// a holder nobody bound with the same errMemoryGuardKillsUnbound, for the same reason.
+//
+// The event id is the one killed applies under (memoryGuardKillEventID): the guard's id is minted
+// by each launcher process, so a kill of the controller's pod and one of an issue pod never share
+// it, and a report the controller's launcher sent again on its next connection is applied once, so
+// the controller is told of one kill once.
+func (m *memoryGuardKills) controllerKilled(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	if m.pool == nil || len(m.handlers) == 0 {
+		return errMemoryGuardKillsUnbound
+	}
+	fact := intake.ControllerMemoryGuardKill{Token: token, PodUID: podUID, Report: report}
+	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
+		return fmt.Errorf("apply the memory guard's kill of pid %d in the controller's pod %s: %w", report.PID, podUID, err)
 	}
 	return nil
 }

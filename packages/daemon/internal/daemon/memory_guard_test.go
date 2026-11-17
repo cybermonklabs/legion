@@ -126,6 +126,71 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	}
 }
 
+// The holder applies a kill of the controller's pod as one fact under the kill's own identity, so
+// the same report sent twice is one fact and one controller notice; the outbox's run publishes
+// that notice once, to the project's controller topic, as `memory-guard-kill on LEGION`, and to
+// no other topic. The notice names the process, its pid, its size, the pod's reading and the limit.
+func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	kills := &memoryGuardKills{}
+	kills.bind(pool, []intake.Handler{engine})
+	token := claim.ControllerToken("legion")
+	report := memoryGuardKill()
+	report.Guard = "guard-c0de"
+
+	for range 2 {
+		if err := kills.controllerKilled(ctx, token, "pod-controller", report); err != nil {
+			t.Fatalf("apply the controller's kill: %v", err)
+		}
+	}
+
+	var applied int
+	if err := pool.QueryRow(ctx, `select count(*) from processed_events where source = 'launcher' and event_id = $1`,
+		"memory-guard-kill:guard-c0de:3").Scan(&applied); err != nil {
+		t.Fatalf("read the applied facts: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("the kill is applied as %d facts under memory-guard-kill:guard-c0de:3, want one", applied)
+	}
+
+	publisher := &outboxPublisher{}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, project: "legion", now: time.Now}
+	for run := range 2 {
+		if err := runner.RunOnce(ctx); err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+	}
+	const topic = "notifications.legion.legion.controller"
+	if topic != notify.ControllerTopic("legion") {
+		t.Fatalf("the controller's topic is %q, want %q", notify.ControllerTopic("legion"), topic)
+	}
+	published := publisher.publishes()
+	if len(published) != 1 || published[0].topic != topic || published[0].message != "memory-guard-kill on LEGION" {
+		t.Fatalf("published %+v, want one notice on %s as memory-guard-kill on LEGION", published, topic)
+	}
+	notice, ok := published[0].payload.(record.Notice)
+	if !ok || notice.Kind != record.MemoryGuardKillNotice || notice.Role != claim.RoleController {
+		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice of the controller", published[0].payload)
+	}
+	for _, part := range []string{"SIGKILL", "`python3` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-controller/references/wakes.md"} {
+		if !strings.Contains(notice.Reason, part) {
+			t.Fatalf("the notice's reason %q does not name %q", notice.Reason, part)
+		}
+	}
+}
+
+// A holder the boot never bound refuses a kill of the controller's pod as it refuses an issue
+// pod's, so the launcher session logs the report it drops.
+func TestMemoryGuardAnUnboundHolderRefusesEveryControllerKill(t *testing.T) {
+	err := (&memoryGuardKills{}).controllerKilled(context.Background(), claim.ControllerToken("legion"), "pod-controller", memoryGuardKill())
+	if !errors.Is(err, errMemoryGuardKillsUnbound) {
+		t.Fatalf("controllerKilled = %v, want errMemoryGuardKillsUnbound", err)
+	}
+}
+
 // A holder the boot never bound has no fact path, and says so to the launcher session, which logs
 // the report it drops: a boot that skipped the bind shows in the log rather than nowhere.
 func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
