@@ -88,9 +88,9 @@
 # code. check-private-names.sh is not dependency code: it sources nothing, and runs bash builtins
 # and dirname, mktemp, rm, git (ls-files), grep, find, sort, xargs, env, sh, tr, cat and wc, all
 # the runner's own; it is the one script a job holding the deployment's term list runs
-# (release.yaml's legion_names, pi_envoy_names, pi_legion_names and claude_envoy_names and
-# release-envoy-listener.yaml's release_names, through .github/actions/private-names-packed-plugin
-# and .github/actions/private-names-release-notes). The
+# (release.yaml's claude_envoy_names and release-notes-names.yaml's job, through
+# .github/actions/private-names-packed-plugin and .github/actions/private-names-release-notes).
+# The
 # classification is of a command a step runs, never of a word a comment or another command's
 # argument holds: a script named only that way is no exemption. A step whose `uses:` is a local
 # action and no DEPENDENCY_USES entry is read through that action's action.yml: a composite
@@ -126,12 +126,14 @@
 # the boundary; this check is a tripwire on that boundary, and the pass-through class above (a
 # variable in command position, `xargs`, `nohup`, an unlisted program, a `bun` behind `docker -Dl
 # debug run`) is accepted on that ground.
-# Scope: exactly the three workflows WORKFLOWS lists: release.yaml,
-# release-envoy-listener.yaml and release-envoy-infra.yaml. Rules 1-3 and 6 read every job that
-# has `steps:`; a job that calls a reusable workflow (`uses:` and no steps, release.yaml's
-# worker_image) is out of their
-# scope, since what it runs is that workflow's own jobs. Rule 4 reads the job it names. Rule 5
-# reads every job's `if:`, steps or not.
+# Scope: exactly the four workflows WORKFLOWS lists: release.yaml, release-envoy-listener.yaml,
+# release-envoy-infra.yaml, and release-notes-names.yaml, the reusable workflow that release.yaml's
+# and the listener's notes names jobs call, whose job holds the deployment's term list. Rules 1-3
+# and 6 read every job that has `steps:`; a job that calls a reusable workflow (`uses:` and no
+# steps: those names jobs, and release.yaml's worker_image) is out of their scope, since what it
+# runs is that workflow's own jobs, which this check reads when the workflow is on WORKFLOWS
+# (release-notes-names.yaml is; worker-image.yaml, which builds the worker image, is not).
+# Rule 4 reads the job it names. Rule 5 reads every job's `if:`, steps or not.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -171,6 +173,7 @@ LineLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapp
 RELEASE = Path(".github/workflows/release.yaml")
 LISTENER = Path(".github/workflows/release-envoy-listener.yaml")
 INFRA = Path(".github/workflows/release-envoy-infra.yaml")
+NOTES_NAMES = Path(".github/workflows/release-notes-names.yaml")
 
 # What makes a job credentialed: one of these scopes, or the deploy key's name anywhere in it, by
 # dot or by index (`secrets.DEPLOY_KEY`, `secrets['DEPLOY_KEY']`, `secrets["DEPLOY_KEY"]`), in any
@@ -194,7 +197,7 @@ TRIPWIRE = f"{RELEASE_PUSH} no-credential"
 # tag, and nothing else pushes.
 PUSH_COMMAND = "release-push.sh push-tag"
 # The workflows this check reads, in this order: a workflow joins the check here.
-WORKFLOWS = [RELEASE, LISTENER, INFRA]
+WORKFLOWS = [RELEASE, LISTENER, INFRA, NOTES_NAMES]
 # A secret other than GITHUB_TOKEN, which a build job must not hold: `secrets.X` or `secrets['X']`
 # for any X but GITHUB_TOKEN, `toJSON(secrets)` (the context and functions are case-insensitive,
 # as are secret names), or a bare `secrets` inside a `${{ … }}` expression (`${{ secrets }}`,

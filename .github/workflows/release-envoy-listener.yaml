@@ -601,35 +601,23 @@ jobs:
         run: .github/scripts/release-push.sh no-credential
 
   # The private-name check of the changelog entries release_build rendered, over the very file
-  # release_publish writes into the GitHub release's body. A job of its own, because the check
-  # reads the deployment's term list (PRIVATE_NAME_TERMS) and no build job holds it: this one
-  # checks out the .github cone and runs .github/actions/private-names-release-notes, which
-  # downloads the entries and runs the check, and no dependency code
-  # (.github/scripts/check-release-credentials.sh reads the action's steps). It runs whenever
-  # release_build released and checks when that release rendered entries; the check fails a push's
-  # or a dispatched run's scan without the list. release_publish needs this job, and its release
-  # steps run only when it succeeded, so a finding releases nothing; `latest` still moves, since
-  # the image carries no changelog.
+  # release_publish writes into the GitHub release's body, through
+  # .github/workflows/release-notes-names.yaml, whose header says why it is a job of its own and
+  # what it runs. It runs whenever release_build released, and checks when that release rendered
+  # entries. release_publish needs this job, and its release steps run only when it succeeded, so
+  # a finding releases nothing; `latest` still moves, since the image carries no changelog.
   release_names:
     needs: release_build
     if: always() && needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    # contents: read is for the checkout.
+    # contents: read is for the called workflow's checkout.
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.release_build.outputs.notes == 'true'
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
-
-      - uses: ./.github/actions/private-names-release-notes
-        if: needs.release_build.outputs.notes == 'true'
-        with:
-          artifact: envoy-release-notes
-          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: envoy-release-notes
+      notes: ${{ needs.release_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # Moves `latest` and, when release_build decided a release, publishes it: confirms the version
   # against the tags inside the concurrency group, checks what build and release_build handed over,

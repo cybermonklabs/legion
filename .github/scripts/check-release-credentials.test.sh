@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for `check-release-credentials.sh`: a job of the three release workflows it reads that
-# holds a credential runs no dependency
+# Tests for `check-release-credentials.sh`: a job of the four workflows it reads (the three release
+# workflows and the reusable notes names workflow) that holds a credential runs no dependency
 # code, uses only allow-listed actions, restores no cache and holds the deploy key only in the env
 # of a step that runs the one push command (a release's push-tag);
 # a job that runs dependency code holds no credential and ends in the no-credential
@@ -12,7 +12,7 @@
 # code runs, and these cases exercise those patterns, on each side of each line.
 #
 # Each case builds a miniature repository under a temporary directory, with the real script
-# symlinked into it and the three workflows written green, and mutates one file.
+# symlinked into it and the four workflows written green, and mutates one file.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.test.sh
 # CI runs it in ci.yaml's test job.
@@ -79,8 +79,9 @@ SHA=3d3c42e5aac5ba805825da76410c181273ba90b1
 RELEASE=.github/workflows/release.yaml
 LISTENER=.github/workflows/release-envoy-listener.yaml
 INFRA=.github/workflows/release-envoy-infra.yaml
+NOTES_NAMES=.github/workflows/release-notes-names.yaml
 
-# write_green <workflows dir>: the three workflows in a shape every rule passes, not a copy of the
+# write_green <workflows dir>: the four workflows in a shape every rule passes, not a copy of the
 # real files. release.yaml: a build job (install, setup-bun, a `go build` behind `&&`,
 # install-changie, `release-push.sh fold-notes`, upload, tripwire) with an `if:` of its own, two
 # credentialed publish jobs (setup-node, `npm publish` of the handed tarball, the tag push and a
@@ -91,7 +92,8 @@ INFRA=.github/workflows/release-envoy-infra.yaml
 # below mutate; the real release.yaml publishes every package from one job. The listener: a docker
 # build job (`packages: write`, a build-push) and release_publish in its concurrency group, with
 # `docker buildx imagetools create`. Infra: a build job (install-pulumi, `pulumi package
-# get-schema`, tripwire) and a publish job.
+# get-schema`, tripwire) and a publish job. The notes names workflow: one job that checks out and
+# runs check-private-names.sh from the checkout with the term list, and no dependency code.
 write_green() {
   local dir=$1
   cat > "$dir/release.yaml" <<'YAML'
@@ -357,6 +359,39 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "envoy-infra v1" assets/*.tar.gz
 YAML
+  cat > "$dir/release-notes-names.yaml" <<'YAML'
+name: Release Notes Names
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        type: string
+        required: true
+    secrets:
+      PRIVATE_NAME_TERMS:
+        required: false
+permissions:
+  contents: read
+jobs:
+  names:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - uses: actions/download-artifact@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/notes
+      - name: Check the entries name nothing private
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" "$RUNNER_TEMP/notes/release-notes.md"
+YAML
 }
 
 # add_publish_step <root> <step yaml lines>: a step before pi_envoy_publish's "Publish to npm".
@@ -371,12 +406,38 @@ add_push_tag_step() {
   add_publish_step "$1" "      - name: $2"$'\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n'"$3"$'          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"\n'
 }
 
-echo "case: the three workflows in a shape every rule passes"
+echo "case: the four workflows in a shape every rule passes"
 root=$(fixture green)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it covered" \
-  "$(contains "$out" 'check-release-credentials: 4 credentialed job(s) and 3 build job(s) across 3 workflows keep credentials out of jobs that run dependency code')"
+  "$(contains "$out" 'check-release-credentials: 4 credentialed job(s) and 3 build job(s) across 4 workflows keep credentials out of jobs that run dependency code')"
+
+echo "case: the notes names workflow's job, which holds the term list, runs bun"
+# The control that this check reads the reusable workflow at all: the release workflows' names
+# jobs only call it, so a dependency command in its job is caught here or nowhere.
+root=$(fixture names-workflow-bun)
+mutate "$root/$NOTES_NAMES" $'      - name: Check the entries name nothing private\n' $'      - run: bun install --frozen-lockfile\n      - name: Check the entries name nothing private\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job's secret, beside the dependency code" \
+  "$(contains "$out" "^::error::$NOTES_NAMES:[0-9]*: job 'names' runs dependency code (step 3 runs 'bun'), but its text names secrets.PRIVATE_NAME_TERMS")"
+check "and the missing tripwire" \
+  "$(contains "$out" "^::error::$NOTES_NAMES:[0-9]*: job 'names' runs dependency code (step 3 runs 'bun'), so its last step must be the tripwire")"
+
+echo "case: the notes names workflow's checkout keeps its credential"
+root=$(fixture names-workflow-persist)
+mutate "$root/$NOTES_NAMES" $'          persist-credentials: false\n' $'          persist-credentials: true\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the reusable workflow's checkout" "$(contains "$out" "^::error::$NOTES_NAMES:[0-9]*: .*persist-credentials")"
+
+echo "case: the notes names workflow is missing"
+root=$(fixture names-workflow-missing)
+rm "$root/$NOTES_NAMES"
+run_check "$root"
+check "exits 1, so the release workflows' calls cannot reach a workflow this check never read" \
+  "$(is "$status:$(contains "$out" "^::error::$NOTES_NAMES is missing\$")" 1:true)"
 
 echo "case: a credentialed job runs bun install"
 root=$(fixture bun-install)

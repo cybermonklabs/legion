@@ -380,33 +380,23 @@ jobs:
         run: .github/scripts/release-push.sh no-credential
 
   # The private-name check of the changelog entries legion_build rendered, over the very file
-  # publish writes into the GitHub release's body. A job of its own, because the check reads the
-  # deployment's term list (PRIVATE_NAME_TERMS) and no build job holds it: this one checks out the
-  # .github cone and runs .github/actions/private-names-release-notes, which downloads the entries
-  # and runs the check, and no dependency code (.github/scripts/check-release-credentials.sh reads
-  # the action's steps). It runs whenever legion_build released and checks when that release
-  # rendered entries; the check fails a push's run without the list. publish needs this job, and
-  # its legion steps run only when it succeeded, so a finding releases nothing of legion.
+  # publish writes into the GitHub release's body, through
+  # .github/workflows/release-notes-names.yaml, whose header says why it is a job of its own and
+  # what it runs. It runs whenever legion_build released, and checks when that release rendered
+  # entries. publish needs this job, and its legion steps run only when it succeeded, so a finding
+  # releases nothing of legion.
   legion_names:
     needs: legion_build
     if: always() && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    # contents: read is for the checkout.
+    # contents: read is for the called workflow's checkout.
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.legion_build.outputs.notes == 'true'
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
-
-      - uses: ./.github/actions/private-names-release-notes
-        if: needs.legion_build.outputs.notes == 'true'
-        with:
-          artifact: legion-notes
-          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: legion-notes
+      notes: ${{ needs.legion_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # The Envoy Oh My Pi plugin, @sjawhar/pi-envoy. pi_envoy_build versions it, installs the
   # workspace and packs it (the dependencies' code, so no write scope and no secret), and hands the
@@ -553,23 +543,15 @@ jobs:
   pi_envoy_names:
     needs: pi_envoy_build
     if: always() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    # contents: read is for the checkout.
+    # contents: read is for the called workflow's checkout.
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.pi_envoy_build.outputs.notes == 'true'
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
-
-      - uses: ./.github/actions/private-names-release-notes
-        if: needs.pi_envoy_build.outputs.notes == 'true'
-        with:
-          artifact: pi-envoy-notes
-          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-envoy-notes
+      notes: ${{ needs.pi_envoy_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
   pi_legion_build:
@@ -697,23 +679,15 @@ jobs:
   pi_legion_names:
     needs: pi_legion_build
     if: always() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    # contents: read is for the checkout.
+    # contents: read is for the called workflow's checkout.
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.pi_legion_build.outputs.notes == 'true'
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
-
-      - uses: ./.github/actions/private-names-release-notes
-        if: needs.pi_legion_build.outputs.notes == 'true'
-        with:
-          artifact: pi-legion-notes
-          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-legion-notes
+      notes: ${{ needs.pi_legion_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # The Claude Code plugin, @sjawhar/claude-envoy, built and published as the two Oh My Pi plugins
   # are. The difference is what it packs: the plugin's own tree carries no built file, so this job

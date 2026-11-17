@@ -6,11 +6,12 @@ description: >-
   release-notes.md, which is the file the publish job writes into the GitHub release's body. A
   missing file fails the check (exit 2), so an artifact that holds no entries never passes as
   clean. It runs that shell script and nothing else, so the job that calls it runs no dependency
-  code (.github/scripts/check-release-credentials.sh reads these steps). release.yaml's
-  legion_names, pi_envoy_names, pi_legion_names and claude_envoy_names and
-  release-envoy-listener.yaml's release_names call it; each keeps its own needs, conditions,
-  permissions and checkout of the .github cone, and its publish job runs that package's release
-  only when it succeeded.
+  code (.github/scripts/check-release-credentials.sh reads these steps). Its callers are
+  .github/workflows/release-notes-names.yaml's job, which release.yaml's legion_names,
+  pi_envoy_names and pi_legion_names and release-envoy-listener.yaml's release_names call, and
+  release.yaml's claude_envoy_names, which also checks the packed plugin; each caller keeps its
+  own needs, conditions, permissions and checkout of the .github cone, and its publish job runs
+  that package's release only when it succeeded.
 
 inputs:
   artifact:
