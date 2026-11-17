@@ -397,12 +397,23 @@ type SpawnSpec struct {
 // It is for a pod's drift report (internal/runtime/sandbox's movedRoleOverlays), which names a
 // moved overlay of the block's own arm `memory.config_files <file>`, the spelling it had before
 // any experiment was declared, and every other arm's by ConfigFilesField.
+//
+// Roles is the issue roles the arm's experiment reaches (config.Experiment.Roles), nil for every
+// issue role: a role it leaves out never starts on the arm's overlays, so the readers of every
+// tail a role may start on pass the arm over for that role (Reaches, RoleOverlayValues).
 type Variant struct {
 	Experiment       string
 	Name             string
 	ConfigFiles      []string
 	ConfigFilesField string
 	MemoryBlock      bool
+	Roles            []claim.Role
+}
+
+// Reaches is whether a launch of role may start on this arm's overlays: every issue role where
+// the arm's experiment names no roles, and only the roles it names where it names some.
+func (variant Variant) Reaches(role claim.Role) bool {
+	return variant.Roles == nil || slices.Contains(variant.Roles, role)
 }
 
 // VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:
@@ -432,7 +443,8 @@ type RoleOverlayValue struct {
 // variants, the arms of every experiment the project declares, that names any — one value per
 // arm, never one value holding two arms' files, since the union of two arms is a configuration
 // no launch produces. An arm that names no overlay adds no value of its own, because its roles
-// start on the role's own files, which the role's own value already is. A role no arm reaches
+// start on the role's own files, which the role's own value already is, and neither does an arm
+// whose experiment leaves the role out of its `roles` (Variant.Reaches). A role no arm reaches
 // answers that one value, which is the value every role was told before any experiment existed.
 //
 // The controller runs in no tree, so it is in no arm and answers its own files alone whatever
@@ -448,7 +460,7 @@ func RoleOverlayValues(role claim.Role, own []string, variants []Variant) []Role
 	var values []RoleOverlayValue
 	if role != claim.RoleController {
 		for i, variant := range variants {
-			if len(variant.ConfigFiles) > 0 {
+			if len(variant.ConfigFiles) > 0 && variant.Reaches(role) {
 				values = append(values, RoleOverlayValue{Variant: &variants[i], Files: slices.Concat(own, variant.ConfigFiles)})
 			}
 		}

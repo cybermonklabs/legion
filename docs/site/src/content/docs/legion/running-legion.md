@@ -447,17 +447,28 @@ What each part is for:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
+  `implementer`, `tester`, `reviewer`, `merger`, each once), and every issue role where the block
+  names none. A launch of a role the list leaves out loads none of this experiment's overlays or
+  instructions, while its unit keeps the arm it drew; the deployment's and the role's own
+  settings, and the arms of any other experiment that reaches the role, still apply. So an
+  experiment that changes how the work is done can leave the roles that judge the work, such as
+  the reviewer, the tester and the architect who signs a merge off, out of its arms, and read
+  their verdicts as its outcome; with every role in the arm, a merge rate or a count of review
+  rounds is partly the treated roles' own verdict.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
-  a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own
-  disk that the daemon reads at boot and appends to that role's system prompt.
+  a role of a unit drawn into it names where the experiment reaches that role, and
+  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
+  appends to that role's system prompt.
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
-  A role of a drawn unit names each arm's `config_files` in its `PI_CONFIG_FILES` after the
-  operator's own and the role's own, in the order the project's file declares the experiments, and
-  ends its system prompt with each arm's `instructions` in that same order.
+  A role of a drawn unit that the experiment reaches names each arm's `config_files` in its
+  `PI_CONFIG_FILES` after the operator's own and the role's own, in the order the project's file
+  declares the experiments, and ends its system prompt with each arm's `instructions` in that same
+  order.
   The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
   and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.
@@ -831,7 +842,12 @@ answer. A pre-registration states seven things.
 1. **The primary outcome.** One measure, named before the first draw, that the experiment is
    judged on: the share of issues merged with no fix by a person, say, or the median hours from
    an issue's start to its merge. Say how it is computed and which records it is read from. List
-   secondary measures if you want them, and let none of them decide the experiment.
+   secondary measures if you want them, and let none of them decide the experiment. Say which
+   roles the arms reach (`roles`), and check that no reached role decides the outcome: a merge
+   waits on the reviewer's approval and the architect's sign-off, and the tester's fail sends
+   work back, so where the arm reaches those roles a merge rate or a count of review rounds is
+   partly the treatment's own verdict, and a laxer reviewer reads as a better arm. Leave such
+   roles out of `roles`, or choose an outcome no reached role decides.
 
 2. **The unit it randomises, and whether mixing arms inside a tree is a danger for that
    outcome.** `unit: tree` draws once for a whole tree, so every issue of that tree runs in one
@@ -887,6 +903,7 @@ A template to copy:
 ```text
 Experiment: <name>            Project: <KEY>        Unit: tree | issue
 Primary outcome: <measure, how it is computed, which records it is read from>
+Roles the arms reach: <every issue role> | <the roles `roles` lists>; no reached role decides the outcome, because …
 Mixing inside a tree: <safe, because …> | <a danger, because …; so the unit is the tree>
 Smallest effect worth acting on: <points>
 Units needed per arm: <n> (about 400 for ten points, 1,600 for five, at the tree level)

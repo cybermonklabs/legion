@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
@@ -160,6 +161,7 @@ var settingsEmitted = map[string]string{
 	"Experiment.Name":                                "projects.<KEY>.experiments.<name> (the mapping key the block is declared under)",
 	"Experiment.Mode":                                "projects.<KEY>.experiments.<name>.mode",
 	"Experiment.Unit":                                "projects.<KEY>.experiments.<name>.unit",
+	"Experiment.Roles":                               "projects.<KEY>.experiments.<name>.roles",
 	"Experiment.OnVariant":                           "projects.<KEY>.experiments.<name>.on_variant",
 	"Experiment.Variants":                            "projects.<KEY>.experiments.<name>.variants",
 	"Variant.Name":                                   "projects.<KEY>.experiments.<name>.variants[].name",
@@ -587,8 +589,9 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 }
 
 // A project's `experiments` ride the settings as the file writes them: every block in the file's
-// order, under the name it is declared with, with its mode, its unit, the arm `on` would give and
-// its arms in the file's order, each with its weight and its overlays. The paths are the
+// order, under the name it is declared with, with its mode, its unit, the roles its arms reach
+// (absent where it names none), the arm `on` would give and its arms in the file's order, each
+// with its weight and its overlays. The paths are the
 // operator's own file names, as the `memory` block's are (settingsEmitted). A project that
 // declares none under the key carries `[]`, never no key at all, which the census above reads off
 // the fixture.
@@ -602,6 +605,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
           - name: long
       review-depth:
         mode: on
+        roles: [planner, implementer]
         on_variant: deep
         variants:
           - {name: deep}
@@ -617,7 +621,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 			{Name: "short", Weight: 3, ConfigFiles: []string{}},
 			{Name: "long", Weight: 1, ConfigFiles: []string{}},
 		}},
-		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "deep", Variants: []VariantSettings{
+		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, Roles: []claim.Role{claim.RolePlanner, claim.RoleImplementer}, OnVariant: "deep", Variants: []VariantSettings{
 			{Name: "deep", Weight: 1, ConfigFiles: []string{}},
 			{Name: "shallow", Weight: 1, ConfigFiles: []string{}},
 		}},

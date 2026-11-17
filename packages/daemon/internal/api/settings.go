@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -330,7 +331,7 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 	}
 	for _, experiment := range p.Experiments {
 		declared := config.Experiment{
-			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, Roles: experiment.Roles, OnVariant: experiment.OnVariant,
 			Variants: make([]config.Variant, 0, len(experiment.Variants)),
 		}
 		for _, variant := range experiment.Variants {
@@ -356,21 +357,24 @@ type MemorySettings struct {
 
 // ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the
 // name it is declared under, the mode each new unit it covers is drawn under, the unit one draw
-// covers, the arm `on` gives every unit (absent where the block names none), and the arms it
-// draws among in the file's order.
+// covers, the issue roles whose launches load its arms (absent where the block names none, which
+// is every issue role), the arm `on` gives every unit (absent where the block names none), and the
+// arms it draws among in the file's order.
 type ExperimentSettings struct {
 	Name      string                `json:"name"`
 	Mode      config.ExperimentMode `json:"mode"`
 	Unit      config.ExperimentUnit `json:"unit"`
+	Roles     []claim.Role          `json:"roles,omitempty"`
 	OnVariant string                `json:"on_variant,omitempty"`
 	Variants  []VariantSettings     `json:"variants"`
 }
 
 // VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
-// random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
-// into it names, `[]` for an arm that names none, and the one instructions file such a role's
-// system prompt takes, absent where the arm names none. The paths are the operator's own file
-// names, which no credential rides in, as the `memory` block's are.
+// random draw gives it against its siblings, the Oh My Pi overlays each role its experiment
+// reaches of a unit drawn into it names, `[]` for an arm that names none, and the one
+// instructions file such a role's system prompt takes, absent where the arm names none. The
+// paths are the operator's own file names, which no credential rides in, as the `memory` block's
+// are.
 type VariantSettings struct {
 	Name         string   `json:"name"`
 	Weight       int      `json:"weight"`
@@ -671,7 +675,7 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 	declared := make([]ExperimentSettings, 0, len(experiments))
 	for _, experiment := range experiments {
 		entry := ExperimentSettings{
-			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, Roles: slices.Clone(experiment.Roles), OnVariant: experiment.OnVariant,
 			Variants: make([]VariantSettings, 0, len(experiment.Variants)),
 		}
 		for _, variant := range experiment.Variants {
