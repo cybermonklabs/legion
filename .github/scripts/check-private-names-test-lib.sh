@@ -126,17 +126,15 @@ run_check() {
 # that names a private thing. A case rewrites `$work/compare` (one JSON object per page, as
 # `gh api --paginate` prints them), `$work/pr-commits` or a comment route's pages, then calls
 # run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
-# answers to `$work/calls`. For the issue-key rule it answers six routes more, each from a file a
+# answers to `$work/calls`. For the issue-key rule it answers four routes more, each from a file a
 # case writes and otherwise as GitHub answers a repository with no such record: the commits that
-# touch the cutoff marker (`$work/cutoff-commits`, else none, so the rule is inactive); the
-# releases (`$work/releases`, one JSON list in the order the REST route lists them, else none),
-# 100 a page in that order on the REST route and on GraphQL's `releases` connection, which
-# sorts them by creation time, newest first, only when the query asks for exactly that order
-# (`orderBy: {field: CREATED_AT, direction: DESC}`), with a cursor `c<N>` after page N; a
-# compare of the marker's commit with a tag (`$work/contains.<tag>` holding `ahead`, `identical`
-# or `behind`, else `behind`); one commit's files (`$work/commit.<sha>`, else a refusal); and the
+# touch the cutoff marker (`$work/cutoff-commits`, else none, so the rule is inactive); one
+# release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding
+# `HTTP 500` a server error); one commit's files (`$work/commit.<sha>`, else a refusal); and the
 # pull request's files (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints
-# them, else a refusal; read without --paginate, also a refusal).
+# them, else a refusal; read without --paginate, also a refusal). The repository's history and
+# tags, which the rule reads with git, are a bare repository under `$work/remote`, which
+# run_pr_text names as GITHUB_SERVER_URL.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -157,31 +155,14 @@ case "$1 $2" in
   "api repos/example/repo/pulls/7") cat "$PR_TEXT_TEST_DIR/pull" ;;
   "api repos/example/repo/commits?path=.github/issue-key-cutoff&sha=main&per_page=100")
     if [ -e "$PR_TEXT_TEST_DIR/cutoff-commits" ]; then cat "$PR_TEXT_TEST_DIR/cutoff-commits"; else echo '[]'; fi ;;
-  "api repos/example/repo/releases?per_page=100&page="[1-9]*)
-    n=${2##*&page=}
-    jq -c --argjson n "$n" '.[($n - 1) * 100:$n * 100]' <<< "$(cat "$PR_TEXT_TEST_DIR/releases" 2>/dev/null || echo '[]')" ;;
-  "api graphql")
-    query='' cursor=''
-    for arg in "$@"; do
-      case $arg in query=*) query=${arg#query=} ;; cursor=*) cursor=${arg#cursor=} ;; esac
-    done
-    n=1
-    if [ -n "$cursor" ]; then n=$((${cursor#c} + 1)); fi
-    sorted=false
-    if tr -d ' \n' <<< "$query" | grep -q -F 'orderBy:{field:CREATED_AT,direction:DESC}'; then sorted=true; fi
-    jq -c --argjson n "$n" --argjson sorted "$sorted" '
-      (if $sorted then sort_by(.created_at // .published_at) | reverse else . end) as $all
-      | {data: {repository: {releases: {
-          nodes: ($all[($n - 1) * 100:$n * 100] | map({tagName: .tag_name,
-            createdAt: (.created_at // .published_at), publishedAt: .published_at, isDraft: .draft})),
-          pageInfo: {endCursor: "c\($n)", hasNextPage: (($all | length) > $n * 100)}}}}}' \
-      <<< "$(cat "$PR_TEXT_TEST_DIR/releases" 2>/dev/null || echo '[]')" ;;
+  "api repos/example/repo/releases/tags/"*)
+    file="$PR_TEXT_TEST_DIR/release.${2#repos/example/repo/releases/tags/}"
+    if [ ! -e "$file" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    if grep -q -x 'HTTP 500' "$file"; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    cat "$file" ;;
   "api repos/example/repo/pulls/7/files?per_page=100")
     [[ " $* " == *" --paginate "* ]] || { echo "files route read without --paginate: $*" >&2; exit 3; }
     if [ -e "$PR_TEXT_TEST_DIR/pr-files" ]; then cat "$PR_TEXT_TEST_DIR/pr-files"; else echo "no files answer" >&2; exit 3; fi ;;
-  "api repos/example/repo/compare/"*...*)
-    tag=${2##*...}
-    if [ -e "$PR_TEXT_TEST_DIR/contains.$tag" ]; then cat "$PR_TEXT_TEST_DIR/contains.$tag"; else echo behind; fi ;;
   "api repos/example/repo/commits/"*"?per_page=100")
     sha=${2#repos/example/repo/commits/}
     sha=${sha%%\?*}
@@ -210,14 +191,15 @@ write_pr_text() {
     > "$work/event.json"
   jq '.pull_request' "$work/event.json" > "$work/pull"
   rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.* "$work/cutoff-commits" \
-    "$work/releases" "$work"/contains.* "$work"/commit.* "$work/pr-files"
+    "$work"/release.* "$work"/commit.* "$work/pr-files"
 }
 run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
   : > "$work/calls"
   set +e
   out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
-    PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" "$pr_text_script" 2>&1)
+    GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" \
+    "$pr_text_script" 2>&1)
   status=$?
   set -e
 }

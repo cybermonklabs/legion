@@ -189,7 +189,9 @@ fi
 # commit that added .github/issue-key-cutoff to the base branch is the one that told every worker
 # to keep keys and links out of this repository's text (skills/legion-worker/references/
 # pr-body.md), and the cutoff is the publish time of the earliest legion-v* release whose commit
-# contains it. No such commit, or no such release yet, and the rule is inactive. Once active, a
+# contains it, found at a cost that does not grow with the releases (below). No such commit, or no
+# such release yet, and the rule is inactive; a history or a release GitHub does not answer is
+# UNKNOWN, and refused. Once active, a
 # pull request opened before the cutoff is not read for it; one opened after it is read in its
 # title and body, every trusted comment, review and review comment (all posted after it), and
 # each commit whose committer date is at or after the cutoff: its message, and the lines and paths
@@ -214,67 +216,65 @@ cutoff=''
 if [ -z "$skill_commit" ]; then
   echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
 else
-  skill_date=$(jq -s -r '[.[][]] | last | .commit.committer.date' "$work/cutoff-commits")
-  # The releases, 100 a page, in the one order that lets the paging stop early: GraphQL's, sorted
-  # by creation time, newest first. (The REST releases route is not in that order: it lists one day
-  # at a time and, within a day, one package after another, so a page can reach an early-morning
-  # release of another package before that day's later legion-v releases, and a stop there moved
-  # the cutoff from run to run.) A release's creation time is the committed date of the commit it
-  # tags, and that date is not in commit order: the merge queue dates a commit when it builds it,
-  # which can be before its parent lands, so a release of a commit that contains the marker can be
-  # dated before the marker commit. The paging therefore stops only after a page that reaches a
-  # release created more than release_date_margin before the marker commit's date, rather than
-  # reading every release the repository ever published (some thousands, at every run).
-  # The candidates below are filtered by publish time, which is when the release really happened:
-  # a release that contains the marker is published after the marker lands, and a commit is never
-  # dated after it lands, so that filter keeps every one.
-  # release_date_margin: two days, in seconds. The largest gap found on main between a commit's
-  # date and the date of a commit it follows is 791 minutes (13.2 hours, a merge-queue commit
-  # dated before its parent); two days stays above that, and costs about two pages more.
-  release_date_margin=$((2 * 24 * 60 * 60))
-  stop_before=$(jq -rn --arg date "$skill_date" --argjson margin "$release_date_margin" \
-    '$date | fromdateiso8601 - $margin | todateiso8601')
-  # shellcheck disable=SC2016 # $owner, $name and $cursor are GraphQL's variables, not the shell's
-  releases_query='query($owner: String!, $name: String!, $cursor: String) {
-    repository(owner: $owner, name: $name) {
-      releases(first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
-        nodes { tagName createdAt publishedAt isDraft }
-        pageInfo { endCursor hasNextPage }
-      }
-    }
-  }'
-  : > "$work/releases"
-  release_cursor=''
-  while :; do
-    cursor_args=()
-    if [ -n "$release_cursor" ]; then cursor_args=(-f cursor="$release_cursor"); fi
-    gh api graphql -f query="$releases_query" -f owner="${repository%%/*}" -f name="${repository#*/}" \
-      "${cursor_args[@]}" > "$work/releases-page"
-    jq '.data.repository.releases.nodes
-        | map({tag_name: .tagName, created_at: .createdAt, published_at: .publishedAt, draft: .isDraft})' \
-      "$work/releases-page" >> "$work/releases"
-    page_oldest=$(jq -r '[.data.repository.releases.nodes[].createdAt] | min // empty' "$work/releases-page")
-    more=$(jq -r '.data.repository.releases.pageInfo.hasNextPage' "$work/releases-page")
-    if [ "$more" != true ] || { [ -n "$page_oldest" ] && [[ $page_oldest < $stop_before ]]; }; then
+  # The earliest release that contains the marker commit is the lowest legion-v version that
+  # contains it and has a published release: release.yaml computes each legion version from the
+  # highest existing tag (release-push.sh version) and runs one release at a time (its concurrency
+  # group, never cancelled), so a higher version is tagged and published after every lower one.
+  # That order is checked, not trusted: the next version's release, when it has one, must be
+  # published no earlier, or the cutoff is refused as UNKNOWN. Which tags contain the marker is
+  # git's answer, from a clone of the base branch's commits alone (--filter=tree:0: no tree, no
+  # file), read anonymously, as the repository is public; the legion-v tags are lightweight tags on
+  # those commits, so their refs come from one ref listing, and only a tag whose commit the clone
+  # lacks makes the tags be fetched. So each run asks GitHub's API for a release or two, however
+  # many releases there are; reading every release since the marker grew with each one.
+  history="$work/history.git"
+  remote="${GITHUB_SERVER_URL:-https://github.com}/$repository"
+  # unknown <message...>: the cutoff cannot be derived, so the rule refuses rather than passes.
+  unknown() {
+    echo "::error::UNKNOWN: $*, so the issue-key rule's cutoff is unknown; it is refused, not passed" >&2
+    key_status=2
+  }
+  if ! git clone -q --bare --filter=tree:0 --single-branch --no-tags --branch "$base_ref" "$remote" \
+    "$history" 2> "$work/git-error"; then
+    unknown "git could not read $base_ref's history ($(head -n 1 "$work/git-error"))"
+  elif ! git -C "$history" cat-file -e "$skill_commit^{commit}" 2> /dev/null; then
+    unknown "$base_ref's history does not hold the commit that added $cutoff_file"
+  elif ! git -C "$history" ls-remote origin 'refs/tags/legion-v*' > "$work/tag-refs" 2> "$work/git-error"; then
+    unknown "git could not list the legion-v tags ($(head -n 1 "$work/git-error"))"
+  elif ! awk '$2 !~ /\^\{\}$/ { print "create " $2 " " $1 }' "$work/tag-refs" |
+      git -C "$history" update-ref --stdin 2> /dev/null &&
+    ! git -C "$history" fetch -q --no-tags origin '+refs/tags/legion-v*:refs/tags/legion-v*' 2> "$work/git-error"; then
+    unknown "git could not fetch the legion-v tags ($(head -n 1 "$work/git-error"))"
+  else
+    git -C "$history" tag -l 'legion-v*' --contains "$skill_commit" --sort=v:refname |
+      awk '/^legion-v[0-9]+\.[0-9]+\.[0-9]+$/' > "$work/containing"
+    first_tag='' first_published=''
+    while IFS= read -r tag; do
+      # A tag can exist before its release does, and a draft is no release: either is skipped.
+      if ! gh api "repos/$repository/releases/tags/$tag" > "$work/release" 2> "$work/gh-error"; then
+        if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
+        unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
+        break
+      fi
+      published=$(jq -r 'select(.draft == false) | .published_at // empty' "$work/release")
+      [ -n "$published" ] || continue
+      if [ -z "$first_tag" ]; then
+        first_tag=$tag first_published=$published
+        continue
+      fi
+      if [[ $published < $first_published ]]; then
+        unknown "$tag was published at $published, before $first_tag at $first_published, so the" \
+          "legion-v versions are not in publish order and the lowest one is not the earliest"
+      fi
       break
+    done < "$work/containing"
+    if [ "$key_status" -eq 0 ] && [ -n "$first_tag" ]; then
+      cutoff=$first_published
+      echo "check-pr-text: the issue-key rule is active since $first_tag, published $first_published"
+    elif [ "$key_status" -eq 0 ]; then
+      echo "check-pr-text: the issue-key rule is inactive: no legion-v* release contains the commit" \
+        "that added $cutoff_file yet"
     fi
-    release_cursor=$(jq -r '.data.repository.releases.pageInfo.endCursor' "$work/releases-page")
-  done
-  jq -s -r --arg after "$skill_date" '[.[][] | select(.draft | not)
-      | select(.tag_name | startswith("legion-v")) | select(.published_at >= $after)]
-      | sort_by(.published_at) | .[] | "\(.tag_name)\t\(.published_at)"' "$work/releases" \
-    > "$work/candidates"
-  while IFS=$'\t' read -r tag published; do
-    relation=$(gh api "repos/$repository/compare/$skill_commit...$tag" --jq .status)
-    if [ "$relation" = ahead ] || [ "$relation" = identical ]; then
-      cutoff=$published
-      echo "check-pr-text: the issue-key rule is active since $tag, published $published"
-      break
-    fi
-  done < "$work/candidates"
-  if [ -z "$cutoff" ]; then
-    echo "check-pr-text: the issue-key rule is inactive: no legion-v* release contains the commit" \
-      "that added $cutoff_file yet"
   fi
 fi
 opened=$(jq -r '.created_at // empty' "$live")

@@ -447,15 +447,58 @@ planted_key="$key_project-""123"
 key_terms=$(printf '%s\n' "$planted_terms" "key:$key_project" key:LEGION)
 link="dispatch"':''//'
 cutoff_at=2026-11-20T00:00:00Z
-# key_rule_on: the fixtures of an active rule: a commit on main that adds the cutoff marker,
-# dated before a legion-v release that contains it, published at cutoff_at.
-key_rule_on() {
-  jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
-  jq -nc --arg at "$cutoff_at" '[{tag_name: "legion-v9.0.0", published_at: $at, draft: false},
-    {tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases"
-  echo ahead > "$work/contains.legion-v9.0.0"
-  echo behind > "$work/contains.legion-v8.9.9"
+# git_fixture <dir> <git args...>: git in a fixture repository, with no user or system
+# configuration of this machine (a signing setting, say) in the way.
+git_fixture() {
+  local dir=$1
+  shift
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$dir" -c user.name=Dev \
+    -c user.email=dev@example.com "$@"
 }
+# history_remote: the repository's history as the rule reads it with git, built once: a bare
+# repository at $work/remote/example/repo whose main holds a commit, the commit that adds the
+# cutoff marker and three later commits, with lightweight tags legion-v8.9.9 on the first,
+# legion-v9.0.0, legion-v9.1.0 and legion-v10.0.0 on the later three, and another package's
+# pi-envoy-v20.0.0 beside legion-v9.0.0. Sets marker_sha to the marker commit.
+history_remote() {
+  local src="$work/history-src" bare="$work/remote/example/repo"
+  if [ ! -d "$bare" ]; then
+    mkdir -p "$src/.github"
+    git_fixture "$src" init -q -b main
+    git_fixture "$src" commit -q --allow-empty -m "before the marker"
+    git_fixture "$src" tag legion-v8.9.9
+    : > "$src/.github/issue-key-cutoff"
+    git_fixture "$src" add .github/issue-key-cutoff
+    git_fixture "$src" commit -q -m "add the marker"
+    for tags in "legion-v9.0.0 pi-envoy-v20.0.0" legion-v9.1.0 legion-v10.0.0; do
+      git_fixture "$src" commit -q --allow-empty -m "after the marker"
+      for tag in $tags; do git_fixture "$src" tag "$tag"; done
+    done
+    mkdir -p "$work/remote/example"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git clone -q --bare "$src" "$bare"
+    git_fixture "$bare" config uploadpack.allowFilter true
+  fi
+  marker_sha=$(git_fixture "$bare" rev-parse 'main~3')
+}
+# release <tag> <published at>: the release route's answer for that tag.
+release() { jq -nc --arg tag "$1" --arg at "$2" '{tag_name: $tag, published_at: $at, draft: false}' > "$work/release.$1"; }
+# marker_on_main: the commits route names the marker commit, dated before every release.
+marker_on_main() {
+  history_remote
+  jq -nc --arg sha "$marker_sha" '[{sha: $sha, commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' \
+    > "$work/cutoff-commits"
+}
+# key_rule_on: the fixtures of an active rule: the marker commit on main, and legion-v9.0.0, the
+# lowest version that contains it, published at cutoff_at; legion-v8.9.9, which does not, and
+# legion-v9.1.0, which does, published later.
+key_rule_on() {
+  marker_on_main
+  release legion-v8.9.9 2026-11-19T00:00:00Z
+  release legion-v9.0.0 "$cutoff_at"
+  release legion-v9.1.0 2026-11-20T06:00:00Z
+}
+# release_calls: the tags whose release the run asked for, in order, one a line.
+release_calls() { sed -n 's#^api repos/example/repo/releases/tags/##p' "$work/calls"; }
 # opened_at <time>: the pull request was opened then.
 opened_at() { jq --arg at "$1" '.created_at = $at' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"; }
 # commits <sha> <date> <message> [...]: the compare route's one page, those commits in order.
@@ -511,84 +554,77 @@ check "with no marker commit on main, a planted key in the title passes" "$(is "
 check "says the rule is inactive and why" \
   "$(contains "$out" '^check-pr-text: the issue-key rule is inactive: no commit on main adds')"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
-jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
-jq -nc '[{tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases"
-echo behind > "$work/contains.legion-v8.9.9"
+marker_on_main
+release legion-v8.9.9 2026-11-19T00:00:00Z
 key_run
-check "with a marker commit and no release that contains it, the key still passes" "$(is "$status" 0)"
+check "with a marker commit and no release of a version that contains it, the key still passes" "$(is "$status" 0)"
 check "says no release contains it" "$(contains "$out" 'no legion-v\* release contains the commit')"
+check "asked for the three versions that contain it, a tag with no release yet being skipped" \
+  "$(is "$(release_calls | paste -sd' ')" 'legion-v9.0.0 legion-v9.1.0 legion-v10.0.0')"
 
-echo "case: the releases are read in creation order, newest first, and stop at the first page past the margin"
-# GitHub's REST releases route lists one day at a time and, within a day, one package after
-# another (pi-legion, pi-envoy, legion, ...), so its first page can reach an early-morning release
-# of another package before that day's earlier legion-v releases: a stop on that page picked a
-# later cutoff, and each new release moved it. Here the marker commit is dated 10:00 on the 16th;
-# that day holds 45 pi-legion and 45 pi-envoy releases every half hour from 00:00, then 20 legion
-# releases hourly from 03:30, of which legion-v20.7.0 at 10:30 is the first to contain the marker
-# and sits on the REST route's second page. GraphQL sorts them by creation time, newest first, and
-# the paging stops at the first page that reaches a release created more than two days before the
-# marker: the 13th's.
-release_day() { # release_day <day> <package> <count> <first minute> <step minutes> <version prefix>
-  jq -nc --arg day "$1" --arg pkg "$2" --argjson n "$3" --argjson start "$4" --argjson step "$5" --arg v "$6" '
-    def two: tostring | if length < 2 then "0" + . else . end;
-    [range($n) as $i | ($n - 1 - $i) as $k | ($start + $k * $step) as $m
-      | {tag_name: "\($pkg)-v\($v).\($k).0", draft: false,
-         published_at: "2026-11-\($day)T\(($m / 60 | floor) | two):\(($m % 60) | two):00Z"}]'
-}
-day_by_package() { # day_by_package [newer]: the 16th and the 13th, in the REST route's order
-  {
-    if [ "${1:-}" = newer ]; then
-      release_day 17 pi-legion 20 0 60 21
-      release_day 17 pi-envoy 10 0 60 21
-      release_day 17 legion 10 30 60 21
-    fi
-    release_day 16 pi-legion 45 0 30 20
-    release_day 16 pi-envoy 45 0 30 20
-    release_day 16 legion 20 210 60 20
-    release_day 13 pi-envoy 100 720 0 19
-  } | jq -s -c 'add' > "$work/releases"
-  for k in 7 8 9 10 11 12 13 14 15 16 17 18 19; do echo ahead > "$work/contains.legion-v20.$k.0"; done
-  for k in 0 1 2 3 4 5 6 7 8 9; do echo ahead > "$work/contains.legion-v21.$k.0"; done
-}
+echo "case: the cutoff is the lowest legion-v version that contains the marker and has a release"
+# Versions in version order, not text order (legion-v10.0.0 comes last), from git's answer to
+# which tags contain the marker: legion-v8.9.9 does not, and another package's tag is never read.
+# legion-v9.0.0's tag has no release yet, so legion-v9.1.0's is the first, and legion-v10.0.0's is
+# read to check that it was published no earlier.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
-jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-16T10:00:00Z"}}}]' > "$work/cutoff-commits"
-day_by_package
+marker_on_main
+release legion-v8.9.9 2026-11-19T00:00:00Z
+release legion-v9.1.0 2026-11-20T10:30:00Z
+release legion-v10.0.0 2026-11-20T12:00:00Z
 key_run
-check "finds the first release that contains the marker, at 10:30" \
-  "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v20.7.0, published 2026-11-16T10:30:00Z$')"
-check "reads two pages, the second reaching releases past the margin, and never the third" \
-  "$(is "$(grep -c '^api graphql' "$work/calls")" 2)"
-check "never reads the REST route's order" "$(is "$(grep -c 'releases?per_page=' "$work/calls")" 0)"
-day_by_package newer
-key_run
-check "with 40 newer releases on top, the same cutoff" \
-  "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v20.7.0, published 2026-11-16T10:30:00Z$')"
-check "and two pages again, the second asked for after the first's cursor, never the third" \
-  "$(is "$(grep -c '^api graphql' "$work/calls"):$(grep -c 'cursor=c1' "$work/calls")" 2:1)"
+check "active since legion-v9.1.0, the first version with a release" \
+  "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v9.1.0, published 2026-11-20T10:30:00Z$')"
+check "asks for the releases in version order, and stops after the one past the first" \
+  "$(is "$(release_calls | paste -sd' ')" 'legion-v9.0.0 legion-v9.1.0 legion-v10.0.0')"
 
-echo "case: a release that contains the marker can be dated before it, and the paging still finds it"
-# A release's creation time is the date of the commit it tags, and the merge queue can date a
-# commit up to 13 hours before its parent. Here the first release that contains the marker
-# (dated 10:00 on the 16th), legion-v20.7.0, published at 10:30, tags a commit dated 21:00 the day
-# before; the first page holds 98 releases created after the marker, legion-v20.8.0 at 12:30,
-# which contains it too, and one release created at 09:30, before the marker. A stop at the first
-# page older than the marker read that page alone and gave 12:30; the margin reads the next.
+echo "case: the API calls stay the same however many releases there are"
+# Every pr-title run derives the cutoff, so its cost must not grow with each release. Sixty more
+# legion-v versions, each with a release, leave the run's calls as they were.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
-jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-16T10:00:00Z"}}}]' > "$work/cutoff-commits"
-{
-  release_day 16 pi-legion 98 605 1 22
-  jq -nc '[{tag_name: "legion-v20.8.0", published_at: "2026-11-16T12:30:00Z", draft: false},
-    {tag_name: "pi-envoy-v20.0.0", published_at: "2026-11-16T09:30:00Z", draft: false},
-    {tag_name: "legion-v20.7.0", created_at: "2026-11-15T21:00:00Z", published_at: "2026-11-16T10:30:00Z", draft: false}]'
-  release_day 13 pi-envoy 20 720 0 19
-} | jq -s -c 'add' > "$work/releases"
-echo ahead > "$work/contains.legion-v20.7.0"
-echo ahead > "$work/contains.legion-v20.8.0"
+key_rule_on
 key_run
-check "finds legion-v20.7.0 at 10:30, not the later legion-v20.8.0" \
-  "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v20.7.0, published 2026-11-16T10:30:00Z$')"
-check "reads the second page, where the release dated before the marker sits" \
-  "$(is "$(grep -c '^api graphql' "$work/calls")" 2)"
+few_calls=$(wc -l < "$work/calls")
+check "two release calls with three versions after the marker" \
+  "$(is "$(release_calls | paste -sd' ')" 'legion-v9.0.0 legion-v9.1.0')"
+for n in $(seq 0 59); do
+  git_fixture "$work/remote/example/repo" tag "legion-v11.$n.0" main
+  release "legion-v11.$n.0" "2026-11-2$((1 + n / 10))T00:00:00Z"
+done
+key_run
+check "the same cutoff with sixty more versions" \
+  "$(contains "$out" "^check-pr-text: the issue-key rule is active since legion-v9.0.0, published $cutoff_at\$")"
+check "the same two release calls" "$(is "$(release_calls | paste -sd' ')" 'legion-v9.0.0 legion-v9.1.0')"
+check "and as many calls in all" "$(is "$(wc -l < "$work/calls")" "$few_calls")"
+for n in $(seq 0 59); do git_fixture "$work/remote/example/repo" tag -d "legion-v11.$n.0" > /dev/null; done
+
+echo "case: a later version published before a lower one is refused, not trusted"
+# The lowest version is the earliest release only while versions rise in publish order, which the
+# release workflow keeps; the next version's release is the check that it did.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+marker_on_main
+release legion-v9.0.0 2026-11-20T00:00:00Z
+release legion-v9.1.0 2026-11-19T12:00:00Z
+key_run
+check "exits 2" "$(is "$status" 2)"
+check "says the versions are not in publish order" \
+  "$(contains "$out" '^::error::UNKNOWN: legion-v9.1.0 was published at 2026-11-19T12:00:00Z, before legion-v9.0.0 .* not in publish order')"
+
+echo "case: a release or a history GitHub does not answer is UNKNOWN, never a pass"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+marker_on_main
+echo 'HTTP 500' > "$work/release.legion-v9.0.0"
+key_run
+check "a server error on a release exits 2" "$(is "$status" 2)"
+check "names the release it could not read" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9.0.0 (gh: Server Error (HTTP 500))')"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+mv "$work/remote" "$work/remote.held"
+key_run
+mv "$work/remote.held" "$work/remote"
+check "a history git cannot read exits 2" "$(is "$status" 2)"
+check "says git could not read it" "$(contains "$out" "^::error::UNKNOWN: git could not read main's history")"
 
 echo "case: once a release carries the marker commit, a pull request opened before it is not read"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
