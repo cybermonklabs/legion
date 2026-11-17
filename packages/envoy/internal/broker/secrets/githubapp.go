@@ -653,13 +653,13 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 // giveBackHook for an answer it could not read whole, and this gives back one that does not
 // decode. check is whether this is a check's request (MintRequest.Check), which is not sent again
 // once an attempt may have reached GitHub and failed - any failure but one known to come before a
-// connection, a name that did not resolve, a failed dial or a failed TLS handshake (mintCall's
-// resendLost, beforeConnection): GitHub may have received it whole and minted a token nobody will
-// use, which nothing can name, and sending it again would mint another for a verdict alone. An
-// attempt that failed before a connection minted nothing, and a check sends it again as any call
-// is sent again. A release sends either again, since its caller is waiting for the token itself,
-// and each attempt GitHub served whose answer it loses leaves its token live until it lapses.
-// appID names the App in the lines a give-back logs.
+// connection, a name that did not resolve, a failed dial or a certificate the broker did not
+// trust (mintCall's resendLost, beforeConnection): GitHub may have received it whole and minted a
+// token nobody will use, which nothing can name, and sending it again would mint another for a
+// verdict alone. An attempt that failed before a connection minted nothing, and a check sends it
+// again as any call is sent again. A release sends either again, since its caller is waiting for
+// the token itself, and each attempt GitHub served whose answer it loses leaves its token live
+// until it lapses. appID names the App in the lines a give-back logs.
 func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt, appID string, installationID int64, body []byte, check bool) (githubInstallationToken, error) {
 	const what = "mint GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodPost, m.base()+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", jwt, body)

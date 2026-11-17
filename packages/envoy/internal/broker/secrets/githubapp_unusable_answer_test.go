@@ -69,6 +69,12 @@ const (
 	// answerReset has GitHub receive the whole request, mint its token and reset the connection
 	// with no answer, so the minter's read fails as a *net.OpError that is no dial's.
 	answerReset tokenAnswerFault = "reset after it was received"
+	// answerBadRecord has GitHub receive the whole request, mint its token and answer it, while
+	// the minter's transport fails the call with a TLS record error, as a record that does not
+	// parse after the handshake fails; answerAlert does so with a TLS alert the peer sent after
+	// the handshake. Either is a TLS error that comes after the request went out.
+	answerBadRecord tokenAnswerFault = "a TLS record error after the request went out"
+	answerAlert     tokenAnswerFault = "a TLS alert after the request went out"
 )
 
 // pastTheCap is more than the minter reads of a token answer (secrets' accessTokensResponseLimit,
@@ -186,8 +192,9 @@ func (g *breakingGitHub) peek() tokenAnswerFault {
 
 // unreachableFirst is the minter's transport: a token request whose fault is answerUnreachable,
 // answerUnresolved or answerUntrusted fails as a refused dial, a name that did not resolve or a
-// certificate the broker does not trust does, and reaches nothing; every other request goes on
-// to next.
+// certificate the broker does not trust does, and reaches nothing; one whose fault is
+// answerBadRecord or answerAlert reaches GitHub, which mints and answers, and then fails with a
+// TLS record error or alert; every other request goes on to next.
 type unreachableFirst struct {
 	github *breakingGitHub
 	next   http.RoundTripper
@@ -198,13 +205,24 @@ func (u unreachableFirst) RoundTrip(request *http.Request) (*http.Response, erro
 		return u.next.RoundTrip(request)
 	}
 	var failed error
-	switch u.github.peek() {
+	switch fault := u.github.peek(); fault {
 	case answerUnreachable:
 		failed = &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 	case answerUnresolved:
 		failed = &net.DNSError{Err: "no such host", Name: "api.github.com", IsNotFound: true}
 	case answerUntrusted:
 		failed = &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}
+	case answerBadRecord, answerAlert:
+		// The stand-in takes this fault itself (next), mints and answers whole; the answer
+		// never reaches the minter.
+		response, err := u.next.RoundTrip(request)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		if fault == answerBadRecord {
+			return nil, tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}
+		}
+		return nil, &net.OpError{Op: "remote error", Err: tls.AlertError(20)}
 	default:
 		return u.next.RoundTrip(request)
 	}
@@ -286,7 +304,7 @@ func breakAnswer(w http.ResponseWriter, fault tokenAnswerFault, members map[stri
 	// The token member whole and the start of the next one: the answer GitHub began, cut off.
 	pastToken := len(`{"token":`) + len(members["token"]) + len(`,"expires_at"`)
 	switch fault {
-	case answerWhole:
+	case answerWhole, answerBadRecord, answerAlert:
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write(whole)
 	case answerLost:
@@ -503,6 +521,12 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			faults: []tokenAnswerFault{answerReset, answerReset, answerReset}, requests: 1, live: 1},
 		{name: "a connection GitHub reset after it received the request, to a release", narrowing: lean,
 			faults: []tokenAnswerFault{answerReset, answerReset, answerReset}, requests: 3, live: 3},
+		{name: "a TLS record error after the request went out, to a check", check: true, narrowing: lean,
+			faults: []tokenAnswerFault{answerBadRecord, answerBadRecord, answerBadRecord}, requests: 1, live: 1},
+		{name: "a TLS alert after the request went out, to a check", check: true, narrowing: lean,
+			faults: []tokenAnswerFault{answerAlert, answerAlert, answerAlert}, requests: 1, live: 1},
+		{name: "a TLS record error after the request went out, to a release", narrowing: lean,
+			faults: []tokenAnswerFault{answerBadRecord, answerBadRecord, answerBadRecord}, requests: 3, live: 3},
 		{name: "an answer lost through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
 		{name: "an answer lost through a transport that reports no connection, to a release", narrowing: lean, silent: true,

@@ -61,9 +61,10 @@ type mintTransportError struct {
 	read bool
 	// sent is whether the request may have reached the upstream, and it is true for every failure
 	// but one known to come before the transport had a connection to the upstream - a name that
-	// did not resolve, a dial that failed, a failed TLS handshake (beforeConnection) - which did
-	// nothing upstream. Any other failure may come after some or all of the request went out and
-	// was served, whatever the write reported. A read that failed is always sent.
+	// did not resolve, a dial that failed, a certificate the broker did not trust
+	// (beforeConnection) - which did nothing upstream. Any other failure may come after some or
+	// all of the request went out and was served, whatever the write reported. A read that failed
+	// is always sent.
 	sent bool
 	// status is the status that answer came with, for a read that failed; 0 where no answer
 	// arrived (answeredStatus).
@@ -255,17 +256,16 @@ func classify(ctx context.Context, err error) (outcome string, retry bool) {
 
 // beforeConnection reports whether err, a failed call, is one the transport met before it had a
 // connection to the upstream, so no byte of the request left: a name that did not resolve, a
-// dial that failed or ran out of time, or a TLS handshake the broker or the upstream refused.
-// Every other failure may have come after the request went out, so it reads false, and so does a
-// failure this cannot place.
+// dial that failed or ran out of time, or a certificate the broker did not trust, which only the
+// TLS handshake checks. A TLS record error or alert can come after the handshake, once the
+// request went out, so it does not count, and neither does any other failure that may have come
+// after the request went out, or one this cannot place: each reads false.
 func beforeConnection(err error) bool {
 	var dns *net.DNSError
 	var op *net.OpError
 	var certificate *tls.CertificateVerificationError
-	var record tls.RecordHeaderError
-	var alert tls.AlertError
 	switch {
-	case errors.As(err, &dns), errors.As(err, &certificate), errors.As(err, &record), errors.As(err, &alert):
+	case errors.As(err, &dns), errors.As(err, &certificate):
 		return true
 	case errors.As(err, &op):
 		return op.Op == "dial"
