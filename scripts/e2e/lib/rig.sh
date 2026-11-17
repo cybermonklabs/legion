@@ -328,3 +328,9 @@ run_processes() {
     # this substitution and print a warning, or a check's FAIL line, on a run that is going well.
   done < <(find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0' 2>/dev/null || :)
 }
+
+# lib/process-tree.sh holds how a proof knows a process it started by the pid it started, never by
+# a walk of the machine's /proc for its name: record_pid_sh, recorded_pid, launched, child_of and
+# omp_program. It needs nothing of this rig's, and stage2-tmux-supervision.sh sources it without it.
+# shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
+. "$root/scripts/e2e/lib/process-tree.sh"

@@ -9,6 +9,8 @@ standalone helpers they run, and the files they source, which `shellcheck` follo
 
 - [`lib/rig.sh`](#librigsh)
 
+- [`lib/process-tree.sh`](#libprocess-treesh)
+
 - [`lib/workflow.sh`](#libworkflowsh)
 
 - [`lib/github-apps.sh`](#libgithub-appssh)
@@ -695,7 +697,7 @@ The checks, in order, each printing what it observed (`== <check>` … `ok <chec
 | `stale-generation-hello-refused` | writes a hello carrying generation 1's boot token to `<state_dir>/worker-stream.sock`: the daemon closes it with nothing written and logs `rejected hello (stale worker generation)` |
 | `unregistered-agent-retired-at-the-deadline` | a second daemon whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
 | `restart-readopts-the-live-panes` | SIGTERM, then start again: `boots` +1, both claims keep their generation, incarnation and pane, no pane opens or closes, and a task delivered after the restart runs once — over the connection the shim's reconnect hello opened |
-| `omp-child-environment` | the boot log names the resolved pinned OMP binary for both probes and panes; the pane's process is `/bin/sh -c`; walking first children from it to `argv[0] == omp` finds that exact executable, never the OMP wrapper that remains first on the ordinary daemon PATH; the pane's shell and that OMP carry all four XDG base directories under `<state_dir>/home` and no `DBUS_SESSION_BUS_ADDRESS` (LEGION-206 P1, with the gateway route in place); OMP carries `GEMINI_API_KEY` (length only) that its shim does not, and no `ANTHROPIC_API_KEY`, `GEMINI_API_KEY_TESTS`, `SOPS_AGE_KEY_FILE` or `SECRETSD_CONFIG` |
+| `omp-child-environment` | the boot log names the resolved pinned OMP binary for both probes and panes; the pane's process is `/bin/sh -c`; the one process below it that runs that exact executable is the pane's OMP ([`launched`](#libprocess-treesh)), and no process on the line up from it to the pane's shell runs the OMP wrapper that remains first on the ordinary daemon PATH; the pane's shell and that OMP carry all four XDG base directories under `<state_dir>/home` and no `DBUS_SESSION_BUS_ADDRESS` (LEGION-206 P1, with the gateway route in place); OMP carries `GEMINI_API_KEY` (length only) that its shim does not, and no `ANTHROPIC_API_KEY`, `GEMINI_API_KEY_TESTS`, `SOPS_AGE_KEY_FILE` or `SECRETSD_CONFIG` |
 | `stray-pane-reaped-after-the-grace` | opens a window marked as the daemon's (`@legion_owner`) holding no recorded pane, and an unmarked one beside it: the periodic orphan sweep (every 60 s, 120 s grace) reaps the marked one no sooner than 120 s after it opened, and keeps the unmarked window and both claims' panes |
 | `stop` | `legion claims stop` of the root architect is refused — 409, "the tree's root claim ends only when its tree closes; suspend it to stop its process; no workflow issue backs its tree, so legion claims close ends it" — and moves nothing: its state, generation, and pane are what they were; `legion claims suspend` suspends the root; `legion claims stop` of a second worker, S2-3's tester, retires it and its pane is gone; no workflow issue backs S2-1, so `legion claims close` of its root closes the tree while its first worker is still live: the root and the worker are both retired and the worker's pane is gone; `legion stop` ends the daemon with exit 0 |
 | `every-turn-through-the-route` | [`lib/check-model-route.sh`](#libcheck-model-routesh) over every session in the isolated profile, each subagent's included: every assistant turn was served by the `anthropic` provider, the route's; and its negative control, a copy of one captured session with a turn rewritten as Bedrock's, is refused |
@@ -3021,7 +3023,10 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 - `controller-claims-the-role`
 
   the controller registers, `GET /legion/v1/state` shows `controllerLocator` (`runtime: tmux`, `external: true`), the Envoy role `legion-<project>-controller` names its session, and its Oh My Pi has the controller environment, its secret only as a 0600 file, interactive (claims the controller role, shows `controllerLocator`);
-  with no GitHub App configured, its stderr says the controller's gh acts as nobody, and `$ctl_state/gh` is an empty 0700 directory with no credential log
+  with no GitHub App configured, its stderr says the controller's gh acts as nobody, and `$ctl_state/gh` is an empty 0700 directory with no credential log.
+  That Oh My Pi is `controller_omp`'s: the process below the pid the pane recorded for `legion controller start` ([`record_pid_sh`](#libprocess-treesh)) that runs the pinned Oh My Pi, whose environment is read once, with no pipe.
+  `lib/controller-start-guards.test.ts` (`bun test scripts/e2e/lib`) runs `controller_omp` against a stand-in `legion` that runs its Oh My Pi through `sh -c`: it finds that Oh My Pi twenty times of twenty when it runs under another name, and when a mebibyte of its environment follows `LEGION_STATE_DIR`, and refuses one of another state directory.
+  Against the lookup before this one, which read every process of the machine and took the first whose `argv[0]` was named `omp` and whose environment, read through `tr | grep -q`, named the state directory, both of the first two rows find it 0 times of 20
 
 - `ctrl-c-reaches-omp-not-the-cli`
 
@@ -6018,6 +6023,69 @@ Each item below names a function, then what it does.
 
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
+
+## lib/process-tree.sh
+
+How a live proof knows a process it started: by the pid it had when it started, read from what started it, and by the program the kernel records it runs (`/proc/<pid>/exe`), never by a walk of the machine's `/proc` for its name, its command line or its working directory.
+On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other Oh My Pi there runs under the same name, its own daemon broker child among them; an `omp_invocation`, a wrapper or `exec -a` gives `argv[0]` any name;
+and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
+[`lib/rig.sh`](#librigsh) sources it, and `stage2-tmux-supervision.sh`, which sources no rig, sources it on its own.
+It needs nothing of its caller's.
+
+```sh
+. "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
+```
+
+- `record_pid_sh`
+
+  the POSIX sh a tmux pane's command runs as `sh -c "$record_pid_sh" record-pid FILE COMMAND…`:
+  it writes its own pid and start time to FILE through a rename and execs COMMAND, so FILE names COMMAND's own process.
+  The controller, parked-decision and Stage 4b proofs start each `legion controller start` this way, and the Dispatch user-turn proof its session's Oh My Pi
+
+- `recorded_pid FILE EXE`
+
+  prints the pid FILE names while that very process runs EXE (its `/proc/<pid>/exe`): it fails before FILE is written, once the process has ended, and for a pid the kernel has since given to another process, of EXE or not, whose start time is not the one FILE holds
+
+- `launched PID EXE…`
+
+  prints the one process below PID that runs one of the EXEs, going below no process that does: below a pane, the agent past its `sh -c`, its `legion worker-shim` and the `mise x` that execs, whatever helper the shim runs beside it (agent-secrets' keygen and renew).
+  It refuses none and more than one, naming them, and on none it names each process it passed and the program it runs.
+  The controller, Stage 2, Stage 3, the 4b.13b acceptance, the Claude Code backend and the clean-session-stop proofs find their agents with it
+
+- `child_of PID`
+
+  prints PID's one child, refusing none and more than one
+
+- `child_running PID EXE`
+
+  prints the one child of PID itself that runs EXE, refusing none and more than one:
+  a pane's `legion worker-shim` is its process's child that runs the run's legion, and a Claude Code pane's `legion claude-bridge` is that shim's.
+  The Claude Code backend proof reads a pane's backend this way before it looks for the agent, so an Oh My Pi that Claude Code runs as a tool is never taken for the agent.
+  It takes Claude Code as the bridge's one child once that child runs the program the run's `claude` ends in (its own path when it is the program itself, else the first `claude` on PATH that is, which a devbox's dotfiles wrapper hands the call to), never while it is the bridge's own fork or the interpreter of any wrapper on the way
+
+- `native_program FILE`
+
+  prints FILE's real path, and refuses a script (`#!`) and a mise shim: a script's process runs its interpreter and a mise shim execs the version mise picks, so no process runs either by the kernel's record.
+  `launched`, `child_running` and `omp_program` take their programs through it.
+  The clean-session-stop proof refuses an Oh My Pi named in `LEGION_E2E_OMP_PATH` that is either, and with it unset takes the first `omp` on PATH that is neither, as a devbox's own omp wrapper takes the first `omp` on PATH that is no wrapper
+
+- `first_native NAME`
+
+  prints the first `NAME` on PATH that `native_program` takes, each `type -ap` line a whole path, spaces and all, and fails naming each candidate it passed.
+  The clean-session-stop proof's default Oh My Pi and the Claude Code backend proof's Claude Code for a wrapper `claude` are found with it
+
+- `omp_program PIN`
+
+  prints the program a Legion process this shell starts runs for `omp_invocation: mise x PIN -- omp`: `LEGION_OMP_PATH`'s real path when it is set, since it outranks the invocation, and PIN's own `bin/omp` otherwise
+
+`lib/process-tree.test.ts` (`bun test scripts/e2e/lib`) runs each against processes it starts, under an `ERR` trap that prints:
+the pid file names the process the command execs into and nothing once it ends; a pid running another program, and one of the same program with another start time, are refused;
+`launched` finds a program below `bash` and `sh -c`, and beside a helper child of its parent, which `child_of` refuses as two children, and refuses two matches, none, and a tree where only another program runs;
+and the processes of the rows that start a line or a helper are gone when they end;
+and `first_native` takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim.
+`lib/claude-backend-guards.test.ts` finds a pane's Claude Code under its bridge when its path holds a space and when it runs under another name, which the lookup by `argv[0]` before it did not;
+answers nothing while the bridge's child is still the bridge's own fork, the first wrapper of a chain of two (bash) or the second (sh), and then names the program the chain ends in;
+and takes a pane's Claude Code for its agent where that Claude Code, under another name, runs an Oh My Pi below itself, an Oh My Pi the lookup before it took for the agent
 
 ## lib/two-builds.sh
 

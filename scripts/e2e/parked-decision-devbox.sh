@@ -341,10 +341,12 @@ claim_session_text() {
 # start_controller WINDOW runs `legion controller start` in WINDOW of the run's own tmux server, with
 # the operator's Oh My Pi session's own variables unset (omp_session_unsets, lib/omp-home.sh: that
 # session, which runs this script, sets OMP_SESSION_ID) and the run's isolated profile, which holds
-# this checkout's pi-envoy and pi-legion and the model route.
+# this checkout's pi-envoy and pi-legion and the model route. The window's command records the pid
+# of the command it runs in $evidence/logs/WINDOW.pid (record_pid_sh, lib/rig.sh), which execs in
+# that process, so the run knows each controller start by the pid it started.
 start_controller() {
   local window=$1 command
-  command="cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/$window.stderr'; echo \$? >'$evidence/logs/$window.exit'; sleep 3600"
+  command="cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/logs/$window.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/$window.stderr'; echo \$? >'$evidence/logs/$window.exit'; sleep 3600"
   if tm has-session 2>/dev/null; then
     tm new-window -d -n "$window" "$command"
   else
@@ -356,21 +358,24 @@ controller_token=legion-$ptoken-controller
 # in $work/controller-role.json (stage4b-sandbox-tree.sh).
 role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{http_code}' -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/roles/$controller_token" 2>/dev/null; }
 role_unheld() { [ "$(role_answer)" = 404 ]; }
-controller_runs() { pgrep -f -- "^$work/legion controller start --config $work/controller.yaml" >/dev/null; }
-controller_gone() { ! controller_runs; }
+# controller_runs WINDOW: the `legion controller start` WINDOW's command started still runs, by the
+# pid it recorded (recorded_pid, lib/rig.sh), never by a search of the machine's processes for its
+# command line.
+controller_runs() { recorded_pid "$evidence/logs/$1.pid" "$work/legion" >/dev/null; }
+controller_gone() { ! controller_runs "$1"; }
 # controller_quit WINDOW quits the controller as a person does (stage4b-sandbox-tree.sh): Ctrl-C ends
 # a turn and asks again, and Ctrl-D on the empty editor quits.
 controller_quit() {
   local window=$1
-  if controller_runs; then
+  if controller_runs "$window"; then
     for _ in 1 2 3 4 5; do
-      controller_runs || break
+      controller_runs "$window" || break
       tm send-keys -t "pd:$window" C-c
       sleep 2
     done
-    if controller_runs; then tm send-keys -t "pd:$window" C-d; fi
+    if controller_runs "$window"; then tm send-keys -t "pd:$window" C-d; fi
   fi
-  until_true 60 "legion controller start in $window to exit" controller_gone
+  until_true 60 "legion controller start in $window to exit" controller_gone "$window"
   until_true 300 "the listener to answer that the controller role $controller_token has no live holder" role_unheld
 }
 controller_session_id() { daemon_state | jq -er '.controllerLocator.sessionId // empty'; }
@@ -980,7 +985,8 @@ until_true 300 "$tree3 to be parked" parked "$tree3"
 question3=$(open_question "$tree3")
 answer_question "$question3"
 until_true 300 "the workflow to relay the person's answer on $tree3 while no controller runs" relayed_logged "$tree3" ask-answered
-controller_runs && fail "a controller runs before ctl2 starts"
+# ctl1 is the one controller the run started before ctl2.
+! controller_runs ctl1 || fail "a controller runs before ctl2 starts: ctl1's, pid $(cat "$evidence/logs/ctl1.pid")"
 start_seq=$(last_seq "$tree3")
 note "$tree3 was answered after its park; the daemon relayed the answer while no controller ran ($(since "$waited"))"
 start_controller ctl2

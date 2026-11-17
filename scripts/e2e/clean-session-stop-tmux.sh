@@ -41,8 +41,10 @@
 # - LEGION_E2E_CLAUDE_MODEL (required) is the model id the Claude Code pane runs.
 # - CLEAN_SESSION_STOP_PG_DSN (required) is a loopback PostgreSQL the run creates the daemon's own
 #   database in and drops on exit. This script starts no database.
-# - LEGION_E2E_OMP_PATH (default the `omp` on PATH, else the worker image's /opt/omp/bin/omp) is
-#   the Oh My Pi the daemon runs in every Oh My Pi pane and in its own boot gate.
+# - LEGION_E2E_OMP_PATH (default the first `omp` on PATH that is the program itself, past any
+#   wrapper script or mise shim, else the worker image's /opt/omp/bin/omp) is the Oh My Pi the
+#   daemon runs in every Oh My Pi pane and in its own boot gate. The proof knows the agent's
+#   process by the program the kernel records it runs, so a wrapper named here is refused.
 # - LEGION_E2E_CLAUDE_CODE_PIN (default the worker image's /opt/legion/claude-code) is the
 #   directory holding the package.json and package-lock.json that pin @anthropic-ai/claude-code.
 #   The image carries the pin and no Claude Code, so the run installs that exact release under
@@ -433,22 +435,20 @@ process_args() {
   { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
 }
 
-# agent_descendant PID NAME prints the first process under PID (PID included) whose argv[0] is
-# called NAME, breadth first.
+# agent_descendant PID NAME prints the pane's agent: the one process below PID, the pid the claim's
+# locator recorded, that runs the program NAME stands for ($omp_bin for omp, $claude_bin for
+# claude, the two the daemon is told: LEGION_OMP_PATH and LEGION_CLAUDE_PATH) by the kernel's record
+# (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a wrapper or
+# an argv[0] of another name cannot stand in for the agent or hide it.
 agent_descendant() {
-  local queue=("$1") pid child children
-  local -a args
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if process_args "$pid" args && [ "$(basename -- "${args[0]}")" = "$2" ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null) || children=
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
+  case $2 in
+    omp) launched "$1" "$omp_bin" ;;
+    claude) launched "$1" "$claude_bin" ;;
+    *)
+      printf 'no agent program is named %s\n' "$2"
+      return 1
+      ;;
+  esac
 }
 
 # parent_pid PID prints its parent's, from the stat fields after the comm field's own `) `.
@@ -639,12 +639,19 @@ case $pg_dsn in
   *) fail "CLEAN_SESSION_STOP_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
 require_loopback_dsn db_host CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
-[ -n "$omp_bin" ] || omp_bin=$(command -v omp || true)
-[ -n "$omp_bin" ] || { [ ! -x /opt/omp/bin/omp ] || omp_bin=/opt/omp/bin/omp; }
-[ -n "$omp_bin" ] ||
-  fail "LEGION_E2E_OMP_PATH is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
+# The proof kills the agent's own process, which it knows by the program the kernel records it runs
+# (agent_descendant), so the Oh My Pi it names is the binary itself (native_program,
+# lib/process-tree.sh): a wrapper script's process runs its interpreter and a mise shim's runs the
+# version mise picks, and the Oh My Pi either starts runs another file. With LEGION_E2E_OMP_PATH
+# unset it is the first omp on PATH that is one (first_native), as a devbox's dotfiles omp wrapper
+# itself takes the first omp on PATH that is no wrapper, else the worker image's.
+if [ -z "$omp_bin" ] && ! omp_bin=$(first_native omp); then
+  [ -x /opt/omp/bin/omp ] ||
+    fail "LEGION_E2E_OMP_PATH is required: $omp_bin, and the worker image's /opt/omp/bin/omp is absent"
+  omp_bin=/opt/omp/bin/omp
+fi
 [ -x "$omp_bin" ] || fail "LEGION_E2E_OMP_PATH names $omp_bin, which is not an executable file"
-omp_bin=$(realpath -e -- "$omp_bin")
+omp_bin=$(native_program "$omp_bin") || fail "LEGION_E2E_OMP_PATH: $omp_bin"
 { [ -r "$claude_pin/package.json" ] && [ -r "$claude_pin/package-lock.json" ]; } ||
   fail "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code; the worker image carries that pin and no Claude Code"
 claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||

@@ -313,20 +313,11 @@ claim_session_file() {
 claim_session_text() { local f; f=$(claim_session_file "$1" "$2") || return 1; cat -- "$f"; }
 workspace_jj() { local issue=$1; shift; jj -R "$state/workspaces/$repo/${issue,,}" "$@"; }
 
-omp_descendant() {
-  local queue=("$1") pid children
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if [ "$(basename "$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 1p)")" = omp ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
-}
+# omp_descendant PANE_PID prints the pane's Oh My Pi: the one process below the pane's own process,
+# the pid the claim's locator recorded, that runs the Oh My Pi the daemon launches ($omp_exe) by the
+# kernel's record (launched, lib/rig.sh), whatever name it was called by. No argv[0] is read: a
+# wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_descendant() { launched "$1" "$omp_exe"; }
 claim_pane_pid() {
   daemon_state | jq -er --arg issue "$1" --arg role "$2" \
     '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
@@ -653,6 +644,9 @@ envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --packag
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every pane's Oh My Pi runs: the daemon starts from this environment, so
+# LEGION_OMP_PATH outranks the invocation when it is set (omp_program, lib/rig.sh).
+omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not on disk"
 cat >"$work/instructions.md" <<'EOF'
 # Acceptance proof instructions
 

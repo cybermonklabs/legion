@@ -6,9 +6,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
-// name and run under its own `set -Eeuo pipefail` against live processes this suite starts:
-// bridged, whether a claude's parent is the run's `legion claude-bridge -- <claude>`; claude_pid,
-// a pane's Claude Code process; and endpoint_mismatch, an agent's environment against the rig.
+// name and run under its own `set -Eeuo pipefail`, with lib/process-tree.sh sourced, against live
+// processes this suite starts: bridged, whether a claude's parent is the run's
+// `legion claude-bridge -- <claude>`; claude_pid, a pane's Claude Code process; and
+// endpoint_mismatch, an agent's environment against the rig.
 const fn = scriptFunctions(join(import.meta.dir, "..", "claude-backend-tmux.sh"));
 const guards = [
   "process_args",
@@ -16,6 +17,7 @@ const guards = [
   "parent_pid",
   "agent_descendant",
   "claude_pid",
+  "claude_ready",
   "bridged",
   "endpoint_mismatch",
 ]
@@ -23,12 +25,12 @@ const guards = [
   .join("\n");
 
 const dir = temporaryDirectory("claude-backend-guards-test");
-// The stand-in processes are copies of two real programs, so a host without them has nothing to
-// start and every row here is skipped.
-// The gate is given both names: it walks each one and names the missing ones in its warning.
+// The stand-in processes are copies of two real programs, and sh runs one wrapper, so a host
+// without any of the three has nothing to start and every row here is skipped.
+// The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
-const found = new Map(["bash", "sleep"].map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout("bash", "sleep");
+const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
+const skip = skipWithout("bash", "sleep", "sh");
 // Only the unreadable-environment case needs an interpreter.
 const withoutPython = skipWithout("python3");
 function tool(name: string): string {
@@ -39,22 +41,53 @@ function tool(name: string): string {
 // The run's legion is a copy of bash, so a process can carry it as its executable (/proc/<pid>/exe)
 // with `claude-bridge` as its first argument: bash runs the script of that name from its working
 // directory, which starts its second argument as its child and waits on it, as the bridge waits on
-// Claude Code.
+// Claude Code, under the name CLAUDE_ARGV0 gives it when that is set (`exec -a`, as a wrapper or
+// another argv[0] gives the real Claude Code), or after holding its own fork a second when
+// CLAUDE_FORK_HOLD is set, as the real bridge's child is the bridge until it execs. `pane-shim` runs
+// the rest of its arguments, after its `--`, as its child, as a pane's `legion worker-shim` runs the
+// bridge.
 const work = join(dir, "work");
-// The run's claude is a copy of sleep, under a directory whose name holds a space.
+// The run's claude is a copy of sleep, under a directory whose name holds a space. Beside it: a
+// chain of two wrapper scripts, as a devbox's dotfiles shim is one, the first run by bash and the
+// second by sh, each running two seconds as only itself before it execs the next, the last a copy
+// of sleep elsewhere; a Claude Code that is a copy of bash, which runs the cwd's script `600` (the
+// bridge hands it that argument) and so runs an Oh My Pi tool below itself; and that Oh My Pi, a
+// copy of sleep.
 const claudeDir = join(dir, "bin with space");
 const claude = join(claudeDir, "claude");
+const wrapper = join(claudeDir, "claude-wrapper");
+const wrapper2 = join(dir, "real", "claude-wrapper-2");
+const wrapped = join(dir, "real", "claude");
+const claudeWithTool = join(claudeDir, "claude-with-tool");
+const ompTool = join(dir, "real", "omp");
 const cwd = join(dir, "cwd");
+const processTree = join(import.meta.dir, "process-tree.sh");
 beforeAll(() => {
   if (skip) return;
   mkdirSync(work);
   copyFileSync(tool("bash"), join(work, "legion"));
   mkdirSync(claudeDir);
   copyFileSync(tool("sleep"), claude);
+  mkdirSync(join(dir, "real"));
+  copyFileSync(tool("sleep"), wrapped);
+  copyFileSync(tool("sleep"), ompTool);
+  copyFileSync(tool("bash"), claudeWithTool);
+  writeFileSync(wrapper, `#!${tool("bash")}\nsleep 2\nexec ${JSON.stringify(wrapper2)} "$@"\n`, {
+    mode: 0o755,
+  });
+  writeFileSync(wrapper2, `#!${tool("sh")}\nsleep 2\nexec ${JSON.stringify(wrapped)} "$@"\n`, {
+    mode: 0o755,
+  });
   mkdirSync(cwd);
-  for (const script of ["claude-bridge", "worker-shim"]) {
-    writeFileSync(join(cwd, script), '"$2" 600\n:\n');
-  }
+  writeFileSync(join(cwd, "worker-shim"), '"$2" 600\n:\n');
+  writeFileSync(
+    join(cwd, "claude-bridge"),
+    'if [ -n "$CLAUDE_FORK_HOLD" ]; then (sleep 1; exec "$2" 600)\n' +
+      'elif [ -n "$CLAUDE_ARGV0" ]; then (exec -a "$CLAUDE_ARGV0" "$2" 600)\n' +
+      'else "$2" 600; fi\n:\n'
+  );
+  writeFileSync(join(cwd, "pane-shim"), 'shift\n"$@"\n:\n');
+  writeFileSync(join(cwd, "600"), `${JSON.stringify(ompTool)} 600\n:\n`);
 });
 
 // run runs BODY after the guards, with the rig's globals set, a scratch directory of its own in
@@ -66,10 +99,17 @@ beforeAll(() => {
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 ${guards}
-work=$WORK claude_bin=$CLAUDE port_dispatch=1 port_listener=2 port_nats=3 state=/rig
+. ${JSON.stringify(processTree)}
+work=$WORK claude_bin=$CLAUDE claude_exe=$(realpath -e -- "$CLAUDE") port_dispatch=1 port_listener=2 port_nats=3 state=/rig
 scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
 started=()
-trap 'kill -- "\${started[@]}" 2>/dev/null || true' EXIT
+# Each process a row started goes with everything below it.
+kill_tree() {
+  local c
+  for c in $(children_of "$1"); do kill_tree "$c"; done
+  kill "$1" 2>/dev/null || true
+}
+trap 'for p in \${started[@]+"\${started[@]}"}; do kill_tree "$p"; done' EXIT
 spawn() {
   "$@" </dev/null >/dev/null 2>&1 &
   pid=$!
@@ -91,6 +131,26 @@ await_child() {
   [ -z "$child" ] || started+=("$child")
   [ -n "$child" ] && [ "$seen" = "$want" ] ||
     { echo "no child of $pid running $want within 10 s (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
+}
+# await_below EXE sets below to the process anywhere below pid that runs EXE once one does, read
+# through every process's children and the kernel's record of what each runs, never a name.
+await_below() {
+  local want i p queue
+  want=$(realpath -e -- "$1")
+  below=
+  for i in $(seq 1 200); do
+    queue=("$pid")
+    while [ "\${#queue[@]}" -gt 0 ] && [ -z "$below" ]; do
+      for p in $(cat /proc/"\${queue[0]}"/task/*/children 2>/dev/null || :); do
+        if [ "$(readlink "/proc/$p/exe" 2>/dev/null || :)" = "$want" ]; then below=$p; else queue+=("$p"); fi
+      done
+      queue=("\${queue[@]:1}")
+    done
+    [ -z "$below" ] || return 0
+    sleep 0.05
+  done
+  echo "no process below $pid running $want within 10 s" >&2
+  exit 1
 }
 `;
   const result = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
@@ -156,17 +216,82 @@ if bridged "$child"; then echo "other claude: accepted"; else echo "other claude
 });
 
 describe.skipIf(skip)("claude_pid", () => {
-  test(
-    "finds Claude Code under the bridge when its executable's path holds a space",
-    () => {
-      const r = run(`
-spawn "$work/legion" claude-bridge -- "$claude_bin"
-await_child "$claude_bin"
+  // A pane stand-in: bash for the pane's own `sh -c`, the run's legion running pane-shim for its
+  // `legion worker-shim`, and the run's legion running claude-bridge, whose one child is the run's
+  // claude.
+  const pane = `spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
+await_below "$claude_bin"
 found=$(claude_pid "$pid") || found=none
-if [ "$found" = "$child" ]; then echo "found the child"; else echo "found $found, want $child"; fi
-`);
+if [ "$found" = "$below" ]; then echo "found the bridge's child"; else echo "found $found, want $below"; fi
+printf 'argv[0] %s\\n' "$(tr '\\0' '\\n' <"/proc/$below/cmdline" | sed -n 1p)"`;
+
+  test(
+    "finds Claude Code under the pane's bridge when its executable's path holds a space",
+    () => {
+      const r = run(pane);
       expect(r.err).toBe("");
-      expect(r.out.trim()).toBe("found the child");
+      expect(r.out).toBe(`found the bridge's child\nargv[0] ${claude}\n`);
+    },
+    slow
+  );
+
+  test(
+    "finds Claude Code under the pane's bridge when it runs under another name, as a wrapper or exec -a gives it",
+    () => {
+      const r = run(`export CLAUDE_ARGV0=not-claude\n${pane}`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe("found the bridge's child\nargv[0] not-claude\n");
+    },
+    slow
+  );
+  test(
+    "answers no process until the bridge's child runs Claude Code itself, past the bridge's fork and a chain of two wrapper scripts",
+    () => {
+      // Each poll before the last exec must answer nothing: the child is first the bridge's own fork,
+      // then the first wrapper's bash, then the second wrapper's sh, and none of them is Claude Code.
+      const r = run(`export CLAUDE_FORK_HOLD=1
+claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringify(wrapped)})
+spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
+: >"$scratch/stages"
+found=
+SECONDS=0
+while [ "$SECONDS" -lt 60 ]; do
+  if found=$(claude_pid "$pid"); then break; fi
+  case $found in *"does not run Claude Code yet: it runs "*) printf '%s\\n' "\${found##*it runs }" >>"$scratch/stages" ;; esac
+  found=
+  sleep 0.02
+done
+[ -n "$found" ] || { echo "no Claude Code within 60 s" >&2; exit 1; }
+[ "$(readlink "/proc/$found/exe")" = "$claude_exe" ] && echo "first answer: the program the chain ends in" || echo "first answer: $found, running $(readlink "/proc/$found/exe")"
+for stage in "the bridge's fork:$(realpath -e -- "$work/legion")" "the first wrapper:$(realpath -e -- "$(command -v bash)")" "the second wrapper:$(realpath -e -- "$(command -v sh)")"; do
+  if grep -qxF -- "\${stage#*:}" "$scratch/stages"; then echo "refused while it was \${stage%%:*}"; else echo "never saw \${stage%%:*}"; fi
+done`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "first answer: the program the chain ends in\n" +
+          "refused while it was the bridge's fork\n" +
+          "refused while it was the first wrapper\n" +
+          "refused while it was the second wrapper\n"
+      );
+    },
+    slow
+  );
+
+  test(
+    "takes the pane's Claude Code for its agent, not an Oh My Pi Claude Code runs below itself",
+    () => {
+      const r =
+        run(`claude_bin=${JSON.stringify(claudeWithTool)} claude_exe=$(realpath -e -- ${JSON.stringify(claudeWithTool)}) omp_exe=${JSON.stringify(ompTool)}
+spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
+await_below "$omp_exe"
+found=$(agent_descendant "$pid") || found=none
+case $(readlink "/proc/$found/exe" 2>/dev/null) in
+  "$(realpath "$claude_bin")") echo "the agent: Claude Code" ;;
+  "$(realpath "$omp_exe")") echo "the agent: the Oh My Pi below Claude Code" ;;
+  *) echo "the agent: $found" ;;
+esac`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe("the agent: Claude Code\n");
     },
     slow
   );

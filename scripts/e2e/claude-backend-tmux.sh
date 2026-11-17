@@ -344,27 +344,26 @@ read_environ() {
     [ -n "${_env[${entry%%=*}]+set}" ] || _env[${entry%%=*}]=${entry#*=}
   done
 }
-# agent_descendant PID prints the first process under PID (PID included) that is an agent: Oh My Pi
-# (argv[0] omp) or Claude Code (argv[0] claude). A Claude Code pane's MCP server is claude's child,
-# so the walk meets claude first.
+# agent_descendant PANE_PID prints the pane's agent, read down from the pane's own process, the pid
+# the claim's locator recorded, by where each process stands and what it runs, never by its argv[0]:
+# the pane's `legion worker-shim` is its process's child that runs the run's legion
+# (child_running, lib/process-tree.sh); on a Claude Code pane that shim's own child that runs the
+# run's legion is its `legion claude-bridge`, and the agent is the Claude Code claude_pid finds; on
+# an Oh My Pi pane the agent is the one process below the shim that runs the Oh My Pi the daemon
+# launches ($omp_exe; launched). The backend is read from the pane's own tree first, so an Oh My Pi a
+# Claude Code runs as a tool is never taken for the agent, and a wrapper or an argv[0] of another
+# name cannot stand in for it or hide it.
 agent_descendant() {
-  local queue=("$1") pid children
-  local -a args
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if process_args "$pid" args; then
-      case $(basename -- "${args[0]}") in
-        omp | claude)
-          printf '%s\n' "$pid"
-          return 0
-          ;;
-      esac
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
+  local shim
+  shim=$(child_running "$1" "$work/legion") || {
+    printf 'pane process %s: %s\n' "$1" "$shim"
+    return 1
+  }
+  if child_running "$shim" "$work/legion" >/dev/null; then
+    claude_pid "$1"
+  else
+    launched "$shim" "$omp_exe"
+  fi
 }
 claim_pane_pid() {
   daemon_state | jq -er --arg issue "$1" --arg role "$2" \
@@ -478,15 +477,41 @@ parent_pid() {
   read -r -a stat <<<"${stat##*) }"
   printf '%s\n' "${stat[1]}"
 }
-# claude_pid PANE_PID prints the pane's Claude Code process, failing when the pane's agent is not one:
-# its first argument, whole, names an executable called claude, whatever spaces its path holds.
+# claude_pid PANE_PID prints the pane's Claude Code process: the one child of the pane's
+# `legion claude-bridge`, which is the shim's child that runs the run's legion, the shim being the
+# pane's process's child that runs it (child_running and child_of, lib/process-tree.sh), once that
+# child runs Claude Code (claude_ready). bridged then holds its parent to
+# `legion claude-bridge -- <the run's claude>`. It prints why and fails when the pane has no such
+# process yet, an Oh My Pi pane among them.
 claude_pid() {
-  local agent
-  local -a args
-  agent=$(agent_descendant "$1") || return 1
-  process_args "$agent" args && [ "$(basename -- "${args[0]}")" = claude ] || return 1
-  printf '%s\n' "$agent"
+  local shim bridge child
+  shim=$(child_running "$1" "$work/legion") || {
+    printf 'pane process %s: %s\n' "$1" "$shim"
+    return 1
+  }
+  bridge=$(child_running "$shim" "$work/legion") || {
+    printf 'the shim %s of pane process %s: %s\n' "$shim" "$1" "$bridge"
+    return 1
+  }
+  child=$(child_of "$bridge") || {
+    printf 'the bridge %s of pane process %s: %s\n' "$bridge" "$1" "$child"
+    return 1
+  }
+  claude_ready "$child" || {
+    printf 'the child %s of the bridge %s does not run Claude Code yet: it runs %s\n' "$child" "$bridge" "$(readlink "/proc/$child/exe" 2>/dev/null || echo nothing)"
+    return 1
+  }
+  bridged "$child" || {
+    printf 'process %s, the child of %s, is no claude of the run'\''s legion claude-bridge\n' "$child" "$bridge"
+    return 1
+  }
+  printf '%s\n' "$child"
 }
+# claude_ready PID: PID, the bridge's child, runs the run's Claude Code itself, $claude_exe by the
+# kernel's record, and not the bridge it forked from or any wrapper on the way to it: a wrapper
+# script is run by its interpreter, and a chain of them by one interpreter after another, so only
+# the program the chain ends in is the agent, and its environment the one the endpoints are read in.
+claude_ready() { [ "$(readlink "/proc/$1/exe" 2>/dev/null || :)" = "$claude_exe" ]; }
 # claude_argv CLAUDE_PID prints its argv, one argument per line.
 claude_argv() { tr '\0' '\n' <"/proc/$1/cmdline"; }
 # ancestry PID prints PID and each ancestor above it, one `<pid> <argv>` line each, up to pid 1: what
@@ -612,6 +637,12 @@ bun_running=$(bun --version 2>/dev/null | tr -d '[:space:]') || bun_running=
   fail "refusing to run under Bun ${bun_running:-<no version>}: .bun-version pins $bun_pin, and the run builds claude-envoy with packages/claude-envoy/scripts/build.ts, whose bundler output depends on the exact Bun build (LEGION-568). Put the pinned Bun first on PATH ($(command -v bun) is the one found)"
 read_app_logins
 claude_bin=$(command -v claude)
+# The program the run's Claude Code runs: claude_bin when it is the program itself, and otherwise,
+# for a wrapper such as a devbox's dotfiles claude, the first claude on PATH that is (first_native,
+# lib/process-tree.sh), the one that wrapper hands the call to. claude_ready knows the agent by it;
+# a pane whose wrapper ends in another program shows no agent and fails its check by name.
+claude_exe=$(native_program "$claude_bin") || claude_exe=$(first_native claude) ||
+  fail "Claude Code: $claude_bin is a wrapper, and $claude_exe"
 # The daemon and every pane run with HOME moved to the run's own (make_omp_home), which hides mise's
 # global config from the box's own gh, jj, tmux and bun shims: a pane's jj shim hands the call back
 # to itself (exit 127), and the pane's MCP server finds no bun. So the real binaries mise resolves
@@ -678,6 +709,10 @@ envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --packag
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every Oh My Pi pane runs: the daemon starts from this environment, so LEGION_OMP_PATH
+# outranks the invocation when it is set (omp_program, lib/process-tree.sh). agent_descendant knows
+# a pane's Oh My Pi by it.
+omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not on disk"
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code backend proof instructions
 

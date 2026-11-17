@@ -5697,6 +5697,11 @@ bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --pro
 bash "$root/scripts/e2e/lib/install-model-gateway.sh" --profile "$profile" --home "$omp_home" --dest "$evidence/model-gateway" --cache-dir "$work/model-gateway-cache" >/dev/null ||
   blocked "the controller's model route could not be installed (lib/install-model-gateway.sh)"
 pin=$(<"$root/.omp-pin")
+mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
+# omp`, execs. controller_launched_with_steps knows the controller's process by it, as the kernel
+# records it (launched, lib/rig.sh).
+omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin has no bin/omp"
 cat >"$work/controller.yaml" <<EOF
 project: $project
 daemon_url: http://$host:$port_daemon
@@ -5715,8 +5720,11 @@ EOF
 # less the running session's own Oh My Pi and Envoy variables (omp_session_unsets, lib/omp-home.sh):
 # `legion controller start` hands Oh My Pi its caller's environment, so an operator session's
 # PI_CONFIG_FILES would lay that session's own settings overlays over the run's profile.
+# The window's command records the pid of the `legion controller start` it runs in
+# $evidence/logs/controller.pid (record_pid_sh, lib/rig.sh), which execs in that process, so the run
+# knows the command by the pid it started.
 tmux -L "legion-e2e4b-$$" new-session -d -s controller -x 200 -y 50 \
-  "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
+  "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/logs/controller.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
 until_true 300 "controllerLocator in the state" sh -c "'$work/legion' state --json --config '$work/legion.yaml' | jq -e '.controllerLocator.sessionId != null' >/dev/null"
 controller_session=$(daemon_state | jq -r .controllerLocator.sessionId)
 note "controllerLocator $(daemon_state | jq -c .controllerLocator)"
@@ -5994,19 +6002,44 @@ until_true 600 "$tree3's pods to be gone" sh -c \
   "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$tree3' -o name) && [ -z \"\$out\" ]"
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
 # (1) The controller was launched with the daemon's own design gate steps, none here (the run's
-# `gates.design` is `off`, the empty list): the Oh My Pi running in the controller's directory
-# carries the line in its system prompt, the file its --append-system-prompt names.
+# `gates.design` is `off`, the empty list): the Oh My Pi the run's `legion controller start`
+# launched carries the line in its system prompt, the file its --append-system-prompt names. That
+# Oh My Pi is the process below the pid the controller's window recorded that runs the pinned Oh
+# My Pi (recorded_pid and launched, lib/rig.sh), and its command line is read with no pipe: nothing
+# searches the machine's /proc, where every other Oh My Pi and every tool the controller runs is.
 steps_line='Design gate steps: none.'
 controller_launched_with_steps() {
-  local proc file
-  for proc in /proc/[0-9]*; do
-    [ "$(readlink "$proc/cwd" 2>/dev/null)" = "$work/controller-state/controller" ] || continue
-    file=$(tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | awk 'p{print;exit} $0=="--append-system-prompt"{p=1}')
-    [ -n "$file" ] && grep -qF "$steps_line" "$file" && return 0
+  local cli omp arg file='' next=''
+  local -a args
+  cli=$(recorded_pid "$evidence/logs/controller.pid" "$work/legion") || {
+    echo "$evidence/logs/controller.pid names no running $work/legion"
+    return 1
+  }
+  omp=$(launched "$cli" "$omp_exe") || {
+    echo "$omp"
+    return 1
+  }
+  { mapfile -d '' -t args <"/proc/$omp/cmdline"; } 2>/dev/null || {
+    echo "the command line of the Oh My Pi $omp could not be read"
+    return 1
+  }
+  for arg in ${args[@]+"${args[@]}"}; do
+    if [ -n "$next" ]; then
+      file=$arg
+      break
+    fi
+    [ "$arg" != --append-system-prompt ] || next=1
   done
-  return 1
+  [ -n "$file" ] || {
+    echo "the Oh My Pi $omp has no --append-system-prompt"
+    return 1
+  }
+  grep -qF "$steps_line" "$file" || {
+    echo "$file, the prompt of the Oh My Pi $omp, does not carry it"
+    return 1
+  }
 }
-controller_launched_with_steps || fail "no process in $work/controller-state/controller was launched with '$steps_line'"
+why=$(controller_launched_with_steps) || fail "the controller's Oh My Pi was not launched with '$steps_line': $why"
 note "the controller's Oh My Pi was launched with '$steps_line'"
 # (2) With tree 3 out, a slot stands free — tree 1 stands in merging, past its review, and holds
 # none — so an unlabelled leaf set to
@@ -6145,9 +6178,10 @@ role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{htt
 role_unheld() { [ "$(role_answer)" = 404 ]; }
 role_held_by() { [ "$(role_answer)" = 200 ] && jq -e --arg s "$1" '.holder == $s' "$work/controller-role.json" >/dev/null; }
 # The operator's controller quits as a person quits it (controller-start-tmux.sh): Ctrl-C ends a
-# turn and asks again, and Ctrl-D on the empty editor quits. The tmux command's own shell, which
-# names the command too, is not `legion controller start`, so the pattern is anchored at the binary.
-operator_controller_runs() { pgrep -f -- "^$work/legion controller start --config $work/controller.yaml" >/dev/null; }
+# turn and asks again, and Ctrl-D on the empty editor quits. It runs while the pid its window
+# recorded runs the run's legion (recorded_pid, lib/rig.sh), never by a search of the machine's
+# processes for its command line.
+operator_controller_runs() { recorded_pid "$evidence/logs/controller.pid" "$work/legion" >/dev/null; }
 operator_controller_quit() { ! operator_controller_runs; }
 if operator_controller_runs; then
   for _ in 1 2 3 4 5; do

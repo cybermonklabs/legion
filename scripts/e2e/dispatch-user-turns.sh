@@ -176,11 +176,12 @@ registered() {
 unlisted() {
   listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -e --arg d "$session_cwd" 'all(.[]; .dir != $d)' >/dev/null
 }
-# session_gone: no process of the session (Oh My Pi or a tool it runs) is left in session_cwd.
-session_gone() {
-  local p
-  for p in /proc/[0-9]*; do [ "$(readlink "$p/cwd" 2>/dev/null)" != "$session_cwd" ] || return 1; done
-}
+# session_gone: the session's Oh My Pi has exited, by the pid its pane recorded as it started it
+# (record_pid_sh and recorded_pid, lib/process-tree.sh), which execs `mise x`, which execs Oh My Pi:
+# that process's Envoy plugin is what holds the session on the listener, which the next wait reads.
+# No walk of the machine's /proc by working directory: one took 26 s over 28,165 entries at load
+# 453, against this wait's 30 s.
+session_gone() { ! recorded_pid "$work/session.pid" "$omp_exe" >/dev/null; }
 human() { curl -fsS -H "X-Dispatch-User: $login" -H 'Content-Type: application/json' "$@"; }
 bearer() { curl -fsS -H "Authorization: Bearer $(cat "$work/dispatch-token")" -H 'Content-Type: application/json' "$@"; }
 listener() { curl -fsS -H "@$work/envoy-auth-header" -H 'Content-Type: application/json' "$@"; }
@@ -192,7 +193,7 @@ page() { bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" "$@"; }
 # which otherwise holds the terminal for the whole run.
 launch_session() {
   local command
-  command=$(printf '%q ' env "${omp_session_unsets[@]}" \
+  command=$(printf '%q ' sh -c "$record_pid_sh" record-pid "$work/session.pid" env "${omp_session_unsets[@]}" \
     HOME="$omp_home" OMP_PROFILE="$profile" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_TOKEN_FILE="$work/envoy-token" ENVOY_NATS_URL="$nats_url" \
     DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
@@ -207,6 +208,9 @@ mkdir -p "$session_cwd"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
 mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
+# The program the session's Oh My Pi runs: what `mise x $omp_tool -- omp` execs. session_gone knows
+# the session by it.
+omp_exe=$(realpath -e -- "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool has no bin/omp"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch)
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"

@@ -104,6 +104,8 @@ TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (l
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/process-tree.sh
+. "$root/scripts/e2e/lib/process-tree.sh"
 
 # ---- reporting and waiting ------------------------------------------------------------------------
 
@@ -250,23 +252,19 @@ user_turns() {
     | [.message.content[]? | .text? // empty] | join(" ") | select(contains($m))' "$1" | jq -s length
 }
 argv0() { tr '\0' '\n' <"/proc/$1/cmdline" | head -1; }
-# first_child PID: the process's first child. A Go process (the shim) starts its children from
-# whichever thread runs the goroutine, so every thread's children list is read, not the main one's.
-first_child() { cat /proc/"$1"/task/*/children 2>/dev/null | tr ' ' '\n' | grep -m1 .; }
-# omp_of PANE_PID: the OMP process, found by walking first children from the pane's process to the
-# one whose argv[0] is omp.
-omp_of() {
-  local p=$1 i
-  for i in 1 2 3 4 5 6; do
-    [ "$(basename "$(argv0 "$p")")" = omp ] && {
-      echo "$p"
-      return 0
-    }
-    p=$(first_child "$p")
-    [ -n "$p" ] || return 1
-  done
-  return 1
+# parent_of PID prints its parent's pid, from the stat fields after the comm field's own `) `.
+parent_of() {
+  local stat
+  local -a fields
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+  read -r -a fields <<<"${stat##*) }"
+  printf '%s\n' "${fields[1]}"
 }
+# omp_of PANE_PID: the pane's Oh My Pi, the one process below the pane's own process, the pid the
+# claim's locator recorded, that runs the configured pinned binary $expected_omp by the kernel's
+# record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a
+# wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_of() { launched "$1" "$expected_omp"; }
 env_of() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
 # start_daemon: the main daemon, in the background, its log appended to daemon.log, on a copy of the
 # socket its keeper holds (below). HOME and OMP_PROFILE select the run's isolated profile for the
@@ -624,11 +622,12 @@ begin retried-frame-starts-no-second-turn
 # waits, and the next sweep sends the same frame again. Resumed, the shim hands OMP the first
 # prompt and answers every repeat from its dedupe record.
 pane2_pid=$(jq -r '.locator.incarnation | split(":")[0]' <<<"$c2_json")
-shim2=$(first_child "$pane2_pid")
-# The shim is the process whose argv[1] is worker-shim, as every reader of a Legion process tree
-# takes it, never one naming it in a later argv word.
+# The shim is the pane's process's one child (child_of, lib/process-tree.sh), and its argv[1] is
+# worker-shim, as every reader of a Legion process tree takes it, never one naming it in a later
+# argv word.
+shim2=$(child_of "$pane2_pid") || fail "pane process $pane2_pid: $shim2"
 [ "$(tr '\0' '\n' <"/proc/$shim2/cmdline" | sed -n 2p)" = worker-shim ] ||
-  fail "the first child of pane process $pane2_pid is not the shim"
+  fail "the child of pane process $pane2_pid is not the shim"
 kill -STOP "$shim2"
 marker2="S2E-RETRY-$RANDOM$RANDOM"
 delivery2=$(claims deliver --json --claim "$c2" --task "Reply with the single word pong. ($marker2)" | jq -r .pending.id)
@@ -658,10 +657,13 @@ until_true 240 "claim $c1 to be ready again after its pane was killed" \
 after=$(claim_json "$c1")
 [ "$(jq -r .session <<<"$after")" = "$session1" ] || fail "the relaunch registered another session: $(jq -r .session <<<"$after")"
 [ "$(jq -r .locator.tmux.pane <<<"$after")" != "$old_pane" ] || fail "the claim still names the killed pane"
-omp1=$(omp_of "$(jq -r '.locator.incarnation | split(":")[0]' <<<"$after")") || fail "no omp process under the new pane"
+omp1=$(omp_of "$(jq -r '.locator.incarnation | split(":")[0]' <<<"$after")") || fail "no omp process under the new pane: $omp1"
 resume_file=$(jq -r .sessionFile <<<"$after")
-tr '\0' '\n' <"/proc/$omp1/cmdline" | grep -qxF -- "--resume=$resume_file" ||
-  fail "the relaunched omp ($omp1) was not started with --resume=$resume_file: $(tr '\0' ' ' <"/proc/$omp1/cmdline" | cut -c1-200)"
+omp_args=()
+{ mapfile -d '' -t omp_args <"/proc/$omp1/cmdline"; } 2>/dev/null || fail "the relaunched omp's ($omp1) command line could not be read"
+resumed=
+for arg in ${omp_args[@]+"${omp_args[@]}"}; do [ "$arg" != "--resume=$resume_file" ] || resumed=1; done
+[ -n "$resumed" ] || fail "the relaunched omp ($omp1) was not started with --resume=$resume_file: $(printf '%s ' "${omp_args[@]}" | cut -c1-200)"
 [ "$(envoy_role "$c1" | jq -r .holder)" = "$session1" ] || fail "the resumed session does not hold its Envoy role"
 note "killed $old_pane (generation $old_gen) → pane $(jq -r .locator.tmux.pane <<<"$after"), generation $(jq -r .generation <<<"$after"), same session $session1"
 note "omp $omp1 started with --resume=$resume_file; the Envoy role still held by $session1"
@@ -820,20 +822,25 @@ pane1_pid=$(jq -r '.locator.incarnation | split(":")[0]' <<<"$now1")
 mapfile -t shell_argv < <(tr '\0' '\n' <"/proc/$pane1_pid/cmdline")
 [ "${shell_argv[0]}" = /bin/sh ] && [ "${shell_argv[1]}" = -c ] ||
   fail "the pane's process runs '${shell_argv[0]} ${shell_argv[1]}', not sh -c"
-omp1=$(omp_of "$pane1_pid") || fail "no omp process under pane process $pane1_pid"
-chain=$pane1_pid
-chain_pids=$pane1_pid
-p=$pane1_pid
-while [ "$p" != "$omp1" ]; do
-  p=$(first_child "$p")
-  chain="$chain → $p ($(basename "$(argv0 "$p")"))"
-  chain_pids="$chain_pids $p"
+omp1=$(omp_of "$pane1_pid") || fail "no omp process under pane process $pane1_pid: $omp1"
+# The line from the pane's process down to its Oh My Pi, read upwards through each process's
+# parent, and each process's command line read whole, with no pipe between the read and the check.
+chain_pids=$omp1
+p=$omp1
+while [ "$p" != "$pane1_pid" ]; do
+  p=$(parent_of "$p") && [ "$p" -gt 1 ] || fail "omp $omp1 is not below pane process $pane1_pid"
+  chain_pids="$p $chain_pids"
 done
+chain=
 for p in $chain_pids; do
-  tr '\0' ' ' <"/proc/$p/cmdline" | grep -qF "$HOME/.dotfiles/shims/omp" &&
-    fail "pane process chain runs the dotfiles OMP wrapper: $(tr '\0' ' ' <"/proc/$p/cmdline")"
+  args=()
+  { mapfile -d '' -t args <"/proc/$p/cmdline"; } 2>/dev/null || fail "the command line of process $p, on the line to omp $omp1, could not be read"
+  for arg in ${args[@]+"${args[@]}"}; do
+    case $arg in *"$HOME/.dotfiles/shims/omp"*) fail "pane process chain runs the dotfiles OMP wrapper: ${args[*]}" ;; esac
+  done
+  chain="${chain:+$chain → }$p ($(basename -- "${args[0]-}"))"
 done
-shim1=$(first_child "$pane1_pid")
+shim1=$(child_of "$pane1_pid") || fail "pane process $pane1_pid: $shim1"
 # LEGION-206 P1 holds with the gateway route: the pane's shell and its OMP keep the daemon's own XDG
 # directories and carry no session bus address (only the key command gets the operator's).
 for p in "$pane1_pid" "$omp1"; do
@@ -858,7 +865,7 @@ key_length=$(tr '\0' '\n' <"/proc/$omp1/environ" | awk 'index($0, "GEMINI_API_KE
 for name in GEMINI_API_KEY_TESTS SOPS_AGE_KEY_FILE SECRETSD_CONFIG; do
   [ -z "$(env_of "$omp1" "$name")" ] || fail "omp's environment carries $name"
 done
-note "pane process $pane1_pid is /bin/sh -c; first children: $chain"
+note "pane process $pane1_pid is /bin/sh -c; its line to omp: $chain"
 note "omp $omp1 executes the configured pinned binary $actual_omp, no process in its chain runs the dotfiles wrapper, and its PATH head ${omp_path%%:*} matches the pane's; XDG_CONFIG_HOME=$xdg; GEMINI_API_KEY of $key_length bytes (from the daemon-held file), absent from the shim; no ANTHROPIC_API_KEY, GEMINI_API_KEY_TESTS, SOPS_AGE_KEY_FILE or SECRETSD_CONFIG"
 note "the pane's shell $pane1_pid and omp $omp1: all four XDG base directories under $state/home, no DBUS_SESSION_BUS_ADDRESS"
 pass

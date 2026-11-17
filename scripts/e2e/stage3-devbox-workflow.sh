@@ -421,20 +421,11 @@ workspace_jj() {
 # ---- the production guards -------------------------------------------------------------------
 # A pane that can reach the operator's Dispatch or Envoy is not a scratch pane. Every registered
 # pane's OMP environment must name this rig's servers before the proof sends it an instruction.
-omp_descendant() {
-  local queue=("$1") pid children
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if [ "$(basename "$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 1p)")" = omp ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
-}
+# omp_descendant PANE_PID prints the pane's Oh My Pi: the one process below the pane's own process,
+# the pid the claim's locator recorded, that runs $pin's own bin/omp ($omp_exe) by the kernel's
+# record (launched, lib/rig.sh), whatever name it was called by. No argv[0] is read: a wrapper or an
+# argv[0] of another name cannot stand in for it or hide it.
+omp_descendant() { launched "$1" "$omp_exe"; }
 claim_pane_pid() {
   daemon_state | jq -er --arg issue "$1" --arg role "$2" \
     '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
@@ -737,6 +728,9 @@ until_true 90 "the GitHub ingress bridge to report ready" grep -q 'BRIDGE READY'
 # back: under box-login the profile's agent.db is the operator's login database.
 pin=${box_pin:-$(<"$root/.omp-pin")}
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every pane's Oh My Pi runs (daemon_runs_the_pinned_omp holds the daemon to it), by
+# which omp_descendant knows a pane's agent.
+omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the Oh My Pi $pin has no bin/omp"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'
