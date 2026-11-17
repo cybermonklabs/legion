@@ -522,8 +522,10 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 				// arrives inside the paste's bound however slowly this test runs.
 				release := s.holdReads()
 				s.start(false, false)
-				if after {
-					s.wait("DEADLINE_REACHED")
+				// A stall before the prompt's first read can carry the deadline past the start,
+				// where start does not keep what the terminal showed.
+				if after && s.waitFirst("DEADLINE_REACHED", setupOutranDeadline) == setupOutranDeadline {
+					return false
 				}
 				s.send("\x1b[200~pastehead")
 				if s.waitFirst("DEADLINE_PASSED", setupOutranDeadline) == setupOutranDeadline {
