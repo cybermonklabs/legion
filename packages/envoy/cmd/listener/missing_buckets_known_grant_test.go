@@ -109,13 +109,12 @@ func refusedKnownReads(grant *testnats.NkeyGrant, cid uint64) int {
 
 // On a hub whose users were rendered before the known-session bucket's grant, a start that another
 // missing bucket holds at its gates reads the known-session bucket once: the server refuses that
-// read, the listener's client records the refusal (bus.RefusedRequest), and the wait leaves the
-// bucket to its store from then on (awaitCopiedBuckets). Each read the server refuses is a
-// permissions violation and the connection's `envoy nats async error` ERROR, so a wait that read
-// it on every turn logged one each turn (a refused read waits out bucketCheckTimeout, then
-// bucketWaitInterval) for as long as the start was held: at 91c75f9e8d, with a one-second bound
-// on that read, this test's wait made 3 refused reads in 9 s. The wait is still the start's: it
-// holds while the other buckets are missing, and returns once they exist. The connection is a bus
+// read, the listener's client records the refusal, the read ends on it (readBucketsOn), and the
+// wait leaves the bucket to its store from then on (awaitCopiedBuckets). Each read the server
+// refuses is a permissions violation and the connection's `envoy nats async error` ERROR, so a
+// wait that read it on every turn logged one each turn for as long as the start was held: at
+// 91c75f9e8d this test's wait made 3 refused reads in 9 s. The wait is still the start's: it holds
+// while the other buckets are missing, and returns once they exist. The connection is a bus
 // client's, as the listener's is, since only a client records the refusals its connection is sent.
 func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	seed, public := testnats.User(t)
@@ -142,9 +141,8 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- awaitCopiedBuckets(ctx, logger, conn, js, copied, missing) }()
 
-	// The first turn, whose refused read waits out its whole bound, then four more, with every
-	// bucket but the known-session one missing.
-	held := bucketCheckTimeout + 4*bucketWaitInterval + time.Second
+	// Four turns of the wait, with every bucket but the known-session one missing.
+	held := 4*bucketWaitInterval + time.Second
 	select {
 	case err := <-done:
 		t.Fatalf("the wait returned %v with %v missing, want it held", err, missing.list())
@@ -179,6 +177,51 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	}
 	if n := refusedKnownReads(grant, cid); n != 1 {
 		t.Fatalf("over the whole wait the server refused %d reads of KV_%s, want 1", n, bus.KnownSessionBucket)
+	}
+}
+
+// A start on a hub whose users were rendered before the known-session bucket's grant, with every
+// other copied bucket there, goes on at once: the server's refusal of the known-session read ends
+// that read the moment the listener's client records it (readBucketsOn), rather than at
+// bucketCheckTimeout, and the wait then holds nothing for that bucket. At c024fc6da2 the refused
+// read waited out its whole ten-second bound, so such a listener opened /v1 about 12 s after it
+// began listening, every caller refused 503 meanwhile
+// (TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet: 12090 ms, want within 5000).
+func TestAStartGoesOnAtOnceOverAKnownSessionBucketTheServerRefuses(t *testing.T) {
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, ">")
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := bus.Connect([]string{grant.URL}, bus.WithName("refused-start"))
+	if err != nil {
+		t.Fatalf("connect the listener's user: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn, js := client.Connection(), client.JS()
+	copied := listenerCopiedBuckets(false)
+	for _, bucket := range copied {
+		if _, err := bus.CreateCopiedBucket(conn, js, bucket, 1); err != nil {
+			t.Fatalf("create %s: %v", bucket, err)
+		}
+	}
+	grant.Grant(t, grantBeforeKnownSessions()...)
+	missing := &missingBuckets{}
+	began := time.Now()
+	if err := awaitCopiedBuckets(context.Background(), logging.NewWithWriter("test-machine", &cmdtest.LockedBuffer{}), conn, js, copied, missing); err != nil {
+		t.Fatalf("the wait: %v", err)
+	}
+	within := 2 * time.Second
+	if took := time.Since(began); took > within {
+		t.Fatalf("the wait took %s over a known-session bucket the server refuses, every other bucket there, want within %s: the refusal ends the read", took.Round(time.Millisecond), within)
+	}
+	cid, err := conn.GetClientID()
+	if err != nil {
+		t.Fatalf("read the connection's id: %v", err)
+	}
+	if n := refusedKnownReads(grant, cid); n != 1 {
+		t.Fatalf("the server refused %d reads of KV_%s, want 1: the test says nothing about a refused read otherwise", n, bus.KnownSessionBucket)
+	}
+	if names := missing.list(); len(names) != 0 {
+		t.Fatalf("missing = %v, want none: no read found a bucket missing", names)
 	}
 }
 
