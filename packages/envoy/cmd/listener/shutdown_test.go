@@ -195,7 +195,7 @@ func provisionListenerServer(t *testing.T, uri string, env []string) {
 		name, value, _ := strings.Cut(setting, "=")
 		switch name {
 		case bus.ReplicasEnvVar:
-			n, err := strconv.Atoi(value)
+			n, err := bus.ParseNATSReplicas(value)
 			if err != nil {
 				t.Fatalf("%s: %v", setting, err)
 			}

@@ -152,7 +152,7 @@ bucket is among the buckets. The proof is required before anything changes:
   --nats URL           the NATS server, as a user that may create and delete the buckets'
                        streams (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED in the environment)
   --bucket NAME        a copied bucket to act on, repeatable (default: every one, for create)
-  --replicas N         the copies a bucket is created with (default ENVOY_NATS_REPLICAS, else 1)
+  --replicas N         the copies a bucket is created with, 1 to 5 (default ENVOY_NATS_REPLICAS, else 1)
 
 Until INFRA-840's cutover, a missing bucket is created with a listener's credential instead:
   --break-glass        create each --bucket the server reports missing, as a listener's NATS user
@@ -237,16 +237,19 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	if len(buckets) == 0 {
 		buckets = bus.CopiedBuckets()
 	}
-	if replicas == 0 {
-		replicas = 1
-		if value := os.Getenv(bus.ReplicasEnvVar); value != "" {
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 1 {
-				fmt.Fprintf(stderr, "envoy-infra buckets: %s=%q is no replica count\n", bus.ReplicasEnvVar, value)
-				return 2
-			}
-			replicas = n
+	// The deployment's replica count: --replicas, or else ENVOY_NATS_REPLICAS read as every program
+	// of the deployment reads it (bus.ParseNATSReplicas). Either outside 1 to bus.MaxReplicas is a
+	// usage error, before anything connects.
+	replicasSet := false
+	flags.Visit(func(set *flag.Flag) { replicasSet = replicasSet || set.Name == "replicas" })
+	if replicasSet {
+		if replicas < 1 || replicas > bus.MaxReplicas {
+			fmt.Fprintf(stderr, "envoy-infra buckets: --replicas %d is no replica count: want a whole number of copies from 1 to %d\n", replicas, bus.MaxReplicas)
+			return 2
 		}
+	} else if replicas, err = bus.ParseNATSReplicas(os.Getenv(bus.ReplicasEnvVar)); err != nil {
+		fmt.Fprintf(stderr, "envoy-infra buckets: %v\n", err)
+		return 2
 	}
 	if breakGlass {
 		return breakGlassCreate(stdout, stderr, natsURL, operator, buckets, replicas)

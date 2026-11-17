@@ -2704,10 +2704,11 @@ may not subscribe; only `create --break-glass` runs as one
 This static user lasts until the cutover to dispatch://INFRA-840's auth callout, which replaces it.
 
 `create` creates every copied bucket that is missing (or each `--bucket`), with its configuration
-(file storage, `ENVOY_NATS_REPLICAS` copies or `--replicas`, and the session bucket's 5 minutes,
-the known sessions' 30 days and the CI state's 7 days of age), and leaves a bucket that exists as
-it is. `recreate` deletes each `--bucket`, checks again that no writer runs, since one started
-between the check and the delete may have written to the deleted bucket, and only then creates it.
+(file storage, `--replicas` copies or else `ENVOY_NATS_REPLICAS`, each 1 to 5 and refused with exit
+2 outside it, and the session bucket's 5 minutes, the known sessions' 30 days and the CI state's 7
+days of age), and leaves a bucket that exists as it is. `recreate` deletes each `--bucket`, checks
+again that no writer runs, since one started between the check and the delete may have written to
+the deleted bucket, and only then creates it.
 `check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
 restore`.
 

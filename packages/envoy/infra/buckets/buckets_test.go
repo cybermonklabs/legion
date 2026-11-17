@@ -1042,6 +1042,41 @@ func TestNoLineTheCommandWritesCarriesTheURLsCredential(t *testing.T) {
 	}
 }
 
+// The replica count a bucket is created with is the deployment's, read as every program of it
+// reads ENVOY_NATS_REPLICAS (bus.ParseNATSReplicas): a count outside 1 to bus.MaxReplicas, from
+// --replicas or from the variable, is refused as a usage error, with 2, before the command
+// connects. The URL names no server, so a run that went on would fail to connect, with 1. At
+// 0668a6db6e --replicas was not checked at all and the variable was read by a parser of the
+// command's own that took any count above 0, so both went on to the server.
+func TestAReplicaCountOutsideOneToFiveIsAUsageError(t *testing.T) {
+	const nowhere = "nats://127.0.0.1:1"
+	for _, c := range []struct {
+		env  string
+		args []string
+		says string
+	}{
+		{"", []string{"--replicas", "6"}, "--replicas 6"},
+		{"", []string{"--replicas", "0"}, "--replicas 0"},
+		{"", []string{"--replicas", "-1"}, "--replicas -1"},
+		{"6", nil, bus.ReplicasEnvVar + ` "6"`},
+		{"three", nil, bus.ReplicasEnvVar + ` "three"`},
+		{"6", []string{"--break-glass", "--operator", "op", "--bucket", bus.SessionBucket}, bus.ReplicasEnvVar + ` "6"`},
+	} {
+		t.Run(fmt.Sprintf("%s=%q %v", bus.ReplicasEnvVar, c.env, c.args), func(t *testing.T) {
+			t.Setenv(bus.ReplicasEnvVar, c.env)
+			args := append([]string{"create", "--nats", nowhere}, c.args...)
+			if !slices.Contains(c.args, "--break-glass") {
+				args = append(args, "--host", "box-1")
+			}
+			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+			code, stdout, stderr := runCommand(t, w, nil, args...)
+			if code != 2 || !strings.Contains(stderr, c.says) || !strings.Contains(stderr, "from 1 to 5") || len(w.calls) != 0 {
+				t.Fatalf("%q = %d, want the usage error naming %s and 1 to 5, before any proof (%v)\n%s%s", args, code, c.says, w.calls, stdout, stderr)
+			}
+		})
+	}
+}
+
 // A deployment's copied buckets get their copies here, where `envoy-infra buckets create` makes
 // them, since no listener creates one (cmd/listener/stream_replicas_test.go,
 // TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing). On a
