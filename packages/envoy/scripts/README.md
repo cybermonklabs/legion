@@ -354,8 +354,10 @@ prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run
 `database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
 broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
 script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
-replaces the 15-minute `-timeout`; `ci.yaml`'s `envoy-go` job runs it as "Count the
-database broker suites' skips" and counts that bound in its time budget.
+replaces the 15-minute `-timeout`, which bounds each package's test binary and not the run:
+the packages run several at a time, so one that starts late ends later. `ci.yaml`'s
+`envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
+its own (`timeout-minutes: 25`) that its time budget counts.
 
 ## aws-moto-check.sh
 

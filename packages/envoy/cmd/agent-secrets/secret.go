@@ -799,11 +799,11 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 		if err := checkSettingsKeyARN(settings); err != nil {
 			return nil, err
 		}
-		sm, st, err := awsClients(ctx, settings.AWSRegion)
+		sm, st, sources, err := awsClients(ctx, settings.AWSRegion)
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf()}, nil
+		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf(sources)}, nil
 	case secrets.StoreGCP:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err

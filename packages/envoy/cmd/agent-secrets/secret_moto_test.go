@@ -91,7 +91,9 @@ func motoUser(t *testing.T, endpoint string, root motoKeys, name, policy string)
 // the rest of the default chain - says on every form which source signed in, and runs as that
 // source's IAM user; a user no policy allows is named and refused. A profile variable that names
 // a profile the AWS config does not hold stops the command, so no later source in the chain (here a
-// container credentials endpoint, as a machine's role would be) signs in in its place.
+// container credentials endpoint, as a machine's role would be) signs in in its place; a profile
+// the config holds with no credential of its own lets that endpoint sign in, and the using line
+// says so.
 func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 	endpoint := os.Getenv("AGENT_SECRETS_MOTO_URL")
 	if endpoint == "" {
@@ -120,7 +122,7 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 	if err := os.WriteFile(sharedCredentials, []byte(keys), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(sharedConfig, []byte("[profile writer]\nregion = us-east-1\n\n[profile nobody]\nregion = us-east-1\n"), 0o600); err != nil {
+	if err := os.WriteFile(sharedConfig, []byte("[profile writer]\nregion = us-east-1\n\n[profile nobody]\nregion = us-east-1\n\n[profile credless]\nregion = us-east-1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// From here on moto checks every call against IAM. A form content type answers 500.
@@ -226,6 +228,12 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 			if want := "load your AWS sign-in: failed to get shared config profile, missing"; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, ": using ") {
 				t.Fatalf("%s=missing: exit %d, stderr %q; want 1, %q and no using line", variable, code, stderr, want)
 			}
+		}
+	})
+	t.Run("7 a profile with no credential of its own, then a container endpoint", func(t *testing.T) {
+		stderr, code := run(t, []string{"AWS_PROFILE=credless", "AWS_CONTAINER_CREDENTIALS_FULL_URI=" + lent.URL}, "", "show", "MOTO_TEST")
+		if want := "using the AWS profile credless (AWS_PROFILE), which holds no credential, so the container credentials endpoint AWS_CONTAINER_CREDENTIALS_FULL_URI names signed in: " + writerARN + "\n"; code != 0 || !strings.Contains(stderr, want) {
+			t.Fatalf("exit %d, stderr %q; want 0 and %q", code, stderr, want)
 		}
 	})
 }

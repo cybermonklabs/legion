@@ -8,15 +8,18 @@ body: |-
   where gcloud impersonates one, the AWS ARN, or `principal unknown` for a lent token, an
   `authorized_user` file and a gcloud token from a file. On AWS the source is the one the AWS SDK
   itself used, in its own order, and the line says when access keys or a web identity token file
-  outrank a profile variable that is also set. Whom a credential acts as is read best effort: the
-  metadata server's account within a short deadline, and gcloud's auth settings within 5 s, and a
-  read that fails or is slow never keeps the command from signing in: the line then names the
-  metadata server's `this machine's or this pod's identity`, or the gcloud login with `principal
-  unknown`. A store refusal, and a create that IAM lets make the secret but not add its value,
-  name the same credential and how to choose another, from the source in use: under a lent token,
-  unset `CLOUDSDK_AUTH_ACCESS_TOKEN`, which outranks every other source; under a credentials file,
-  name another in `GOOGLE_APPLICATION_CREDENTIALS` or unset it to reach the gcloud variables;
-  under every later Google source, `a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an
-  account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS`; on
-  AWS `AWS_PROFILE`, or the access keys or web identity token file that outrank it. No userinfo or
-  tokeninfo call is made to name a principal.
+  outrank a profile variable that is also set, and when a profile that holds no credential of its
+  own let a container's credentials endpoint or the machine's instance role sign in. Whom a
+  credential acts as is read best effort: the metadata server's account within a short deadline,
+  and gcloud's auth settings within 5 s, and a read that fails or is slow never keeps the command
+  from signing in: the line then names the metadata server's `this machine's or this pod's
+  identity`, or the gcloud login with `principal unknown`. A store refusal, and a create that IAM
+  lets make the secret but not add its value, name the same credential and how to choose another,
+  from the source in use: under a lent token, unset `CLOUDSDK_AUTH_ACCESS_TOKEN`, which outranks
+  every other source; under a credentials file, name another in `GOOGLE_APPLICATION_CREDENTIALS`
+  or unset it to reach the gcloud variables; under every later Google source, `a gcloud
+  configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a
+  credentials file in GOOGLE_APPLICATION_CREDENTIALS`, with the account named first, and a
+  configuration only once it is unset, where `CLOUDSDK_CORE_ACCOUNT` is set; on AWS `AWS_PROFILE`,
+  or the access keys or web identity token file that outrank it. No userinfo or tokeninfo call is
+  made to name a principal.
