@@ -1669,6 +1669,7 @@ var termsLineFault = formFault{
 	name: "a line under Terms that is no term line", node: `"drift: ` + driftDefinition + `"`, kind: specform.KindLine,
 	clean: termLine("drift", driftDefinition), broken: "**drift:** " + driftDefinition, excerpt: "drift: " + driftDefinition,
 	rule: "term-line", detail: `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+		`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`,
 }
 
