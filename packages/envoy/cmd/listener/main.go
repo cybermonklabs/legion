@@ -656,9 +656,14 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 			}
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
 				if answered && errors.Is(err, nats.ErrStreamNotFound) && len(c.buckets) > 0 {
-					// Deleted since the monitor last looked: named now, not at its next check.
-					held = append(held, slices.DeleteFunc(slices.Clone(c.buckets), func(b string) bool { return slices.Contains(held, b) })...)
-					continue
+					// Deleted since the monitor last looked: named now, not at its next check, and
+					// only the buckets a read of their streams finds missing, since a cache that reads
+					// two buckets fails its ping when either is gone. None of c.buckets is in held
+					// (reads, above), so none is named twice.
+					if gone := readBuckets(ctx, d.client.JS(), c.buckets).missing; len(gone) > 0 {
+						held = append(held, gone...)
+						continue
+					}
 				}
 				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
 				return

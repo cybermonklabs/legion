@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -72,6 +74,51 @@ func TestAMissingBucketDoesNotHideAnotherFailureFromHealthz(t *testing.T) {
 	}
 	if code, body := get(); code != http.StatusServiceUnavailable || !strings.Contains(body["error"].(string), "durable consumer") {
 		t.Fatalf("/healthz with the session bucket missing and the durable deleted = %d %v, want 503 for the durable consumer", code, body)
+	}
+}
+
+// pingStreamGone is a cache whose watch is clean and whose ping answers that a stream is gone: the
+// interest cache the moment either of its two buckets is deleted, before its watcher or the
+// self-health monitor has seen the delete.
+type pingStreamGone struct{ kvCache }
+
+func (pingStreamGone) WatchErr() error { return nil }
+func (pingStreamGone) Ping() error     { return natsgo.ErrStreamNotFound }
+
+// /healthz names only the buckets a read finds missing. A cache reads two buckets, and the role
+// bucket alone is deleted: its ping answers stream-not-found before the monitor's next read, and
+// /healthz names envoy_roles and not envoy_interests, which is still there. At 0668a6db6e it named
+// every bucket of the cache, so an operator was told to create a bucket the hub still held.
+func TestHealthzNamesOnlyTheBucketsAReadFindsMissing(t *testing.T) {
+	t.Parallel()
+	client := setupTestNATS(t)
+	const consumer = "listener-healthz-names-the-missing-bucket"
+	bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
+	if err := bustest.Provision(client.Conn, 1); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
+		t.Fatalf("delete the role bucket: %v", err)
+	}
+	if _, err := client.JS().StreamInfo("KV_" + bus.InterestBucket); err != nil {
+		t.Fatalf("control: the interest bucket is not there to be named wrongly: %v", err)
+	}
+	missing := &missingBuckets{}
+	var state atomic.Pointer[listenerDeps]
+	state.Store(&listenerDeps{client: client, consumer: consumer, caches: []listenerCache{
+		{name: "interest", cache: pingStreamGone{}, buckets: []string{bus.InterestBucket, bus.RoleClaimBucket}, missing: missing},
+	}})
+	recorder := httptest.NewRecorder()
+	healthzHandler(&state, missing).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var body struct {
+		Status  string   `json:"status"`
+		Missing []string `json:"missing_buckets"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("read /healthz %q: %v", recorder.Body.String(), err)
+	}
+	if recorder.Code != http.StatusOK || body.Status != "degraded" || !slices.Equal(body.Missing, []string{bus.RoleClaimBucket}) {
+		t.Fatalf("/healthz with only %s deleted = %d %s, want 200 degraded naming [%s] alone", bus.RoleClaimBucket, recorder.Code, recorder.Body.String(), bus.RoleClaimBucket)
 	}
 }
 
