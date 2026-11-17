@@ -229,33 +229,30 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 // which is the holder the deciding update read, so a claim that committed while this one waited
 // is the one named.
 func (s *Store) BindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error) {
-	if tx, ok := TxFrom(ctx); ok {
-		return s.bindSession(ctx, tx, session, principal, fixed, expires)
-	}
-	tx, err := s.pool.Begin(ctx)
+	ctx, err := s.BeginTX(ctx)
 	if err != nil {
 		return "", fmt.Errorf("bind session name: %w", err)
 	}
-	defer tx.Rollback(ctx)
-	taken, err := s.bindSession(ctx, tx, session, principal, fixed, expires)
+	defer s.Rollback(ctx)
+	taken, err := s.bindSession(ctx, session, principal, fixed, expires)
 	if err != nil {
 		return "", err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.Commit(ctx); err != nil {
 		return "", fmt.Errorf("bind session name: %w", err)
 	}
 	return taken, nil
 }
 
-// bindSession is BindSession's claim, made in tx.
-func (s *Store) bindSession(ctx context.Context, tx pgx.Tx, session, principal string, fixed bool, expires time.Time) (string, error) {
-	claim := expires.Add(SessionRetention)
+// bindSession is BindSession's claim, made in the transaction ctx carries.
+func (s *Store) bindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error) {
+	db, until := s.db(ctx), expires.Add(SessionRetention)
 	// holder and live are the name's row as its lock read it: the principal holding it, and
 	// whether that hold had not run out.
 	var holder string
 	var live bool
 	for {
-		err := tx.QueryRow(ctx, `select principal, expires_at > now() from oauth_session_bindings where session = $1 for update`,
+		err := db.QueryRow(ctx, `select principal, expires_at > now() from oauth_session_bindings where session = $1 for update`,
 			session).Scan(&holder, &live)
 		if err == nil {
 			break
@@ -266,9 +263,9 @@ func (s *Store) bindSession(ctx context.Context, tx pgx.Tx, session, principal s
 		// No row: this is the name's first claim, unless another claim inserted the row since
 		// the select read, in which case the insert writes nothing and the next pass locks and
 		// reads that claim's row.
-		inserted, err := tx.Exec(ctx, `insert into oauth_session_bindings (session, principal, expires_at)
+		inserted, err := db.Exec(ctx, `insert into oauth_session_bindings (session, principal, expires_at)
 			values ($1, $2, case when $4 then `+heldByConfiguration+` else $3 end)
-			on conflict (session) do nothing`, session, principal, claim, fixed)
+			on conflict (session) do nothing`, session, principal, until, fixed)
 		if err != nil {
 			return "", fmt.Errorf("bind session name: %w", err)
 		}
@@ -277,11 +274,11 @@ func (s *Store) bindSession(ctx context.Context, tx pgx.Tx, session, principal s
 		}
 	}
 	_, reserved := s.Reserved[session]
-	updated, err := tx.Exec(ctx, `update oauth_session_bindings set principal = $2,
+	updated, err := db.Exec(ctx, `update oauth_session_bindings set principal = $2,
 			expires_at = case when $4 then `+heldByConfiguration+` when principal = $2 then greatest(expires_at, $3) else $3 end
 		where session = $1 and ($4 or principal = $2 or expires_at <= now()
 			or (principal = any($5::text[]) and expires_at <> `+heldByConfiguration+` and not $6))`,
-		session, principal, claim, fixed, s.PairedWith(principal), reserved)
+		session, principal, until, fixed, s.PairedWith(principal), reserved)
 	if err != nil {
 		return "", fmt.Errorf("bind session name: %w", err)
 	}

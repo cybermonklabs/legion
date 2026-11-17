@@ -754,7 +754,7 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 		if s.Sessions != nil {
 			paired = s.Sessions.PairedWith(*in.carry)
 		}
-		principals = append(append(make([]string, 0, 1+len(paired)), *in.carry), paired...)
+		principals = slices.Concat([]string{*in.carry}, paired)
 	}
 	if err := adopt(ctx, tx, in, principals, record.LauncherActor(cred.ID.String())); err != nil {
 		return Enrollment{}, false, err

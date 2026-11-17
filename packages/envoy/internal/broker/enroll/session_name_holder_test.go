@@ -50,14 +50,6 @@ func enrollmentsNaming(t *testing.T, svc *Service, session string) int {
 	return rows
 }
 
-// oldPodAccount and movedPodAccount are the two ServiceAccounts of a deployment an operator
-// moves: its pods ran as the first and run as the second now. A test that pairs them says so
-// (pairAccounts), and nothing else pairs them.
-const (
-	oldPodAccount   = "system:serviceaccount:legion:worker"
-	movedPodAccount = "system:serviceaccount:legion-next:worker"
-)
-
 // pairAccounts pairs the ServiceAccount subjects a and b for session names, both ways, as
 // cmd/broker reads one pair of BROKER_SESSION_ACCOUNT_PAIRS into the store an enrollment binds its
 // name through (oauthstore.Store.SessionPairs).
@@ -135,17 +127,17 @@ func adoptionsOf(t *testing.T, svc *Service, to uuid.UUID) []adoption {
 // withheldFromReplacedPod is the name withheld from the replaced pod's session (replacedPod).
 const withheldFromReplacedPod = "AUTO_TOKEN"
 
-// replacedPod is a role's pod running as oldPodAccount that enrolled session, holds a live grant,
-// waits on a request nobody has answered yet and has had withheldFromReplacedPod taken back from
-// it, and was then replaced: its launcher revoked its enrollment, as the daemon does when it lets
-// the role's process go, which leaves the row dormant holding all three for the session's next
-// enrollment. It answers the launcher's credential, the pod's enrollment, its grant and its
+// replacedPod is a role's pod running as workerPodAccount that enrolled session, holds a live
+// grant, waits on a request nobody has answered yet and has had withheldFromReplacedPod taken back
+// from it, and was then replaced: its launcher revoked its enrollment, as the daemon does when it
+// lets the role's process go, which leaves the row dormant holding all three for the session's
+// next enrollment. It answers the launcher's credential, the pod's enrollment, its grant and its
 // pending request.
 func replacedPod(t *testing.T, svc *Service, pod func(account, uid string) Enrollment) (Credential, Enrollment, uuid.UUID, string) {
 	t.Helper()
 	ctx := context.Background()
 	cluster := mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
-	old, err := svc.Create(ctx, cluster, pod(oldPodAccount, "pod-uid-old"))
+	old, err := svc.Create(ctx, cluster, pod(workerPodAccount, "pod-uid-old"))
 	if err != nil {
 		t.Fatalf("the old account's pod enrolment: %v", err)
 	}
@@ -467,10 +459,10 @@ func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
 		return Enrollment{Kind: "pod", RuntimeID: uid, Thumbprint: "tp-" + uid, SessionID: str(session),
 			PodToken: mintPodToken(t, issuer, key, account, uid)}
 	}
-	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(oldPodAccount), exchange.AccountPrincipal(movedPodAccount)
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(workerPodAccount), exchange.AccountPrincipal(pairedWorkerPodAccount)
 	cluster, old, grant, request := replacedPod(t, svc, pod)
 
-	_, err := svc.Create(ctx, cluster, pod(movedPodAccount, "pod-uid-new"))
+	_, err := svc.Create(ctx, cluster, pod(pairedWorkerPodAccount, "pod-uid-new"))
 	if !errors.Is(err, ErrSessionHeld) {
 		t.Fatalf("the moved account's pod enrolment with no pair = %v, want ErrSessionHeld: an unpaired account is refused a name another holds, as before", err)
 	}
@@ -493,8 +485,8 @@ func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
 		t.Fatalf("the refused enrolment logged takes %+v, want none: it took nothing", takes)
 	}
 
-	pairAccounts(t, svc, oldPodAccount, movedPodAccount)
-	moved, err := svc.Create(ctx, cluster, pod(movedPodAccount, "pod-uid-new"))
+	pairAccounts(t, svc, workerPodAccount, pairedWorkerPodAccount)
+	moved, err := svc.Create(ctx, cluster, pod(pairedWorkerPodAccount, "pod-uid-new"))
 	if err != nil {
 		t.Fatalf("the moved account's pod enrolment with the pair = %v, want it enrolled: a paired account takes the name its pair holds", err)
 	}
@@ -528,15 +520,15 @@ func TestAPairedAccountsEnrollmentAfterItsExchangeTookTheNameTakesWhatItCarries(
 		return Enrollment{Kind: "pod", RuntimeID: uid, Thumbprint: "tp-" + uid, SessionID: str(session),
 			PodToken: mintPodToken(t, issuer, key, account, uid)}
 	}
-	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(oldPodAccount), exchange.AccountPrincipal(movedPodAccount)
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(workerPodAccount), exchange.AccountPrincipal(pairedWorkerPodAccount)
 	cluster, old, grant, request := replacedPod(t, svc, pod)
-	pairAccounts(t, svc, oldPodAccount, movedPodAccount)
+	pairAccounts(t, svc, workerPodAccount, pairedWorkerPodAccount)
 
 	taken, err := svc.Sessions.BindSession(ctx, session, movedPrincipal, false, time.Now().Add(time.Hour))
 	if err != nil || taken != oldPrincipal {
 		t.Fatalf("the moved account's trade under %s = %q, %v; want it to take the name from %q", session, taken, err, oldPrincipal)
 	}
-	moved, err := svc.Create(ctx, cluster, pod(movedPodAccount, "pod-uid-new"))
+	moved, err := svc.Create(ctx, cluster, pod(pairedWorkerPodAccount, "pod-uid-new"))
 	if err != nil {
 		t.Fatalf("the moved account's pod enrolment after its trade = %v, want it enrolled: the name is already its account's", err)
 	}

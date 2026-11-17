@@ -409,7 +409,7 @@ func TestTheBrokerLogsTheSessionAccountPairsItRead(t *testing.T) {
 			"BROKER_DATABASE_URL=" + storetest.URL(t),
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + writeTempFile(t, "fake-secrets.json", []byte(`{"secrets": []}`)),
+			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
 		}, env...)})
 	}
 	// line is the one "session account pairs" line broker logs, failing t unless it logged
