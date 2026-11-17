@@ -17,8 +17,8 @@
 // What the guard reports is the record and the class: never the text that matched, never the
 // component of a path that matched, and never anything the detection engine itself printed. The
 // classes are the descriptions of the rules in private-names.toml, and a path in a report has
-// every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does for those rules (its lines 269-276).
+// every component the repository and company rules match replaced by "<name>", the masking that
+// .github/scripts/check-private-names.sh's `mask` function does for those rules.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
