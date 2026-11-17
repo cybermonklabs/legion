@@ -77,7 +77,7 @@ func publishedDestinations(t *testing.T, database *store.Store, eventID int64) (
 
 // holderSubject is the agent subject of roleHolder, every role's holder in a test that runs the
 // outbox with heldRoles.
-var holderSubject = contracts.AgentSubject(roleHolder)
+var holderSubject = contracts.LegacyAgentSubject(roleHolder)
 
 // A role route whose forward to its holder NATS denies (a per-client grant without the holder's
 // agent subject) is not published: the outbox does not record the destination, does not mark the

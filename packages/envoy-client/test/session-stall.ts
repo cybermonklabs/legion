@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { agentSubject, EnvelopeSchema } from "@legion/contracts";
+import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { createConsumerDelivery } from "../src/consumer-delivery";
@@ -157,7 +157,7 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
     process.stdout.write(`${JSON.stringify(event)}\n`);
   };
   const client = createEnvoyClient({ baseUrl: config.envoyUrl, fetch });
-  const subject = agentSubject(config.sessionID);
+  const subject = legacyAgentSubject(config.sessionID);
   const nats = await connect({ servers: [config.natsUrl], name: config.sessionID });
   const codec = StringCodec();
   // The ledger a host keeps of what it has already shown. Nothing is persisted: this child lives

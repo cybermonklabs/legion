@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // imageOmp is an `omp` that passes the image's three probes as a working image's Oh My Pi does:
@@ -472,8 +472,8 @@ func TestProbeImageRefusesAnImageMissingACapability(t *testing.T) {
 func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
-	seed, public := testnats.User(t)
-	t.Setenv("NATS_NKEY_SEED_FILE", testnats.SeedFile(t, seed+"\n"))
+	seed, public := testnkeys.User(t)
+	t.Setenv("NATS_NKEY_SEED_FILE", testnkeys.SeedFile(t, seed+"\n"))
 
 	code, stdout, stderr := probeImage(img.flags()...)
 
@@ -482,8 +482,8 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 		t.Fatalf("probe-image with a user seed = %d %q %q, want the table, then %q, and no seed", code, stdout, stderr, want)
 	}
 
-	account := testnats.Account(t)
-	file := testnats.SeedFile(t, account)
+	account := testnkeys.Account(t)
+	file := testnkeys.SeedFile(t, account)
 	t.Setenv("NATS_NKEY_SEED_FILE", file)
 	code, stdout, stderr = probeImage(img.flags()...)
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "NATS_NKEY_SEED_FILE ("+file+") holds an nkey seed that is not a user's") || strings.Contains(stderr, account) {
@@ -497,8 +497,8 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 func TestProbeImageReadsTheSeedPointerByTheDaemonsModeRule(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
-	seed, _ := testnats.User(t)
-	file := testnats.SeedFile(t, seed+"\n")
+	seed, _ := testnkeys.User(t)
+	file := testnkeys.SeedFile(t, seed+"\n")
 	if err := os.Chmod(file, 0o640); err != nil {
 		t.Fatal(err)
 	}

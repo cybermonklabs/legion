@@ -67,11 +67,11 @@ func runLossCut(t *testing.T, cut lossCut) {
 	ctx := context.Background()
 	const before = lossCutBefore
 	name, _ := SessionConsumerName(cut.session)
-	agent := contracts.AgentSubject(cut.session)
+	agent := contracts.LegacyAgentSubject(cut.session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject(cut.session+"_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject(cut.session+"_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	start, err := consumers.Ensure(ctx, cut.session, filters, 0)
 	if err != nil {

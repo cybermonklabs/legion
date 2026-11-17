@@ -7,29 +7,29 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // DaemonSeed reads the daemon's own seed by Seed's precedence under its own names: the configuration
 // key's file over NATS_DAEMON_NKEY_SEED_FILE over NATS_DAEMON_NKEY_SEED. It never reads the pane
 // seed's names, and Seed never reads its.
 func TestTheDaemonSeedResolvesByItsOwnNamesAlone(t *testing.T) {
-	daemon, _ := testnats.User(t)
-	pane, _ := testnats.User(t)
-	other, _ := testnats.User(t)
+	daemon, _ := testnkeys.User(t)
+	pane, _ := testnkeys.User(t)
+	other, _ := testnkeys.User(t)
 	for _, tc := range []struct {
 		name string
 		key  string
 		env  map[string]string
 		want string
 	}{
-		{"the key's file, over both variables", testnats.SeedFile(t, daemon+"\n"),
+		{"the key's file, over both variables", testnkeys.SeedFile(t, daemon+"\n"),
 			map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": "", "NATS_DAEMON_NKEY_SEED": "hunter2"}, daemon},
 		{"NATS_DAEMON_NKEY_SEED_FILE, over NATS_DAEMON_NKEY_SEED", "",
-			map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": testnats.SeedFile(t, "\n"+daemon+"  \n"), "NATS_DAEMON_NKEY_SEED": other}, daemon},
+			map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": testnkeys.SeedFile(t, "\n"+daemon+"  \n"), "NATS_DAEMON_NKEY_SEED": other}, daemon},
 		{"NATS_DAEMON_NKEY_SEED", "", map[string]string{"NATS_DAEMON_NKEY_SEED": " " + daemon + " "}, daemon},
 		{"none, whatever the pane seed's names hold", "",
-			map[string]string{"NATS_NKEY_SEED_FILE": testnats.SeedFile(t, pane), "NATS_NKEY_SEED": pane}, ""},
+			map[string]string{"NATS_NKEY_SEED_FILE": testnkeys.SeedFile(t, pane), "NATS_NKEY_SEED": pane}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := natsauth.DaemonSeed(tc.key, env(tc.env))
@@ -48,17 +48,17 @@ func TestTheDaemonSeedResolvesByItsOwnNamesAlone(t *testing.T) {
 // held to 0600, and only one another uid owns may be group-readable), never a fallback to the next source, to the pane seed, or to no
 // credential, and never carrying the seed.
 func TestAnUnusableDaemonSeedIsAnErrorNamingItsSource(t *testing.T) {
-	userSeed, _ := testnats.User(t)
+	userSeed, _ := testnkeys.User(t)
 	missing := filepath.Join(t.TempDir(), "missing.seed")
-	blank := testnats.SeedFile(t, " \n")
-	notASeed := testnats.SeedFile(t, "SUNOTASEED")
-	accountSeed := testnats.SeedFile(t, testnats.Account(t))
-	good := testnats.SeedFile(t, userSeed)
-	public := testnats.SeedFile(t, userSeed)
+	blank := testnkeys.SeedFile(t, " \n")
+	notASeed := testnkeys.SeedFile(t, "SUNOTASEED")
+	accountSeed := testnkeys.SeedFile(t, testnkeys.Account(t))
+	good := testnkeys.SeedFile(t, userSeed)
+	public := testnkeys.SeedFile(t, userSeed)
 	if err := os.Chmod(public, 0o604); err != nil {
 		t.Fatal(err)
 	}
-	writable := testnats.SeedFile(t, userSeed)
+	writable := testnkeys.SeedFile(t, userSeed)
 	if err := os.Chmod(writable, 0o660); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestAnUnusableDaemonSeedIsAnErrorNamingItsSource(t *testing.T) {
 		})
 	}
 	// A daemon-owned 0640 seed is refused as the pane seed's is.
-	shared := testnats.SeedFile(t, userSeed)
+	shared := testnkeys.SeedFile(t, userSeed)
 	if err := os.Chmod(shared, 0o640); err != nil {
 		t.Fatal(err)
 	}

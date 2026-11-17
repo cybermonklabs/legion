@@ -48,10 +48,10 @@ const (
 	ClaimSession = "session"
 	// ClaimPerson is the person the session acts for.
 	ClaimPerson = "person"
-	// ClaimService is the service a token that names no person is, and is empty for every token
-	// that names one. It is written always, for the reason ClaimProjectScope is: a reader of the
-	// row never has to take an absent service as either "no service" or "a claim this build of
-	// the broker did not write".
+	// ClaimService is the service a token that names no person is, a machine's fleet or the
+	// service a read entry names, and is empty for every token that names one. It is written
+	// always, for the reason ClaimProjectScope is: a reader of the row never has to take an
+	// absent service as either "no service" or "a claim this build of the broker did not write".
 	ClaimService = "service"
 	// ClaimMachine is the machine a person signed in on acted through: the Google account the
 	// trade's actor token named (exchange.Claims.Actor). It is set only beside ClaimPerson, and
@@ -60,16 +60,19 @@ const (
 	// the actor token's issuer spells it, a Google subject rather than an account, so this is
 	// the name an introspection can answer and a reader can act on.
 	ClaimMachine = "machine"
-	// ClaimProjectScope is what ClaimProjects means, one of oauthwire.ProjectScopeNamed or
-	// oauthwire.ProjectScopePerson. It is written always, so a reader never has to take an
-	// absent list as either "every project" or "none".
+	// ClaimProjectScope is what ClaimProjects means, one of oauthwire.ProjectScopeNamed,
+	// oauthwire.ProjectScopePerson or oauthwire.ProjectScopeNone, the last for a read entry's
+	// token alone, which is granted oauthwire.ScopeRead beside it (writeProjectScope). It is
+	// written always, so a reader never has to take an absent list as "every project", "no
+	// project at all" or a claim nobody decided.
 	ClaimProjectScope = "project_scope"
 	// ClaimProjects is the token's list of projects in its stored spelling: the keys separated by
-	// one space (oauthwire.JoinProjects), and the empty string for none. It is written always, for
-	// the reason ClaimProjectScope is. It is a string and not a list because the session's extra
-	// claims are stored as JSON and read back as map[string]any, so a []string written here would
-	// come back as []any and read as no projects at all; one grammar serves the form parameter,
-	// this claim and AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
+	// one space (oauthwire.JoinProjects), and the empty string for none, which is all a token of
+	// the none scope ever carries. It is written always, for the reason ClaimProjectScope is. It
+	// is a string and not a list because the session's extra claims are stored as JSON and read
+	// back as map[string]any, so a []string written here would come back as []any and read as no
+	// projects at all; one grammar serves the form parameter, this claim and
+	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
 )
 
@@ -591,9 +594,10 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 // In order: the projects the request names, which must be a list (oauthwire.ParseProjects) before
 // anything else is read; the subject token's audience, which the library never checks and which a
 // token minted for another service would fail; the policy's decision, which names the session,
-// the person or the service, the projects and the principal; and then the claims themselves, onto
-// the session, where the row the token is stored in carries them and an introspection answers
-// from them, with the principal beside them for claimSession.
+// the person or the service, the project scope, the projects and the principal; and then the
+// claims themselves, onto the session, where the row the token is stored in carries them and an
+// introspection answers from them, with the principal beside them for claimSession, and the one
+// OAuth scope a decision may carry granted on the request (writeProjectScope).
 //
 // The subject the library asks for is the principal, which every decision names: a token that
 // names a service and no person has no person to be the subject of, and a subject that is
@@ -674,15 +678,46 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		session.Extra[ClaimMachine] = claims.Actor
 	}
-	// Every exchange constructor sets the scope; an unset one is a decision nobody made, and is
-	// the broker's own failure rather than a token whose empty list reads as either scope.
+	if err := writeProjectScope(request, session, claims); err != nil {
+		return "", err
+	}
+	return claims.Principal, nil
+}
+
+// writeProjectScope writes what claims.Scope decides onto the session the token is stored with,
+// and grants the OAuth scope that decision carries: the project scope's wire word under
+// ClaimProjectScope; the list of projects under ClaimProjects, which is empty for every token of
+// the none scope; a named token's one project under claimLegacyProject too, and none for any
+// other; and oauthwire.ScopeRead for exchange.ProjectScopeNone, the read entry's decision, and
+// no scope for any other.
+//
+// The entry decides the scope, and the request's own scope parameter never does. The exchange
+// client is registered for oauthwire.Scope alone (oauthstore.exchangeClient), so the library
+// refuses a request that names oauthwire.ScopeRead invalid_scope before decide runs, under every
+// entry; and it validates a requested scope without granting it, so a request under a read entry
+// that names oauthwire.Scope is granted oauthwire.ScopeRead here and nothing else, and the same
+// request under any other entry is granted nothing.
+//
+// Any other value, exchange.ProjectScopeUnset included, is a server error that names it, and
+// nothing is written or granted: every exchange constructor sets the scope, so an unset one is a
+// decision nobody made and the broker's own failure rather than a token whose empty list reads as
+// any scope. Read as the person scope, as a build before exchange.ProjectScopeNone read every
+// value that was not named, a Claims nobody filled in would mint a token that acts as its person.
+// No path through decide hands it one today, since ExchangeConfig.Policy is a concrete
+// *exchange.Set and each of its decisions sets one of the three values below, so the refusal is
+// what keeps a value that package adds later from being minted as one of them before this switch
+// learns its word.
+func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims) error {
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
 	case exchange.ProjectScopePerson:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopePerson
+	case exchange.ProjectScopeNone:
+		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNone
+		request.GrantScope(oauthwire.ScopeRead)
 	default:
-		return "", oauth2.ErrServerError.WithDebugf("the exchange decided %s for %s", claims.Scope, claims.Principal)
+		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) for %s, which this broker writes no word for", int(claims.Scope), claims.Scope, claims.Principal)
 	}
 	session.Extra[ClaimProjects] = oauthwire.JoinProjects(claims.Projects)
 	// A named token naming one project also stores it under the claim a broker before the list
@@ -695,7 +730,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		delete(session.Extra, claimLegacyProject)
 	}
-	return claims.Principal, nil
+	return nil
 }
 
 // claimLegacyProject is the claim a broker before the list stored a named token's one project
@@ -1154,7 +1189,7 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // a pod uid) that no registration names for the session the token would write under, reading
 // oauthstore.Store.PodSessionRegistered in the exchange's own transaction. An exchange whose
 // claims carry no instance is not gated: a fixed-session entry's pod, a workflow run and a dev box
-// each write under a name their configuration or their person decides, and nothing of theirs is
+// each carry a name their configuration or their person decides, and nothing of theirs is
 // registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
@@ -1163,17 +1198,46 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // decide because a refusal raised through the library's store hook arrives as invalid_request,
 // and this one is invalid_grant: the subject token is sound and it is the broker's state that
 // refuses it, exactly as a session name another principal holds is.
+//
+// Its error_description begins oauthwire.PodSessionNotRegistered and a colon, in place of the
+// library's stock invalid_grant text, because unlike every other invalid_grant a later trade can
+// cure it: a pod's trade can reach the broker before its registration does (its daemon registers
+// at the claim, a session's watch at the pod's creation, and either registrar can be down for
+// minutes), so both clients read these words as a refusal to trade again on rather than a final
+// one.
+//
+// A registration that names a key (the thumbprint the registrar sent, which the Legion daemon
+// sends for each role's own agent-secrets key) admits only an exchange whose DPoP proof is of that
+// key, and refuses one proved with another invalid_grant, naming the session. The roles of one
+// issue pod read one exchange token and are registered for one pod uid, so this is what keeps a
+// role holding the pod's token and a key of its own from trading for a sibling role's session. A
+// registration that names none is the pod's, as a session watch registers a session pod's one
+// session.
+//
+// That refusal is the one trade here that is the attack the key exists to stop, so it logs a WARN
+// line of its own naming the principal, the pod, the session, the key the registration is bound to
+// and the key the trade proved: writeError logs only a server error, and without the line the
+// refusal reads in the log as an expired grant or a registration not yet written does.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
 	}
 	name, _ := session.Extra[ClaimSession].(string)
-	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name)
-	if err != nil {
+	presented := session.GetDPoPJWKThumbprint()
+	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, presented)
+	var bound *oauthstore.PodSessionBoundError
+	switch {
+	case errors.As(err, &bound):
+		slog.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
+			"principal", session.Principal, "pod", session.Instance, "session", name,
+			"bound_thumbprint", bound.Bound, "presented_thumbprint", presented)
+		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", name)
+	case err != nil:
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	if !registered {
-		return oauth2.ErrInvalidGrant.WithHintf("No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", name)
+		return oauth2.ErrInvalidGrant.WithDescription(oauthwire.PodSessionNotRegistered+":").
+			WithHintf("No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", name)
 	}
 	return nil
 }
