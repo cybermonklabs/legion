@@ -194,7 +194,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
   "The two numbers can differ, and the answer shows both. " +
   "Report the version this call answers, never the one at the plugin's path on the image. " +
-  "A relaunch installs the build this process loaded under the role's own state home. " +
+  "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
+  "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
   "read_build reads no project state. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +

@@ -15,8 +15,10 @@ import { z } from "zod"
 import pkg from "../package.json" with { type: "json" }
 
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
- * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
- * the role's state home, so the build at the image's own path is another one. */
+ * process loaded, never a path read anywhere else. In a pod a Claude Code role installs no plugin
+ * (the daemon's `NoPluginInstall`) and loads its image's own claude-envoy, so a relaunch keeps
+ * this build and only the update round over the pod brings another. It is an Oh My Pi role's
+ * relaunch that installs its plugin pair fresh under the role's state home. */
 const BUILD = pluginBuildOf(pkg)
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */

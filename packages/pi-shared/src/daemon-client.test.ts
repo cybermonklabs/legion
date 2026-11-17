@@ -756,7 +756,7 @@ async function refusalFrom(daemonContract: number | undefined): Promise<Error> {
 /** A value only the body carries: no refusal message may quote it. */
 const BODY_SECRET = "U3VwZXJ2aXNlZEJ5TGVnaW9u";
 
-test("a refusal from a build below the daemon says the pod waits for its update round", async () => {
+test("a refusal from a build below the daemon says the process waits for its replacement", async () => {
   const refused = await refusalFrom(CONTRACT + 1);
 
   expect(refused).toBeInstanceOf(LegionDaemonContractError);
@@ -764,20 +764,18 @@ test("a refusal from a build below the daemon says the pod waits for its update 
   expect(refused.message).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
   expect(refused.message).toContain(`The daemon speaks ${CONTRACT + 1}.`);
   expect(refused.message).toContain(
-    "This pod is behind the daemon, and it waits for its update round."
+    "This process is behind the daemon and waits for its replacement."
   );
   expect(refused.message).not.toContain(BODY_SECRET);
 });
 
-test("a refusal from a build above the daemon says the daemon is the older of the two", async () => {
+test("a refusal from a build above the daemon says the daemon is older than this build", async () => {
   const refused = await refusalFrom(CONTRACT - 1);
 
   expect(refused).toBeInstanceOf(LegionDaemonContractError);
   expect(refused.message).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
   expect(refused.message).toContain(`The daemon speaks ${CONTRACT - 1}.`);
-  expect(refused.message).toContain(
-    "The daemon is the older of the two, and the update round will not cure it."
-  );
+  expect(refused.message).toContain("The daemon is older than this build.");
   expect(refused.message).not.toContain(BODY_SECRET);
 });
 
@@ -820,7 +818,7 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   const detail = (behind as LegionDaemonApiError).detail;
   expect(detail).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
   expect(detail).toContain(`The daemon speaks ${CONTRACT + 1}.`);
-  expect(detail).toContain("This pod is behind the daemon, and it waits for its update round.");
+  expect(detail).toContain("This process is behind the daemon and waits for its replacement.");
   expect(detail).toContain(`${new TextEncoder().encode(page).length} bytes`);
   expect(detail).toContain('"<html>503 Service Unavailable</html>x');
   expect(detail).toContain("not the daemon's refusal shape");
@@ -833,9 +831,7 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   expect(ahead).toBeInstanceOf(LegionDaemonApiError);
   expect(ahead).toMatchObject({ status: 503, code: undefined });
   expect((ahead as LegionDaemonApiError).detail).toContain(`The daemon speaks ${CONTRACT - 1}.`);
-  expect((ahead as LegionDaemonApiError).detail).toContain(
-    "The daemon is the older of the two, and the update round will not cure it."
-  );
+  expect((ahead as LegionDaemonApiError).detail).toContain("The daemon is older than this build.");
   expect((ahead as LegionDaemonApiError).detail).not.toContain(BODY_SECRET);
 
   // One bare word, which a JSON parser's own message quotes far past the start the refusal shows.
@@ -881,7 +877,7 @@ test("a refusal raised on the retry of a dropped attempt says the earlier attemp
     "an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed"
   );
   expect(refused.message).toContain(
-    "This pod is behind the daemon, and it waits for its update round."
+    "This process is behind the daemon and waits for its replacement."
   );
   expect(refused.message).not.toContain(BODY_SECRET);
 });

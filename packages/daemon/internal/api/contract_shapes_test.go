@@ -1124,10 +1124,12 @@ func loadContractShapes(t *testing.T) map[shapeKey]contractShape {
 // contract was read then against the version.go entry that explains it. After that an author who
 // meets a red check cannot clear it by writing the records again: `-update` leaves a record of an
 // earlier contract where it is, because that record is what a reader at that contract needs and
-// not a reading of today's code. Such a record still changes with the serving-down that produces
-// it, by a hand edit of the fixture, and that diff is what a reviewer reads. A pair the fixture
-// has no record of at all is no pair `-update` adds either: it fails
-// TestTheRecordSetIsOneRecordPerAnswerPerContract by name, so an answer nobody recorded is seen.
+// not a reading of today's code. Nor does a hand edit of the fixture change such a record once
+// its contract has shipped: `.github/scripts/check-daemon-api-contract.sh` refuses a change to a
+// record of a contract at or below the number its base declares, so a change of shape takes a
+// contract above the base's and serves the old shape down. A pair the fixture has no record of at
+// all is no pair `-update` adds either: it fails TestTheRecordSetIsOneRecordPerAnswerPerContract
+// by name, so an answer nobody recorded is seen.
 func updatedRecords(onFile, fresh []contractShape) []contractShape {
 	records := make([]contractShape, 0, len(onFile)+len(fresh))
 	for _, record := range onFile {

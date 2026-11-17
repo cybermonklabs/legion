@@ -217,19 +217,24 @@ export class LegionDaemonApiError extends Error {
 
 /** Which of the two builds is behind, for the refusals of an answer this build cannot read (the
  * success `LegionDaemonContractError` names, and the non-success `LegionDaemonApiError` that is
- * not the daemon's refusal shape): this build's contract, the one the daemon stated, and what a
- * role can do about the difference. A pod below the daemon is cured by its update round, which
- * replaces the process with one that reads this answer. A pod above the daemon is not: the
- * daemon is the older of the two, and no update round of the pod moves it. */
+ * not the daemon's refusal shape): this build's contract and the one the daemon stated. A process
+ * whose contract differs from the daemon's, above it or below it, is replaced. An Oh My Pi
+ * role's is relaunched onto the daemon's own plugin by the daemon's stale-plugin lane
+ * (`refreshPlugin` in the daemon's `internal/supervise/plugin.go`). A Claude Code role in a pod
+ * installs no plugin (`NoPluginInstall`): its plugin is its image's own claude-envoy, so the
+ * update round over its pod replaces it. So a process below the daemon waits for its
+ * replacement. A process above it is told that the daemon is older and nothing of a cure: the
+ * lane relaunches an Oh My Pi process above the daemon onto the daemon's plugin too, which is
+ * older than this build. */
 function contractStanding(mine: number, daemon: number | undefined): string {
   if (daemon === undefined) {
     return `This build speaks daemon API contract ${mine}. The daemon stated no contract, so this build cannot say which side is behind.`;
   }
   if (mine < daemon) {
-    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. This pod is behind the daemon, and it waits for its update round.`;
+    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. This process is behind the daemon and waits for its replacement.`;
   }
   if (mine > daemon) {
-    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. The daemon is the older of the two, and the update round will not cure it.`;
+    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. The daemon is older than this build.`;
   }
   return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. Neither side is behind.`;
 }

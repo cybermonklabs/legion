@@ -189,10 +189,12 @@ func TestACallerAtTheFloorIsServedTheStandInsAndNoCheckRole(t *testing.T) {
 // third claim records no contract and moves neither half. A caller of that same pod that states
 // its own contract is served that contract's shape, whichever of the two it states.
 //
-// Both builds of this pod read the body the pod reading decides, which is what makes the union
-// body the right one: neither states a contract of its own, so each is served what the pod
-// says, and no one body serves them both unless it carries the newer's keys and the older's
-// stand-ins. The pod of the next case differs in exactly that, and in nothing else.
+// Both builds of this pod read the body the pod reading decides: neither states a contract of
+// its own, so each is served what the pod says. No one body serves them both. A 46 reader
+// refuses `check.role`, a key it does not know, and every reader from 54 on requires it. So the
+// union body carries the 73 reader's required keys and the 46 reader's stand-ins, and the 46
+// process keeps failing until it is replaced. The pod of the next case differs in which of its
+// builds reads that body, and in nothing else.
 func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 	claims := mixedPodClaims(ServingFloor, claimsToRefreshContract)
 	logs := &bytes.Buffer{}
@@ -238,9 +240,11 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 // newer one would serve that reader `admission.trees`, the memory fields and the rest, which
 // its own schema refuses the whole body for (podContracts).
 //
-// This narrows no rule: where both builds of a pod read the pod-decided body, the union body
-// is still the one they can both read, which the `{46, 73}` case above holds. The two pods
-// differ in who reads the answer and in nothing else.
+// This narrows no rule: where both builds of a pod read the pod-decided body, that body is still
+// the union, which the `{46, 73}` case above holds. The union carries the 73 reader's required
+// keys, and the 46 process keeps failing on it until it is replaced: a 46 reader refuses
+// `check.role`, and every reader from 54 on requires it. The two pods differ in who reads the
+// answer and in nothing else.
 func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T) {
 	logs := &bytes.Buffer{}
 	handler := shapedServer(t, populatedState(t), mixedPodClaims(ServingFloor, DaemonAPIVersion), logs, true)

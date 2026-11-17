@@ -22,14 +22,18 @@ import (
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.
 //
-// The added-key half of the gate is bounded, and the removed-key half is not. A plugin built
-// before dispatch://INFRA-1048 reads an answer with a strict schema and refuses the whole body
-// for one key it does not know. dispatch://INFRA-1048 landed the reader that drops an unknown
-// key instead, and the first release carrying that reader declares 49. So once
+// The gate has three parts, and only the added-key part is bounded. A plugin built before
+// dispatch://INFRA-1048 reads an answer with a strict schema and refuses the whole body for one
+// key it does not know. dispatch://INFRA-1048 landed the reader that drops an unknown key
+// instead, and the first release carrying that reader declares 49. So once
 // `lowestPluginContract` on the state reports 49 or more, no live reader refuses a key it does
-// not know, and the added-key half of the gate may be dropped with the record entries that
-// serve it. The removed-key half stays for good: a reader still needs the key its own contract
-// requires, whatever this daemon stopped writing.
+// not know, and the added-key part of the gate may be dropped with the record entries that
+// serve it. The removed-key part stays for good: a reader still needs the key its own contract
+// requires, whatever this daemon stopped writing. The third part is the value hold-back: the
+// values a later contract added to an enumerated field are held back from a caller below that
+// contract (EnumeratedFields, shaping.go's valueStrips, fieldArrivals.heldBack). It stays after
+// `lowestPluginContract` reaches 49 too, because a reader refuses a value its enumeration does
+// not admit, whatever its reading of keys.
 const ServingFloor = 46
 
 // SupportedContracts is every contract this daemon describes a shape for: each number version.go
