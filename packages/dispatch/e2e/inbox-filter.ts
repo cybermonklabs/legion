@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { settledState } from "./settled";
+
 /**
  * The Inbox's `?assignee=` control (`features/inbox/AssigneeFilter.tsx`), one of the five fields
  * the bar's **Filter** button opens (INFRA-450; before it, the control stood in the bar itself).
@@ -19,12 +21,28 @@ export function assigneeOptions(page: Page): Locator {
   return page.getByRole("listbox", { name: "Assignee options" });
 }
 
+/** Whether the panel `control` opens is open, by the control's own `aria-expanded`, read once
+ *  the page shows the control: a count taken while the page still loads finds no panel, and
+ *  takes it for a shut one. `what` names the control, for the failure. */
+export function expandedState(what: string, control: Locator): Promise<"open" | "shut"> {
+  const page = control.page();
+  return settledState(what, [
+    ["open", control.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", control.and(page.locator('[aria-expanded="false"]'))],
+  ]);
+}
+
+/** Opens the five filter fields of the bar `within` holds - the page's or the drawer's - unless
+ *  they are open already; the bar's **Filter** button says which. */
+async function showFilterFields(within: Page | Locator): Promise<void> {
+  const filter = within.locator("[data-inbox-filter]");
+  if ((await expandedState("the Inbox's Filter button", filter)) === "shut") await filter.click();
+}
+
 /** Opens the bar's five filter fields unless they are open already, and hands back the panel. */
 export async function openFilterFields(page: Page): Promise<Locator> {
   const fields = page.locator("[data-inbox-filter-fields]");
-  if ((await fields.count()) === 0) {
-    await page.locator("[data-inbox-filter]").click();
-  }
+  await showFilterFields(page);
   await expect(fields).toHaveCount(1);
   return fields;
 }
@@ -34,11 +52,9 @@ export async function openFilterFields(page: Page): Promise<Locator> {
  *  the popover is shut again before this answers, so the next read of the list is not made
  *  through it. */
 export async function typeFilterCount(page: Page, within: Locator, name: string): Promise<number> {
-  if ((await page.locator("[data-inbox-filter-fields]").count()) === 0) {
-    await within.locator("[data-inbox-filter]").click();
-  }
+  await showFilterFields(within);
   const trigger = within.getByRole("button", { name: "Filter by type" });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState("the Type filter", trigger)) === "shut") await trigger.click();
   const options = page.getByRole("listbox", { name: "Type options" });
   const label =
     (await options
@@ -52,7 +68,7 @@ export async function typeFilterCount(page: Page, within: Locator, name: string)
 export async function openAssigneeFilter(page: Page): Promise<void> {
   await openFilterFields(page);
   const trigger = assigneeFilter(page);
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") {
+  if ((await expandedState("the assignee filter", trigger)) === "shut") {
     await trigger.click();
   }
   await expect(assigneeOptions(page)).toHaveCount(1);

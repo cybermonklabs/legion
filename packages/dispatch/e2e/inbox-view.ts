@@ -22,7 +22,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
-import { openFilterFields } from "./inbox-filter";
+import { expandedState, openFilterFields } from "./inbox-filter";
 import { inboxList } from "./inbox-pane";
 import {
   agentRowId,
@@ -362,17 +362,18 @@ export async function bandHeadings(page: Page): Promise<string[]> {
 export async function openField(page: Page, field: string): Promise<Locator> {
   const fields = await openFilterFields(page);
   const trigger = fields.getByRole("button", { name: `Filter by ${field}` });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState(`the ${field} filter`, trigger)) === "shut") await trigger.click();
   const label = field === "assignee" ? "Assignee" : field[0]?.toUpperCase() + field.slice(1);
   const options = page.getByRole("listbox", { name: `${label} options` });
   await expect(options).toHaveCount(1);
   return options;
 }
 
-/** The **View** menu, opened. */
+/** The **View** menu, opened. Its trigger says whether it is open already. */
 export async function openView(page: Page): Promise<Locator> {
   const menu = page.getByRole("menu", { name: "View" });
-  if ((await menu.count()) === 0) await page.locator("[data-inbox-view]").click();
+  const trigger = page.locator("[data-inbox-view]");
+  if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   return menu;
 }

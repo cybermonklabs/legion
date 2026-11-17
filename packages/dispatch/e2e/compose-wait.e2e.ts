@@ -80,6 +80,8 @@ async function watchMark(
   log: string[]
 ): Promise<void> {
   while (Date.now() - writtenAt < untilMs) {
+    // One sample of this instant, by design: the row measures when the span goes, so a read
+    // that waited for it to settle would move the sample and blur the log it builds.
     const present = (await markSpan(page, markId).count()) > 0;
     const at = Math.round((Date.now() - writtenAt) / SAMPLE_MS) * SAMPLE_MS;
     log.push(`${at}ms:${present ? "present" : "gone"}`);

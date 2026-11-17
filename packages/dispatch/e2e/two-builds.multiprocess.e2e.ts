@@ -562,11 +562,6 @@ function isAsset(url: URL): boolean {
   return url.origin === dashboardOrigin && url.pathname.startsWith("/assets/");
 }
 
-async function allVisible(locators: readonly Locator[]): Promise<boolean> {
-  for (const locator of locators) if (!(await locator.isVisible())) return false;
-  return true;
-}
-
 /** Opens every visit with the page document, API calls and sockets on `pageProcess` (the pin
  *  cookie) and every `/assets/` request on `assetProcess` (the pin header, which wins over the
  *  cookie), and then asks that every script and stylesheet of `pageProcess`'s build was answered
@@ -653,13 +648,21 @@ async function walk(
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
-        await expect.poll(async () => problems.length > 0 || (await allVisible(shows))).toBe(true);
+        await expect
+          .poll(async () => {
+            if (problems.length > 0) return true;
+            for (const locator of shows) if (!(await locator.isVisible())) return false;
+            return true;
+          })
+          .toBe(true);
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
           await expect.poll(() => pending.size).toBe(0);
         }
       } catch (error) {
         for (const locator of shows) {
+          // The visit has already failed, so this reads once which landmarks are missing at the
+          // failure, for its message: a wait here would only add a timeout to a failed visit.
           if (!(await locator.isVisible())) problems.push(`${locator} is not visible`);
         }
         if (problems.length === 0) problems.push(String(error));

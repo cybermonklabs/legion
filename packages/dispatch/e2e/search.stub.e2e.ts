@@ -84,12 +84,13 @@ phoneTest(
     // Four rows, not the three this corpus answered before an issue's keyword vector carried
     // its primary document's text: the document, the comment, the ask, and the issue the
     // document belongs to, which that change makes a hit for its own spec's words.
-    await expect(options).toHaveCount(4);
+    const hits = 4;
+    await expect(options).toHaveCount(hits);
     await expect(dialog.getByRole("option", { name: /^issue / })).toHaveCount(1);
     await expect(dialog.getByRole("option", { name: /^ask / })).toContainText(
       "Chose On the chart table"
     );
-    for (let index = 0; index < (await options.count()); index += 1) {
+    for (let index = 0; index < hits; index += 1) {
       const box = await options.nth(index).boundingBox();
       expect(box, `result option ${index} has a layout box`).not.toBeNull();
       expect(box?.height ?? 0, `result option ${index} is a touch target`).toBeGreaterThanOrEqual(

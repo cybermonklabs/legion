@@ -101,7 +101,10 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
     const priority = second.getByRole("combobox", { name: `Priority of ${target.key}` });
-    const before = await priority.inputValue();
+    // The select is held to the priority the seed gave the issue before the edit picks the other
+    // of 0 and 1, so the select read is one the page has drawn rather than a first empty value.
+    const before = String(target.priority ?? "");
+    await expect(priority).toHaveValue(before);
     const next = before === "0" ? "1" : "0";
     await priority.selectOption(next);
     await expect

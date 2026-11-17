@@ -477,6 +477,9 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     await input.fill("go to");
     const documents = rows.filter({ hasText: "Go to Documents" });
     await expect(documents).toHaveCount(1);
+    // The count above waited for this row, and a row's id is built from the action it runs
+    // (`search-option-action-<scope>-<id>`, `SearchPalette.tsx`), so it reads the same at any
+    // instant after.
     const documentsId = await documents.getAttribute("id");
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     await expect(input).toHaveAttribute("aria-activedescendant", ids[0] ?? "");

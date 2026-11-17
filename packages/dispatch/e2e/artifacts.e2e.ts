@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
+import { settledState } from "./settled";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
 const tinyPng =
@@ -36,13 +37,24 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   return path;
 }
 
+/** The phone's review panel toggle, whose name says Open or Close as the panel is shut or open. */
+function reviewPanelToggle(page: Page): Locator {
+  return page.getByRole("button", { name: /review panel/i });
+}
+
+/** Shuts the phone's review panel where it is open over the page. The toggle says which it is,
+ *  and is read once the page has drawn it rather than at the instant it attaches. */
+async function shutReviewPanel(page: Page): Promise<void> {
+  const toggle = reviewPanelToggle(page);
+  const panel = await settledState("the review panel", [
+    ["open", toggle.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", toggle.and(page.locator('[aria-expanded="false"]'))],
+  ]);
+  if (panel === "open") await toggle.click();
+}
+
 async function openArtifacts(page: Page, isPhone: boolean) {
-  if (isPhone) {
-    const reviewPanel = page.getByRole("button", { name: /review panel/i });
-    if ((await reviewPanel.getAttribute("aria-expanded")) === "true") {
-      await reviewPanel.click();
-    }
-  }
+  if (isPhone) await shutReviewPanel(page);
   await page.getByRole("tab", { name: "Artifacts" }).click();
 }
 
@@ -179,10 +191,8 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
     await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = page.getByRole("button", { name: /review panel/i });
-    if ((await openMargin.getAttribute("aria-expanded")) === "true") {
-      await openMargin.click();
-    }
+    const openMargin = reviewPanelToggle(page);
+    await shutReviewPanel(page);
     const [navigationBox, marginBox] = await Promise.all([
       openNavigation.boundingBox(),
       openMargin.boundingBox(),

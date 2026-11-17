@@ -1,5 +1,6 @@
 import {
   agentFilter,
+  agentFilterState,
   agentGroupToggle,
   agentRow,
   type FakeSession,
@@ -133,8 +134,7 @@ function filterOptions(page: Page): Locator {
 
 /** Opens one filter's panel and leaves it open, which is where its text box is. */
 async function openFilter(page: Page, filter: "group" | "machine" | "role"): Promise<void> {
-  const trigger = agentFilter(page, filter);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  if ((await agentFilterState(page, filter)) === "shut") await agentFilter(page, filter).click();
   await expect(page.getByRole("listbox")).toHaveCount(1);
 }
 

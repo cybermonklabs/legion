@@ -7,6 +7,7 @@ import { createAsk, createComment, createIssue, createProject } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
+import { settledState } from "./settled";
 
 export interface FakeSession {
   session_id: string;
@@ -399,18 +400,35 @@ export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
 }
 
 /** Collapses `group` if it is open, or opens it if it is closed: every group is open when the
- *  page loads, so a row that needs one shut says so. */
+ *  page loads, so a row that needs one shut says so. The heading says which it is, and is read
+ *  once the page has drawn it rather than at the instant it attaches. */
 export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<void> {
   const toggle = agentGroupToggle(page, group);
-  const expanded = await toggle.getAttribute("aria-expanded");
+  const fold = await settledState(`the ${group} group's heading`, [
+    ["open", toggle.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", toggle.and(page.locator('[aria-expanded="false"]'))],
+  ]);
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", expanded === "true" ? "false" : "true");
+  await expect(toggle).toHaveAttribute("aria-expanded", fold === "open" ? "false" : "true");
 }
 
 /** The group, machine or role filter's trigger. Each of the three is a `MultiSelect` (R7), named
  *  by what it filters rather than by what is ticked in it. */
 export function agentFilter(page: Page, filter: "group" | "machine" | "role"): Locator {
   return page.getByRole("button", { name: `Filter by ${filter}` });
+}
+
+/** Whether a filter's panel is open, by its trigger's `aria-expanded`, read once the page has
+ *  drawn the trigger rather than at the instant it attaches. */
+export function agentFilterState(
+  page: Page,
+  filter: "group" | "machine" | "role"
+): Promise<"open" | "shut"> {
+  const trigger = agentFilter(page, filter);
+  return settledState(`the ${filter} filter`, [
+    ["open", trigger.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", trigger.and(page.locator('[aria-expanded="false"]'))],
+  ]);
 }
 
 /** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
@@ -421,7 +439,7 @@ export async function pickAgentFilter(
   option: string
 ): Promise<void> {
   const trigger = agentFilter(page, filter);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  if ((await agentFilterState(page, filter)) === "shut") await trigger.click();
   await page.getByRole("option", { exact: true, name: option }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
