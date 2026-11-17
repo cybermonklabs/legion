@@ -260,8 +260,8 @@ jobs:
   changes:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # changes, pr-title, cancel-started and ci-ok run on arm64: each runs JavaScript actions and
-    # shell scripts over gh, jq, git and coreutils, and compiles, downloads and runs no binary, so
-    # the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
+    # shell scripts over the image's own gh, jq, git and coreutils, and builds or fetches no binary,
+    # so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
     # about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
