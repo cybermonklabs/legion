@@ -90,18 +90,21 @@ soon as it is filed (the daemon holds it until the issues its `--blocked-by` lin
 adjust open children when closures change the plan. Your issue's own first phase has already
 started when you start, so a child you file runs beside your issue's own work. Your issue's
 sign-off then waits for its last round, whose head carries their merges
-(`skill://legion-architect`, sections 3 and 4). No first phase of a child of yours starts while
-Dispatch shows an open child under it, and a `children-first` notice names each one with the
-Dispatch status that holds it: file every child at once, release every child that should run, and
-move each other child as section 3 of `skill://legion-architect` says. Park between
-event-driven wakes; do not poll or manufacture progress. The daemon starts every phase of each
-released child itself, in the order its fixed workflow table sets, each phase worker as its own
-process with that child's context already in its environment; a role it starts again resumes the
-same session instead of starting fresh, except after a claim whose provider refused every turn of
-that session, which the daemon fails and your `retry_or_escalate` retries in a new one that has
-read none of its own earlier work. You start no worker. Each released child gets its own architect
-when the daemon starts its first phase, and that architect owns the child from then on
-(`skill://legion-architect`, section 2).
+(`skill://legion-architect`, sections 3 and 4). When a person sets your issue back to `todo` while
+it runs or is held, you stay live: your issue goes back to `admitted`, and while Dispatch shows an
+open child under it, its first phase waits and the `children-first` notice of that wait comes to
+you. No first phase of a child of yours starts while Dispatch shows an open child under it, and a
+`children-first` notice names each one with the Dispatch status that holds it: file every child at
+once, release every child that should run, and move each other child as section 3 of
+`skill://legion-architect` says. Park between event-driven wakes; do not poll or manufacture
+progress. The daemon starts every phase of each released child itself, in the order its fixed
+workflow table sets, each phase worker as its own process with that child's context already in
+its environment; a role it starts again resumes the same session instead of starting fresh,
+except after a claim whose provider refused every turn of that session, which the daemon fails
+and your `retry_or_escalate` retries in a new one that has read none of its own earlier work. You
+start no worker. Each released child gets its own architect when the daemon starts its first
+phase, and that architect owns the child from then on; while it does not hold its role, the
+child's notices come to you (`skill://legion-architect`, section 2).
 
 ## Escalation
 

@@ -940,8 +940,9 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   phase or escalates it to the controller; `legion claims retry` applies the same retry when the
   architect cannot, and a `todo` on a held root releases the hold without either of them. A
   failed claim ignores `legion claims resume` and `legion claims deliver`.
-  A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
-  not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
+  A retired claim ignores those two as well. `legion claims retry --claim <token>` reaches it as
+  it reaches a failed one, and `legion claims retry --failed` passes over it.
+  A workflow start also relaunches it on the session it kept: a start of the phase it owns — its
   architect's `retry_or_escalate` of a held phase, a transition into that phase, or a tree close
   and re-admission — and, for a retired tree architect, its tree's admission.
 

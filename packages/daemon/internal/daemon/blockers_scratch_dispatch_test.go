@@ -51,11 +51,12 @@ import (
 //     blocked by that issue, and takes the row again and starts its planning when the issue
 //     closes;
 //  4. a child released through release_children is held, the answer naming the issue it waits on,
-//     and starts when that issue closes, its tree's architect told so by a child-status notice
-//     naming the issue it waited on; and a child released out of backlog is recorded by the
-//     release's own todo write, held at admitted and named blocked on that same issue as the
-//     answer says, while an unblocked one released beside it is started by its release, and the
-//     todo events of those writes, when the daemon's consumer delivers them, change nothing;
+//     and starts when that issue closes, the architect above it (here its tree's) told so by a
+//     child-status notice naming the issue it waited on; and a child released out of backlog is
+//     recorded by the release's own todo write, held at admitted and named blocked on that same
+//     issue as the answer says, while an unblocked one released beside it is started by its
+//     release, and the todo events of those writes, when the daemon's consumer delivers them,
+//     change nothing;
 //  5. a waiting root a person moves to backlog and back to todo is still checked, since only a tree
 //     that ran starts again when Legion takes it back, and is admitted when its blocker closes;
 //  6. a root waiting on an issue Legion keeps no record of and nobody handed to it is admitted by
@@ -452,7 +453,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	// The tree's architect is told the child it held starts, and why: the child-status notice the
 	// daemon queued on the child, in the very transaction that started it, naming the issue it
-	// waited on and saying that the child's own architect owns it from now on.
+	// waited on and saying that the child's own architect owns it while that architect holds its
+	// role.
 	notices := childStatusNotices(t, pool, child)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", child, notices)
 	wantNotice := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, free, blocked) + childStartedOwnership
@@ -896,12 +898,13 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 }
 
 // childStartedOwnership is how every child-status notice of a child's start ends, after its
-// reason: the child's own architect starts with it and owns it, so the architect it tells hears
-// only what goes above that architect (workflow.ChildStartedNotice).
-const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
-	"and its other notices while its architect does not hold its role: it failed, an operator stopped or suspended it, " +
-	"or the child left the workflow"
+// reason: the child's own architect starts with it and owns it while that architect holds its
+// role, so the architect it tells hears only what goes above that architect
+// (workflow.ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
+	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
+	"worker-stalled of its architect, and its other notices while its architect does not hold its role: it failed, an " +
+	"operator stopped or suspended it, or the child left the workflow"
 
 // childStatusNotices is the reason of every child-status notice the daemon has queued on issue for
 // the architect above it, oldest first, read off the daemon's own outbox, where a notice stands

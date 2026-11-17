@@ -1195,11 +1195,14 @@ Closing the terminal leaves the project without one, and the daemon logs
    session with fresh budgets; `legion claims retry --failed` retries every failed claim, and a
    failed phase worker whose issue is held for its own role retries that phase), and bring a suspended phase worker back as
    [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
-   shows for its `suspendedBy`. A claim the state names `retired` takes neither resume nor retry —
-   `legion claims retry` refuses a claim that has not failed — and comes back only on a workflow
-   start: a start of the phase it owns, or its tree's admission for a root's architect, as that
-   page's `needsWorkflowStart` shows. Never resume or retry by hand a claim of a lingering tree or
-   of an issue parked out of the workflow: re-admission or the issue's return to `todo` starts it.
+   shows for its `suspendedBy`. A claim the state names `retired` takes no resume.
+   `legion claims retry --claim <token>` starts it again, because the retry reaches a retired
+   claim as well as a failed one: an architect is relaunched on its kept session, and a phase
+   worker whose issue stands in its phase has that phase started again (`--failed` passes over a
+   retired claim). Otherwise it comes back on a workflow start: a start of the phase it owns, or,
+   for a root's architect, its tree's admission, as that page's `needsWorkflowStart` shows. Never
+   resume or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
+   re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and

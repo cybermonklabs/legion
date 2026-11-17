@@ -1936,9 +1936,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 		case supervise.StateRetired:
 			// A retired claim was closed with its issue (a child closed as done) or with its tree
-			// (whose linger also removed the workspace), or an operator stopped it. So the
-			// workspace is provisioned, which brings back one a linger removed, before the kept
-			// session relaunches.
+			// (whose linger also removed the workspace), its agent reported its own exit (a phase
+			// worker or a child's own architect, which supervise's exit retires), or an operator
+			// stopped it. So the workspace is provisioned, which brings back one a linger removed,
+			// before the kept session relaunches.
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}

@@ -576,7 +576,7 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // Every forward row short of the close applies through intake with its status, start and notice,
 // and none suspends the worker whose phase it ends: a role stays live from its first assignment
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
-// TestTheMergeLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
+// TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	cases := []struct {
 		name       string

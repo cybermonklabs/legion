@@ -272,10 +272,11 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	}
 }
 
-// A sub-architect whose suspension is in the runtime holds its role no longer: a notice of its
-// issue's child goes up to the architect above it, here the tree root's, as it would once the
-// suspension returned, never to the session being stopped. The routing reads the claim without
-// waiting on the suspension, so it reads the stop in flight from the machine's View
+// A sub-architect whose suspension by the daemon is in the runtime holds its role no longer: a
+// notice that would reach it (here a notice of its issue's child, which has no architect of its
+// own) goes up to the architect above it, here the tree root's, as it would once the suspension
+// returned, never to the session being stopped. The routing reads the claim without waiting on
+// the suspension, so it reads the stop in flight from the machine's View
 // (supervise.ClaimView.Stopping) (LEGION-650).
 func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
 	pool := isolatedOutboxPool(t)
@@ -413,10 +414,10 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 
 // A sub-architect the workflow suspended (a person moved its child out of the workflow) is not
 // coming back for a notice: only its child's next first phase start, after a todo (a person's, or
-// the rerun_child of the architect above), or an operator's resume starts it again. A notice that
-// would reach it goes to the architect above instead, and so does the child's close, which starts
-// at the parent; neither waits on the suspended claim, and neither holds up the tree's later
-// notices.
+// the rerun_child of the architect above), or an operator's resume or delivery starts it again. A
+// notice that would reach it goes to the architect above instead, and so does the child's close,
+// which starts at the parent; neither waits on the suspended claim, and neither holds up the
+// tree's later notices.
 func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

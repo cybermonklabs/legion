@@ -769,8 +769,10 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		if got := rig.storedClaim("legion-legion-legion-209-planner"); got.LastStartRow == 0 || got.SessionFile != "" {
 			t.Fatalf("the re-entered child's planner = %+v, want a fresh launch of the new run's first phase", got)
 		}
-		// No phase worker of the old run is resumed: the implementer whose start the fence declined
-		// is left exactly as the park left it, and the run that came back never asked for it.
+		// The old run's implementer is not resumed: the implementer whose start the fence declined
+		// is left exactly as the park left it, and the run that came back never asked for it. A
+		// planner claim of the old run (none is seeded here) would be resumed by the new run's
+		// planner start.
 		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != child.suspended.Session {
 			t.Fatalf("the re-entered child's implementer = %+v, want the old run's role left suspended with its session and no start recorded against it", got)
 		}

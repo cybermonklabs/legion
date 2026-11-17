@@ -1677,14 +1677,16 @@ type Store interface {
 	DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) error
 	// ReadmittedApproval is the pair root keeps, in any state, zeros when it keeps none.
 	ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error)
-	// TellChildrenFirst marks that the architect that owns issue has been told (the root's own
-	// architect for a root, and for a child the architect above it, since the child's own starts
-	// only with that first phase), for the run generation of tree, that the issue's own first
-	// phase waits for the Dispatch children under it, and reports whether this call is the
-	// telling. The wait itself is never stored, so that a stale mirror row costs one pass; the
-	// telling is, so that the pass every fact, tick, hold release and boot runs does not tell it
-	// again. A re-admission opens a new generation of the tree and so tells it anew, and so does a
-	// hand-over, which gives the issue a tree of its own.
+	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
+	// generation of tree, that the issue's own first phase waits for the Dispatch children under
+	// it, and reports whether this call is the telling. That architect is the root's own for a
+	// root. For a child it is the architect above it, since the child's own starts only with that
+	// first phase, unless a person set the child back to todo while it ran or was held: that
+	// re-entry goes through no leave (workflow's ReenterChild), so the child's own architect still
+	// holds its role and is the one told. The wait itself is never stored, so that a stale mirror
+	// row costs one pass; the telling is, so that the pass every fact, tick, hold release and boot
+	// runs does not tell it again. A re-admission opens a new generation of the tree and so tells
+	// it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
 	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
 	// for the run its generation names of its tree, and answers, at each index of stalls,

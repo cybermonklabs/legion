@@ -20,8 +20,9 @@ Release every adopted child at once with
 a child until it is released. Once it is released, the daemon moves it to `todo` and, while the
 root's design gate is open, starts its first phase itself at the child's own admission slot, and
 not while Dispatch shows an open child under that child. When it starts that first phase, it also
-starts the child's own architect, which owns the child from then on. You start neither that
-architect nor any worker. A release is accepted whole whatever the `--blocked-by` links say: its
+starts the child's own architect, which owns the child from then on; while that architect does not
+hold its role, the child's notices come to you. You start neither that architect nor any worker.
+A release is accepted whole whatever the `--blocked-by` links say: its
 answer names `started` and `held` (each held child with the issues it waits on) beside
 `released`, and a held child waits in your tree until Legion starts it.
 

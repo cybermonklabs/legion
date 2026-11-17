@@ -85,12 +85,12 @@ const (
 	// subArchitectGate is the root's approved design document, which lets its children start.
 	subArchitectGate = "7d2e4f6a-8b1c-4e3d-9a5f-0c2b4d6e8f1a"
 	// subArchitectOwnership is the sentence every child-status notice of a child's start ends
-	// with (workflow.ChildStartedNotice): the child's own architect owns it from then on, so the
-	// architect told hears only what goes above that architect.
-	subArchitectOwnership = "Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-		"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
-		"and its other notices while its architect does not hold its role: it failed, an operator stopped or suspended it, " +
-		"or the child left the workflow"
+	// with (workflow.ChildStartedNotice): the child's own architect owns it while that architect
+	// holds its role, so the architect told hears only what goes above that architect.
+	subArchitectOwnership = "Its own architect starts with it and owns it while that architect holds its role: its " +
+		"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
+		"worker-stalled of its architect, and its other notices while its architect does not hold its role: it failed, an " +
+		"operator stopped or suspended it, or the child left the workflow"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the
@@ -201,7 +201,8 @@ func (r *subArchitectLive) seed() {
 // own grant. Each starts planning on a slot of its own with an architect claim of its own, which
 // its first phase start starts. C's architect, once ready, is told in a catch-up on its own topic,
 // naming C alone, and the daemon logs that publish with the catch-up's generation, its launch and
-// its one issue; T's architect hears that C started and that C's own architect owns it from now on.
+// its one issue; T's architect hears that C started and that C's own architect owns it while that
+// architect holds its role.
 func (r *subArchitectLive) releaseStep() {
 	t := r.t
 	c, s := r.child, r.sibling

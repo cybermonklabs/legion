@@ -286,9 +286,13 @@ it there until that answer comes clean.
     addressing line names which open pull requests of the tree build on the merged branch. Each one
     whose issue stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
     `implementing` by the daemon's own move, with a task that names the base to merge forward, and
-    the architect that owns its issue hears of it by a `checks-red` notice. The architect tells the
-    implementer of one still in `implementing` to expect it and to merge the base forward in that
-    implementing round. On a base with a merge queue —
+    the architect that owns its issue hears of it by a `checks-red` notice. The architect the
+    merger told tells the implementer of each of those pull requests whose issue is still in
+    `implementing` and is an issue it owns to expect the conflict and to merge the base forward in
+    that implementing round. The implementer of one whose issue that architect does not own merges
+    the base forward once GitHub reports its pull request `CONFLICTING`, as its role prompt says
+    (*Reintegrating the base* in
+    `skill://legion-worker/references/conflicts-and-rewrites.md`). On a base with a merge queue —
     a `merge_queue`
     rule among the base branch's rules — it enqueues the pull request instead, with GraphQL
     `enqueuePullRequest` and the same head as `expectedHeadOid`, because `gh pr merge` on such a

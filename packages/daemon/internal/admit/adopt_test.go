@@ -51,12 +51,13 @@ func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 }
 
 // childStartedOwnership is how every child-status notice of a child's start ends, after its
-// reason: the child's own architect starts with it and owns it, so the architect it tells hears
-// only what goes above that architect (workflow.ChildStartedNotice).
-const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
-	"and its other notices while its architect does not hold its role: it failed, an operator stopped or suspended it, " +
-	"or the child left the workflow"
+// reason: the child's own architect starts with it and owns it while that architect holds its
+// role, so the architect it tells hears only what goes above that architect
+// (workflow.ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
+	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
+	"worker-stalled of its architect, and its other notices while its architect does not hold its role: it failed, an " +
+	"operator stopped or suspended it, or the child left the workflow"
 
 // assertJoinedAndPlanning asserts child left admission's queue for tree's run: recorded in tree
 // at generation and, once an admission pass with a slot to spare has read it, planning there on

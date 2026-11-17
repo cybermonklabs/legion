@@ -2162,8 +2162,10 @@ func (a *Admission) catchingUpFor(key string) bool {
 // tellChildrenFirst tells the architect that owns each parent whose own first phase now waits for
 // its Dispatch children, once per issue and per run (record.Store.TellChildrenFirst): a root's own
 // architect, and for a child the architect above it, since the child's own starts only with the
-// first phase this wait holds. The notice names the parent, each open child with the Dispatch
-// status that holds it, and each cycle among them (workflow.ChildrenFirstNotice).
+// first phase this wait holds. A child a person set back to todo while it ran or was held is the
+// exception: that re-entry goes through no leave (workflow's ReenterChild), so the child's own
+// architect still holds its role and is told. The notice names the parent, each open child with
+// the Dispatch status that holds it, and each cycle among them (workflow.ChildrenFirstNotice).
 //
 // The wait is judged again every pass and the telling is written once, which is the whole of
 // why the two are recorded differently: every fact, tick, hold release and boot runs this pass,

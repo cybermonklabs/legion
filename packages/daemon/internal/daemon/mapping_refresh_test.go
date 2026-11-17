@@ -1549,7 +1549,7 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	}
 }
 
-// treeNotices is the reason of every notice queued on tree, in queue order.
+// treeNotices is the payload, as JSON text, of every notice queued on tree, in queue order.
 func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 	t.Helper()
 	rows, err := w.pool.Query(context.Background(), "select payload::text from outbox where issue = $1 and kind = 'notice' order by id", tree)

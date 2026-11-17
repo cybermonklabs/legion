@@ -1210,9 +1210,11 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// A parent whose own Dispatch children are still open does its work after theirs
 		// (LineFacts.ChildWaits): offered a slot here it would build beside the children whose
 		// merges its own head is meant to carry. The architect that owns it is told once per issue
-		// and run of its tree when the wait begins (admit's tellChildrenFirst): its own starts only
-		// with that first phase, so this is the architect above it, or the root's own architect
-		// for a root. The state names it under admission.blocked meanwhile.
+		// and run of its tree when the wait begins (admit's tellChildrenFirst): the root's own
+		// architect for a root, and for a child the architect above it, since the child's own
+		// starts only with that first phase, unless a person set the child back to todo while it
+		// ran or was held, which leaves the child's own architect holding its role (workflow's
+		// ReenterChild). The state names it under admission.blocked meanwhile.
 		if _, waits := facts.ChildWaits[issue.Key]; waits {
 			hold(issue)
 			continue
