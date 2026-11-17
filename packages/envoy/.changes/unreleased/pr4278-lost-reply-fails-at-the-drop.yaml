@@ -13,8 +13,10 @@ body: |-
   session's lock no longer wait out a reply the drop took. A stored write that a second send would
   find refused or answered as a duplicate of itself, a kept-lane cursor write or a publish whose
   caller reads the duplicate verdict, is sent once and answers the loss, so the kept lane reads its
-  cursor back instead of taking its own landed write for another listener's. A request on a client
-  that was stopped answers `nats.ErrConnectionClosed`, as before.
+  cursor back instead of taking its own landed write for another listener's. A request that
+  nats.go's close of a running client's connection cut off answers `bus.ErrConnectionLost` too,
+  and is made again on the connection the client dials to replace it. A request on a client that
+  was stopped answers `nats.ErrConnectionClosed`, as before.
 time: 2026-11-17T05:19:00Z
 custom:
     Issue: pr4278
