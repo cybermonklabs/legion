@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0033_request_notify.up.sql
+-- packages/envoy/internal/broker/store/migrations/0035_request_notify.up.sql
 -- Who is asked to decide a request for a shared human-tier secret. Such a request names the
 -- approver 'anyone', which anyone signed in to the broker may decide (record.MayDecide), and until
 -- now GET /v1/pending listed it for every person, so every signed-in person's Dispatch Inbox held
