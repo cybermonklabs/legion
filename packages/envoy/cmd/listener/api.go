@@ -397,7 +397,7 @@ func writeStoreError(ctx context.Context, w http.ResponseWriter, err error, stat
 // field it is about, and returns the body's parsed expects_reply so messageEnvelope takes the
 // value this parse already read instead of parsing the same bytes again. A refused body returns
 // the unset value, which no caller reads.
-func validateMessageBody(body listenerwire.MessageBody) (string, string, contracts.ExpectsReply) {
+func validateMessageBody(body listenerwire.MessageBody) (string, string, listenerwire.ExpectsReply) {
 	for _, field := range []struct {
 		name  string
 		value *string
@@ -406,17 +406,17 @@ func validateMessageBody(body listenerwire.MessageBody) (string, string, contrac
 		{"supersedes", body.Supersedes},
 	} {
 		if field.value != nil && strings.TrimSpace(*field.value) == "" {
-			return field.name + " must not be empty", field.name, contracts.ExpectsReplyUnset
+			return field.name + " must not be empty", field.name, listenerwire.ExpectsReplyUnset
 		}
 	}
 	if body.Urgency != nil {
 		if *body.Urgency == "" || (*body.Urgency != "low" && *body.Urgency != "med" && *body.Urgency != "high" && *body.Urgency != "blocking") {
-			return "urgency must be one of low, med, high, blocking", "urgency", contracts.ExpectsReplyUnset
+			return "urgency must be one of low, med, high, blocking", "urgency", listenerwire.ExpectsReplyUnset
 		}
 	}
 	expectsReply, err := listenerwire.ParseExpectsReply(body.ExpectsReply)
 	if err != nil {
-		return "expects_reply must be one of " + listenerwire.ExpectsReplyVocabulary, "expects_reply", contracts.ExpectsReplyUnset
+		return "expects_reply must be one of " + listenerwire.ExpectsReplyVocabulary, "expects_reply", listenerwire.ExpectsReplyUnset
 	}
 	return "", "", expectsReply
 }

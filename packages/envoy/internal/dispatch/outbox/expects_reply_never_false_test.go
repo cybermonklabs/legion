@@ -33,7 +33,8 @@ import (
 //     present as anything but "optional" or "required".
 //
 //   - the server's own source under internal/dispatch, refused if any of it names
-//     contracts.ExpectsReplyNone, the one value that marshals to false. That covers the paths no
+//     ExpectsReplyNone, the one value that marshals to false, under either package that declares
+//     it: listenerwire, and contracts, which names listenerwire's. That covers the paths no
 //     envelope of this package builds: the comment and message deliveries' HTTP body
 //     (internal/dispatch/api, internal/dispatch/envoy), whatever their delivery mode.
 //     The read is of each file's syntax tree, so the constant named in a comment - as
@@ -106,13 +107,14 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 				if !ok || selector.Sel.Name != "ExpectsReplyNone" {
 					return true
 				}
-				if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != "contracts" {
+				pkg, ok := selector.X.(*ast.Ident)
+				if !ok || (pkg.Name != "contracts" && pkg.Name != "listenerwire") {
 					return true
 				}
 				t.Errorf(
-					"%s names contracts.ExpectsReplyNone, which marshals to the JSON literal false "+
+					"%s names %s.ExpectsReplyNone, which marshals to the JSON literal false "+
 						"no listener built before #2903 can read; leave the field out instead",
-					fileSet.Position(selector.Pos()),
+					fileSet.Position(selector.Pos()), pkg.Name,
 				)
 				return false
 			})

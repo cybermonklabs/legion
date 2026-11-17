@@ -110,7 +110,7 @@ func Check(t testing.TB, dir string, pkgs []string, wirePkg string, transport []
 		}
 		return os.Open(file)
 	})
-	a := &analysis{wirePkg: wirePkg, transport: map[string]bool{}, helpers: map[string]map[int]bool{}, partyHelpers: map[string]bool{}}
+	a := &analysis{wirePkg: wirePkg, transport: map[string]bool{}, helpers: map[string]map[int]bool{}}
 	for _, name := range transport {
 		a.transport[name] = true
 	}
@@ -125,7 +125,7 @@ func Check(t testing.TB, dir string, pkgs []string, wirePkg string, transport []
 	a.collect()
 	var missing []string
 	for _, name := range transport {
-		if !a.declared[name] {
+		if a.functions[name] == nil {
 			missing = append(missing, name)
 		}
 	}
@@ -283,24 +283,20 @@ type analysis struct {
 	wirePkg   string
 	transport map[string]bool
 	packages  []*checkedPackage
-	// declared is every function full name the packages declare.
-	declared map[string]bool
+	// functions are the packages' functions by full name.
+	functions map[string]*function
 	// helpers are the transport helpers: full name to the indices of their any parameters that
 	// reach a JSON call.
 	helpers map[string]map[int]bool
-	// partyHelpers are the transport helpers that are party calls themselves.
-	partyHelpers map[string]bool
 }
 
 // collect reads every function: whether it is a party call, its judged JSON calls and its calls,
 // then the body readers party calls call and the transport helpers, each to a fixed point.
 func (a *analysis) collect() {
-	a.declared = map[string]bool{}
-	byName := map[string]*function{}
+	a.functions = map[string]*function{}
 	for _, p := range a.packages {
 		for _, f := range p.funcs {
-			a.declared[f.name] = true
-			byName[f.name] = f
+			a.functions[f.name] = f
 		}
 	}
 	for _, p := range a.packages {
@@ -316,7 +312,7 @@ func (a *analysis) collect() {
 					continue
 				}
 				for _, c := range f.calls {
-					if callee := byName[c.callee]; callee != nil && callee.bodyReader && !callee.party {
+					if callee := a.functions[c.callee]; callee.bodyReader && !callee.party {
 						callee.party = true
 						changed = true
 					}
@@ -334,7 +330,6 @@ func (a *analysis) collect() {
 					}
 					if !a.helpers[f.name][index] {
 						a.helpers[f.name][index] = true
-						a.partyHelpers[f.name] = f.party
 						changed = true
 					}
 				}
@@ -384,7 +379,7 @@ func (a *analysis) read(f *function) {
 		if (name == "encoding/json.Unmarshal" || name == "encoding/json.NewDecoder") && len(expr.Args) > 0 && mentions(info, expr.Args[0], all) {
 			f.bodyReader = true
 		}
-		if a.declared[name] {
+		if a.functions[name] != nil {
 			f.calls = append(f.calls, call{callee: name, args: expr.Args})
 		}
 		return true
@@ -446,7 +441,7 @@ func (a *analysis) findings(fset *token.FileSet, dir string) []Finding {
 				}
 			}
 			for _, c := range f.calls {
-				if !f.party && !a.partyHelpers[c.callee] {
+				if !f.party && !a.functions[c.callee].party {
 					continue
 				}
 				for index := range a.helpers[c.callee] {
@@ -617,7 +612,7 @@ func isString(t types.Type) bool {
 func position(fset *token.FileSet, dir string, pos token.Pos) token.Position {
 	position := fset.Position(pos)
 	if base, err := filepath.Abs(dir); err == nil {
-		if relative, err := filepath.Rel(base, position.Filename); err == nil && !strings.HasPrefix(relative, "..") {
+		if relative, err := filepath.Rel(base, position.Filename); err == nil && filepath.IsLocal(relative) {
 			position.Filename = relative
 		}
 	}

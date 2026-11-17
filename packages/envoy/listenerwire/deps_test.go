@@ -7,8 +7,8 @@ import (
 )
 
 // listenerwire imports the standard library and nothing else, so a client links no package of the
-// server by reading its bodies, and the daemon, another module, can import it at all. A listing
-// that names no package, this one included, has read nothing and fails as UNKNOWN.
+// server by reading its bodies. A listing that names no package, this one included, has read
+// nothing and fails as UNKNOWN.
 func TestListenerwireImportsOnlyTheStandardLibrary(t *testing.T) {
 	const self = "github.com/sjawhar/envoy/listenerwire"
 	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} {{.Standard}}", ".").Output()

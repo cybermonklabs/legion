@@ -3,14 +3,17 @@
 // /v1/interests/unsubscribe, the answers of those and of GET /v1/sessions, GET
 // /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET routes of
 // /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the states they
-// carry. The listener (cmd/listener) writes and reads these types, and so does each of its Go
-// clients: the broker's wake (internal/broker/wake), Dispatch's client (internal/dispatch/envoy),
-// and the Legion daemon's publisher and controller probe, which is another module and so needs
-// this package public.
+// carry. The listener (cmd/listener) writes and reads these types, and so do its Go clients in
+// production: the broker's wake (internal/broker/wake), Dispatch's client
+// (internal/dispatch/envoy), and the Legion daemon's publisher and controller probe, which is
+// another module and so needs this package public.
 //
 // It imports the standard library alone (deps_test.go), so a client links nothing of the server
-// by reading its bodies, and clients_test.go holds each client to these types: a client that
-// encodes or decodes a body of its own, even one field of one, fails it.
+// by reading its bodies, and clients_test.go holds those four clients to these types: one that
+// encodes or decodes a body of its own, even one field of one, fails it. The load-test harness
+// (loadtest) and the refill rig (internal/testnats/cmd/refillrig) also call the listener, with
+// bodies of their own, including the subscribe body this package does not declare; the test
+// does not read them.
 //
 // A request's fields are all omitempty. The listener only decodes a request, and reads an absent
 // field as its zero value, so each client sends the fields it sets and no others. An answer's
@@ -343,8 +346,10 @@ type UnsubscribeResponse struct {
 // RoleHolder is GET /v1/roles/<role>'s answer for a role whose holder is live: the role, its
 // holder and the holder's state, live on this answer, named exactly as the 404 of a lapsed holder
 // (RoleRefusal) and a publish answer name them, the holder's title, directory, machine, host and
-// capabilities, its last registration, and the claim's revision. The fields are in the order
-// encoding/json writes them, which is the order of their names.
+// capabilities, its last registration, and the claim's revision. The fields are declared in the
+// alphabetical order of their JSON names, which is the order encoding/json wrote the keys of the
+// map this answer was before it was a struct, so the answer's bytes did not change; a new field
+// keeps that order.
 type RoleHolder struct {
 	// Capabilities is the empty list, never null, for a holder that advertises none.
 	Capabilities []string `json:"capabilities"`
