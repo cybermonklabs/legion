@@ -479,6 +479,28 @@ commit_file() {
     '{stats: {total: $total}, files: [{filename: $path, status: $status, additions: $additions,
       changes: $additions, patch: (if $patch == "-" then null else $patch end)}]}' > "$work/commit.$1"
 }
+# as_merge <sha>: marks that commit of the compare page a merge, with two parents.
+as_merge() {
+  jq -c --arg sha "$1" '.commits |= map(if .sha == $sha then .parents = [{sha: "p1"}, {sha: "p2"}] else . end)' \
+    "$work/compare" > "$work/compare.next"
+  mv "$work/compare.next" "$work/compare"
+}
+# pr_files <status> <path> <patch> [...]: the pull request's files route, one page holding those
+# files (a patch of "-" is none at all), and the pull request route's totals to match them.
+pr_files() {
+  local list='[]' additions
+  while [ $# -gt 0 ]; do
+    additions=$(grep -c '^+' <<< "$3" || true)
+    list=$(jq -c --arg status "$1" --arg path "$2" --arg patch "$3" --argjson additions "$additions" \
+      '. + [{filename: $path, status: $status, additions: $additions, changes: $additions,
+             patch: (if $patch == "-" then null else $patch end)}]' <<< "$list")
+    shift 3
+  done
+  printf '%s\n' "$list" > "$work/pr-files"
+  jq --argjson files "$(jq length <<< "$list")" --argjson lines "$(jq '[.[].changes] | add // 0' <<< "$list")" \
+    '.changed_files = $files | .additions = $lines | .deletions = 0' "$work/pull" > "$work/pull.next"
+  mv "$work/pull.next" "$work/pull"
+}
 key_run() { PRIVATE_NAME_TERMS=$key_terms run_pr_text; }
 key_refused="names an issue key of the deployment's own projects"
 
@@ -634,6 +656,69 @@ commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' 9
 key_run
 check "a commit whose listed files fall short of its total exits 2" "$(is "$status" 2)"
 check "says UNKNOWN for that commit" "$(contains "$out" 'UNKNOWN: commit new-sha changes 9 lines')"
+
+echo "case: a merge commit's own diff is not read, and the pull request's net diff is, once"
+# A forward merge's diff against its first parent is everything the base branch changed since the
+# branch left it: other pull requests' text, and often large files. The net diff is the lines the
+# pull request adds to its base, a line typed while resolving a conflict among them. The three
+# controls a review asked for: the branch's clean commit alone; plus a merge whose own diff adds
+# another pull request's key; plus a merge whose own diff holds a large file with no patch.
+merge_branch() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  key_rule_on
+  opened_at 2026-11-21T00:00:00Z
+  commits new-sha 2026-11-21T01:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "${1:-Merge main forward}"
+  as_merge merge-sha
+  commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+}
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+key_run
+check "control 1, the branch's own clean commit alone, exits 0" "$(is "$status" 0)"
+merge_branch
+commit_file merge-sha modified docs/other-pr.md $'@@ -0,0 +1,1 @@\n+other '"$planted_key"' line'
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+key_run
+check "control 2, a merge whose own diff adds another pull request's key, exits 0" "$(is "$status" 0)"
+check "never asks GitHub for the merge's own files" "$(is "$(contains "$(< "$work/calls")" 'commits/merge-sha')" false)"
+check "reads the pull request's files once" "$(is "$(grep -c 'pulls/7/files' "$work/calls")" 1)"
+merge_branch
+commit_file merge-sha modified docs/big.md -
+jq -c '.files[0].additions = 5000 | .files[0].changes = 5000 | .stats.total = 5000' "$work/commit.merge-sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.merge-sha"
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+key_run
+check "control 3, a merge whose own diff holds a large file with no patch, exits 0" "$(is "$status" 0)"
+check "and says nothing UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
+merge_branch
+commit_file merge-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+pr_files modified docs/notes.md $'@@ -1,0 +2,2 @@\n+clean text\n+resolved as '"$planted_key"' said'
+key_run
+check "a key typed while resolving a conflict, in the net diff, fails" "$(is "$status" 1)"
+check "names the net diff's file and line" "$(contains "$out" "files:docs/notes.md:3: $key_refused")"
+check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
+merge_branch "Merge main forward, as $planted_key asked"
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+key_run
+check "a merge's message is still read" "$(is "$status" 1)"
+check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+merge_branch
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' modified docs/big.md -
+jq -c '.[1].additions = 5 | .[1].changes = 5' "$work/pr-files" > "$work/pr-files.next"
+mv "$work/pr-files.next" "$work/pr-files"
+jq '.additions = 6' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"
+key_run
+check "a net diff file that adds lines with no patch exits 2" "$(is "$status" 2)"
+check "says UNKNOWN for that file of the net diff" "$(contains "$out" "UNKNOWN: GitHub returned no patch for file 2 of #7's net diff")"
+merge_branch
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+jq '.changed_files = 3001' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"
+key_run
+check "a net diff listed short of the pull request's totals exits 2" "$(is "$status" 2)"
+check "says UNKNOWN for the net diff" "$(contains "$out" 'UNKNOWN: #7 holds 1 merge commit(s), so its net diff is read')"
 
 echo "case: the tree outside a pull request's new text is not held to the issue-key rule"
 root=$(fixture key-tree)

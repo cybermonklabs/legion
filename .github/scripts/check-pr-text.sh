@@ -16,8 +16,9 @@
 # of the deployment's own projects, and a Dispatch link), from a cutoff it derives at each run: the
 # section "THE ISSUE-KEY RULE" below says how, and which text. A hit there is reported as
 # `title:<line>`, `body:<line>`, `<kind>:<id>:<line>`, `commit:<sha>:<line>` for a
-# commit's message, or `commit:<sha>:<path>:<line>` for a line a commit adds, its path masked
-# where it holds a name.
+# commit's message, `commit:<sha>:<path>:<line>` for a line a commit adds, or
+# `files:<path>:<line>` for a line of the pull request's net diff, which is read in place of a
+# merge commit's own diff, each path masked where it holds a name.
 #
 # It also requires the title to be a conventional commit subject (`type(scope): summary`, the
 # scope and a `!` optional): squash merges use the title as main's commit subject, and the release
@@ -192,9 +193,14 @@ fi
 # pull request opened before the cutoff is not read for it; one opened after it is read in its
 # title and body, every trusted comment, review and review comment (all posted after it), and
 # each commit whose committer date is at or after the cutoff: its message, and the lines and paths
-# it adds. A commit whose patch GitHub does not return whole is UNKNOWN, and refused. The branch
-# name is not read by this rule: the daemon names an issue's branch after its key today, and the
-# change that names branches another way adds the branch to this rule.
+# it adds. A merge commit's own diff is against its first parent, which for a merge of the base
+# branch forward is everything the base branch changed since the branch left it, other pull
+# requests' text among it: so a merge's message is read, its own diff is not, and the pull
+# request's net diff (the pulls files route, the lines the pull request adds to its base) is read
+# once instead, which holds any line typed while resolving a conflict. A commit or a net diff whose
+# patch GitHub does not return whole is UNKNOWN, and refused. The branch name is not read by this
+# rule: the daemon names an issue's branch after its key today, and the change that names
+# branches another way adds the branch to this rule.
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
@@ -257,12 +263,47 @@ elif [ -n "$cutoff" ]; then
          /^\+/ { while (out < n - 1) { print ""; out++ } print substr($0, 2); out++; n++; next }
          /^ / { n++; next }' "$1"
   }
+  # added_files <pages> <label> <part>: the added lines of every file GitHub listed in <pages> (one
+  # JSON object a page, each with its .files), each written by added_lines to <part>/<path>: under
+  # $keyed when the file is new (added, renamed or copied), its path new text too, and under
+  # $lines_only otherwise. A file that adds lines GitHub returned no patch for is UNKNOWN, named
+  # by <label> and its place in the list, and refused.
+  added_files() {
+    local pages=$1 label=$2 part=$3 files i file_status additions has_patch name dest
+    files=$(jq -s '[.[].files[]] | length' "$pages")
+    for ((i = 0; i < files; i++)); do
+      jq -s -r --argjson i "$i" '[.[].files[]][$i] | "\(.status)\t\(.additions)\t\(.patch != null)"' \
+        "$pages" > "$work/file"
+      IFS=$'\t' read -r file_status additions has_patch < "$work/file"
+      if [ "$additions" -gt 0 ] && [ "$has_patch" != true ]; then
+        echo "::error::UNKNOWN: GitHub returned no patch for file $((i + 1)) of $label, so the lines" \
+          "it adds cannot be read; it is refused, not passed" >&2
+        key_status=2
+        continue
+      fi
+      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .patch // ""' "$pages" | tr -d '\000' > "$work/patch"
+      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .filename' "$pages" > "$work/name"
+      name=$(< "$work/name")
+      case $file_status in
+        added | renamed | copied) dest="$keyed/$part/$name" ;;
+        *) dest="$lines_only/$part/$name" ;;
+      esac
+      mkdir -p "$(dirname "$dest")"
+      added_lines "$work/patch" > "$dest"
+    done
+  }
   jq -r --arg cutoff "$cutoff" '.commits[] | select(.commit.committer.date >= $cutoff) | .sha' \
     "$compare_json" > "$work/new-commits"
+  merges=0
   while IFS= read -r sha; do
     short=${sha:0:12}
     jq -r --arg sha "$sha" '.commits[] | select(.sha == $sha) | .commit.message' "$compare_json" |
       tr -d '\000' > "$keyed/commit/$short"
+    parents=$(jq -r --arg sha "$sha" '.commits[] | select(.sha == $sha) | .parents // [] | length' "$compare_json")
+    if [ "$parents" -gt 1 ]; then
+      merges=$((merges + 1))
+      continue
+    fi
     gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
@@ -273,39 +314,39 @@ elif [ -n "$cutoff" ]; then
       key_status=2
       continue
     fi
-    for ((i = 0; i < files; i++)); do
-      jq -s -r --argjson i "$i" '[.[].files[]][$i] | "\(.status)\t\(.additions)\t\(.patch != null)"' \
-        "$work/commit-$short" > "$work/file"
-      IFS=$'\t' read -r file_status additions has_patch < "$work/file"
-      if [ "$additions" -gt 0 ] && [ "$has_patch" != true ]; then
-        echo "::error::UNKNOWN: GitHub returned no patch for file $((i + 1)) of commit $short, so" \
-          "the lines it adds cannot be read; it is refused, not passed" >&2
-        key_status=2
-        continue
-      fi
-      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .patch // ""' "$work/commit-$short" |
-        tr -d '\000' > "$work/patch"
-      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .filename' "$work/commit-$short" > "$work/name"
-      name=$(< "$work/name")
-      case $file_status in
-        added | renamed | copied) dest="$keyed/added/$short/$name" ;;
-        *) dest="$lines_only/added/$short/$name" ;;
-      esac
-      mkdir -p "$(dirname "$dest")"
-      added_lines "$work/patch" > "$dest"
-    done
+    added_files "$work/commit-$short" "commit $short" "added/$short"
   done < "$work/new-commits"
+  # The net diff, once, for the merges above: the files route lists 100 a page, up to GitHub's
+  # limit of 3000 files, and the pull request route totals them, so a list that comes back short
+  # of those totals is refused rather than read in part. Its hits are `files:<path>:<line>`.
+  if [ "$merges" -gt 0 ]; then
+    gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
+    jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
+    files=$(jq '.files | length' "$work/pr-files")
+    listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")
+    want_files=$(jq '.changed_files // -1' "$live")
+    want_lines=$(jq '(.additions // -1) + (.deletions // 0)' "$live")
+    if [ "$files" -ne "$want_files" ] || [ "$listed" -ne "$want_lines" ]; then
+      echo "::error::UNKNOWN: #$number holds $merges merge commit(s), so its net diff is read, and" \
+        "GitHub listed $files of its $want_files files and $listed of its $want_lines changed lines;" \
+        "the lines it adds cannot all be read, so it is refused, not passed" >&2
+      key_status=2
+    else
+      added_files "$work/pr-files" "#$number's net diff" net
+    fi
+  fi
   # Two runs of rules 6 and 7: one over the title, body, branch, items, commit messages and the
-  # files the new commits add or rename, whose paths are new text too; one over the lines they
-  # add to files they only change, whose paths are not.
+  # files the new commits (or the net diff) add or rename, whose paths are new text too; one over
+  # the lines they add to files they only change, whose paths are not.
   for run in keyed lines_only; do
     dir=${!run}
-    [ "$run" = lines_only ] && [ ! -d "$dir/added" ] && continue
+    [ "$run" = lines_only ] && [ -z "$(ls -A "$dir")" ] && continue
     if [ "$run" = keyed ]; then paths_flag=yes; else paths_flag=no; fi
     run_status=0
     PRIVATE_NAME_RULES=keys PRIVATE_NAME_CHECK_PATHS=$paths_flag "$script_dir/check-private-names.sh" "$dir" 2>&1 |
       sed -E -e "s|$dir/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
         -e "s#(^|[:=])commit/([0-9A-Za-z_-]+)#\\1commit:\\2#g" -e "s#(^|[:=])added/([0-9A-Za-z_-]+)/#\\1commit:\\2:#g" \
+        -e "s#(^|[:=])net/#\\1files:#g" \
       || run_status=$?
     if [ "$run_status" -gt "$key_status" ]; then key_status=$run_status; fi
   done

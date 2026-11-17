@@ -927,7 +927,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **A pull request's new text names no issue key of the deployment's projects and holds no Dispatch link** — link the pull request from its issue in Dispatch instead:
   the term list also names each Dispatch project of the deployment, one `key:<KEY>` line each, and `.github/scripts/check-pr-text.sh` refuses an issue key of those projects (`<KEY>-<n>` as a word of its own, in upper case as Dispatch prints it, so the bare word and a lower-case string of that shape such as a job name pass, and `LEGION-<n>` always passes) and any Dispatch link.
-  It reads a pull request's title and body, its trusted comments, reviews and review comments, each new commit's message, and the lines and paths each new commit adds.
+  It reads a pull request's title and body, its trusted comments, reviews and review comments, each new commit's message, and the lines and paths each new commit adds; a merge commit's own diff is the base branch's changes, so for a pull request that holds a merge it reads the pull request's net diff once instead, a line typed while resolving a conflict included.
   It reads only text newer than its cutoff, which it derives at each run and nobody types: the publish time of the first `legion-v*` release that contains the commit adding `.github/issue-key-cutoff`, the commit that told every worker to keep keys and links out of this repository's text.
   A pull request opened before the cutoff is not read for it, and neither is a commit dated before it, so nothing already open turns red and every new line is read.
   A commit whose patch GitHub does not return whole is refused as UNKNOWN, never passed.
