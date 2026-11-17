@@ -178,6 +178,84 @@ itself:
 - The first deploy of a broker with this behavior restores nothing that ran out before it.
 - A pod whose renewer already exited 76 has no renewer until the pod is relaunched.
 
+### Where a command takes its identity
+
+`agent-secrets NAME -- command`, and every other form that acts as a session (`request`,
+`status`, `cancel`, `revoke`, `self`, `whoami`, `sign`, `renew`), takes its broker identity from
+the first of four sources that has one for the calling process, as the AWS SDK takes a credential
+from the first provider in its chain that holds one. None of them needs a registered agent
+session, so the same command works in a shell, a systemd unit, a cron job, an agent session, a box
+and a pod.
+
+| Source | What it is | Nothing for the caller (skipped) | Present but broken (stops the command) |
+| --- | --- | --- | --- |
+| `key-dir` | The `key.pem` and `enrollment` a launcher put in the key directory (`AGENT_SECRETS_KEY_DIR`, else `$XDG_RUNTIME_DIR/agent-secrets`): a box or a pod. | No `key.pem` there, and no `enrollment.pending` younger than 160 seconds. | A `key.pem` that does not parse, no `enrollment` beside it (with the launcher's `enrollment.error` when it left one), or a launcher still enrolling: a fresh `enrollment.pending` and no `key.pem` after `AGENT_SECRETS_ENROLL_WAIT`. |
+| `sign-in` | A person's `agent-secrets login` on this machine (`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`). | Nobody has signed in on this machine. | Several people signed in and `AGENT_SECRETS_PERSON` names none of them, a record that does not parse, or a broker that refuses the sign-in. |
+| `helper` | `agent-secrets-helper`, for a caller inside a session `agent-secrets register` registered. The command asks the helper first, so a process that only inherited the socket goes on. | No socket file where no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset and no helper unit installed), or the helper answers `NOT_A_SESSION`. | A stopped helper: no socket file where `AGENT_SECRETS_HELPER_SOCK` names one or the helper's unit is installed (a clean stop removes the socket). A socket that does not answer, `NO_CREDENTIAL` (the machine is not logged in), or any other refusal. |
+| `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables or set to `kubernetes`, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
+
+A source that is present but broken, and any refusal of the broker's, stop the command with that
+error: the command never acts under the next identity in its place. With no source, one refusal
+names each source and why it had nothing:
+`no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`.
+
+The machine source finds the machine's identity from the Google exchange audience the broker
+answers in `GET /v1/settings` (`google_exchange_audience`), and takes the first of these that
+gives a token for it: an `external_account` credential file that `GOOGLE_APPLICATION_CREDENTIALS`
+names, acting as the service account its `service_account_impersonation_url` names; and the
+Compute Engine metadata server, which a machine with none answers "no metadata server" within 1.5
+seconds (a GKE pod's metadata server answers for the pod's own Google service account). A pod's
+projected Kubernetes token is not one of them: the broker's exchange mints no launcher credential
+for a Kubernetes identity, so no session could be registered under it, and a pod enrolls through
+its launcher or `agent-secrets enroll --pod` instead. On EC2 the machine source has nothing, since
+the broker takes no AWS identity: such a machine reaches the broker through a launcher's key
+directory, a sign-in or the helper.
+`AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`metadata` or `pool`,
+with its own variables; `kubernetes` is refused, exit 2, before anything is traded), and then
+nothing is detected. Because the cache sits below
+the sign-in, a person who runs `agent-secrets login` acts as themselves from their next command
+on, while the machine's session stays for every process no person signed in for. A machine
+session a client before this one kept in the key directory, marked `machine-session`, is moved to
+the machine cache by the first command that finds it.
+
+`GET /v1/settings` is public, and its Google audience chooses whom the identity token the
+machine mints is good for, so the machine source reads it only from an `https` broker, or an
+`http` one on loopback. Once it has found an identity to mint a token for that audience, and
+before it mints one, it keeps the audience in `google-exchange-audience` in the machine cache;
+a machine with no identity of its own mints nothing and keeps nothing. A broker that later
+names another audience than the one kept is refused before any token is minted for it; if the
+broker's audience really did change, remove that file. A broker publishes its Google audience
+only where `BROKER_VM_SERVICES` lists a machine that may trade a token for it.
+
+Each registration of the machine's session makes a key of its own, the first one and each one
+after the broker says the session is no longer live, so a copy of `key.pem` (in a backup of the
+home directory, or on a disk kept across a reboot) signs for no later enrollment. Commands that
+find the cache empty at the same time register one session between them: a lock in the cache
+holds a registration from its read of the cache to its write.
+
+A process started with no environment of its own, such as a systemd unit or a cron job, reads
+its settings from `~/.config/agent-secrets/config`, as the AWS CLI reads `~/.aws/config`: `KEY=value`
+lines, `#` comments and blank lines, with no quotes taken off, no `export` and no expansion. It
+takes nine keys — `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,
+`AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
+`AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
+`AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT` —
+and any other key is a usage error (exit 2) naming the file and the line. So is a path that is
+not a regular file, a file another user than this one or root owns, and a file its group or
+others can write: the file names the broker the machine proves its identity to, so nothing in it
+is read until it is the user's own and `chmod go-w` is run on it. A variable that is set and not
+empty wins over the file.
+Where the environment gives no `HOME`, as for a system unit that names no `User=`, the file, the
+sign-ins and the machine cache are under the home the password database gives the process's user
+(`/root` for root).
+
+`agent-secrets identity` answers by its exit status alone, as it always has: 0 for a launcher's
+key directory or a helper session, 1 otherwise, asking nothing of the network. `agent-secrets
+identity --source` walks the chain, registering nothing, and prints the source a command would
+use (`key-dir: <dir>`, `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in
+<dir>`, or `machine: ` and the identity it would trade), then `helper: <socket>` whenever the
+helper answered and is not that source; with none it prints the refusal above and exits 1.
+
 ## Machine login
 
 A launcher (a person's machine helper, or the Legion daemon) cannot enroll anything until the
@@ -490,6 +568,12 @@ The broker evaluates every name
   `was denied: `, and the command exits 77. A request every name of which is granted at once
   reaches nobody, so it needs no reason, and a machine login, which is always signed with an
   empty reason, never passes this way.
+- On a broker that signs nobody in, `BROKER_SIGNIN=off`
+  ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), nobody could approve such a
+  name, so it is denied at once, with a reason or without one, and one such name denies the whole
+  request: the session reads `<NAME>: a person must approve it, and this broker signs nobody in
+  (BROKER_SIGNIN=off)` after `was denied: `, and the command exits 77. What the policy grants at
+  once is granted there as everywhere.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
 - A **kind secret** has `kind=github-app`, `kind=google-login` or `kind=google-service-account`,
@@ -759,10 +843,17 @@ The proxy reads the grant behind the password on every connection, and the entry
 request (`packages/envoy/internal/broker/airlockproxy`). A host no entry of that grant binds is
 tunnelled unread, to a public address alone. A bound host is read with a certificate of the
 proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. A
-refusal is an HTTP error from the proxy naming the rule that refused it, such as `host not bound`
-or `not allowed by rule`, and ending with its answer id. The broker logs one line for each call to
-a bound host, never with a value. A call it carried, or could not carry, writes
+header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
+else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+request, with its `:authority` as its `Host`, so one connection carries no request for another
+host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
+(`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
+How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
+decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
+refused it, such as `host not bound` or `not allowed by rule`, and ending with its answer id. The
+broker logs one line for each call to a bound host, never with a value. A call it carried, or
+could not carry, writes
 `airlock proxy: a call to a bound host` with the enrollment, the grant, the secret, the host, the
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
@@ -788,10 +879,11 @@ What the airlock does not stop is as much of the design as what it does:
 - The placeholder works as the proxy password for its grant's bound hosts until the grant ends,
   from wherever the proxy port is reachable.
 
-- Once the grant ends, every call through the proxy gets `407`, to any host, and a WebSocket the
-  proxy had joined to a bound host is closed with the grant rather than running to the idle
-  limit. A tunnel to a host no entry binds carries no value, so the idle limit is the whole of
-  what bounds one.
+- Once the grant ends, every call through the proxy gets `407`, to any host. A call still running
+  at that moment, such as a WebSocket the proxy joined to a bound host, a gRPC call whose answers
+  stream or a long poll, is ended with the grant within 15 seconds rather than running to the
+  idle limit. A call whose service has not answered yet gets the `407` itself. A tunnel to a host
+  no entry binds carries no value, so the idle limit is the whole of what bounds one.
 
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call
@@ -823,6 +915,13 @@ all N shown** decides every request printed. A decision is posted to the broker'
 is bound to that sign-in and to the requests the page printed, so a page on another origin,
 Dispatch's among them, cannot make one, and no route a service calls decides a secret request: the
 broker refuses it `DECIDE_ON_BROKER_PAGE`, naming the page.
+
+A broker that signs nobody in, `BROKER_SIGNIN=off`
+([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no
+request waits on it: every request that would reach a person is denied at once
+([Requests and grants](#requests-and-grants)), and one a broker with sign-in on left pending is
+ended by the broker's next sweep: expired, as a rule, if its deadline has passed, and otherwise
+denied.
 
 The broker checks the signed-in person against the record's approver: anyone else gets a page
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a

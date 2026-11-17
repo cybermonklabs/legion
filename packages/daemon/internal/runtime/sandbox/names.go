@@ -90,6 +90,13 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
+	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
+	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),
+	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
+	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
+	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
 	// HomeMountsDir is where an issue pod's roles container mounts every volume that belongs at
 	// or under the image's home (homeMountsView), and where `legion launcher role-init` finds
 	// each to bind it back at its own path under the role's home overlay.
@@ -146,10 +153,16 @@ const feedSubPath = "feed"
 // AgentSecretsKeyDir is the memory-backed directory a role's agent-secrets key and enrollment id
 // live in, and AgentSecretsTokenDir where the pod's projected token for the broker's audience is
 // mounted, as AgentSecretsTokenFile. The key directory is each role's own; the token is shared.
+// AgentSecretsExchangeDir is where an enrolled pod's projected token for the exchange's audience
+// (AgentSecrets.ExchangeAudience) is mounted, as AgentSecretsExchangeFile, beside the broker's
+// token: the identity every role of the pod is told of as AGENT_SECRETS_MACHINE_TOKEN_FILE, shared
+// as the broker's token is.
 const (
-	AgentSecretsKeyDir    = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
-	AgentSecretsTokenDir  = launcher.FixedRoot + "/agent-secrets-token"
-	AgentSecretsTokenFile = "token"
+	AgentSecretsKeyDir       = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
+	AgentSecretsTokenDir     = launcher.FixedRoot + "/agent-secrets-token"
+	AgentSecretsTokenFile    = "token"
+	AgentSecretsExchangeDir  = launcher.FixedRoot + "/agent-secrets-exchange"
+	AgentSecretsExchangeFile = "token"
 )
 
 // The image's own paths (packages/daemon/docker/worker.Dockerfile: ENV and the COPY lines).
@@ -317,6 +330,13 @@ const (
 	labelIssue   = "legion.dev/issue"
 	labelRole    = "legion.dev/role"
 )
+
+// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
+// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
+// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
+// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
+// from the sandbox the launch that builds it decided.
+const labelSandbox = "legion.dev/sandbox"
 
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
 // and the name of the one volume claim template the controller's Sandbox owns — an issue's owns

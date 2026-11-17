@@ -1044,12 +1044,13 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 //
 // A copy still inside roleKeepWindow that beforeForward allows is forwarded to the holder's agent
 // subject exactly as a live role send forwards it (roleForwardDedupePrefix,
-// contracts.AgentSubject). A copy whose hour ended is dropped, and so is one whose delivery mode
-// the holder does not take; either is sent to its sender as a dead letter where it is owed one. A
-// copy no read can decode, and one beforeForward refuses as an echo or a repeat, is passed over. A
-// walk with no holder forwards nothing: it ends what needs no holder to end and stops at the first
-// copy it cannot end, which is inside its hour and waits for the role's next live holder
-// (roleKeepCopyWaits). No walk forwards a copy whose hour ended.
+// contracts.LegacyAgentSubject, the old form every producer writes until slice C4). A copy whose
+// hour ended is dropped, and so is one whose delivery mode the holder does not take; either is sent
+// to its sender as a dead letter where it is owed one. A copy no read can decode, and one
+// beforeForward refuses as an echo or a repeat, is passed over. A walk with no holder forwards
+// nothing: it ends what needs no holder to end and stops at the first copy it cannot end, which is
+// inside its hour and waits for the role's next live holder (roleKeepCopyWaits). No walk forwards a
+// copy whose hour ended.
 //
 // It bounds itself at roleKeepDrainWindow, taken when the walk starts rather than when the
 // handover around it was: the handover holds the role's guard, so no part of a walk's window is
@@ -1143,7 +1144,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 
 	keptSubject := bus.KeptRoleSubject(role)
 	lane := &roleKeepLaneCursor{cfg: cfg, role: role, holder: holder, subject: bus.KeptRoleCursorSubject(role), seq: head.cursorSeq}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	// The record the role lane judges a forward against, read the same way here: what the holder
 	// already took, and what is already on its way to it. A walk with no holder judges nothing
 	// against it.
@@ -1678,7 +1679,7 @@ func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.En
 		EventID:        keyedEventID(key),
 		Source:         "envoy",
 		SourceEventID:  item.EventID,
-		Topic:          contracts.AgentSubject(item.SourceSession),
+		Topic:          contracts.LegacyAgentSubject(item.SourceSession),
 		DedupeKey:      key,
 		IssuedAt:       dropped.UnixMilli(),
 		PayloadSummary: "Envoy dropped your message to role " + role + ": " + drop.summary() + ".",

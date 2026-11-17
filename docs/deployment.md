@@ -426,18 +426,20 @@ provider_keys:
   attributes are the operator's to begin and the runtime's to finish.
   The operator sets the attributes this deployment's spend is billed
   under, and each pane carries them with its own `legion.issue` and `legion.role` after them,
-  so a pane's own attributes name the issue it serves. The agent keeps the last value a key is
-  given, so the daemon's two pairs come last. Both keys reach the spend collector today, and
-  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
-  issue yet. A row grouped by issue follows when the collector keeps them, which
-  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  so a pane's own attributes name the issue it serves. A pane of a unit drawn into arms of the
+  project's experiments carries `legion.arms` after those, one `<experiment>:<variant>` for each
+  arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
+  files it ran with. The agent keeps the last value a key is
+  given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
+  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
+  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it
   refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
   `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
-  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
-  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  than 255 characters once decoded, and one naming `legion.issue`, `legion.role` or
+  `legion.arms`, which the runtime writes itself — and names that member and what is wrong with it, never the rest of the
   value. One such member costs the pane every attribute of the variable, the operator's own among
   them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
@@ -519,6 +521,9 @@ provider_keys:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
+  issue role where the block names none; a pane of a role the list leaves out loads none of this
+  experiment's overlays or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole

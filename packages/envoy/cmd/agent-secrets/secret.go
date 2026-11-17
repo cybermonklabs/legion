@@ -47,19 +47,19 @@ var secretForms []secretForm
 func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
-		{command{"secret list", "agent-secrets secret list [--json] [--profile P]",
+		{command{"secret list", "agent-secrets secret list [--json]",
 			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, max grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
-		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
+		{command{"secret show", "agent-secrets secret show NAME [--json]",
 			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session]",
 			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
-		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
+		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none]",
 			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, max grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a shape, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
-		{command{"secret delete", "agent-secrets secret delete NAME [--profile P]",
+		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
-		{command{"secret restore", "agent-secrets secret restore NAME [--profile P]",
+		{command{"secret restore", "agent-secrets secret restore NAME",
 			"Cancel the agent secret NAME's scheduled deletion under the environment's cloud credential,\nthen ask the broker to serve it again at once."}, cmdSecretRestore},
 	}
 	execForm := commands[len(commands)-1]
@@ -106,6 +106,16 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	// --profile was a flag of the AWS backend (cybermonklabs/legion#1833) until #4130; the
+	// tool now reads the store credential from the environment, as the cloud's own tools do, so a
+	// form given --profile is a usage error naming the variables to use instead, and those that
+	// outrank them.
+	for _, a := range args[1:] {
+		if a == "--profile" || strings.HasPrefix(a, "--profile=") {
+			fmt.Fprintln(stderr, "agent-secrets secret: --profile is not a flag: agent-secrets reads the store credential from the environment, as the cloud's own tools do. On Google Cloud set CLOUDSDK_ACTIVE_CONFIG_NAME (a gcloud configuration) or CLOUDSDK_CORE_ACCOUNT (a gcloud account), which CLOUDSDK_AUTH_ACCESS_TOKEN and GOOGLE_APPLICATION_CREDENTIALS outrank when set; on AWS set AWS_PROFILE, which access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and AWS_WEB_IDENTITY_TOKEN_FILE, outrank when set, as in the AWS CLI.")
+			return exitUsageError
+		}
+	}
 	for _, form := range secretForms {
 		if form.help.name == "secret "+args[0] {
 			return form.run(args[1:], stdout, stderr)
@@ -115,13 +125,15 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 	return exitUsageError
 }
 
-// requireSecretBrokerURL refuses a non-https broker URL for the secret forms unless the broker's
-// host is loopback (127.0.0.0/8, ::1 or localhost). openSession calls it, so every secret form is
-// gated while the exec form and the machine and pod paths (the other newClient callers) keep
-// today's behaviour, and a form's -h, which never opens a session, is unaffected. The secret forms
-// trust the broker's settings to steer a write, so a plain-http broker a network attacker can answer
-// is refused before the first call; an unparseable URL is left to the client, which names it.
-func requireSecretBrokerURL(raw string) error {
+// requireTrustedBrokerURL refuses a non-https broker URL unless the broker's host is loopback
+// (127.0.0.0/8, ::1 or localhost), for the two paths that act on the broker's settings: the
+// secret forms, which openSession gates, and the machine source, which reads the audience its
+// identity token is minted for (machineSource). The exec form's other calls and the pod paths
+// keep today's behaviour, and a form's -h, which never opens a session, is unaffected. The
+// settings steer a write and choose whom the machine's identity token is good for, so a
+// plain-http broker a network attacker can answer is refused before the first call; an
+// unparseable URL is left to the client, which names it.
+func requireTrustedBrokerURL(raw string) error {
 	base := brokerclient.WithoutTrailingSlashes(raw)
 	if base == "" {
 		return nil
@@ -133,7 +145,7 @@ func requireSecretBrokerURL(raw string) error {
 	if u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): the secret forms trust the broker's settings, so a plain-http broker on the network is refused", redact.URL(base))}
+	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): this client acts on the broker's settings (the store a secret form writes, the audience of the identity token this machine mints), so a plain-http broker on the network is refused", redact.URL(base))}
 }
 
 // isLoopbackHost reports whether host is "localhost" (any case) or a loopback IP literal
@@ -161,14 +173,12 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true, "profile": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true}
 
-// secretFlags is form's flag set with --profile, which every secret form takes but only the AWS
-// backend uses (GCP uses your Google sign-in instead, gcpBackend; a non-empty --profile there is a
-// usage error, openSecretBackend).
-func secretFlags(form string, stderr io.Writer) (*flag.FlagSet, *string) {
-	flags := newFlagSet(form, stderr)
-	return flags, flags.String("profile", "", "the AWS profile to sign in with (AWS only; default: AWS_PROFILE, else the AWS SDK's default credential chain)")
+// secretFlags is form's flag set. The store credential comes from the environment, never a flag
+// (cmdSecret refuses --profile), so no form registers one for it.
+func secretFlags(form string, stderr io.Writer) *flag.FlagSet {
+	return newFlagSet(form, stderr)
 }
 
 // secretName is the one NAME a form takes, and its slug: the secret's name under the prefix.
@@ -364,12 +374,8 @@ func shellWord(s string) string {
 }
 
 // pipeCommand is the command line a form names for piping a value in: prefix (the backend's
-// signInPrefix), agent-secrets, then words, then --profile as the person gave it, each
-// shell-quoted, so running it signs in the same way.
-func pipeCommand(prefix, profile string, words ...string) string {
-	if profile != "" {
-		words = append(words, "--profile", profile)
-	}
+// signInPrefix), agent-secrets, then words, each shell-quoted, so running it signs in the same way.
+func pipeCommand(prefix string, words ...string) string {
 	quoted := make([]string, len(words))
 	for i, w := range words {
 		quoted[i] = shellWord(w)
@@ -612,14 +618,25 @@ type secretBackend interface {
 	// token without an email scope - which reads and writes all the same: the store's IAM, not
 	// this CLI, decides what any sign-in may do.
 	personEmail(ctx context.Context) (string, error)
-	// identity names the sign-in for a refusal of the store's (secretSession.refusedAs): AWS's
-	// ARN, or which Google credential the backend took and what it is.
+	// identity names the sign-in, as `<source>: <principal>`, for the line every form prints
+	// before its first store call (openSession) and a refusal of the store's
+	// (secretSession.refusedAs): the source the backend took the credential from (a
+	// variable, a file, gcloud, the machine) and who it acts as - AWS's ARN, a Google account's
+	// email - or that the principal is unknown.
 	identity() string
+	// chooseAnother is how a refusal of the store's tells the caller to sign in with another
+	// credential, as one clause that starts "choose another": built from the source that signed
+	// in, it names the variables that can choose another from there - never one that source
+	// outranks without saying so - and on Google Cloud the gcloud configurations
+	// CLOUDSDK_ACTIVE_CONFIG_NAME can name.
+	chooseAnother() string
 	// signInPrefix is the shell assignments a command line the form prints for running again
 	// (pipeCommand) needs to sign in as this one did when the sign-in came from a variable that
-	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when set, and
-	// CLOUDSDK_CORE_ACCOUNT when it chose the gcloud login; else "". It ends in a space when it is
-	// not empty.
+	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when that
+	// chose the source, and CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT when they chose
+	// the gcloud login; AWS's AWS_PROFILE or AWS_DEFAULT_PROFILE when that profile signed in, and
+	// AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN for a web identity; else "", and never a key or
+	// a token. It ends in a space when it is not empty.
 	signInPrefix() string
 
 	list(ctx context.Context) ([]secretView, error)
@@ -702,12 +719,13 @@ func (s *secretSession) Close() error { return s.backend.close() }
 func (s *secretSession) storeName() string { return s.src.storeName() }
 
 // refusedAs is err, and where err is the store's own access-denied refusal, the sign-in the form
-// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused.
+// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused,
+// and how to choose another (backend.chooseAnother).
 func (s *secretSession) refusedAs(err error) error {
 	if !s.backend.isAccessDenied(err) {
 		return err
 	}
-	return fmt.Errorf("%w; the store refused %s", err, s.backend.identity())
+	return fmt.Errorf("%w; the store refused %s; %s", err, s.backend.identity(), s.backend.chooseAnother())
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
@@ -741,13 +759,14 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 // field names (openSecretBackend) and, on AWS, refuses a sign-in in another account
 // (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. It
 // refuses no sign-in for the kind of identity it is, a read's or a write's: the store's IAM
-// decides what it may do.
-func openSession(ctx context.Context, profile string) (*secretSession, error) {
+// decides what it may do. Once the backend is open, and before any store call, it prints on
+// stderr the one line that names the sign-in form's calls run under (backend.identity).
+func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSession, error) {
 	base := brokerBaseURL()
 	if base == "" {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
 	}
-	if err := requireSecretBrokerURL(base); err != nil {
+	if err := requireTrustedBrokerURL(base); err != nil {
 		return nil, err
 	}
 	broker := newClient(base)
@@ -755,7 +774,7 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read the settings of %s: %w", brokerSource(base), err)
 	}
-	backend, err := openSecretBackend(ctx, profile, settings)
+	backend, err := openSecretBackend(ctx, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -764,6 +783,7 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 		s.Close()
 		return nil, err
 	}
+	fmt.Fprintf(stderr, "agent-secrets %s: using %s\n", form, backend.identity())
 	return s, nil
 }
 
@@ -771,22 +791,20 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 // key ARN's own account and region (checkSettingsKeyARN), for "" or secrets.StoreAWS - a
 // broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
 // secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
-// secrets.StoreGCP. Any other value is refused before any cloud call.
-func openSecretBackend(ctx context.Context, profile string, settings Settings) (secretBackend, error) {
+// secrets.StoreGCP. The store credential comes from the environment, not a flag. Any other store
+// is refused before any cloud call.
+func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, error) {
 	switch settings.Store {
 	case "", secrets.StoreAWS:
 		if err := checkSettingsKeyARN(settings); err != nil {
 			return nil, err
 		}
-		sm, st, err := awsClients(ctx, profile, settings.AWSRegion)
+		sm, st, sources, err := awsClients(ctx, settings.AWSRegion)
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st, profile: profile}, nil
+		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf(sources)}, nil
 	case secrets.StoreGCP:
-		if profile != "" {
-			return nil, usageErr{fmt.Errorf("--profile names an AWS profile; this broker's store is %s, which signs in with CLOUDSDK_AUTH_ACCESS_TOKEN, your Application Default Credentials or your gcloud login, not --profile", settings.Store)}
-		}
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
 		}
@@ -927,7 +945,7 @@ func writeIndentedJSON(w io.Writer, v any) error {
 func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	const form = "secret list"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	asJSON := flags.Bool("json", false, "print the secrets as JSON")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
@@ -935,7 +953,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	if len(positional) > 0 {
 		return secretFail(stderr, form, usageErr{fmt.Errorf("unexpected argument %q", positional[0])})
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -988,7 +1006,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	const form = "secret show"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	asJSON := flags.Bool("json", false, "print the secret as JSON")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
@@ -997,7 +1015,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1044,7 +1062,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	const form = "secret create"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	owner := flags.String("owner", "", "me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
 	tier := flags.String("tier", "", "agent (its owner's agents use it without asking) or human (a person approves each use)")
 	kind := flags.String("kind", "", strings.Join(policy.Kinds, ", ")+" or none (the default)")
@@ -1095,7 +1113,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1151,7 +1169,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	// created the empty secret but before its answer reaches the form.
 	pending := &pendingCreate{s: s, form: form, name: name, owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
 	return runCreate(pending, func(deadline time.Time) (string, error) {
-		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, deadline, stderr)
+		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), *shape, deadline, stderr)
 		if err == nil && policy.ValidKind(*kind) {
 			err = checkValueFor(*kind, *shape, value)
 		}
@@ -1166,7 +1184,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	const form = "secret set"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1174,7 +1192,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1193,7 +1211,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if kind != "" && !policy.ValidKind(kind) {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's kind tag %q names no kind the broker mints, and it refuses the secret as %s: retag it --kind %s or %s before setting its value", name, kind, policy.ReasonKindUnknown, strings.Join(policy.Kinds, ", "), tagNone)})
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), shape, time.Time{}, stderr)
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), "secret", "set", name), shape, time.Time{}, stderr)
 	if err == nil && kind != "" {
 		err = checkValueFor(kind, shape, value)
 	}
@@ -1218,7 +1236,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	const form = "secret delete"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1226,7 +1244,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1242,7 +1260,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	const form = "secret restore"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1250,7 +1268,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}

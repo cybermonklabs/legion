@@ -335,7 +335,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	}
 	var agentSecrets *sandbox.AgentSecrets
 	if a := k.AgentSecrets; a != nil {
-		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second}
+		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience}
 	}
 	cache, err := repositoryCache(k.RepositoryCache)
 	if err != nil {
@@ -355,6 +355,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
+		Sandbox:    sandboxConfig(k.Sandbox),
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
 		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL, DispatchToken: dispatchToken,
 		NATSURLs: cfg.NatsURLs,
@@ -384,6 +385,19 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
+}
+
+// sandboxConfig is runtime.kubernetes.sandbox as the runtime takes it: the settled block, member
+// for member, the microVM storage class already defaulted to runtime.kubernetes.storage_class.
+func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
+	settled := sandbox.SandboxConfig{Type: sandbox.SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
+	if m := c.MicroVM; m != nil {
+		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		if endpoint := m.Metadata; endpoint != nil {
+			settled.MicroVM.Metadata = &sandbox.MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
+		}
+	}
+	return settled
 }
 
 // repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a
@@ -419,18 +433,20 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
 // before each credential expires; no person approves any of it, a restart included. Every login
 // logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
-// pod enrollment waits for it. The client itself is returned too, read-only, so the state route can
-// show the login's current status (source.State, agentsecrets.Client.LoginStatus). Never part of
-// launchSecrets, so no pod is ever handed the daemon's key, token or credential. Nil, nil without
-// the block.
-func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, *agentsecrets.Client) {
+// pod enrollment waits for it. With the block's exchange_audience set, the same client is the
+// machines' Registrar too (newRegistrar), which registers each role's session for its pod; unset,
+// the Registrar is nil and no registration is ever made. The client itself is returned too,
+// read-only, so the state route can show the login's current status (source.State,
+// agentsecrets.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
+// daemon's key, token or credential. Nil, nil, nil without the block.
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *agentsecrets.Client) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.AgentSecrets == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
-	return brokerEnroller{client: client}, client
+	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
 
 // brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,11 +23,76 @@ import (
 
 // Scheduling is where Legion's pods may run, beyond the Legion pool every one of them selects.
 type Scheduling struct {
-	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself.
+	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself. A
+	// microVM issue pod names its own ComputeClass in place of any this names (placement).
 	NodeSelector map[string]string
-	// Tolerations are appended to the Legion pool's own toleration.
+	// Tolerations are appended to the Legion pool's own toleration, less one of another
+	// ComputeClass on a microVM issue pod (placement).
 	Tolerations   []corev1.Toleration
 	PriorityClass string
+}
+
+// SandboxType is the sandbox an issue pod runs in.
+type SandboxType string
+
+const (
+	// SandboxGVisor is gVisor: the sandbox of every issue pod the configuration names no other
+	// for, and of every other pod the runtime builds.
+	SandboxGVisor SandboxType = "gvisor"
+	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVM names.
+	SandboxMicroVM SandboxType = "microvm"
+)
+
+// SandboxConfig is runtime.kubernetes.sandbox, settled, as the daemon hands it over member for
+// member (config.SandboxConfig): the sandbox of the project's issue pods, the issues whose pods run
+// in the other one, and where a microVM pod runs. It places issue pods alone: the controller's pod,
+// the repository cache pods and the image probe run in gVisor whatever it says. The zero value
+// runs every issue pod in gVisor.
+type SandboxConfig struct {
+	// Type is the sandbox of the project's issue pods. Any value but SandboxMicroVM, the zero
+	// value's included, reads as gVisor.
+	Type SandboxType
+	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name.
+	CanaryIssues []string
+	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the
+	// configuration names none. New refuses a nil one, or one naming no ComputeClass or no
+	// StorageClass, while an issue pod runs in a microVM (AnyMicroVM).
+	MicroVM *MicroVM
+}
+
+// MicroVM is runtime.kubernetes.sandbox.microvm: the GKE ComputeClass whose nodes run the microVM
+// pods; the StorageClass of their disks, runtime.kubernetes.storage_class where the block names
+// none, which the loader fills in; and the metadata endpoint their launchers serve, nil for none.
+type MicroVM struct {
+	ComputeClass, StorageClass string
+	Metadata                   *MetadataEndpoint
+}
+
+// MetadataEndpoint is runtime.kubernetes.sandbox.microvm.metadata, which a microVM pod's launcher
+// is told (launcher.MetadataConfig): the cluster's Workload Identity pool,
+// `<PROJECT_ID>.svc.id.goog`, which is also the audience of the projected token the launcher
+// exchanges for a Google one (workloadIdentityVolumes), and the cluster's identity provider.
+type MetadataEndpoint struct {
+	WorkloadPool, IdentityProvider string
+}
+
+// Of is the sandbox issue's pod runs in: Type, or the other one when CanaryIssues names the
+// issue's exact key.
+func (c SandboxConfig) Of(issue string) SandboxType {
+	microVM := c.Type == SandboxMicroVM
+	if slices.Contains(c.CanaryIssues, issue) {
+		microVM = !microVM
+	}
+	if microVM {
+		return SandboxMicroVM
+	}
+	return SandboxGVisor
+}
+
+// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
+// names an issue, whose pod then runs in a microVM on a gVisor project.
+func (c SandboxConfig) AnyMicroVM() bool {
+	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
 
 // Tools are absolute paths inside the worker image. Legion is the `legion` every container runs
@@ -98,6 +164,9 @@ type Options struct {
 	// default (runtime.kubernetes.issue_volume, config.defaultIssueVolume when the file sets none).
 	IssueVolume resource.Quantity
 	Scheduling  Scheduling
+	// Sandbox is the sandbox each issue pod runs in, and where a microVM pod runs (SandboxConfig).
+	// Every pod runs in gVisor under the zero value.
+	Sandbox SandboxConfig
 	// Resources are the two pods' requirements: every issue pod's one container and its two init
 	// containers carry Issue, the controller's pod's one container Controller. The daemon hands
 	// both (config.DefaultResources fills what its file leaves out). At
@@ -326,10 +395,13 @@ type PodResources struct {
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the
 // pod's `agent-secrets` client calls, and the audience and lifetime of the projected token each
 // pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the
-// variables, or the shim flags.
+// variables, or the shim flags. ExchangeAudience, when set, is the audience of a second projected
+// token every enrolled pod carries, the identity the broker's exchange trades for a broker token
+// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one.
 type AgentSecrets struct {
-	URL, Audience string
-	TokenExpiry   time.Duration
+	URL, Audience    string
+	TokenExpiry      time.Duration
+	ExchangeAudience string
 }
 
 // InstallRef names the pieces of Agent Sandbox a cluster must have: the Sandbox CRD, and the

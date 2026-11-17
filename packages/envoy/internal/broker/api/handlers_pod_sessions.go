@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
+
+// thumbprintShape is an RFC 7638 SHA-256 thumbprint as a registrar sends it: 32 bytes,
+// base64url-encoded with no padding.
+var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's exact shape.
 type podSessionBody struct {
@@ -22,6 +27,16 @@ type podSessionBody struct {
 	PodToken string `json:"pod_token"`
 	// The session name that pod may exchange under.
 	Session string `json:"session"`
+	// The RFC 7638 thumbprint of the key the session's own role proves (its agent-secrets key),
+	// which binds the registration to that key: the exchange refuses a trade for this session
+	// proved with another. Absent, the registration is the pod's, as a session pod's one session
+	// is registered.
+	Thumbprint string `json:"thumbprint,omitempty"`
+	// The registrar's own order of its writes for this pod and session, which the Legion daemon
+	// sets to the role's launch generation: a write of a lower generation than the row's changes
+	// nothing, so a write an old incarnation sent that the broker commits after the new
+	// incarnation's leaves the new key in place. Absent is 0, as a session watch writes.
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // podSessionResponse is POST /v1/oauth/exchange/pod-sessions's answer: the registration as it now
@@ -32,6 +47,14 @@ type podSessionResponse struct {
 	PodUID string `json:"pod_uid"`
 	// The session name that pod may exchange under.
 	Session string `json:"session"`
+	// The thumbprint the registration is bound to, as it now stands; absent for one bound to the
+	// pod alone.
+	Thumbprint string `json:"thumbprint,omitempty"`
+	// The generation of the write that last set the registration, as it now stands: a write of a
+	// lower one is answered the row it did not change. Absent for one no registrar gave a
+	// generation, so a registrar that sends none, as the session watch does, is answered exactly
+	// the fields it was answered before generations existed (R9); a reader takes absent as 0.
+	Generation int64 `json:"generation,omitempty"`
 	// When the broker stops honouring the registration unless it is written again.
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -63,6 +86,22 @@ type podSessionResponse struct {
 // SESSION_FIXED, since such a pod needs no registration and registering one would say something
 // the configuration already says), and a session name no request could name back (400
 // SESSION_INVALID). Each refusal names the account or the name it refused and repeats no token.
+//
+// The body may name the thumbprint of the key the session's own role proves, which binds the
+// registration to that key (oauthstore.Store.RegisterPodSession), and a thumbprint that is not
+// 43 base64url characters is 400 THUMBPRINT_INVALID. It may name the write's generation, the
+// registrar's own order of its writes for this pod and session, and a negative one is 400
+// GENERATION_INVALID. The answer is always the registration as stored after the write, its
+// generation included: a write naming no key keeps the binding a live row already holds, and a
+// write of a lower generation than the row's changes nothing and is answered the row unchanged.
+//
+// Each write is logged with what it did, since the registrar is the authority here and these
+// lines are the one record of who may write under which name. A write applied is logged at Info
+// as registered, naming the thumbprint and generation the registrar sent beside the ones stored,
+// and the thumbprint it replaced when it bound the row to another key; one that names no key and
+// no generation, of a row that names neither, logs the line it logged before either existed (R9).
+// A write the generation rule refused changed nothing, so it is not logged as registered: it logs
+// a line of its own at Warn, naming what it sent beside the row it left as it was.
 func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
@@ -82,7 +121,17 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			fmt.Sprintf("this is the caller's own pod, %s of %s, and a registrar registers a pod other than the one it runs in", claims.PodUID, claims.Subject))
 		return
 	}
-	expires, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session)
+	if body.Thumbprint != "" && !thumbprintShape.MatchString(body.Thumbprint) {
+		writeError(w, http.StatusBadRequest, "THUMBPRINT_INVALID",
+			"the thumbprint must be a key's RFC 7638 SHA-256 thumbprint: 43 base64url characters, unpadded")
+		return
+	}
+	if body.Generation < 0 {
+		writeError(w, http.StatusBadRequest, "GENERATION_INVALID",
+			fmt.Sprintf("the generation must be 0 or more, not %d", body.Generation))
+		return
+	}
+	stored, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session, body.Thumbprint, body.Generation)
 	switch {
 	case errors.Is(err, exchange.ErrNoPodBinding):
 		writeError(w, http.StatusBadRequest, "POD_NOT_BOUND", err.Error())
@@ -95,10 +144,19 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	case err != nil:
 		writeInternal(w, "register the pod's session name", err)
 	default:
-		// The one record of who may now write under this name: the registrar is the authority
-		// here, so a write it made and a write it stopped making are both read from this line.
-		slog.Info("broker: registered a pod to write under a session name",
-			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
-		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, ExpiresAt: expires})
+		attrs := []any{"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session}
+		if body.Thumbprint != "" || body.Generation != 0 || stored.JKT != "" || stored.Generation != 0 {
+			attrs = append(attrs, "sent_thumbprint", body.Thumbprint, "sent_generation", body.Generation,
+				"thumbprint", stored.JKT, "generation", stored.Generation)
+		}
+		switch {
+		case !stored.Applied:
+			slog.Warn("broker: a pod's session registration was not written: the registration holds a later generation", attrs...)
+		case stored.Replaced != "":
+			slog.Info("broker: registered a pod to write under a session name", append(attrs, "replaced_thumbprint", stored.Replaced)...)
+		default:
+			slog.Info("broker: registered a pod to write under a session name", attrs...)
+		}
+		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: stored.JKT, Generation: stored.Generation, ExpiresAt: stored.ExpiresAt})
 	}
 }

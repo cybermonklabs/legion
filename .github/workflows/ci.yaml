@@ -625,6 +625,8 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
+              # testnats's Gate reserves its port with internal/testport.
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -635,6 +637,11 @@ jobs:
               # is a module of its own, so Go's internal rule bars it from internal/contracts,
               # where the generated values are.
               - 'packages/envoy/sessiontiming/*'
+              # The daemon reads an issue event's key and a role lane's role in both forms of
+              # their names through this one public package, and the nats-server versions it
+              # refuses through the next, for the same reason.
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
@@ -657,6 +664,8 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -708,6 +717,9 @@ jobs:
               # internal/dispatch/redeliver sweeps its redelivery records through
               # kvwatch.ScanExistingKeys (redeliver/sweep.go:50,488).
               - 'packages/envoy/internal/kvwatch/*'
+              # internal/dispatch/api checks a role-holder publication against legionagents.Roles
+              # (issue_role_holders.go).
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -724,6 +736,8 @@ jobs:
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              # internal/bus refuses a nats-server below the floor this package holds.
+              - 'packages/envoy/natsversion/*'
             # The daemon's `legion` command, `go list -deps ./cmd/legion` in packages/daemon (its
             # embedded probes, turnscope.yml and role prompts included, and the envoy package it
             # serves its held listener through): what docs/site/scripts/build-binaries.sh:17 builds
@@ -825,6 +839,10 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              # The doors onto the readers of a message name's two forms and onto the
+              # nats-server versions the daemon refuses, for the same reason.
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -834,6 +852,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
@@ -853,6 +873,8 @@ jobs:
               - 'packages/envoy/internal/webhook/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
+              # internal/bus refuses a nats-server below the floor this package holds.
+              - 'packages/envoy/natsversion/*'
             # The jj .github/actions/install-jj installs, and the mise it installs that jj with.
             jj_install: &jj_install
               - '.github/actions/install-jj/**'
@@ -1003,7 +1025,10 @@ jobs:
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
@@ -1590,6 +1615,9 @@ jobs:
               - *claude_envoy_build
               # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
               - *listener_command
+              # scripts/e2e/lib/nats-image.test.ts builds natsfloor, the command it asks the NATS
+              # floor through; its natsversion package is in the listener's list above.
+              - 'packages/envoy/natsversion/cmd/natsfloor/*'
               # Each harness step's own gate, named here so the job runs for the change that
               # makes one of those gates true. Each of those lists names this file and
               # ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
@@ -1638,6 +1666,10 @@ jobs:
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
               - 'scripts/third-party-notices.test.ts'
+              # scripts/third-party-notices.test.ts:102-105 lists the Dispatch web app's typeface:
+              # it resolves the font file's path, lists that directory and reads the package.json
+              # and LICENSE.txt in it.
+              - 'packages/dispatch/web/src/fonts/inter/**'
               - 'scripts/third-party-notices.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
@@ -1684,6 +1716,7 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The guides' layout step of the test job (ci-job-test.yaml's
@@ -1911,6 +1944,8 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -1960,6 +1995,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -1976,6 +2012,7 @@ jobs:
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
@@ -1984,6 +2021,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
@@ -2003,6 +2042,7 @@ jobs:
               - 'packages/envoy/internal/webhook/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
             jj_install: &jj_install
               - '.github/actions/install-jj/**'
               - 'packages/daemon/docker/worker.Dockerfile'
@@ -2034,6 +2074,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
@@ -2042,6 +2084,9 @@ jobs:
               # internal/dispatch/redeliver sweeps its redelivery records through
               # kvwatch.ScanExistingKeys (redeliver/sweep.go:50,488).
               - 'packages/envoy/internal/kvwatch/*'
+              # internal/dispatch/api checks a role-holder publication against legionagents.Roles
+              # (issue_role_holders.go).
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
@@ -2060,6 +2105,7 @@ jobs:
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
@@ -2251,6 +2297,8 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
@@ -2320,6 +2368,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -2433,6 +2482,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -2585,6 +2635,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
               # component compiles that package.
@@ -2601,6 +2652,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             envoy_go:
@@ -2711,6 +2763,12 @@ jobs:
               # main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
               # matches no file (its rule 9).
               - '.dispatch/**'
+              # The step "Check that no CI file of this repository compares the spec files" reads
+              # every file under these four.
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'scripts/**'
             # The text checks of the three Go modules, the Dispatch API's eight static source
             # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
             # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
@@ -2800,6 +2858,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -2821,6 +2880,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
@@ -2831,6 +2891,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -2841,6 +2902,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
               - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+              - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
               - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
               - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
               - '!packages/envoy/cmd/dispatch/memory_test.go'
@@ -2855,6 +2917,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The two-build job's Go step alone, behind a gate of its own (dispatch_two_builds_go):
@@ -2872,6 +2935,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -2922,6 +2986,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -2937,6 +3002,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
               - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+              - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
               - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
               - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
               - '!packages/envoy/cmd/dispatch/memory_test.go'
@@ -2948,6 +3014,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The two-build job: its Go step's reads above, named again so the job runs for the
@@ -2966,6 +3033,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -3014,6 +3082,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -3034,6 +3103,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
               - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+              - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
               - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
               - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
               - '!packages/envoy/cmd/dispatch/memory_test.go'
@@ -3045,6 +3115,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The server-change soak (listener-server-change): `go test -tags serverchange
@@ -3139,6 +3210,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -3151,6 +3223,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The local acceptance run drives the Go listener and renders every frame with the
@@ -3444,6 +3517,7 @@ jobs:
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/norace_test.go'
+              - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
               - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
@@ -3471,6 +3545,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/files/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
@@ -3513,6 +3588,7 @@ jobs:
               - '!packages/envoy/internal/smoke/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
@@ -3521,6 +3597,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
@@ -3609,6 +3686,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/filestest/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/horizontest/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -3642,6 +3720,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -3656,9 +3735,11 @@ jobs:
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testpg/testdb/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names, which this job's own package compiles.
               - 'packages/envoy/internal/broker/wire/*'
               # internal/dispatch/api/openapi_test.go's
@@ -3703,6 +3784,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/events/**/*_test.go'
               - '!packages/envoy/internal/dispatch/files/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
@@ -3721,6 +3803,7 @@ jobs:
               - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
+              - '!packages/envoy/internal/legionagents/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
@@ -3731,7 +3814,9 @@ jobs:
               - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
@@ -3932,6 +4017,10 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              # The doors onto the readers of a message name's two forms and onto the
+              # nats-server versions the daemon refuses, for the same reason.
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
             # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
             # rules that binary carries to the frozen shell script's verdicts, case for case.
@@ -4028,6 +4117,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -4112,6 +4202,7 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/roleholder/**'
+              - 'packages/envoy/natsversion/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
@@ -4194,12 +4285,14 @@ jobs:
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
@@ -4261,6 +4354,8 @@ jobs:
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/subjectforms/**'
+              - 'packages/envoy/natsversion/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
               - '.bun-version'
@@ -4967,7 +5062,8 @@ jobs:
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
   # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module).
+  # binary of every package of the envoy module). It also runs the guard that no CI file of this
+  # repository compares the spec files with the approved spec.
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5085,9 +5181,9 @@ jobs:
   # (internal/testnats), so no job here needs a container runtime of its own.
   #
   # Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and
-  # kvwatch share this runner. The Dispatch store's tests (store_test.go:28, storetest.go:44) and
-  # delivery's (internal/dispatch/delivery/intake_test.go:39-41) read DISPATCH_TEST_DATABASE_URL
-  # and skip without it, and cmd/listener/dispatch_resolution_test.go:158 gets its database
+  # kvwatch share this runner. The Dispatch store's tests (store_test.go:28) and delivery's take
+  # their databases from storetest.Open (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL
+  # and skips without it, and cmd/listener/dispatch_resolution_test.go:158 gets its database
   # through internal/testpg, so the job carries the lane's Postgres service; the registry store
   # itself is the NATS KV view and needs none.
   envoy-go-race:
