@@ -1275,14 +1275,14 @@ func termLineFinding(name, artifactID string, version int, term, definition, whe
 		Node: term, Kind: "term_line", Where: fmt.Sprintf("%s version %d", name, version),
 		Rule: "term-second-definition", Excerpt: definition,
 		Detail: where + " defines this term. This line has the form of a definition, but it is not under a heading Terms. " +
-			"If it is no definition, change its form. If it is a definition, move it under Terms",
+			"If it is no definition, change its form. If it is a definition, use the definition there, or change that definition and request approval of its document",
 	}}
 }
 
 // A definition is a term line under Terms (R50). A line in that form under another heading is no
 // definition, but a reader would take it for a second one when it names a defined term: with lease
 // in the list, a request whose spec names lease under "## Glossary" is refused, and the finding
-// tells the writer to change the form of the line or to move it under Terms. A document that a
+// tells the writer to change the form of the line or to use that definition. A document that a
 // person approved with such a line adds no term to the list. The control: the same line with a
 // name that nothing defines opens the request.
 func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *testing.T) {
@@ -1646,10 +1646,11 @@ func TestTwoDocumentsThatJoinAtOneMoveKeepTheOrderOfTheirApprovals(t *testing.T)
 // driftDefinition is a definition that the line of termsLineFault holds in another form.
 const driftDefinition = "The slow change of the clock of one machine."
 
-// termsLineFault is a line under Terms in another form than a term line: the colon in the bold.
+// termsLineFault is a line under Terms in another form than a term line: the colon in the bold. Its
+// finding names the line by the text that a person reads, with no marks of emphasis.
 var termsLineFault = formFault{
-	name: "a line under Terms that is no term line", node: `"- **drift:** ` + driftDefinition + `"`, kind: specform.KindLine,
-	clean: termLine("drift", driftDefinition), broken: "**drift:** " + driftDefinition, excerpt: "- **drift:** " + driftDefinition,
+	name: "a line under Terms that is no term line", node: `"drift: ` + driftDefinition + `"`, kind: specform.KindLine,
+	clean: termLine("drift", driftDefinition), broken: "**drift:** " + driftDefinition, excerpt: "drift: " + driftDefinition,
 	rule: "term-line", detail: `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`,
 }

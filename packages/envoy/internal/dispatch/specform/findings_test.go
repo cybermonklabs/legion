@@ -99,21 +99,26 @@ func TestAPersonsNameIsTheNameOfOnePerson(t *testing.T) {
 }
 
 // R49: "No text of The Spec holds a link to a record of Dispatch". A term's name is a text of The
-// Spec, so the reference rules judge it, as a text of Kind term. The control: a term named by a
-// noun gives no finding of its name.
+// Spec, so the reference rules judge it, as a text of Kind term. A name that holds a character
+// other than the letters a to z, the digits, spaces and hyphens also breaks term-name (R50), on the
+// definition. The control: a term named by a noun gives no finding of its name.
 func TestTheReferenceRulesJudgeTheNameOfATerm(t *testing.T) {
 	for _, test := range []struct {
 		term       Term
 		rule, name string
+		also       []Finding
 	}{
-		{Term{Name: "dispatch://ACME-12", Definition: "One record of a request.", Where: where}, "dispatch-link", `it links to a record of Dispatch: "dispatch://ACME-12"`},
-		{Term{Name: "Ada Lovelace", Definition: "One owner of a request.", Where: where}, "person", `it names a person: "Ada Lovelace"`},
-		{Term{Name: "session", Definition: "One conversation of an agent.", Where: where}, "", ""},
+		{Term{Name: "dispatch://ACME-12", Definition: "One record of a request.", Where: where}, "dispatch-link", `it links to a record of Dispatch: "dispatch://ACME-12"`,
+			[]Finding{finding(definition(Term{Name: "dispatch://ACME-12", Definition: "One record of a request.", Where: where}), "term-name",
+				`the name holds ":" (U+003A) and "/" (U+002F). A term name holds only the letters a to z, the digits 0 to 9, spaces and hyphens`)}},
+		{Term{Name: "Ada Lovelace", Definition: "One owner of a request.", Where: where}, "person", `it names a person: "Ada Lovelace"`, nil},
+		{Term{Name: "session", Definition: "One conversation of an agent.", Where: where}, "", "", nil},
 	} {
 		var want []Finding
 		if test.rule != "" {
 			want = []Finding{{Node: test.term.Name, Kind: Kind("term"), Where: where, Rule: Rule(test.rule), Detail: test.name, Excerpt: test.term.Name}}
 		}
+		want = append(want, test.also...)
 		if got := Check(planted("ada.lovelace@example.com"), Input{Proposed: []Term{test.term}}); !sameFindings(got, want) {
 			t.Errorf("the term %q: Check =\n%#v\nwant\n%#v", test.term.Name, got, want)
 		}

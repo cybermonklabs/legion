@@ -69,9 +69,12 @@ func (e *extraction) add(node string, kind Kind, body string) {
 // purpose). A block is named by its id. The term lines under a heading Terms are Terms, counted as
 // Kind definition. Each other paragraph, list item or table row under that heading is a text of
 // Kind line, named by its text in quotes: a term line has one form, "- **<term>**: <definition>",
-// and a line in any other form is a break of the form, not a term. Each text's Where is
-// "<document> version <n>". A document that the parser refuses is an error: the application reads
-// no block of it either.
+// and a line in any other form is a break of the form, not a term. A heading whose text reads as
+// Terms in another form (readsAsTerms) is a text of Kind heading, named by its text in quotes, and
+// no Terms part: the heading Terms has one form too. A term line outside a Terms part is a text of
+// Kind term_line (termLineElsewhere): it is no definition and adds no term, and Check refuses it
+// when it names a defined term (R50). Each text's Where is "<document> version <n>". A document
+// that the parser refuses is an error: the application reads no block of it either.
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
 		return Extracted{}, fmt.Errorf("%s version %d is not valid UTF-8", document, version)
@@ -124,8 +127,9 @@ func (e *extraction) blocks(nodes []*pmdoc.Node, container string) {
 }
 
 // heading reads a heading, with the blocks after it in its container: the heading Terms opens a
-// Terms part, which the next heading of its level or above closes, and a heading of a component
-// or an interface is a name, with the paragraph right under it as its purpose.
+// Terms part, which the next heading of its level or above closes, a heading that reads as Terms
+// in another form is a text of Kind heading, and a heading of a component or an interface is a
+// name, with the paragraph right under it as its purpose.
 func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 	level := headingLevel(node)
 	if e.termsLevel > 0 && level <= e.termsLevel {
@@ -134,6 +138,10 @@ func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 	heading := read(node.Children)
 	if heading == "Terms" {
 		e.termsLevel = level
+		return
+	}
+	if readsAsTerms(heading) {
+		e.add(fmt.Sprintf("%q", heading), KindHeading, heading)
 		return
 	}
 	component := componentHeading.FindStringSubmatch(heading)
@@ -178,8 +186,9 @@ func (e *extraction) listItem(node *pmdoc.Node, list string) {
 }
 
 // itemLine reads the first paragraph of a list item of list: bold text, its id in code font and
-// " · under:" are an entry line, a statement of the bold text. Under a heading Terms, bold text,
-// ": " and a definition in an item of a bullet list are a term line, and any other item is a line.
+// " · under:" are an entry line, a statement of the bold text. Bold text, ": " and a definition in
+// an item of a bullet list are a term line: under a heading Terms a term, and elsewhere a text of
+// Kind term_line (termLineElsewhere). Under a heading Terms any other item is a line.
 func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	lead, rest := strongLead(paragraph.Children)
 	strong, after := read(lead), inline(rest)
@@ -189,12 +198,13 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 			return
 		}
 	}
-	if e.termsLevel == 0 {
-		return
-	}
 	if strong != "" && list == "bullet_list" {
 		if match := definitionTail.FindStringSubmatch(after); match != nil {
 			if definition := strings.TrimSpace(match[1]); definition != "" {
+				if e.termsLevel == 0 {
+					e.termLineElsewhere(strong, definition)
+					return
+				}
 				e.out.Terms = append(e.out.Terms, Term{Name: strong, Definition: definition, Where: e.where})
 				e.out.Counts[KindDefinition]++
 				return
@@ -202,6 +212,21 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 		}
 	}
 	e.line(read(paragraph.Children))
+}
+
+// termLineElsewhere keeps a term line outside a Terms part, of its term name and its definition,
+// as a text of Kind term_line named by the name, with the definition as its body. It is no
+// definition and adds no term. Check refuses it when it names a defined term, since a reader would
+// take it for a second definition. Two such lines of one name are two texts.
+func (e *extraction) termLineElsewhere(name, definition string) {
+	e.out.Texts = append(e.out.Texts, Text{Node: name, Kind: KindTermLine, Body: definition, Where: e.where})
+}
+
+// readsAsTerms reports whether heading, the text of a heading as a person reads it and not
+// "Terms", reads as Terms: the word terms in any case, after one last colon is taken away. Another
+// word, such as Glossary, or Terms in a longer text, does not.
+func readsAsTerms(heading string) bool {
+	return strings.EqualFold(strings.TrimSpace(strings.TrimSuffix(heading, ":")), "terms")
 }
 
 // table reads a table: the rows of a table whose head starts Id, Kind, Name and Purpose are each

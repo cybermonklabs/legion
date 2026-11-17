@@ -126,13 +126,14 @@ func TestThePersonRuleReadsTheNameOfOnePerson(t *testing.T) {
 }
 
 // A term's name is a text of The Spec: a name that links to a record of Dispatch, or that names a
-// person, is refused.
+// person, is refused. A name that holds a character other than the letters a to z, the digits,
+// spaces and hyphens also breaks the rule term-name of R50, on the definition.
 func TestTheReferenceRulesJudgeTheNameOfATerm(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a term named by a link",
 			spec: "## Terms\n\n- **dispatch://ACME-12**: One record of a request.\n",
-			want: []string{"term dispatch://ACME-12 dispatch-link"}},
+			want: []string{"term dispatch://ACME-12 dispatch-link", "definition dispatch://ACME-12 term-name"}},
 		{name: "a term named as a person",
 			spec: "## Terms\n\n- **Ada Lovelace**: One owner of a request.\n",
 			want: []string{"term Ada Lovelace person"}},

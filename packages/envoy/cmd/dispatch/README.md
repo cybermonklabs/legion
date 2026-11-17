@@ -4762,16 +4762,19 @@ Each other paragraph, list item or table row under that heading breaks the form 
 So a decision block under that heading breaks the form at its question line.
 A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
 The finding names the line by its text, and it says where a decision block goes.
-A heading that reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
-Such a heading has the text `terms` in another case, with emphasis marks or with a last colon, such as `## TERMS`, `## **Terms**` or `## Terms:`.
+A heading whose text reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
+Such a heading reads as `terms` in another case or with a last colon, such as `## TERMS` or `## Terms:`.
+Emphasis is no part of the text that a person reads, so `## **Terms**` is the heading `Terms`.
 A line of the term-line form in another place is no definition, and it adds no term to the list.
-That is a line under another heading, under no heading or in a typed block, outside a code fence.
+That is a list item under another heading or under none, also in a block quote, a list item, a callout or a decision block.
+A line in a code block or in a table cell is no such line.
 A reader takes such a line for a second definition when it names a defined term.
 So it breaks the form (rule `term-second-definition`, kind `term_line`) when a definition defines its name.
 That definition is a term of the list, or a term line under `Terms` of any document of the request, its own document included.
 The order of the documents in a request changes no answer.
 Its finding names the definition.
-It tells the writer to change the form of the line, or to move the line under `Terms` if it is a definition.
+It tells the writer to change the form of the line.
+If the line is a definition, it tells the writer to use the definition there or to change it.
 Two such lines of one name that no definition defines are prose, and they break nothing.
 This refusal helps an honest writer, and it has a limit.
 Dispatch refuses no such line while no definition defines its name, and it cannot see a later request.

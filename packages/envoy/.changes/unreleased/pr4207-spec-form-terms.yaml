@@ -21,11 +21,13 @@ body: |-
   of the root's list. So two writes at one time cannot both add a definition of one term. The
   finding names the term and the document that defines it. A definition with no sentence, or with
   more than one, also breaks the form, and a sentence holds a word with a letter. A line under a
-  heading Terms that is no term line breaks it too. So does a heading that reads as Terms in another
-  form, such as "## TERMS" or "## Terms:". A line of the term-line form in another place is no
-  definition, and it adds no term. It breaks the form when a definition defines its name. That is a
-  term of the list, or a term line under Terms of any document of the request. Two such lines of
-  one name that nothing defines break nothing. GET /api/v1/artifacts/{id}/spec-form answers the
-  list of terms of the document's root.
+  heading Terms that is no term line breaks it too. So does a heading whose text reads as Terms in
+  another form, such as "## TERMS" or "## Terms:". Emphasis is no part of that text, so
+  "## **Terms**" is the heading Terms. A line of the term-line form in another place is no
+  definition, and it adds no term. That holds also in a block quote, a list item, a callout or a
+  decision block. A line in code or in a table cell is no such line. It breaks the form when a
+  definition defines its name. That is a term of the list, or a term line under Terms of any
+  document of the request. Two such lines of one name that nothing defines break nothing. GET
+  /api/v1/artifacts/{id}/spec-form answers the list of terms of the document's root.
 custom:
     Issue: pr4207

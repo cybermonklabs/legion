@@ -28,9 +28,11 @@ const termsHeadingDetail = `it is no Terms heading, and a Terms heading has the 
 
 // lineDetail is the detail of a line in the form of a term line outside Terms that names a
 // defined term, after the place of that definition: the line is no definition, but a reader
-// would take it for a second one, so the writer changes its form or moves it under Terms.
+// would take it for a second one. So the writer changes its form, or, for a definition, uses the
+// definition there or changes it in its own document: a move under Terms would be a second
+// definition, which the rule refuses too.
 const lineDetail = "%s defines this term. This line has the form of a definition, but it is not under a heading Terms. " +
-	"If it is no definition, change its form. If it is a definition, move it under Terms"
+	"If it is no definition, change its form. If it is a definition, use the definition there, or change that definition and request approval of its document"
 
 // emptyNameDetail is the detail of the rule term-name for a name that holds no letter and no digit.
 const emptyNameDetail = "the name holds no letter from a to z and no digit. A term name holds at least one letter or digit"

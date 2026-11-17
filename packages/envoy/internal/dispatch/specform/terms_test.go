@@ -330,8 +330,10 @@ func TestATermNameHoldsOnlyTheLettersAToZDigitsSpacesAndHyphens(t *testing.T) {
 }
 
 // A term name holds at least one letter from a to z or one digit: a term line under Terms whose
-// name is empty, only a character that shows nothing, or only spaces and hyphens breaks the rule
-// term-name. The controls: a name of one letter, of a letter and a digit, and with a hyphen.
+// bold name is only a character that shows nothing, or only a hyphen, breaks the rule term-name.
+// Bold marks around white space alone mark no bold text, so a person reads such a line as no term
+// line, and it breaks the rule term-line. The controls: a name of one letter, of a letter and a
+// digit, and with a hyphen.
 func TestATermNameWithNoLetterAndNoDigitIsRefused(t *testing.T) {
 	const detail = "the name holds no letter from a to z and no digit. A term name holds at least one letter or digit"
 	check := func(name string) (Extracted, []Finding) {
@@ -341,13 +343,19 @@ func TestATermNameWithNoLetterAndNoDigitIsRefused(t *testing.T) {
 		}
 		return extracted, Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
 	}
-	for _, name := range []string{" ", "\u200b", "-", " - ", "\u00ad"} {
+	for _, name := range []string{"\u200b", "-", "\u00ad"} {
 		extracted, got := check(name)
 		if len(extracted.Terms) != 1 {
 			t.Fatalf("the name %+q: Terms = %#v, want one term", name, extracted.Terms)
 		}
 		if want := []Finding{finding(definition(extracted.Terms[0]), "term-name", detail)}; !sameFindings(got, want) {
 			t.Errorf("the name %+q: Check = %#v, want %#v", name, got, want)
+		}
+	}
+	for _, name := range []string{" ", " - "} {
+		extracted, got := check(name)
+		if len(extracted.Terms) != 0 || len(got) != 1 || got[0].Rule != ruleTermLine || got[0].Kind != KindLine {
+			t.Errorf("the name %+q: Terms = %#v and Check = %#v, want no term and one term-line finding", name, extracted.Terms, got)
 		}
 	}
 	for _, name := range []string{"x", "r2", "x-ray"} {
@@ -387,21 +395,22 @@ func TestASecondDefinitionUnderAnotherHeadingIsRefused(t *testing.T) {
 }
 
 // termLineElsewhere is the detail of a line in the form of a term line outside a heading Terms
-// that names a term that where defines.
+// that names a term that where defines. Its way out for a definition is the definition there, never
+// a move under Terms, which would be a second definition.
 func termLineElsewhere(where string) string {
 	return where + " defines this term. This line has the form of a definition, but it is not under a heading Terms. " +
-		"If it is no definition, change its form. If it is a definition, move it under Terms"
+		"If it is no definition, change its form. If it is a definition, use the definition there, or change that definition and request approval of its document"
 }
 
-// A definition is a term line under a heading Terms (R50). A line in that form in another place
-// of a covered document, outside a code fence, is no definition and adds no term: under each
-// heading, under no heading, and in the body of a requirement. A reader would take it for a
-// second definition when it names a defined term, so it is a finding then: a term of the list, or
-// a term that the document itself defines under Terms. Its finding is of Kind term_line, names
-// where the term is defined, and tells the writer to change the form of the line or to move it
-// under Terms. The controls: the same line in a code fence, a line of a name that nothing
-// defines, and two such lines of one name that nothing defines, which are prose, give no finding
-// and add no term.
+// A definition is a term line under a heading Terms (R50). A term line in another place of a
+// covered document is no definition and adds no term: under each heading, under no heading, and in
+// each container that the parser reads blocks in (a block quote, a list item, a callout and a
+// decision block). A reader would take it for a second definition when it names a defined term, so
+// it is a finding then: a term of the list, or a term that the document itself defines under
+// Terms. Its finding is of Kind term_line, names where the term is defined, and tells the writer
+// to change the form of the line or to use that definition. The controls: the same line in code or
+// in a table cell, a line of a name that nothing defines, and two such lines of one name that
+// nothing defines, which are prose, give no finding and add no term.
 func TestATermLineOutsideTermsIsNoDefinitionAndAddsNoTerm(t *testing.T) {
 	list := []Term{{Name: "heartbeat", Definition: "The signal that a session sends.", Where: "terms.md version 1 of ACME-1"}}
 	check := func(markdown string) (Extracted, []Finding) {
@@ -419,7 +428,10 @@ func TestATermLineOutsideTermsIsNoDefinitionAndAddsNoTerm(t *testing.T) {
 		"# Spec\n\n## Glossary\n\n- **heartbeat**: A pulse of a pump.\n",
 		"- **heartbeat**: A pulse of a pump.\n",
 		"# Spec\n\nSome prose.\n\n  * **Heartbeat**: A pulse of a pump.\n",
-		"# Spec\n\n:::requirement{#r1}\nThe pump sends a pulse.\n- **heartbeat**: A pulse of a pump.\n:::\n",
+		"# Spec\n\n> - **heartbeat**: A pulse of a pump.\n",
+		"# Spec\n\n- A step.\n\n  - **heartbeat**: A pulse of a pump.\n",
+		"# Spec\n\n:::callout{kind=\"note\"}\n- **heartbeat**: A pulse of a pump.\n:::\n",
+		"# Spec\n\n:::ask{#which urgency=\"med\" multiple=\"false\"}\nWhich pulse does the pump send?\n\n- **heartbeat**: A pulse of a pump.\n:::\n",
 	} {
 		extracted, got := check(markdown)
 		if len(extracted.Terms) != 0 {
@@ -437,7 +449,8 @@ func TestATermLineOutsideTermsIsNoDefinitionAndAddsNoTerm(t *testing.T) {
 	}
 	for _, markdown := range []string{
 		"# Spec\n\n```\n- **heartbeat**: A pulse of a pump.\n```\n",
-		"# Spec\n\n:::requirement{#r1}\nThe pump sends a pulse.\n~~~\n- **heartbeat**: A pulse of a pump.\n~~~\n:::\n",
+		"# Spec\n\n:::callout{kind=\"note\"}\nThe pump sends a pulse.\n\n~~~\n- **heartbeat**: A pulse of a pump.\n~~~\n:::\n",
+		"# Spec\n\n| Term | Note |\n| --- | --- |\n| **heartbeat**: A pulse of a pump. | none |\n",
 		"# Spec\n\n## Glossary\n\n- **valve**: A part that opens and closes.\n",
 		"# Spec\n\n## Glossary\n\n- **valve**: A part that opens.\n- **Valve**: A part that closes.\n",
 		"# Spec\n\n## Steps\n\n- **Note**: Read the plan.\n\n## Checks\n\n- **Note**: Run each check.\n",
