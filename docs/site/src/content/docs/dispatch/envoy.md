@@ -419,9 +419,8 @@ held by another process from a different session.
 A registration renews every claim its own process holds, whatever topics it carries. What says a
 role was given up is the claim itself: a hand-back that could not free the claim — a release of
 that role's lane topic stating no client instance, the shape a client built before this change
-sends, and the shape Oh My Pi still sends when it takes back the subjects it opened for a role
-that ended, so any process of the session can send it — marks the claim instead, whether it
-names a process or none, no registration renews a
+sends, or any caller that leaves the instance out, so any process of the session can send it —
+marks the claim instead, whether it names a process or none, no registration renews a
 marked claim, and the reaper frees the role at its next pass past the live window: one live
 window plus up to one reap interval, about ten minutes with the defaults above.
 `GET /v1/roles/<role>` answers `handed_back: true` for such a claim,

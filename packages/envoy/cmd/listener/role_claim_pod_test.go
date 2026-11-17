@@ -47,7 +47,8 @@ func (r *roleClaimHandBackRig) handBackAs(body string) []string {
 }
 
 // podNoticeTopic is a subject a plugin opened for the role the pod holds, which pi-envoy hands
-// back beside the role's lane when the role ends (its closeSubjects).
+// back with no client_instance_id when the role ends (its closeSubjects); a body below names the
+// role's lane beside it.
 const podNoticeTopic = "notifications.team.pod-notice"
 
 // The pod path: POST /v1/roles/set with no client_instance_id, the body the role claimer sends, is
@@ -56,10 +57,10 @@ const podNoticeTopic = "notifications.team.pod-notice"
 // session that states another instance changes nothing, and a hand-back from that other instance
 // frees nothing. The process that adopted the claim goes on renewing it.
 //
-// The hand-backs the current clients send with no client_instance_id - pi-envoy's
-// POST /v1/interests/unsubscribe of the subjects it closes when a role ends, which can name the
-// role's lane beside a notice subject, and the same body naming the lane alone - mark a pod's
-// claim that names no process, and free nothing; such a claim is then adopted by no registration.
+// A hand-back with no client_instance_id - the body every current client's unsubscribe sends,
+// here naming the role's lane alone and beside another subject, as a client of an older build or
+// any caller that leaves the instance out would - marks a pod's claim that names no process and
+// frees nothing; such a claim is then adopted by no registration.
 // Control: the same bodies mark a claim that names a process, as they did before.
 func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 	const (

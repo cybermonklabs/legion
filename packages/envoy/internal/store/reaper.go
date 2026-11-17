@@ -175,10 +175,11 @@ type RoleClaimSweep struct {
 // is the session's own word that it gave the role up, written by a hand-back of that role's lane
 // topic that stated no process (Registry.markRoleClaimHandedBack, over a claim of that session
 // the release could not free, whether it names a process or none). Any process of the session
-// can send that release - a client built before a release named its process, and pi-envoy when
-// it takes back the subjects it opened for a role that ended or acts on a subscription.removed
-// frame - so the mark is not proof that the holder itself gave the role up; it is what the
-// window below is for.
+// can send that release - a client built before a release named its process, or any caller that
+// leaves client_instance_id out of POST /v1/interests/unsubscribe; no current client sends it for
+// a role's lane, since pi-envoy's and claude-envoy's hand-back of a role states its instance - so
+// the mark is not proof that the holder itself gave the role up; it is what the window below is
+// for.
 //
 // A marked claim is freed one live window after its last renewal and not at once, and that
 // window is load-bearing: a holder whose claim names its process and a hand-back marked wrongly

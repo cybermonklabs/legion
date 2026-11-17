@@ -4983,7 +4983,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   Its deregistration frees nothing, its hand-back marks it (below), and the role claim reaper frees it, a marked claim once its renewal has lapsed and an unmarked one once its session is gone.
 
 - A hand-back is the one release that marks a claim it could not free (`store.RoleClaim.HandedBack`, `store.markRoleClaimHandedBack`):
-  a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends, and the shape pi-envoy still sends when it takes back the subjects it opened for a role that ended, and when it acts on a `subscription.removed` frame, either of which can name a role's lane.
+  a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends, or any caller that leaves `client_instance_id` out; no current client sends it for a role's lane, since the hand-back of a role by pi-envoy and by claude-envoy states its instance.
   It marks a claim that names no process as it marks one that names a process.
   No registration renews or adopts a marked claim, so the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval — and `GET /v1/roles/<role>` answers `handed_back` meanwhile.
   The empty-topics deregistration names no one role's lane and so hands no one role back, a release that names a process frees the claims of that process and marks none, and the administrator's force frees them all.
