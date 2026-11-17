@@ -323,7 +323,10 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 //
 // Whether the room was the settlement's own is what its load recorded, not a look at the name: a
 // settlement that found no room may still find one another caller's load published, which is that
-// caller's (withSettlementLoad). What holds the record is read under its lock (unusedLocked) - a
+// caller's (withSettlementLoad). Whether that room has gone is read off its load's token
+// (warmedRoom): a room still loading keeps its mark and is not retired here, since the settlement
+// whose load it is retires it as that settlement ends, and a room that has left ygo's map is
+// forgotten by its unload. What holds the record is read under its lock (unusedLocked) - a
 // browser registered, a socket being admitted, an open writer, a settlement running or armed, an
 // update not yet stored - first here and again with the room's close gate held, from inside an
 // Apply on the room. A room something holds stays the settlement's: another settlement, or a
@@ -341,8 +344,13 @@ func (s *Service) retireSettlementRoom(room string) {
 		return
 	}
 	warmed := state.warmed
-	if warmed != nil && s.srv.GetDoc(room) != warmed {
+	switch {
+	case warmed == nil:
+	case s.loadEnded(warmed.load):
 		state.warmed, warmed = nil, nil
+	case s.srv.GetDoc(room) != warmed.doc:
+		// Still loading, or out of ygo's map with its unload to come.
+		warmed = nil
 	}
 	unused := s.unusedLocked(state)
 	s.unlockState(room, state)
@@ -371,7 +379,7 @@ func (s *Service) takeUnusedWarmed(room string, held *crdt.Doc) bool {
 		return false
 	}
 	defer s.unlockState(room, state)
-	if state.warmed != held || !s.unusedLocked(state) {
+	if state.warmed == nil || state.warmed.doc != held || !s.unusedLocked(state) {
 		return false
 	}
 	state.warmed = nil
@@ -386,6 +394,19 @@ func (s *Service) takeUpSettlementRoom(_ context.Context, room string) {
 		state.warmed = nil
 		s.unlockState(room, state)
 	}
+}
+
+// warmedRoom is a room instance a late departure's settlement loaded (roomState.warmed): the
+// document ygo's load hook was handed, and the token that load counted under (roomLoaded). Whether
+// the instance has gone is read off the token (loadEnded), not off the name: ygo's GetDoc answers
+// nil for a room still loading as for one that has gone (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/server.go:1709-1734), so an earlier instance's late unload, run while this one
+// loads, would read as this one's end. The token ends only once its room has left ygo's map: an
+// unload ends the name's oldest load, never that of the room ygo holds or is loading
+// (releaseUnloadedRoom says why), and a load that fails ends its own (onLoadDocument).
+type warmedRoom struct {
+	doc  *crdt.Doc
+	load *residentLoad
 }
 
 // readLocked is what the settlement reads once its transaction holds the document's owner row: the

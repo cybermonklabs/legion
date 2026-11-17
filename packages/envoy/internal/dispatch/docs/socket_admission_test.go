@@ -17,6 +17,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -714,6 +715,62 @@ func TestARoomALateSettlementLoadedStaysForABrowserThatJoinedIt(t *testing.T) {
 	}
 }
 
+// An earlier room's unload that runs while the room a late departure's settlement loads is still
+// loading - its load hook has recorded it as the settlement's room, and ygo has not closed its
+// ready barrier, so GetDoc answers nil for the name - is that earlier room's end, not the
+// settlement room's: the room keeps its mark, and the departing browser's socket end retires it as
+// it retires one that finished loading first.
+func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	// The second room leaves while the first room's unload is held. The first close holds the
+	// service's close gate for the room (roomServer.CloseRoom) until its unload returns, so the
+	// second room is closed by ygo's own CloseRoom, as in
+	// TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes; its unload ends the oldest load.
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.Server.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+
+	// The late departure's settlement loads a third room, held once its load hook has recorded it
+	// as the settlement's, and the first room's unload runs then.
+	letReady := r.awaitSettlementLoadHeld(letDeparture)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+	letReady()
+	r.awaitSocketEnd("the second room's browser")
+	r.requireLateSettlementLoadedARoom()
+	r.requireNothingCounted("once the late departure's settlement has ended")
+}
+
+// A retirement's look at the record while the room a late departure's settlement loads is still
+// loading - another settlement ending, say - leaves that room's mark: GetDoc answers nil for a room
+// still loading as for one that has gone, and the room is the loading settlement's to retire as its
+// departing browser's socket ends.
+func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+
+	letReady := r.awaitSettlementLoadHeld(letDeparture)
+	r.service.retireSettlementRoom(r.room)
+	letReady()
+	r.awaitSocketEnd("the second room's browser")
+	r.requireLateSettlementLoadedARoom()
+	r.requireNothingCounted("once the late departure's settlement has ended")
+}
+
 // Two rooms of one document that have both left ygo's map can report their unloads in either
 // order, and an unload that has begun may wait while a later room of the document loads and
 // unloads in full. Whatever the order, each unload ends one of the loads counted under the name,
@@ -930,6 +987,44 @@ func (r *reloadedRoom) requireLateSettlementLoadedARoom() {
 	if loads := r.loads.Load(); err != nil || owed || loads != 3 {
 		r.t.Fatalf("after the late departure the document was loaded %d times and still owes a settlement: %v (%v); want the settlement to have loaded a room of its own, the third, and committed; nothing here is tested", loads, owed, err)
 	}
+}
+
+// awaitSettlementLoadHeld lets the held departure go (holdDeparture) and holds the room its
+// settlement's warm-up loads once ygo's load hook (Service.onLoadDocument) has returned, before ygo
+// closes the room's ready barrier and hands the room to anyone, until letReady. It requires the
+// hold to find the room recorded as the settlement's and not yet handed out by GetDoc: otherwise
+// nothing is tested.
+func (r *reloadedRoom) awaitSettlementLoadHeld(letDeparture func()) (letReady func()) {
+	r.t.Helper()
+	reached, ready := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	letReady = func() { once.Do(func() { close(ready) }) }
+	r.t.Cleanup(letReady)
+	var holding atomic.Bool
+	load := r.service.srv.OnLoadDocument
+	r.service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
+		err := load(ctx, room, doc)
+		if err == nil && room == r.room && isSettlementLoad(ctx) && !holding.Swap(true) {
+			close(reached)
+			<-ready
+		}
+		return err
+	}
+	letDeparture()
+	select {
+	case <-reached:
+	case <-time.After(roomWait(r.t)):
+		r.t.Fatal("the late departure's settlement never loaded a room, so nothing here is tested")
+	}
+	state := r.service.lockExistingState(r.room)
+	marked := state != nil && state.warmed != nil
+	if state != nil {
+		r.service.unlockState(r.room, state)
+	}
+	if !marked || r.service.srv.GetDoc(r.room) != nil {
+		r.t.Fatalf("the settlement's room, held before ygo hands it out, is recorded as the settlement's: %v, and handed out by GetDoc: %v; want recorded and not handed out, or nothing here is tested", marked, r.service.srv.GetDoc(r.room) != nil)
+	}
+	return letReady
 }
 
 // awaitUnload waits for the next unload of the room to have run.

@@ -673,9 +673,11 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	state.recordIssueLocked(issue)
 	open := !state.closed
 	// A room a late departure's settlement loaded is that settlement's until a browser or a writer
-	// takes it up (withSettlementLoad, retireSettlementRoom).
+	// takes it up (withSettlementLoad, retireSettlementRoom). It is known by this load's token as
+	// well as its document, so an earlier room's unload, which may run before ygo hands this room
+	// to anyone, does not read as this room's end (warmedRoom).
 	if isSettlementLoad(ctx) {
-		state.warmed = doc
+		state.warmed = &warmedRoom{doc: doc, load: counted}
 	}
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
 	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on
