@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A worker's backward move (`request_backward_move`) now posts on the issue, before the status
+  changes, which phase the issue left and went to, the role that asked, and that role's reason. The
+  reason used to reach only the architect's notice and the next role's task, and the issue showed a
+  bare status change.
