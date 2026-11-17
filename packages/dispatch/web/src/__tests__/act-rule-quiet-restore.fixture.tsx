@@ -1,10 +1,13 @@
 // The rows `act-warnings.test.ts` runs in a child `bun test` of its own to prove that `setup.ts`
 // puts back a spy of `quietConsoleError` that a row leaves in place, by each of its two restores:
-// the `afterEach` beside its clock restore, and the `beforeEach` of its act rule. The file's name
-// matches no test pattern, so the suite never runs it. Three rows fail on purpose, with the errors
-// `act-warnings.test.ts` expects; a hook of this file fails only when a restore is missing, in any
-// row order, with an error that says which.
+// the `afterEach` beside its clock restore, after a row that throws and, since it runs before the
+// act check, after a row whose act message makes that check throw; and the `beforeEach` of its act
+// rule. The file's name matches no test pattern, so the suite never runs it. Four rows fail on
+// purpose, with the errors `act-warnings.test.ts` expects; a hook of this file fails only when a
+// restore is missing or runs after the act check, in any row order, with an error that says which.
 import { afterAll, afterEach, describe, test } from "bun:test";
+import { render } from "@testing-library/react";
+import { useState } from "react";
 
 import { quietConsoleError } from "./act-warnings";
 
@@ -50,6 +53,45 @@ describe("quiet rows whose afterEach throws", () => {
   });
   row("another leaves console.error quiet past its end", () => {
     quietConsoleError();
+  });
+});
+
+/** The setter of the count `QuietActCount` shows, which its row calls with no event between. */
+interface HeldCount {
+  set: (count: number) => void;
+}
+
+function useHeldCount(held: HeldCount): string {
+  const [count, setCount] = useState(0);
+  held.set = setCount;
+  return `count ${count}`;
+}
+
+function QuietActCount({ held }: { held: HeldCount }) {
+  return <p>{useHeldCount(held)}</p>;
+}
+
+// This row's state set outside act draws an act message while `console.error` is quiet, so the
+// preload's act check throws for the row, which skips any `afterEach` after that check. The restore
+// beside the clock restore puts the spy back before this `afterAll`, which Bun runs after the row
+// and before any next row, only because it runs before that check.
+describe("a quiet row whose act check throws", () => {
+  afterAll(() => {
+    if ("mock" in console.error) {
+      throw new Error(
+        "console.error was still quiet after the act check failed its row: no restore ran before that check"
+      );
+    }
+  });
+  row("sets a state outside act while console.error is quiet", () => {
+    const held: HeldCount = {
+      set: () => {
+        throw new Error("QuietActCount has not rendered");
+      },
+    };
+    render(<QuietActCount held={held} />);
+    quietConsoleError();
+    held.set(1);
   });
 });
 

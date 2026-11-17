@@ -68,15 +68,19 @@ export function installActMessageRecorder(): void {
 
 /**
  * Keeps `console.error` quiet for the rest of the row: a row whose code logs on purpose uses it to
- * keep that expected output out of the log. The preload puts `console.error` back after the row's
- * own `afterEach` hooks, in the `afterEach` of `setup.ts` beside its clock restore, so a row that
- * throws before its own restore still gets it back; a row may restore it sooner with
- * `mockRestore()` on the spy this returns. Bun skips that `afterEach` when an `afterEach` before
- * it throws, so the preload's `beforeEach` also puts back a spy the row before left in place. A
- * second call in the same row restores the first spy and returns a new one. The spy records each
- * act message it is handed before it drops the call, so the rule still fails the row that drew
- * one. It is the only sanctioned way to silence `console.error`: a replacement, or a row's own spy
- * with a `mockImplementation`, drops React's act messages before the rule can read them.
+ * keep that expected output out of the log. Call it in a row's body or a `beforeEach`: the
+ * preload's `beforeEach` undoes a call made in a `beforeAll` or at the top of a file before the
+ * first row starts. The preload puts `console.error` back after the row's own `afterEach` hooks,
+ * in the `afterEach` of `setup.ts` beside its clock restore, so a row that throws before its own
+ * restore still gets it back; a row may restore it sooner with `mockRestore()` on the spy this
+ * returns. Bun skips that `afterEach` when an `afterEach` before it throws, so the preload's
+ * `beforeEach` also puts back a spy the row before left in place: after a row whose own
+ * `afterEach` throws, `console.error` comes back only when the next row starts, and after a file's
+ * last row it stays quiet through that file's `afterAll`. A second call in the same row restores
+ * the first spy and returns a new one. The spy records each act message it is handed before it
+ * drops the call, so the rule still fails the row that drew one. It is the only sanctioned way to
+ * silence `console.error`: a replacement, or a row's own spy with a `mockImplementation`, drops
+ * React's act messages before the rule can read them.
  */
 export function quietConsoleError(): Mock<typeof console.error> {
   restoreQuietConsoleError();

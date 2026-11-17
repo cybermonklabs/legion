@@ -1746,8 +1746,11 @@ after that wait, outside `act`.
 Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
 `quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
 puts `console.error` back after the row, and still records each act message, so the rule still
-fails the row; any other replacement of `console.error`, or a spy on it with a `mockImplementation`,
-is not allowed, because it drops the message before the rule reads it.
+fails the row; after a row whose own `afterEach` throws, `console.error` comes back only when the
+next row starts, and after a file's last row it stays quiet through that file's `afterAll`, yet the
+act messages are still recorded, so the file still fails; any other replacement of `console.error`,
+or a spy on it with a `mockImplementation`, is not allowed, because it drops the message before the
+rule reads it.
 Setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment` is not a fix either, and
 neither is a `user-event` call inside `act`: React then prints "The current testing environment
 is not configured to support act(...)" and the row fails on that.

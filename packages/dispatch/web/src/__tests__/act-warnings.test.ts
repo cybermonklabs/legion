@@ -195,20 +195,27 @@ test("the act rule fails the row whose component suspended inside an unawaited a
 });
 
 // Both of the preload's restores of a spy of `quietConsoleError` that a row left in place: the
-// `afterEach`, which a row that throws still reaches, and the `beforeEach`, which puts back one a
-// row left when an `afterEach` of that row threw. Without either, a hook of the fixture fails,
-// which Bun reports as one more failed row, named `(unnamed)`.
+// `afterEach`, which a row that throws still reaches, and which runs before the act check, so a
+// row whose act message makes that check throw reaches it too; and the `beforeEach`, which puts
+// back one a row left when an `afterEach` of that row threw. Without either, or with the
+// `afterEach` below the act check, a hook of the fixture fails, which Bun reports as one more
+// failed row, named `(unnamed)`.
 test("the preload puts back the spy of quietConsoleError a row leaves, even past a throwing afterEach", async () => {
   const run = await runFixture("act-rule-quiet-restore.fixture.tsx");
-  expectFailedSummary(run, { fail: "3", pass: "1" });
+  expectFailedSummary(run, { fail: "4", pass: "1" });
   const failed = failedRows(run.output);
   const threw = "a quiet row that throws > fails before it restores console.error";
+  const drewAct =
+    "a quiet row whose act check throws > sets a state outside act while console.error is quiet";
   const leftQuiet = [
     "quiet rows whose afterEach throws > another leaves console.error quiet past its end",
     "quiet rows whose afterEach throws > one leaves console.error quiet past its end",
   ];
-  expect([...failed.keys()].sort()).toEqual([threw, ...leftQuiet]);
+  expect([...failed.keys()].sort()).toEqual([threw, drewAct, ...leftQuiet]);
   expect(failed.get(threw)).toContain("error: the row failed with console.error quiet");
+  const actCheck = failed.get(drewAct);
+  expect(actCheck).toContain("error: React printed 1 act message(s) in or before this row:");
+  expect(actCheck).toContain("update outside act in QuietActCount");
   for (const name of leftQuiet) {
     expect(failed.get(name)).toContain(
       "error: the row's afterEach failed, which skips the preload's afterEach hooks"
