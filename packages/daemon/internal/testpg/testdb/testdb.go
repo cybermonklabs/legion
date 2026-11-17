@@ -116,17 +116,24 @@ func create(dsn, prefix string) (string, func() error, error) {
 // database belongs to another role.
 const insufficientPrivilege = "42501"
 
+// objectInUse is PostgreSQL's 55006, which a forced drop answers while a backend it terminated
+// has not exited yet: PostgreSQL waits only a few seconds for one before it gives up.
+const objectInUse = "55006"
+
 // Execer is what Drop needs of a connection or a pool: one statement.
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// Drop drops name, waiting an autovacuum worker out. `drop database ... with (force)` terminates
-// every other session of the database, which PostgreSQL refuses to a login that is neither
-// superuser nor a member of pg_signal_backend as soon as one session belongs to another role — an
-// autovacuum worker, which attaches to a database a test has just filled. Every Legion pod shares
-// one server whose test login holds neither privilege, so the refusal is waited out for 30
-// seconds; any other error is the caller's at once (dispatch://INFRA-714 round six).
+// Drop drops name, waiting out an autovacuum worker and a backend that has not exited yet.
+// `drop database ... with (force)` terminates every other session of the database, which
+// PostgreSQL refuses to a login that is neither superuser nor a member of pg_signal_backend as
+// soon as one session belongs to another role — an autovacuum worker, which attaches to a
+// database a test has just filled. Every Legion pod shares one server whose test login holds
+// neither privilege (dispatch://INFRA-714 round six). Where the login may terminate every session,
+// the drop then waits only a few seconds for those backends to exit, and answers 55006 while one
+// has not, which a run under load reaches (envoy's storetest retries the same code). Both
+// refusals are waited out for 30 seconds; any other error is the caller's at once.
 //
 // It lives here rather than in internal/testpg because this package imports nothing of the
 // module, so every package's tests can take it — internal/store's among them, whose own tests
@@ -139,11 +146,20 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 			return nil
 		}
 		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != insufficientPrivilege {
+		if !errors.As(err, &pgErr) {
+			return err
+		}
+		var reason string
+		switch pgErr.Code {
+		case insufficientPrivilege:
+			reason = "a session of another role, an autovacuum worker, holds the database and this login may not terminate it"
+		case objectInUse:
+			reason = "a backend the forced drop terminated has not exited"
+		default:
 			return err
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%w (still refused after %d attempts over 30s: a session of another role, an autovacuum worker, holds the database and this login may not terminate it)", err, attempt+1)
+			return fmt.Errorf("%w (still refused after %d attempts over 30s: %s)", err, attempt+1, reason)
 		}
 		select {
 		case <-ctx.Done():
