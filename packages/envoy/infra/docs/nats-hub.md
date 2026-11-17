@@ -760,6 +760,25 @@ creates the `ENVOY_NOTIFICATIONS` stream at its first connect, so run `create` w
 `--first-deployment`. A replacement that keeps the disk (`recreate-instances`, a new template)
 keeps every bucket, and needs none of this.
 
+Until dispatch://INFRA-840's operator kind lets the operator connect through the auth service, no
+hub has the buckets user's key, so step 3 cannot run as written. Create each missing bucket with
+the break-glass flag instead, as the in-cluster `gke` listener's NATS user. Read its seed,
+`envoy-nats-seed-gke`, from Secret Manager for that run alone, through a pipe, and never write it
+to disk:
+
+```sh
+NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-seed-gke \
+    --project=<the deployment's project>) \
+  envoy-infra buckets create --break-glass --operator <you> --bucket envoy_interests \
+  --bucket envoy_roles --bucket envoy_sessions --bucket envoy_known_sessions \
+  --bucket envoy_ci_state --nats nats://<h>.<tailnetDnsName>:4222
+```
+
+It creates only buckets the hub reports missing, takes no writer proof and needs no listener
+stopped: a missing bucket only gains a create, so steps 1, 2 and 4 are not needed for it
+([the module README](../README.md#until-the-cutover-create---break-glass)). The pull request that
+removes the listener users' create grant at the cutover deletes the flag and this paragraph.
+
 ## What a first Google Cloud deployment proves
 
 The unit tests run the hub under Pulumi's mocks, check its cloud-config against the golden, and
@@ -1196,9 +1215,10 @@ which the pod-down alert covers.
 
 A key-value bucket a listener copies that is missing has no series either, while the pods serve:
 no listener creates one (dispatch://INFRA-4094), so every write that needs it answers 503 until
-the operator recreates it ([`envoy-infra buckets`](../README.md#envoy-infra-buckets)). Alert on
-each bucket's absence, with a `for` of a few scrapes and the pod-down alert's silence while a pod
-is down:
+the operator recreates it ([`envoy-infra buckets`](../README.md#envoy-infra-buckets), with
+`--break-glass` until dispatch://INFRA-840's cutover, as [Updating a hub](#updating-a-hub) says).
+Alert on each bucket's absence, with a `for` of a few scrapes and the pod-down alert's silence
+while a pod is down:
 
 ```promql
 absent(nats_stream_last_seq{stream_name="KV_envoy_interests"})

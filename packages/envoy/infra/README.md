@@ -73,6 +73,14 @@ confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buc
   bring while they are still at zero, then start them. Nothing holds the checked state through the
   restore; that is the "unheld restore" the command warns of.
 
+Until dispatch://INFRA-840's cutover gives the operator an identity the auth service admits, no
+hub has the buckets user's key, and a missing bucket is created with `envoy-infra buckets create
+--break-glass` instead, as the in-cluster `gke` listener's NATS user, whose seed
+`envoy-nats-seed-gke` is read for that run alone and never written to disk
+([the runbook line](#until-the-cutover-create---break-glass)). It creates only a missing bucket,
+and needs no listener stopped. The pull request that removes the listener users' create grant at
+the cutover deletes the flag.
+
 A test or a dev rig that starts a listener on a NATS server of its own provisions that server
 first, with the one fixture helper: `internal/bustest` in Go (`Provision`, or a connection marked
 with `Connect`/`Fixture` for a store opened in the test's own process), and the
@@ -2659,16 +2667,17 @@ the one output format. The listener's first filter, for a listener named `exampl
 has checked that no writer of them runs: every envoy-listener of the deployment, and every
 envoy-dispatch when `envoy_ci_state` is among the buckets.
 
-**The check is best effort.** Every run prints so first, on standard error. A writer gets past it
-four ways: a host or dev box you do not name, a binary renamed to a name the check does not know, a
-writer that starts between the final scan and the create, and a restore after `check` that nothing
-holds. So before every run, stop every listener of the deployment (and every envoy-dispatch, for
-`envoy_ci_state`) and confirm on each host that it has ended; the check confirms what you did, and
-does not replace it. dispatch://INFRA-4015's hold (t-10) will exclude writers at the server
-instead: while it holds, the auth callout refuses every connection but the operator's, every other
-connection is kicked, every server's connz shows the operator alone, and a server it cannot reach
-stops the hold. Four tests (`TestBestEffort...`) assert today's outcome of each way, and must be
-inverted when the hold leaves no writer a connection.
+**The check is best effort.** Every run but a break-glass create prints so first, on standard
+error. A writer gets past it four ways: a host or dev box you do not name, a binary renamed to a
+name the check does not know, a writer that starts between the final scan and the create, and a
+restore after `check` that nothing holds. So before every run, stop every listener of the
+deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has
+ended; the check confirms what you did, and does not replace it. dispatch://INFRA-4015's hold
+(t-10) will exclude writers at the server instead: while it holds, the auth callout refuses every
+connection but the operator's, every other connection is kicked, every server's connz shows the
+operator alone, and a server it cannot reach stops the hold. Four tests (`TestBestEffort...`)
+assert today's outcome of each way, and must be inverted when the hold leaves no writer a
+connection.
 
 ```sh
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 \
@@ -2680,7 +2689,9 @@ NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets check --nats nats://<hub>:4
 
 The command reaches a hub on another machine: it sets `ENVOY_ALLOW_REMOTE_NATS=1` for its own
 connection, as `--nats` names the hub. Its NATS user is granted exactly what it sends
-(`buckets.Grant`), and no listener's user may be used for it:
+(`buckets.Grant`). A listener's user cannot run it, since its replies come under a prefix that user
+may not subscribe; only `create --break-glass` runs as one
+([Until the cutover](#until-the-cutover-create---break-glass)):
 
 - publish `$JS.API.INFO`, `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (for `--first-deployment`),
   and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>`, `$JS.API.STREAM.CREATE.KV_<B>`,
@@ -2728,6 +2739,40 @@ command exits 1. A refusal before any change changes nothing; a refusal of `recr
 check comes after its delete, and leaves each `--bucket` deleted and not created: stop the writer it
 names, then run `create`. A check that holds prints what it read: the nodes and machines it checked
 and how many processes it read.
+
+### Until the cutover: `create --break-glass`
+
+No hub has the buckets user's key until dispatch://INFRA-840's cutover, after which the operator
+connects through the auth service as an operator identity it admits. Until then, make a missing
+copied bucket with `--break-glass`, as the in-cluster `gke` listener's NATS user. Read its seed,
+`envoy-nats-seed-gke`, from Secret Manager for that run alone, through a pipe, and never write it to
+disk:
+
+```sh
+NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-seed-gke \
+    --project=<the deployment's project>) \
+  envoy-infra buckets create --break-glass --operator <you> --bucket envoy_sessions \
+  --nats nats://<hub>:4222
+```
+
+It creates each `--bucket` that `STREAM.INFO KV_<bucket>` reports missing, with `create`'s
+configuration at `--replicas` or `ENVOY_NATS_REPLICAS` copies (set it to the deployment's count, 3
+on a clustered hub), and does nothing else:
+
+- it refuses, and creates none, when any `--bucket` exists or its read answers anything but "not
+  found"; it never updates or deletes a bucket;
+- it takes its replies on the default `_INBOX.` prefix, which a listener's user may receive on;
+- it takes no writer proof, prints no best-effort warning, and needs no listener stopped: a missing
+  bucket only gains a create, since the writes its deleted stream acknowledged were lost with it and
+  every listener has answered its writes 503 since, so a create while listeners run loses nothing
+  more. The proof cannot reach the production VM hub's processes either;
+- it logs one line to standard error for each bucket, naming the operator (`--operator`, required),
+  the hub, the bucket and `break-glass`;
+- it is refused with `recreate` or `check`, beside a proof flag (`--kube-context`, `--host`,
+  `--ssh`, `--connz`, `--first-deployment`), and without a `--bucket`.
+
+The pull request that removes the create grant from the listener users at the cutover deletes the
+flag and this section.
 
 ## NATS seeds
 

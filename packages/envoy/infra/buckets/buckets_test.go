@@ -7,20 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -571,8 +576,10 @@ func ownProcesses(own func() []*exec.Cmd) Runner {
 	}
 }
 
-// Every run prints the best-effort warning first, on standard error, whatever it then does: a run
-// whose proof holds, a refused one, a usage error. At 7b262c2e0a no run printed it.
+// Every run but a break-glass create prints the best-effort warning first, on standard error,
+// whatever it then does: a run whose proof holds, a refused one, a usage error. A break-glass
+// create takes no proof, and TestBreakGlassCreatesAMissingBucketAsAListenersUser asserts it prints
+// no warning. At 7b262c2e0a no run printed it.
 func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
 	uri, _ := server(t)
 	for _, c := range []struct {
@@ -696,6 +703,328 @@ func TestBestEffortCheckHoldsNothingThroughARestoreUntilINFRA4015BarrierLands(t 
 	if code := command(context.Background(), []string{"check", "--nats", uri, "--host", "this-machine", "--ssh", ssh}, &stdout, &stderr, judged, http.DefaultClient); code != 1 ||
 		!strings.Contains(stderr.String(), fmt.Sprintf("process %d envoy-listener runs", writer.Process.Pid)) {
 		t.Fatalf("control: check with the writer running = %d, want refused naming it:\n%s", code, stderr.String())
+	}
+}
+
+// capturedLog swaps the default logger for one that writes text lines into a buffer until the test
+// ends, and puts back the log package's output, which slog.SetDefault redirects, then too.
+func capturedLog(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buffer := &lockedBuffer{}
+	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buffer, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(output)
+		log.SetFlags(flags)
+	})
+	return buffer
+}
+
+// lockedBuffer is a buffer the bus's goroutines may write to while the test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// listenerUserServer starts a NATS server with two users: a listener's, the nkey user the hub
+// renders for the in-cluster gke listener, holding exactly core.ListenerHostPermissions("gke"); and
+// a watcher, which a client presenting no credential becomes and which may do anything, so the test
+// reads streams and stream requests through it. It returns the server's URL and the listener
+// user's seed.
+func listenerUserServer(t *testing.T) (uri, seed string) {
+	t.Helper()
+	seed, public := testnats.User(t)
+	_, watcher := testnats.User(t)
+	grant := core.ListenerHostPermissions("gke")
+	everything := core.Rules{Allow: []string{">"}}
+	config, err := core.Authorization{Users: []core.User{
+		{Name: "gke", NKey: public, Publish: &grant.Publish, Subscribe: &grant.Subscribe, HasSeed: true},
+		{Name: "watcher", NKey: watcher, Publish: &everything, Subscribe: &everything},
+	}, NoAuthUser: "watcher"}.Render(nil)
+	if err != nil {
+		t.Fatalf("render the hub's users: %v", err)
+	}
+	_, uri = testnats.StartConfig(t, config, []string{"-js"}, true)
+	return uri, seed
+}
+
+// jetStream opens the watcher's JetStream on uri (listenerUserServer), or on a server with no users.
+func jetStream(t *testing.T, uri string) (*natsgo.Conn, natsgo.JetStreamContext) {
+	t.Helper()
+	conn := testnats.Connect(t, uri)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	return conn, js
+}
+
+// streamRequests records each request of a stream's JetStream API ($JS.API.STREAM.<verb>.<stream>)
+// as it reaches the server.
+type streamRequests struct {
+	conn *natsgo.Conn
+	sub  *natsgo.Subscription
+}
+
+func watchStreamRequests(t *testing.T, conn *natsgo.Conn) *streamRequests {
+	t.Helper()
+	sub, err := conn.SubscribeSync("$JS.API.STREAM.>")
+	if err != nil {
+		t.Fatalf("watch the stream requests: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("watch the stream requests: %v", err)
+	}
+	return &streamRequests{conn: conn, sub: sub}
+}
+
+// take returns each request since the last take, as <verb>.<stream> in the order they came, but
+// those of the notification stream, whose info every connect reads (bus.Connect). The flush, a
+// round trip after the run ended, leaves each request that reached the server queued here.
+func (r *streamRequests) take(t *testing.T) []string {
+	t.Helper()
+	if err := r.conn.Flush(); err != nil {
+		t.Fatalf("flush the stream request watch: %v", err)
+	}
+	var requests []string
+	for {
+		msg, err := r.sub.NextMsg(50 * time.Millisecond)
+		if err != nil {
+			return requests
+		}
+		if request := strings.TrimPrefix(msg.Subject, "$JS.API.STREAM."); !strings.HasSuffix(request, "."+bus.Stream) {
+			requests = append(requests, request)
+		}
+	}
+}
+
+// Until INFRA-840's cutover no hub has the buckets user's key, so `create --break-glass` runs as a
+// listener's NATS user: here one holding exactly the grant the hub renders for the in-cluster gke
+// listener (core.ListenerHostPermissions), which receives its replies on the default _INBOX.
+// prefix. It creates the missing session bucket with the stream configuration the normal path
+// creates, sends the bucket's stream a read and a create and nothing else, takes no writer proof
+// (no kubectl or ssh call), prints no best-effort warning, and logs one line naming the operator,
+// the hub, the bucket and break-glass.
+//
+// The control is the same user's create without the flag: the normal path takes its replies under
+// _INBOX_envoy_buckets, whose subscription the server refuses a listener's grant ("Permissions
+// Violation for Subscription to _INBOX_envoy_buckets..."), so its read of the bucket gets no answer
+// ("read envoy_sessions: context deadline exceeded") and nothing is created. At 7b0c789c53 that was
+// the one create a listener's user had.
+func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	stream := "KV_" + bus.SessionBucket
+	proven := map[string][]string{"box-1": {clean(150)}}
+	// The normal path's stream, on a server of its own, before the listener user's seed is set.
+	normalURI, normalJS := server(t)
+	if code, stdout, stderr := runCommand(t, &world{hostAnswers: proven}, nil, "create", "--nats", normalURI, "--bucket", bus.SessionBucket, "--host", "box-1"); code != 0 {
+		t.Fatalf("the normal path's create = %d\n%s%s", code, stdout, stderr)
+	}
+	normal, err := normalJS.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read the normal path's stream: %v", err)
+	}
+
+	uri, seed := listenerUserServer(t)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	watcher, js := jetStream(t, uri)
+	requests := watchStreamRequests(t, watcher)
+
+	// The server's refusal reaches the connection as an async error, which the bus logs (slog).
+	logs := capturedLog(t)
+	code, stdout, stderr := runCommand(t, &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, nil, "create", "--nats", uri, "--bucket", bus.SessionBucket, "--host", "box-1")
+	const unanswered = "envoy-infra buckets: read " + bus.SessionBucket + ": context deadline exceeded"
+	refusal := `Permissions Violation for Subscription to \"` + InboxPrefix + `.`
+	if code != 1 || !strings.Contains(stderr, unanswered) || !strings.Contains(logs.String(), refusal) {
+		t.Fatalf("control: create as a listener's user without --break-glass = %d, want 1, %q, and the server's %q\n%s%s\nlogs:\n%s", code, unanswered, refusal, stdout, stderr, logs.String())
+	}
+	t.Logf("control: create without --break-glass = %d: %q, after the server's %q", code, unanswered, refusal)
+	if _, err := js.StreamInfo(stream); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("control: the create without --break-glass made %s: %v", stream, err)
+	}
+	requests.take(t)
+
+	w := &world{}
+	code, stdout, stderr = runCommand(t, w, nil, "create", "--break-glass", "--operator", "operator@example.com", "--bucket", bus.SessionBucket, "--nats", uri)
+	if code != 0 || stdout != "created "+bus.SessionBucket+" (1 copies)\n" {
+		t.Fatalf("create --break-glass as a listener's user = %d\n%s%s", code, stdout, stderr)
+	}
+	if len(w.calls) != 0 {
+		t.Fatalf("create --break-glass took a writer proof: %v", w.calls)
+	}
+	if strings.Contains(stderr, bestEffortWarning) {
+		t.Fatalf("create --break-glass printed the best-effort warning, which tells the operator to stop every listener:\n%s", stderr)
+	}
+	logged := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+	if len(logged) != 1 || !strings.Contains(logged[0], "break-glass") || !strings.Contains(logged[0], "operator operator@example.com") ||
+		!strings.Contains(logged[0], " "+bus.SessionBucket+" ") || !strings.Contains(logged[0], " on "+uri+",") {
+		t.Fatalf("create --break-glass logged %q, want one line naming break-glass, the operator, the bucket and the hub", stderr)
+	}
+	if got, want := requests.take(t), []string{"INFO." + stream, "CREATE." + stream}; !slices.Equal(got, want) {
+		t.Fatalf("create --break-glass sent %v to the bucket's stream, want %v", got, want)
+	}
+	created, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read the stream create --break-glass made: %v", err)
+	}
+	if !reflect.DeepEqual(created.Config, normal.Config) {
+		t.Fatalf("create --break-glass made %+v\nthe normal path makes %+v", created.Config, normal.Config)
+	}
+}
+
+// A break-glass create only creates. With the session bucket there, holding a key, it refuses,
+// sends the bucket's stream one read and nothing else, and leaves the stream as it was: the same
+// stream, configuration, messages and key. With a missing bucket named beside it, it creates
+// neither. --break-glass with recreate is refused as a usage error before it connects, and sends
+// the stream nothing.
+func TestBreakGlassRefusesABucketThatExistsAndChangesNothing(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	uri, seed := listenerUserServer(t)
+	watcher, js := jetStream(t, uri)
+	config, _ := bus.CopiedBucketConfig(bus.SessionBucket, 1)
+	kv, err := js.CreateKeyValue(&config)
+	if err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	if _, err := kv.Put("session-1", []byte("held")); err != nil {
+		t.Fatalf("write a key: %v", err)
+	}
+	stream, missing := "KV_"+bus.SessionBucket, "KV_"+bus.RoleClaimBucket
+	before, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read the bucket: %v", err)
+	}
+	t.Setenv("NATS_NKEY_SEED", seed)
+	requests := watchStreamRequests(t, watcher)
+
+	for _, c := range []struct {
+		name string
+		args []string
+		code int
+		says string
+		sent []string
+	}{
+		{"create of the bucket that exists", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
+			1, "refused: " + stream + " exists", []string{"INFO." + stream}},
+		{"create of a missing bucket beside it", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.RoleClaimBucket, "--bucket", bus.SessionBucket},
+			1, "refused: " + stream + " exists", []string{"INFO." + missing, "INFO." + stream}},
+		{"recreate", []string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
+			2, "--break-glass is create's alone", nil},
+		{"--break-glass before recreate", []string{"--break-glass", "recreate", "--operator", "op", "--bucket", bus.SessionBucket},
+			2, "usage: envoy-infra buckets", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			requests.take(t) // the test's own reads of the streams, after the run before
+			w := &world{}
+			code, stdout, stderr := runCommand(t, w, nil, append(c.args, "--nats", uri)...)
+			if code != c.code || !strings.Contains(stderr, c.says) || strings.Contains(stdout, "created") || len(w.calls) != 0 {
+				t.Fatalf("%v = %d, want %d saying %q, nothing created and no proof taken (%v)\n%s%s", c.args, code, c.code, c.says, w.calls, stdout, stderr)
+			}
+			if got := requests.take(t); !slices.Equal(got, c.sent) {
+				t.Fatalf("%v sent %v to the buckets' streams, want %v", c.args, got, c.sent)
+			}
+			after, err := js.StreamInfo(stream)
+			if err != nil || !after.Created.Equal(before.Created) || !reflect.DeepEqual(after.Config, before.Config) ||
+				after.State.Msgs != before.State.Msgs || after.State.LastSeq != before.State.LastSeq {
+				t.Fatalf("%s after the refused run: %v, %+v; want it as it was, %+v", stream, err, after, before)
+			}
+			if entry, err := kv.Get("session-1"); err != nil || string(entry.Value()) != "held" {
+				t.Fatalf("the key after the refused run: %v, %v", entry, err)
+			}
+			if _, err := js.StreamInfo(missing); !errors.Is(err, natsgo.ErrStreamNotFound) {
+				t.Fatalf("the refused run made %s: %v", missing, err)
+			}
+		})
+	}
+}
+
+// --break-glass is refused as a usage error, before anything connects, where it is misused: on
+// recreate or check, beside a proof flag it would leave unchecked, without --operator or with one
+// that spans lines, and without a --bucket; and --operator is refused without it. The URL names no
+// server, so a run that went on would fail to connect, with 1.
+func TestBreakGlassIsRefusedWhereItIsMisused(t *testing.T) {
+	const nowhere = "nats://127.0.0.1:1"
+	for _, c := range []struct {
+		args []string
+		says string
+	}{
+		{[]string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket}, "--break-glass is create's alone"},
+		{[]string{"check", "--break-glass", "--operator", "op"}, "--break-glass is create's alone"},
+		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--host", "box-1"}, "so --host would check nothing"},
+		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--kube-context", "prod", "--connz", "http://hub:8222"}, "so --connz and --kube-context would check nothing"},
+		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--first-deployment"}, "so --first-deployment would check nothing"},
+		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--ssh", "ssm-ssh"}, "so --ssh would check nothing"},
+		{[]string{"create", "--break-glass", "--bucket", bus.SessionBucket}, "--break-glass needs --operator"},
+		{[]string{"create", "--break-glass", "--operator", " ", "--bucket", bus.SessionBucket}, "--break-glass needs --operator"},
+		{[]string{"create", "--break-glass", "--operator", "op\nenvoy-infra buckets: forged", "--bucket", bus.SessionBucket}, "--break-glass needs --operator"},
+		{[]string{"create", "--break-glass", "--operator", "op"}, "--break-glass needs each missing --bucket"},
+		{[]string{"create", "--operator", "op", "--bucket", bus.SessionBucket, "--host", "box-1"}, "--operator names who runs a --break-glass create"},
+	} {
+		w := &world{}
+		code, stdout, stderr := runCommand(t, w, nil, append(c.args, "--nats", nowhere)...)
+		if code != 2 || !strings.Contains(stderr, c.says) || len(w.calls) != 0 {
+			t.Errorf("%q = %d, want the usage error %q and no proof taken (%v)\n%s%s", c.args, code, c.says, w.calls, stdout, stderr)
+		}
+	}
+}
+
+// A deployment's copied buckets get their copies here, where `envoy-infra buckets create` makes
+// them, since no listener creates one (cmd/listener/stream_replicas_test.go,
+// TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing). On a
+// three-server cluster, as a clustered hub runs, a create at --replicas 3, one at
+// ENVOY_NATS_REPLICAS=3 and a break-glass create at ENVOY_NATS_REPLICAS=3 each make streams of three
+// copies, two of them on the other servers. The control is a create with neither setting, which
+// makes one copy, so the reading tells one copy from three.
+func TestCreateMakesTheCopiedBucketsAtTheDeploymentsCopies(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	cluster := testnats.StartCluster(t, 3)
+	uri := cluster.Servers[0].URL()
+	_, js := jetStream(t, uri)
+	for _, step := range []struct {
+		name     string
+		replicas string // ENVOY_NATS_REPLICAS
+		args     []string
+		buckets  []string
+		copies   int
+	}{
+		{"control: neither setting", "", []string{"create", "--host", "box-1", "--bucket", bus.SessionBucket}, []string{bus.SessionBucket}, 1},
+		{"--replicas 3", "", []string{"create", "--host", "box-1", "--replicas", "3", "--bucket", bus.InterestBucket, "--bucket", bus.RoleClaimBucket},
+			[]string{bus.InterestBucket, bus.RoleClaimBucket}, 3},
+		{"ENVOY_NATS_REPLICAS=3", "3", []string{"create", "--host", "box-1", "--bucket", bus.KnownSessionBucket}, []string{bus.KnownSessionBucket}, 3},
+		{"--break-glass at ENVOY_NATS_REPLICAS=3", "3", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.CIStateBucket}, []string{bus.CIStateBucket}, 3},
+	} {
+		t.Setenv(bus.ReplicasEnvVar, step.replicas)
+		w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+		if code, stdout, stderr := runCommand(t, w, nil, append(step.args, "--nats", uri)...); code != 0 {
+			t.Fatalf("%s: %v = %d\n%s%s", step.name, step.args, code, stdout, stderr)
+		}
+		for _, bucket := range step.buckets {
+			info, err := js.StreamInfo("KV_" + bucket)
+			if err != nil {
+				t.Fatalf("%s: read %s: %v", step.name, bucket, err)
+			}
+			placed := 0
+			if info.Cluster != nil {
+				placed = 1 + len(info.Cluster.Replicas)
+			}
+			if info.Config.Replicas != step.copies || placed != step.copies {
+				t.Fatalf("%s: %s has %d copies configured and %d placed, want %d", step.name, bucket, info.Config.Replicas, placed, step.copies)
+			}
+		}
 	}
 }
 

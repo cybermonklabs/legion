@@ -27,6 +27,13 @@
 // neither the notification stream, which every listener and envoy-dispatch create at their first
 // connect, nor any of the buckets. An empty server is no proof that no writer runs - a hub on a new
 // disk is empty while its old clients still run - so the inventory is required with it as without.
+//
+// Until dispatch://INFRA-840's cutover lets the operator connect through the auth service, no hub
+// has the buckets user's key (theorem-labs/agent-infra#4079 declares that user with none), so
+// `create --break-glass` is how a missing copied bucket is made: it runs as a listener's NATS user,
+// which may create these buckets, takes no writer proof, and creates only a bucket the server
+// reports missing (breakGlassCreate). The pull request that removes the create grant from the
+// listener users at the cutover deletes the flag with it.
 package buckets
 
 import (
@@ -45,6 +52,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/nats-io/nats.go"
 
@@ -109,11 +117,13 @@ func Grant() (publish, subscribe []string) {
 	return publish, []string{InboxPrefix + ".>"}
 }
 
-// bestEffortWarning is printed on every run, to standard error, before anything else: the check
-// is observation, not exclusion, until dispatch://INFRA-4015's hold (t-10) excludes every writer
-// at the server - the auth callout refusing every connection but the operator's and every other
-// connection kicked - from the check through the change. Each way it names is a test that asserts
-// today's outcome and must flip then (buckets_test.go, TestBestEffort...).
+// bestEffortWarning is printed on every run but a break-glass create, to standard error, before
+// anything else: the check is observation, not exclusion, until dispatch://INFRA-4015's hold (t-10)
+// excludes every writer at the server - the auth callout refusing every connection but the
+// operator's and every other connection kicked - from the check through the change. Each way it
+// names is a test that asserts today's outcome and must flip then (buckets_test.go,
+// TestBestEffort...). A break-glass create takes no proof, and its run needs no writer stopped
+// (breakGlassCreate), so the warning and its instruction are not its to print.
 const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it four ways:
   - an omitted host or dev box: only the --kube-context and --host you name are checked;
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
@@ -125,6 +135,7 @@ leaves no writer a connection, replaces this.
 `
 
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]
+       envoy-infra buckets create --break-glass --operator NAME --bucket NAME --nats URL
 
   create     create every copied bucket that is missing (or each --bucket), once no writer runs
   recreate   delete each --bucket and create it again, once no writer runs
@@ -142,6 +153,12 @@ bucket is among the buckets. The proof is required before anything changes:
                        streams (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED in the environment)
   --bucket NAME        a copied bucket to act on, repeatable (default: every one, for create)
   --replicas N         the copies a bucket is created with (default ENVOY_NATS_REPLICAS, else 1)
+
+Until INFRA-840's cutover, a missing bucket is created with a listener's credential instead:
+  --break-glass        create each --bucket the server reports missing, as a listener's NATS user
+                       (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), with no writer proof; refused
+                       when any --bucket exists, and it updates and deletes nothing
+  --operator NAME      who runs it, named in the line the run logs; required with --break-glass
 `
 
 // stringList is a repeatable flag.
@@ -151,8 +168,8 @@ func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 func command(ctx context.Context, args []string, stdout, stderr io.Writer, run Runner, client *http.Client) int {
-	fmt.Fprint(stderr, bestEffortWarning)
 	if len(args) == 0 || (args[0] != "create" && args[0] != "recreate" && args[0] != "check") {
+		fmt.Fprint(stderr, bestEffortWarning)
 		help := len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help")
 		fmt.Fprint(stderr, usage)
 		if help {
@@ -162,10 +179,13 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	}
 	action := args[0]
 	flags := flag.NewFlagSet("envoy-infra buckets "+action, flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	// What the parse writes waits until the warning is out, so the warning stays first.
+	var parsed bytes.Buffer
+	flags.SetOutput(&parsed)
 	var f fence
 	var buckets stringList
-	var natsURL string
+	var natsURL, operator string
+	var breakGlass bool
 	replicas := 0
 	flags.Var((*stringList)(&f.kubeContexts), "kube-context", "a Kubernetes context to check")
 	flags.Var((*stringList)(&f.hosts), "host", "a machine to query through ssh")
@@ -175,7 +195,14 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	flags.StringVar(&natsURL, "nats", "", "the NATS server")
 	flags.Var(&buckets, "bucket", "a copied bucket")
 	flags.IntVar(&replicas, "replicas", 0, "the copies a bucket is created with")
-	if err := flags.Parse(args[1:]); err != nil {
+	flags.BoolVar(&breakGlass, "break-glass", false, "create each missing --bucket as a listener's user, with no writer proof")
+	flags.StringVar(&operator, "operator", "", "who runs a --break-glass create")
+	err := flags.Parse(args[1:])
+	if action != "create" || !breakGlass {
+		fmt.Fprint(stderr, bestEffortWarning)
+	}
+	fmt.Fprint(stderr, parsed.String())
+	if err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
@@ -191,6 +218,10 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 			fmt.Fprintf(stderr, "envoy-infra buckets: %s is no bucket a listener copies (%s)\n", bucket, strings.Join(bus.CopiedBuckets(), ", "))
 			return 2
 		}
+	}
+	if refusal := breakGlassUsage(flags, action, breakGlass, operator, len(buckets)); refusal != "" {
+		fmt.Fprintf(stderr, "envoy-infra buckets: %s\n", refusal)
+		return 2
 	}
 	if action == "recreate" && len(buckets) == 0 {
 		fmt.Fprintln(stderr, "envoy-infra buckets: recreate needs each --bucket it deletes")
@@ -209,6 +240,9 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 			}
 			replicas = n
 		}
+	}
+	if breakGlass {
+		return breakGlassCreate(stdout, stderr, natsURL, operator, buckets, replicas)
 	}
 	if len(f.kubeContexts) == 0 && len(f.hosts) == 0 {
 		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster and --host for each machine; --first-deployment proves no writer absent and needs them too")
@@ -280,6 +314,112 @@ func create(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext,
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
 	}
 	return 0
+}
+
+// breakGlassUsage is why the flags of a run misuse --break-glass or --operator, or "" when they
+// do not: the flag is create's alone, takes no proof flag, and needs --operator and each --bucket
+// it creates; --operator names a break-glass run and nothing else. An operator name holding a
+// control character, a line break among them, is refused, so the run's log line stays one line.
+func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operator string, buckets int) string {
+	if !breakGlass {
+		if operator != "" {
+			return "--operator names who runs a --break-glass create; leave it off without --break-glass"
+		}
+		return ""
+	}
+	if action != "create" {
+		return "--break-glass is create's alone: it creates a missing bucket and does nothing else, so it neither deletes one (recreate) nor proves that no writer runs (check)"
+	}
+	var proof []string
+	flags.Visit(func(set *flag.Flag) {
+		switch set.Name {
+		case "kube-context", "host", "ssh", "connz", "first-deployment":
+			proof = append(proof, "--"+set.Name)
+		}
+	})
+	if len(proof) > 0 {
+		return "--break-glass takes no writer proof, so " + strings.Join(proof, " and ") + " would check nothing: leave them off"
+	}
+	if strings.TrimSpace(operator) == "" || strings.ContainsFunc(operator, unicode.IsControl) {
+		return "--break-glass needs --operator, who runs it, on one line: the run logs it"
+	}
+	if buckets == 0 {
+		return "--break-glass needs each missing --bucket it creates"
+	}
+	return ""
+}
+
+// breakGlassCreate is `create --break-glass`: it reads each of buckets' streams (STREAM.INFO
+// KV_<bucket>), and only when the server reports every one of them missing does it create each,
+// with its copied-bucket configuration (bus.CopiedBucketConfig) at replicas copies, after one line
+// on standard error naming the operator, the hub, the bucket and that the run is break-glass. A
+// bucket that exists, or whose read answers anything but "not found", refuses the run, and no
+// bucket is created.
+//
+// It connects as the user the environment names (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), a
+// listener's until dispatch://INFRA-840's cutover, and takes its replies on nats.go's default
+// _INBOX. prefix, which a listener's grant may receive on and the buckets user's (InboxPrefix) may
+// not.
+//
+// It takes no writer proof. A missing bucket only gains a create: the writes its deleted stream
+// acknowledged were lost when it was deleted, and every listener has answered its writes 503 since,
+// so a create while listeners run loses nothing more. And the proof cannot reach the production VM
+// hub's processes, so with it this path could not run there (dispatch://INFRA-4094, decisions.md).
+//
+// It only creates. It sends the create nats.go's KV makes (CreateKeyValue), with the configuration
+// the normal path passes it (bus.CreateCopiedBucket), but not through that path, which opens a
+// bucket it finds and raises its copies with a stream update. JetStream answers a create of a
+// stream that exists as done when the configurations are equal, which changes nothing, and
+// otherwise "stream name already in use", which nats.go follows with an update only when the two
+// differ in nothing but the discard policy and direct get (nats.go@v1.53.1 kv.go:525-545). So a
+// bucket another run makes between the read and the create keeps its data, and every setting but
+// those two.
+func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, buckets []string, replicas int) int {
+	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", natsURL, err)
+		return 1
+	}
+	defer nc.Close()
+	js := nc.JS()
+	var refusals []string
+	for _, bucket := range buckets {
+		stream := "KV_" + bucket
+		if _, err := js.StreamInfo(stream); err == nil {
+			refusals = append(refusals, stream+" exists")
+		} else if !errors.Is(err, nats.ErrStreamNotFound) {
+			refusals = append(refusals, fmt.Sprintf("STREAM.INFO %s did not answer that it is missing: %v", stream, err))
+		}
+	}
+	if len(refusals) > 0 {
+		fmt.Fprintln(stderr, "envoy-infra buckets create --break-glass: refused: it creates only buckets the server reports missing, and none at all while any --bucket is there or unread")
+		for _, refusal := range refusals {
+			fmt.Fprintf(stderr, "  refused: %s\n", refusal)
+		}
+		return 1
+	}
+	hub := hubOf(natsURL)
+	for _, bucket := range buckets {
+		config, _ := bus.CopiedBucketConfig(bucket, replicas)
+		fmt.Fprintf(stderr, "envoy-infra buckets: break-glass: operator %s creates %s on %s, as the environment's NATS user and with no writer proof\n", operator, bucket, hub)
+		if _, err := js.CreateKeyValue(&config); err != nil {
+			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
+	}
+	return 0
+}
+
+// hubOf is the server natsURL names, without the user or password a URL may carry, for the
+// break-glass line; natsURL as it is when it does not parse as a URL with a host.
+func hubOf(natsURL string) string {
+	u, err := url.Parse(natsURL)
+	if err != nil || u.Host == "" {
+		return natsURL
+	}
+	u.User = nil
+	return u.String()
 }
 
 // fence is the proof that no writer of the buckets runs.
