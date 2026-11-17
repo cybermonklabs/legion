@@ -4832,7 +4832,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   — the session's, its interest record's or the claims view's, all within a 3.5 s budget
   — never a session a caller may take for ended or one with no topics or roles.
   With `stopped` in its `include=` list (`includes`), and only then, the route answers one more kind of session:
-  one it would otherwise answer `404` that the known-session store holds a record of is `200 {"session_id","state":"stopped","last_seen","title","capabilities","topics"}` (`stoppedSessionInfo`), read from memory, with no `port` and no `host`, not even empty ones, since a session that is not running has no address to be reached at.
+  one it would otherwise answer `404` that the known-session store holds a record of is `200 {"session_id","state":"stopped","last_seen","title","capabilities","topics"}` (`listenerwire.StoppedSessionInfo`), read from memory, with no `port` and no `host`, not even empty ones, since a session that is not running has no address to be reached at.
   A session whose entry the list accepts answers its ordinary body, whose `state` is its entry's, so both shapes of this one request carry `state`.
   Without `stopped` in the list the route answers that session `404`, and `GET /v1/sessions` never lists a stopped session whatever it is asked.
   Dispatch's delivery is the one reader that asks for it, so an issue claim's holder, a role resolution and the session list never see a stopped session.
@@ -4887,7 +4887,7 @@ a cleanup that failed is logged at WARN (`registry role claim old holder cleanup
 `GET /v1/interests/` is cache-only, and `/healthz` keeps its own 3 s budget (`healthzBudget`).
 
 `send` and `publish` accept optional `in_reply_to`, `supersedes`, `urgency`, `expects_reply`, and `expires_at`, and `publish` additionally `dedupe_key`; empty optional fields are omitted.
-`urgency` is `low`, `med`, `high`, or `blocking`; `expects_reply` is `false`, `optional`, or `required`, and the ingress also reads the old string `none` as `false`, which the comment at the parser in `internal/contracts/expects_reply.go` says what removes.
+`urgency` is `low`, `med`, `high`, or `blocking`; `expects_reply` is `false`, `optional`, or `required`, and the ingress also reads the old string `none` as `false`, which the comment at the parser in `listenerwire/expects_reply.go` says what removes.
 `urgency` is informational: the renderers show it to the reader, and no part of Envoy orders, holds or delivers a message by it.
 A session id or role that becomes a KV key NATS would refuse (`bus.EnsureKeyValue`) is a 413 naming its size when too long and a 400 naming the key when it holds an empty token or whitespace, or a character outside nats.go's key alphabet (`ses:bad`, `bus.ErrInvalidKey`), on every route that reads or writes one.
 Every `/v1` 4xx/5xx response, including the startup gate's 503, is JSON: `{"error":"<message>","expected":["field"]}`.

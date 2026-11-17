@@ -449,7 +449,7 @@ func TestRolePreservesListenerNotFoundText(t *testing.T) {
 
 // dispatch://INFRA-392. The listener's lookup route answers an unresponsive holder with its 404:
 // the role cannot be reached now, its state is named, and claim_released is false because the
-// claim stands (cmd/listener roleHolderError, pinned by its own
+// claim stands (listenerwire.RoleRefusal, pinned by its own
 // TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas). A reader that took that
 // refusal for "the role has no holder" dropped every role-routed message to a session that
 // missed its heartbeats - the failure this change exists to remove - so the holder it names is

@@ -154,8 +154,8 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 
 // A listener that confirms a role message before it answers says why it did not deliver one:
 // 504 with receipt_timeout or delivery_failed, naming the holder and the envelope it forwarded
-// (roleSendFailure, packages/envoy/cmd/listener/confirmed.go), 403 with capability when the
-// holder cannot take the payload's delivery mode (capabilityRefusal), or 403 with no reason when
+// (listenerwire.RoleSendFailure), 403 with capability when the holder cannot take the payload's
+// delivery mode (listenerwire.CapabilityRefusal), or 403 with no reason when
 // the NATS server denied the forward under the listener's own grant (writeBusUnavailable,
 // packages/envoy/cmd/listener/api.go). Each is told apart from every other failure, and a 504 or
 // 403 whose body is not that JSON — a proxy's gateway timeout, a reason this daemon does not

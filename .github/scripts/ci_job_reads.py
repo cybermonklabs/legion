@@ -2321,8 +2321,9 @@ GATES = [
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:363 (the new URL at :359-362)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
-        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:62 reads every file of generated (:15, this one :7) and gen-go.ts's outputs list (--check compares the committed file)"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:62 reads every file of generated (:15, this one :8-10) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
+        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
+        (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:53 reads it for the envelope, :81 reads every file of generated (:20-26, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:81 reads every file of generated (:20-26, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
         (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
     ) + bun_job("contracts")),
 

@@ -29,7 +29,7 @@ import (
 
 // Finding is one value a call to the other party encodes or decodes with a type the wire package
 // does not declare: Pos is the value's place in the source, relative to the directory Check ran
-// in where it lies under it; Type is the value's type as its package spells it (wake.sendBody),
+// in where it lies under it; Type is the value's type as its package spells it (envoy.Session),
 // through one pointer, then one slice, then one pointer, or Untyped for a value whose static type
 // is an interface; Call is the JSON call or transport helper it was passed to.
 type Finding struct {
