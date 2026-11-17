@@ -30,6 +30,8 @@ type sessionView struct {
 	mu      sync.Mutex
 	issue   string
 	refused string
+	// ownOnly is that s1 follows no topic family: only its own subject and its mentions reach it.
+	ownOnly bool
 	copies  []sessionCopy
 }
 
@@ -93,7 +95,7 @@ func (v *sessionView) PublishAsync(item contracts.Envelope) <-chan error {
 		answer <- errors.New("the stream does not capture " + item.Topic)
 		return answer
 	}
-	if strings.HasPrefix(item.Topic, v.topicFamily()) || item.Topic == contracts.LegacyAgentSubject("s1") {
+	if (!v.ownOnly && strings.HasPrefix(item.Topic, v.topicFamily())) || item.Topic == contracts.LegacyAgentSubject("s1") {
 		id, err := strconv.ParseInt(item.SourceEventID, 10, 64)
 		if err != nil {
 			answer <- err
