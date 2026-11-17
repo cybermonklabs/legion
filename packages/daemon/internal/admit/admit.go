@@ -2699,13 +2699,14 @@ const (
 // reads: that pass reads them after its sends, and a pass with nothing owed sends nothing. A
 // stalled architect is owed nothing the pass sends, so a gate that read no arm would answer no
 // for every stall, and a quiet project's controller would hear of the stall only at the next fact
-// of the project, which can be its own hourly tick. The arms add two statements, the read of the
-// controller's registration and the read of their marks, and only where an arm holds: the one arm
-// that reads the record itself (architectTookNothing) reads it only for a root its own terms
-// already hold. While no controller is registered the pass tells nobody of a stall
-// (wakeStalledArchitects), so the gate answers no for a stall alone then: a gate that answered
-// yes would apply a fact a minute for as long as no controller runs, each one a processed event
-// that nothing prunes.
+// of the project, which can be its own hourly tick. Past one read of the project's pause and,
+// after a pause, one of the launches it held for architects (readStallFloor, readPauseLetOuts),
+// the arms add two statements, the read of the controller's registration and the read of their
+// marks, and only where an arm holds: the one arm that reads the record for a root itself
+// (architectTookNothing) reads it only for a root its own terms already hold. While no
+// controller is registered the pass tells nobody of a stall (wakeStalledArchitects), so the gate
+// answers no for a stall alone then: a gate that answered yes would apply a fact a minute for as
+// long as no controller runs, each one a processed event that nothing prunes.
 //
 // A paused project owes nothing here (decision 11 of dispatch://INFRA-3759): the pass promotes
 // nothing while the pause stands (promoteHolds), so a fact the gate let through would do nothing,

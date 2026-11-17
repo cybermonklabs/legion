@@ -549,6 +549,37 @@ func OpenOrLastPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, b
 	return p, true, nil
 }
 
+// PauseLetOutsTx is, through tx's snapshot and by issue, when the wake pacing let out the launch
+// of that issue's role that pause held: the latest stuck clock (pod_resumes.clock_at) of the
+// role's resumes the pause held (pod_resumes.pause_id). The resume starts that clock at its own
+// moment (SetProjectResumeClocksTx), and the reservation of the launch moves it to the moment the
+// pacing lets the launch out (SetResumeClock), so it is the let-out once the launch has reserved
+// its turn. An issue whose role the pause held no wake of is absent. project is the project
+// token, as pod_resumes holds it. The architect-stalled arms read it once per reading for the
+// architects (admit's readPauseLetOuts), so an architect the pause stopped owing a launch counts
+// no time before that launch was let out.
+func PauseLetOutsTx(ctx context.Context, tx pgx.Tx, project string, pause int64, role claim.Role) (map[string]time.Time, error) {
+	rows, err := tx.Query(ctx, `select issue, max(clock_at) from pod_resumes
+		where project = $1 and pause_id = $2 and role = $3 group by issue`, project, pause, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("read the let-outs of the %s launches pause %d held: %w", role, pause, err)
+	}
+	defer rows.Close()
+	letOuts := map[string]time.Time{}
+	for rows.Next() {
+		var issue string
+		var at time.Time
+		if err := rows.Scan(&issue, &at); err != nil {
+			return nil, fmt.Errorf("read the let-outs of the %s launches pause %d held: %w", role, pause, err)
+		}
+		letOuts[issue] = at
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the let-outs of the %s launches pause %d held: %w", role, pause, err)
+	}
+	return letOuts, nil
+}
+
 // liveClaimsOf is every live claim of the project whose token is project, in token order: one
 // that is not suspended, failed or retired, and is not the controller's (claim.IsController),
 // which the pause never stops (spec Design item 8). A claim of another project's issue, which the

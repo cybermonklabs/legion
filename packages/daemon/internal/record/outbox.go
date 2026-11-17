@@ -794,17 +794,18 @@ const (
 // Store.TellArchitectsStalled), and the first words of the notice's reason, so a controller that
 // reads two wakes of one root reads two different facts:
 //
-//   - ArchitectTookNothing: the task of the entry the architect's phases row names was first
-//     queued to its claim more than workflow.StrandedReleaseWake ago and no turn of that claim
-//     confirmed it. It is counted from the first queueing of that entry, which the claim's
-//     handshake keeps (supervise.Claim.Handshake), however many times the daemon queued that
-//     entry's task again. A task a let-go of the claim's process took back from a turn is counted
-//     only while the claim is ready, working or idle, from the later of that first queueing and
-//     the relaunched agent's ready. The daemon writes no second start of that entry while its task
-//     stands (workflow.OwedEntry), so the wake is the one thing left. A task the root's own record
-//     has superseded — one that carries an entry, of a run before its generation or of an entry
-//     the row has moved past — is no such task: the sweep writes the start of the row's entry and
-//     that start's task takes its place (workflow.ArchitectStartPending,
+//   - ArchitectTookNothing: the task of the entry the architect's phases row names stands queued
+//     to its claim, no turn of that claim confirmed it, and more than
+//     workflow.StrandedReleaseWake has passed since the later of the first queueing of that entry,
+//     which the claim's handshake keeps (supervise.Claim.Handshake) however many times the daemon
+//     queued that entry's task again, and the last ready of the claim's agent. The task is counted
+//     only while the claim is ready, working or idle, so a launch the wake pacing holds back counts
+//     nothing; a task no let-go took back, held by a claim that is suspended, failed or retired, is
+//     counted from that first queueing. The daemon writes no second start of that entry while
+//     its task stands (workflow.OwedEntry), so the wake is the one thing left. A task the root's
+//     own record has superseded — one that carries an entry, of a run before its generation or of
+//     an entry the row has moved past — is no such task: the sweep writes the start of the row's
+//     entry and that start's task takes its place (workflow.ArchitectStartPending,
 //     supervise.Delivery.SupersededBy). Nor is a task of no entry, such as a wake's: no start takes
 //     its place, and the sweep holds the entry's start back until a turn takes it.
 //   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
@@ -814,7 +815,11 @@ const (
 //     since the daemon queues the next start of its architect only when that wait is answered.
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
-//     raised, whichever is later.
+//     raised, whichever is later, counted from no earlier than the moment the wake pacing let
+//     out the launch of the architect that the latest pause held, and, once a turn of the
+//     architect has confirmed a task of that entry, than the moment it first did. While no turn
+//     has confirmed one, the pacing's queue counts against the bound, and a healthy architect
+//     confirms its entry's task long before the bound.
 type ArchitectStallArm string
 
 const (

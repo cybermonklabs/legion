@@ -3235,10 +3235,11 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // took it back from a turn (interrupted), with the moment the claim's agent last said it was ready
 // (last_ready) and the claim's own handshake of the last entry it was queued a task of
 // (handshake_*), whose queued moment is when that entry's task was first queued, however many
-// times it was queued again. Those are what say an architect took nothing — the task of the entry
-// its row names, standing unconfirmed, counted from that entry's first queueing, and for a task a
-// let-go took back from the relaunched agent's ready where that is later — which the admission
-// pass reads of every root it weighs (admit's architectStalls).
+// times it was queued again, and whose confirmed moment is when a turn first confirmed one. Those
+// are what say an architect took nothing — the task of the entry its row names, standing
+// unconfirmed, counted while the claim's agent is up from the later of that entry's first
+// queueing and the agent's ready — and when the bound of a root slow before its gate starts,
+// which the admission pass reads of every root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,

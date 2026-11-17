@@ -67,12 +67,20 @@ func stallMarks(stalls []architectStall) []record.ArchitectStall {
 // the pause has stopped every architect an arm would name and holds every start and task the
 // daemon would send one, and the passes that tell the controller do not run then (promoteHolds,
 // convergeEntries). After a pause, each arm whose bound is a stretch of time counts it from no
-// earlier than the end of the latest pause (stallFloor).
+// earlier than the end of the latest pause (stallFloor). The first arm counts no time while the
+// architect's launch waits in the wake pacing (tookNothingSince). The third counts from no
+// earlier than the let-out of the launch the latest pause held for the architect, whose let-outs
+// it reads once (readPauseLetOuts), and, once the architect has confirmed a task of its entry,
+// from no earlier than that confirmation (architectSlowBeforeGate).
 func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotReading, facts record.LineFacts,
 	sent map[string]bool,
 ) ([]architectStall, error) {
 	floor, paused, err := a.readStallFloor(ctx, tx)
 	if err != nil || paused {
+		return nil, err
+	}
+	letOuts, err := a.readPauseLetOuts(ctx, tx, floor)
+	if err != nil {
 		return nil, err
 	}
 	var stalls []architectStall
@@ -93,7 +101,8 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		}{
 			{record.ArchitectTookNothing, took},
 			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], floor, now)},
-			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, floor, now)},
+			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, run, floor,
+				letOuts[root.Key], now)},
 		} {
 			if arm.why != "" {
 				stalls = append(stalls, architectStall{root: root, arm: arm.arm, why: arm.why, at: now})
@@ -109,10 +118,18 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 // pauseHolds, supervise's sendPending), so while it stood an architect could register no step of
 // its gate, take no task and be relaunched by no start. That time is no time the architect failed
 // to use. So each arm whose bound is a stretch of time counts it from the later of the moment it
-// names and this one, as the stuck clocks restart at the resume (decision 14 and departure 2 of
-// dispatch://INFRA-3759, store.SetProjectResumeClocksTx). Without it, the resume's own pass
-// (internal/daemon's applyResumePass) would tell the controller of each stall the pause made, and
-// spend the arm's one mark for the run on it (record.Store.TellArchitectsStalled).
+// names and this one, as no stuck clock starts before the resume either (decision 14 and
+// departure 2 of dispatch://INFRA-3759, store.SetProjectResumeClocksTx). Without it, the resume's
+// own pass (internal/daemon's applyResumePass) would tell the controller of each stall the pause
+// made, and spend the arm's one mark for the run on it (record.Store.TellArchitectsStalled).
+//
+// The floor alone leaves the resume's wave of launches counted: the stuck clocks start at the
+// let-out of each launch the wake pacing lets out (store.Store.SetResumeClock), and an architect
+// far back in the wave waits longer than the first arm's bound before its own launch. So the first
+// arm counts nothing while the architect's agent is not up (tookNothingSince), and the third
+// counts from no earlier than the let-out of the launch the pause owed the architect and, once
+// the architect has confirmed its entry's task, than that first confirmation
+// (architectSlowBeforeGate, readPauseLetOuts).
 type stallFloor struct {
 	pause int64
 	at    time.Time
@@ -133,6 +150,29 @@ func (a *Admission) readStallFloor(ctx context.Context, tx pgx.Tx) (stallFloor, 
 		return stallFloor{}, true, nil
 	}
 	return stallFloor{pause: p.ID, at: p.EndedAt}, false, nil
+}
+
+// readPauseLetOuts is, by root key, when the wake pacing let out the launch of the root's
+// architect that the floor's pause held (store.PauseLetOutsTx, the stuck clock of the architect's
+// resume of that pause), read once per reading through tx, and nothing for a project no pause has
+// ended. A root whose architect the pause held no launch of is absent. The pause owes an
+// architect it stops a launch where the architect holds a task it did not finish or a launch the
+// pacing had parked, and it holds each wake of an architect that arrives while it stands; the
+// resume lets each such launch out through the pacing, so the architect could take no turn
+// before that let-out.
+func (a *Admission) readPauseLetOuts(ctx context.Context, tx pgx.Tx, floor stallFloor) (map[string]time.Time, error) {
+	if floor.pause == 0 {
+		return nil, nil
+	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return nil, err
+	}
+	letOuts, err := store.PauseLetOutsTx(ctx, tx, project, floor.pause, claim.RoleArchitect)
+	if err != nil {
+		return nil, fmt.Errorf("read the architect let-outs of %s for the architect-stalled arms: %w", a.project, err)
+	}
+	return letOuts, nil
 }
 
 // count is the moment an arm counts its bound from, given the moment the arm names (since): since,
@@ -175,9 +215,12 @@ func (f stallFloor) sinceFloor(now time.Time) time.Duration {
 // While the project is paused it answers no arm, because architectStalls reads none then. The
 // pause has stopped every architect an arm would name, and holds every start and task the daemon
 // would send one, so no arm says anything of the architect, and `legion state` lists no stall the
-// pause made. After the resume it reads the arms as the pass does, from no earlier than the
-// pause's end (stallFloor), as the stuck clocks restart then (decision 14 and departure 2 of
-// dispatch://INFRA-3759).
+// pause made. After the resume it reads the arms as the pass does: from no earlier than the
+// pause's end (stallFloor), with no time counted by the first arm while an architect waits for
+// its launch in the resume's wave of launches, and with the third counting from no earlier than
+// the let-out of a launch the pause held, and than the first confirmation of the architect's
+// entry where there is one, as the stuck clocks start at each launch's let-out (decision 14 and
+// departure 2 of dispatch://INFRA-3759).
 func (a *Admission) ArchitectStallArms(ctx context.Context, tx pgx.Tx) (map[string][]record.ArchitectStallArm, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
@@ -256,12 +299,15 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // architectTookNothing is the first arm: the architect's claim holds the task of the entry its
 // phases row names (row), of the root's run, no turn of the claim has confirmed it, and it has
 // stood so more than workflow.StrandedReleaseWake since the moment the arm counts it from
-// (tookNothingSince): when a task of that entry was first queued to the claim, or, for a task a
-// let-go took back from a turn, the later of that moment and the relaunched agent's ready; and in
-// either case no earlier than the end of the project's latest pause (floor). The pause keeps such
-// a task unsent (supervise's sendPending), and stops at its ready an architect launched before
-// the task went, so the task stands pending, unconfirmed and not taken back, through the whole
-// pause. It answers what the record says, and "" for a root it does not read.
+// (tookNothingSince): while the claim's agent is up to take a prompt, the later of when a task of
+// that entry was first queued to the claim and that agent's last ready; for a task no let-go took
+// back, held by a claim that is suspended, failed or retired, when that task was first queued;
+// and in every case no earlier than the end of the project's latest pause (floor). While the
+// claim's agent is not up, which is where a launch the wake pacing has parked stands, it counts
+// nothing. The pause keeps such a task unsent (supervise's sendPending), and stops at its ready
+// an architect launched before the task went, so the task stands pending, unconfirmed and not
+// taken back, through the whole pause. It answers what the record says, and "" for a root it does
+// not read.
 //
 // The task is read as the delivery of the entry the row names, of the root's generation, which is
 // R7's "its entry's task" (dispatch://INFRA-2614), and no other. A task of an earlier run, or of
@@ -298,7 +344,8 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		task.QueuedAt.IsZero() {
 		return "", nil
 	}
-	since, counted := tookNothingSince(*held)
+	queued := firstQueued(*held)
+	since, counted := tookNothingSince(*held, queued)
 	if !counted {
 		return "", nil
 	}
@@ -311,56 +358,71 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		return "", err
 	}
 	unconfirmed := "No turn of that claim has confirmed it."
-	if task.Interrupted {
+	switch {
+	case task.Interrupted:
 		unconfirmed = fmt.Sprintf("A let-go of the claim's process took it back from a turn of it, and no turn has confirmed it since %s, "+
 			"the later of its first queueing and the moment the claim's relaunched agent was ready.", since.UTC().Format(time.RFC3339))
+	case since.After(queued):
+		unconfirmed = fmt.Sprintf("No turn of that claim has confirmed it since %s, when the claim's agent was last ready to take it.",
+			since.UTC().Format(time.RFC3339))
 	}
 	return fmt.Sprintf("the task of phase entry %d was first queued to the architect's claim of %s at %s. %s%s The root stands at %s. The daemon writes no second start while that task stands.",
-		task.Entry, root.Key, firstQueued(*held).UTC().Format(time.RFC3339), unconfirmed, floored, root.Phase), nil
+		task.Entry, root.Key, queued.UTC().Format(time.RFC3339), unconfirmed, floored, root.Phase), nil
 }
 
-// tookNothingSince is the moment the first arm counts the pending task of held from, and false
-// where it does not count that task at all. held holds a pending task.
+// tookNothingSince is the moment the first arm counts the pending task of held from, given when
+// a task of that task's entry was first queued to the claim (queued, firstQueued), and false
+// where it counts nothing of the task at this reading. held holds a pending task.
 //
-// A task no let-go took back is counted from the first queueing of its entry (firstQueued), in
-// whatever state the claim stands: no turn ever confirmed it, so the architect took nothing of
-// it, and a failed claim that holds it raises the second arm beside this one. The task's own
-// queueing is not that moment where the entry was queued before: a task retired unconfirmed puts
-// its entry back (supervise's retirePending), the sweep sends that entry again, and the new
-// delivery is queued at the moment of that send. Counted from it, an architect that has left the
-// entry's work untaken past the bound would have its count started again at every send.
+// The arm counts only time in which the architect could have taken the task. A claim's agent can
+// take a prompt in the states ready, working and idle (supervise.SaidReady). A claim enters them
+// only through its agent's ready (supervise's ready, the one move out of registered into ready),
+// which writes the claim's last ready (record.RoleClaim.LastReady) on every launch, a relaunch's
+// included. So in those states the task is counted from the later of its entry's first queueing
+// and that ready: a task the agent has been able to take for more than the bound with no turn
+// confirming it raises the arm. A task first queued while the agent was up is counted from that
+// queueing, and one queued before a relaunch is counted from the relaunched agent's ready.
+//
+// In queued, launch_uncertain, launching, shim_connected and registered no agent is up to take a
+// prompt, so the task counts nothing. A launch the wake pacing has parked stands there
+// (supervise's waitOnMachine persists the claim launching), and the pacing lets launches out at
+// its rate (worker_wakes_per_minute, 8 by default, one every 7.5 seconds). After a pause, the
+// resume lets every launch the pause held out through it, so an architect ninety launches back
+// waits about eleven minutes for its own, past the bound. Counted through that wait, its task
+// would raise the arm before its agent was up, about a stall the resume's queue made, and spend
+// the arm's one mark for the run. A wave of wakes no pause held queues launches the same way, and
+// the rule is the same for it.
 //
 // A task a let-go took back from a turn (supervise.Delivery.Interrupted) is one a turn of the
 // architect did confirm. Every relaunch takes the claim's task back so (supervise's
 // Machine.interrupted): a death, an out-of-memory kill, the stale-plugin relaunch, a repoint, the
 // stall backstop and a held suspension's deadline. The take-back copies the task under a new id,
 // keeps its QueuedAt, clears its confirmation and marks it, and the task waits for the relaunch to
-// send it again. Counted from its entry's first queueing, it would raise the arm on the first pass
-// of the relaunch of an architect whose task was first queued more than ten minutes ago, about an
-// architect that worked the task, and spend the arm's one mark for the run.
+// send it again, whose ready counts it again. The mark is never cleared, so a task a later refusal
+// takes back again is still counted from that ready, which is then the later moment anyway. In
+// suspended, failed and retired such a task counts nothing: a suspended claim has no process, and
+// its task waits for the resume, whose ready counts it again; a failed or a retired claim has no
+// process either, and no start reaches it without a relaunch, which is the second arm's reading.
 //
-// So such a task is counted only while the claim's agent can take a prompt, which is the states
-// ready, working and idle. A claim enters them only through its agent's ready (supervise's ready,
-// the one move out of registered into ready), which writes the claim's last ready
-// (record.RoleClaim.LastReady) on every launch, a relaunch's included, so the task is counted from
-// the later of its entry's first queueing and that ready: a task the relaunched agent has been
-// able to take for more than the bound with no turn confirming it raises the arm. The mark is
-// never cleared (supervise.Delivery.Interrupted), so a task a later refusal takes back again is
-// still counted from that ready, which is then the later moment anyway. The other states count
-// nothing. In queued, launch_uncertain, launching, shim_connected and registered the relaunch has
-// not yet brought up an agent that can take a prompt. A suspended claim has no process: its task
-// waits for the resume, whose ready counts it again. A failed or a retired claim has no process
-// either, and no start reaches it without a relaunch, which is the second arm's reading.
-func tookNothingSince(held record.RoleClaim) (time.Time, bool) {
-	queued := firstQueued(held)
-	if !held.Pending.Interrupted {
-		return queued, true
-	}
-	switch held.State {
-	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
+// A task no let-go took back, held by a suspended, failed or retired claim, is counted from the
+// first queueing of its entry: no turn ever confirmed it, so the architect took nothing of it,
+// and a failed claim that holds it raises the second arm beside this one.
+//
+// The first queueing of the entry is the moment rather than the task's own queueing where the
+// entry was queued before: a task retired unconfirmed puts its entry back (supervise's
+// retirePending), the sweep sends that entry again, and the new delivery is queued at the moment
+// of that send. Counted from it, an architect that has left the entry's work untaken past the
+// bound would have its count started again at every send.
+func tookNothingSince(held record.RoleClaim, queued time.Time) (time.Time, bool) {
+	switch {
+	case supervise.SaidReady(held.State):
 		if held.LastReady.After(queued) {
 			return held.LastReady, true
 		}
+		return queued, true
+	case held.Pending.Interrupted:
+		return time.Time{}, false
+	case held.State == supervise.StateSuspended || held.State == supervise.StateFailed || held.State == supervise.StateRetired:
 		return queued, true
 	}
 	return time.Time{}, false
@@ -469,24 +531,44 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 }
 
 // architectSlowBeforeGate is the third arm: the root stands at phase.Admitted with no step of
-// its design gate registered, more than workflow.ArchitectGateWake after the later of its
-// admission and the moment its architect's entry was last raised, counted from no earlier than
-// the end of the project's latest pause (floor): the pause stopped the architect, which could
-// register no step while it stood. It answers what the record says, and "" for a root it does not
-// read.
+// its design gate registered, more than workflow.ArchitectGateWake after the latest of these
+// moments: its admission or the moment its architect's entry was last raised, whichever is later
+// (since); the end of the project's latest pause (floor), since the pause stopped the architect,
+// which could register no step while it stood; the let-out of the launch the latest pause held
+// for its architect (letOut, the zero time for none); and, where a turn of its architect has
+// confirmed a task of that entry, the moment it first did. It answers what the record says, with
+// the moment it counted from, and "" for a root it does not read.
 //
-// The later of the two moments is the issue's own decision. A root a person answered after a six
-// hour wait comes back to admitted holding the admission row it has held all along, so its
-// admitted moment is six hours old and the bound would be past the moment it resumed. The entry
-// its resume raised is what says when the work came back to it. For a first admission and for a
-// re-admission the two are one moment, since the promotion that takes the slot raises the entry
-// in the same transaction (promoteHolds).
+// The later of the admission and the raised entry is the issue's own decision. A root a person
+// answered after a six hour wait comes back to admitted holding the admission row it has held all
+// along, so its admitted moment is six hours old and the bound would be past the moment it
+// resumed. The entry its resume raised is what says when the work came back to it. For a first
+// admission and for a re-admission the two are one moment, since the promotion that takes the
+// slot raises the entry in the same transaction (promoteHolds).
+//
+// The architect can take no turn of the entry before the wake pacing lets its launch out, and a
+// resume lets every launch a pause held out through the pacing, 8 a minute by default. So a root
+// the resume's own pass admits, or one whose architect the pause stopped, would otherwise count
+// the architect's wait in that queue, about eleven minutes at ninety launches and longer in a
+// larger project, against its 90 minutes. Two moments say when that wait ended. An architect
+// that confirmed its entry before a pause, and that the pause stopped owing a launch, was let out
+// at the stuck clock of its resume of that pause (readPauseLetOuts), which the reservation of
+// that launch sets. And the claim's handshake of the entry (record.RoleClaim.Handshake) keeps
+// when a turn first confirmed a task of it, which is after the let-out of the launch that turn
+// ran in; that moment does not move at a later relaunch, since the handshake keeps the first
+// confirmation of an entry that a turn of the worker made (supervise's EntryHandshake).
+//
+// While the handshake of the row's entry and the root's run holds no confirmation, the arm counts
+// from since, the floor and the let-out alone, so the pacing's queue can feed it only then. A
+// root whose architect has not confirmed a task of its entry 90 minutes after that moment is one
+// where something other than the queue is wrong — a start that never runs, a task of no entry
+// held ahead of the entry's, an architect that took nothing — and the arm tells of it.
 //
 // It reads a root standing at admitted and no other. A root a hand-over carried in stands in a
 // phase of the run that carried it, where its tree's work is already running under a phase
 // worker, and a gate it has not registered holds nothing up yet.
-func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, floor stallFloor,
-	now time.Time,
+func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, run record.RoleRun,
+	floor stallFloor, letOut, now time.Time,
 ) string {
 	if root.Phase != phase.Admitted || len(gate.Rows) > 0 {
 		return ""
@@ -498,10 +580,19 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 	if since.IsZero() {
 		return ""
 	}
-	from, floored := floor.count(since)
+	from, counted := floor.count(since)
+	if letOut.After(from) {
+		from, counted = letOut, fmt.Sprintf(" That time is counted from %s, when the wake pacing let out its architect's launch, which pause %d held.",
+			letOut.UTC().Format(time.RFC3339), floor.pause)
+	}
+	if held := run.Claim; held != nil && row.Entry != 0 && held.Handshake.Entry == row.Entry &&
+		held.Handshake.Generation == root.Generation && held.Handshake.ConfirmedAt.After(from) {
+		from, counted = held.Handshake.ConfirmedAt, fmt.Sprintf(" That time is counted from %s, when a turn of its architect first confirmed a task of phase entry %d.",
+			held.Handshake.ConfirmedAt.UTC().Format(time.RFC3339), row.Entry)
+	}
 	if now.Sub(from) <= workflow.ArchitectGateWake {
 		return ""
 	}
 	return fmt.Sprintf("%s has stood at admitted since %s with no step of its design gate registered, which is more than %s.%s",
-		root.Key, since.UTC().Format(time.RFC3339), workflow.ArchitectGateWake, floored)
+		root.Key, since.UTC().Format(time.RFC3339), workflow.ArchitectGateWake, counted)
 }

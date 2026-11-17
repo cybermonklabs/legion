@@ -2375,10 +2375,12 @@ Both are absent where no entry was queued to that claim in the issue's current g
 A caller from a pod whose claims record a contract below 146 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/server.go`).
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
-- the architect took nothing: the task of the entry its `phases` row names was first queued to its claim more than ten minutes ago, and no turn confirmed it.
+- the architect took nothing: the task of the entry its `phases` row names stands queued to its claim with no turn confirming it, more than ten minutes after the later of its first queueing and the moment the claim's agent last said it was ready (`claims.last_ready`).
   The claim keeps one such moment, for the entry it was last queued a task of: when that entry's task was first queued (`claims.handshake_queued_at`), so a task the daemon sends again for that entry is counted from that first queueing and not from the send.
-  A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
-  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than that first queueing, so the relaunch of an architect that was working its task raises no wake.
+  The task counts only while the claim is ready, working or idle, which is when its agent can take a task.
+  While the claim is queued, launching or registered, the task counts nothing: a launch that the wake pacing holds back stands `launching`, so an architect far back in a long wave of launches, such as the one a resume lets out, raises no wake for the time its launch waits.
+  A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent, whose ready counts it again, so the relaunch of an architect that was working its task raises no wake.
+  While the claim is suspended, failed or retired, a task that such a death or replacement took back from its turn counts nothing, and any other task counts from its first queueing.
   A task the root's own record has superseded — one that carries an entry, of a run before its generation or of an entry its `phases` row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.
   A task that carries no entry, such as the one a wake of the architect's released pod gives, raises it not at all either, and no start takes its place: the daemon sends it first, and sends the entry's task once a turn has taken it.
 
@@ -2388,12 +2390,16 @@ The daemon wakes the project's controller with `architect-stalled on <KEY>` (`sk
   A root waiting on a person raises it as any root does, and its reason says the root waits, because the daemon queues the next start of its architect only when that wait is answered.
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
+  After a pause, it counts from no earlier than the moment the wake pacing let out a launch of the architect that the pause held (`pod_resumes.clock_at`).
+  Once a turn of the architect has confirmed a task of that entry, it counts from no earlier than that first confirmation (`claims.handshake_confirmed_at`), which comes after the pacing let the architect's launch out.
+  So the time an architect waits for its launch in the pacing counts only while no turn has confirmed its entry's task, and an architect that has confirmed none in 90 minutes has something other than the queue wrong with it, such as a start that never ran.
 
 The daemon reads the three arms on every admission pass, and its sweep of each minute runs while an arm holds that no wake has told yet, so in a project where no other fact arrives the controller is woken within a minute of the arm holding.
 While no controller is registered for the project, the daemon marks no arm told and queues no wake, and its sweep does not run for an arm alone, so the first pass after a controller registers tells it.
 Each tree root of `GET /legion/v1/state` carries `architectStalls`, the arms that hold for its architect at that read (`took-nothing`, `claim-unreachable`, `slow-before-gate`), whether or not the controller was told of them.
 The daemon reads them by the same rules as the wake, and the plain `legion state` prints them, with each arm's words, on its line of the roots a wake names, which names a root for nothing else, whatever its two numbers say.
 While the project is paused the daemon reads no arm, and after a pause each arm counts its time from no earlier than the end of the latest pause ([Pausing a project](#pausing-a-project)).
+With or without a pause, the first arm counts no time in which the architect's launch waits in the wake pacing, and the third counts that time only while no turn of the architect has confirmed its entry's task.
 
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, so the upgrade sends no running architect a first task.
@@ -5572,7 +5578,8 @@ The admission pass promotes issues again, and each launch that it causes takes t
 A long queue at the resume is not reported as stuck.
 A woken role's stuck clock (`pod_resumes.clock_at`) starts when the pacing lets its launch out, and the resume starts it again for each wake that the pause held.
 The stuck warning and the stranded-claim report read that clock, and both pass over a project that is paused.
-The architect-stalled wake reads none of its arms while the project is paused, and after a pause each arm counts its time from no earlier than the end of the latest pause, so the resume tells the controller of no stall that the pause made (`stallFloor`, `internal/admit/architect_stall.go`).
+The architect-stalled wake reads none of its arms while the project is paused, and after a pause each arm counts its time from no earlier than the end of the latest pause (`stallFloor`, `internal/admit/architect_stall.go`).
+Its took-nothing arm counts nothing while the architect's launch waits in the pacing, and its slow-before-gate arm counts from no earlier than the let-out of the launch that the pause held for the architect and, once the architect has confirmed its entry's task, than that confirmation (`tookNothingSince` and `architectSlowBeforeGate`), so the resume's queue counts against that arm only while an architect's entry stays unconfirmed.
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
