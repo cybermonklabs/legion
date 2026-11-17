@@ -101,6 +101,11 @@ type fakeBroker struct {
 	lastProof              string // the Proof header the most recent Enroll call carried
 	lastProofURL           string // the exact URL that Proof header was signed for
 
+	// enrollHeldFor, while set, answers every Enroll whose proof is present 403 MEMBERSHIP_HELD
+	// naming that person, as the broker answers a launcher route of a credential whose operator
+	// Dispatch holds until they sign in again: a refusal of the person, not of the credential.
+	enrollHeldFor string
+
 	lastLoginRequest   string // the compact request object the most recent device authorization carried
 	pendingThumbprint  string // the embedded key's thumbprint from that request object
 	deviceCode         string // the device code minted for the most recent login
@@ -197,6 +202,11 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				f.enrollUnauthorizedNext--
 			}
 			writeJSON(w, 401, map[string]string{"code": "LAUNCHER_INVALID", "error": "the launcher credential is not valid"})
+			return
+		}
+		if f.enrollHeldFor != "" {
+			writeJSON(w, 403, map[string]string{"code": "MEMBERSHIP_HELD",
+				"error": f.enrollHeldFor + "'s credentials are held by Dispatch; they work again when " + f.enrollHeldFor + " signs in to Dispatch, or when Google can be reached again"})
 			return
 		}
 		if f.failFirst > 0 {
