@@ -109,9 +109,28 @@ func (s *supervision) oweStallNotice(c supervise.Claim, stop supervise.StallBack
 	s.backstopOwed[c.Token] = stallNoticeOwed{claim: c, stop: stop}
 }
 
+// oweStallNoticeAgain puts back a notice the sweep took out of the owed set and could not write,
+// unless the claim owes another one by now. Whatever is owed for it since was owed by a
+// machine's own report while this one was in the sweep's hand (stallBackstopped), which is a
+// later stall of the same worker, and the newer record is the one its owner wants
+// (oweStallNotice): putting the older one back over it would tell the owner a stall the
+// daemon has since acted on again, and never tell the one it acted on last.
+func (s *supervision) oweStallNoticeAgain(c supervise.Claim, stop supervise.StallBackstopStop) {
+	s.backstopMu.Lock()
+	defer s.backstopMu.Unlock()
+	if _, newer := s.backstopOwed[c.Token]; newer {
+		return
+	}
+	if s.backstopOwed == nil {
+		s.backstopOwed = map[claim.Token]stallNoticeOwed{}
+	}
+	s.backstopOwed[c.Token] = stallNoticeOwed{claim: c, stop: stop}
+}
+
 // tellStallsOwed writes the notices a store refused since the last sweep. Each is taken out of
-// the owed set before it is tried, and put back where it fails, so the sweep and the machine's
-// own goroutine never write one row twice: a notice is in the set or in a hand, never both.
+// the owed set before it is tried, and put back where it fails unless a newer one was owed
+// meanwhile (oweStallNoticeAgain), so the sweep and the machine's own goroutine never write one
+// row twice: a notice is in the set or in a hand, never both.
 func (s *supervision) tellStallsOwed(ctx context.Context) {
 	s.backstopMu.Lock()
 	owed := s.backstopOwed
@@ -119,7 +138,7 @@ func (s *supervision) tellStallsOwed(ctx context.Context) {
 	s.backstopMu.Unlock()
 	for _, notice := range owed {
 		if ctx.Err() != nil || !s.tellStallBackstopped(ctx, notice.claim, notice.stop) {
-			s.oweStallNotice(notice.claim, notice.stop)
+			s.oweStallNoticeAgain(notice.claim, notice.stop)
 		}
 	}
 }

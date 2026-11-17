@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -521,4 +522,50 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 				read.Approval, approved+1)
 		}
 	})
+}
+
+// The publish replaces the issue's whole set, so two publishes of one issue at the same time leave
+// one of the two sets, whole, and never a mix, and each answers the set it stored: the same rule as
+// the role-holder publish (issue_role_holders.go), whose acceptance found the mix. Twenty rounds,
+// because one round can pass by the order the two happen to run in.
+func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	createAdviceProject(t, handler, "DGATE")
+	issue := createAdviceIssue(t, handler, "DGATE", "Racing publishes", nil).Key
+	sets := [][]issueDesignGate{
+		{{Step: model.GatedStepCriteria, ArtifactID: "artifact-a"}},
+		{{Step: model.GatedStepSpec, ArtifactID: "artifact-b"}},
+	}
+	for round := range 20 {
+		publishDesignGates(t, handler, issue, []issueDesignGate{{Step: model.GatedStepDecisions, ArtifactID: "artifact-z"}})
+		codes := make([]int, 2)
+		answers := make([][]issueDesignGate, 2)
+		var start, done sync.WaitGroup
+		start.Add(1)
+		for index, set := range sets {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				start.Wait()
+				response := publishDesignGatesResponse(t, handler, issue, map[string]any{"gates": set, "actor": sessionActor()})
+				codes[index] = response.Code
+				if response.Code == http.StatusOK {
+					answers[index] = decodeBody[issueDesignGates](t, response).Gates
+				}
+			}()
+		}
+		start.Done()
+		done.Wait()
+		stored := recordedDesignGates(t, handler, issue)
+		if !slices.Equal(stored, sets[0]) && !slices.Equal(stored, sets[1]) {
+			t.Errorf("round %d: the issue records %v, want exactly %v or %v", round+1, stored, sets[0], sets[1])
+		}
+		for index, set := range sets {
+			if codes[index] != http.StatusOK {
+				t.Errorf("round %d: publish %d answered %d, want 200", round+1, index, codes[index])
+			} else if !slices.Equal(answers[index], set) {
+				t.Errorf("round %d: publish %d of %v answered %v, want the set it stored", round+1, index, set, answers[index])
+			}
+		}
+	}
 }

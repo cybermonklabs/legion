@@ -1671,11 +1671,15 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
 // first sweep sends; the publish of the documents a gated issue's own gates record, which the
 // boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
-// and that same sweep sends; and the read of a gate's own document, which the boot's catch-up
-// makes for every root it reads (bindGateRequest through dispatch.Client.Approval). It reports
-// whether it answered r. A board that leaves one of these to its own default arm fails the test
-// with an unexpected request, which is what this helper exists to stop: none of them belongs to a
-// test here.
+// and that same sweep sends; the publish of an issue's role sessions, which the boot queues for
+// every issue with a recent claim (daemon.queueRoleHoldersPublish) and each boot ready and each
+// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); and the
+// read of a gate's own document, which the boot's catch-up makes for every root it reads
+// (bindGateRequest through dispatch.Client.Approval). It reports whether it answered r. A board
+// that leaves one of these to its own default arm fails the test with an unexpected request,
+// which is what this helper exists to stop: none of them belongs to a test here.
+// role_holder_publish_test.go and TestRoleHoldersLandInScratchDispatch are the tests of the
+// role-holder publication.
 func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, project string) bool {
 	t.Helper()
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/projects/") &&
@@ -1685,6 +1689,11 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	}
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
 		strings.HasSuffix(r.URL.Path, "/design-gates") {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
+		strings.HasSuffix(r.URL.Path, "/role-holders") {
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}

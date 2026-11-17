@@ -27,6 +27,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	payloads := []OutboxPayload{
 		OrdinaryStatusWrite("testing", "in_progress", ""),
 		OrdinaryStatusWrite("done", "in_progress", "Closed by its architect: no change is needed."),
+		// The workflow's own move that no worker's act explains, a head that conflicts with its base,
+		// carries its reason to post on the issue before the status (workflow's moveReason).
+		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
@@ -56,6 +59,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		WorkspaceRemove{Linger: 3},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
+		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -222,7 +226,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish}
 	lanes := map[OutboxKind][]OutboxLane{}
 	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
 		for _, kind := range LaneKinds(lane) {
@@ -259,6 +263,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a status write of no kind", payload: StatusWrite{Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind ""`},
 		{name: "a status write of a kind nobody gave a rule", payload: StatusWrite{Kind: "escalation", Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind "escalation"`},
 		{name: "empty status", payload: StatusWrite{Kind: OrdinaryStatusRow}, reason: "empty status"},
+		{name: "a reason on a re-assertion", payload: StatusWrite{Kind: ReassertStatusRow, Status: "in_progress", ObservedStatus: "done", Reason: "set back"}, reason: "only a done write or the workflow's own move does"},
+		{name: "a reason on a hand-over", payload: StatusWrite{Kind: HandOverStatusRow, Status: "todo", ObservedStatus: "in_progress", HandOverTree: "LEGION-200", HandOverLinger: 3, Reason: "handed over"}, reason: "only a done write or the workflow's own move does"},
 		{name: "unknown notice", payload: Notice{Kind: "unknown"}, reason: "unknown notice kind"},
 		{name: "a triage notice for an architect", payload: Notice{Kind: TriageNotice}, reason: "unknown notice kind"},
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},

@@ -481,7 +481,7 @@ func TestSkillsConfigurationDriftsAndKeptLaunchesUseTheHeldRepository(t *testing
 			s := &sandbox{}
 			s.Spec.PodTemplate = old.podTemplate(l)
 			now := skillsRuntime(t)
-			if reasons := now.shapeDrift(s, l.kind); len(reasons) != 1 || !strings.Contains(reasons[0], "skills_repository") {
+			if reasons := now.shapeDrift(s, l.shapeKey()); len(reasons) != 1 || !strings.Contains(reasons[0], "skills_repository") {
 				t.Errorf("skills change produced no ordinary pod drift: %q", reasons)
 			}
 			kept, readable := now.keptBy(s, l)
@@ -500,7 +500,7 @@ func TestSkillsConfigurationDriftsAndKeptLaunchesUseTheHeldRepository(t *testing
 			} else if !strings.Contains(command, SkillsDir+"/repo") {
 				t.Errorf("kept launch did not name its pod's clone: %s", command)
 			}
-			if oldShape, nowShape := podShape(old, controllerPod{}), podShape(now, controllerPod{}); oldShape != nowShape {
+			if oldShape, nowShape := podShape(old, controllerPod{}, nil), podShape(now, controllerPod{}, nil); oldShape != nowShape {
 				t.Error("issue skills configuration drifted the controller's pod")
 			}
 		})

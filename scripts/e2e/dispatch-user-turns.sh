@@ -186,14 +186,14 @@ bearer() { curl -fsS -H "Authorization: Bearer $(cat "$work/dispatch-token")" -H
 listener() { curl -fsS -H "@$work/envoy-auth-header" -H 'Content-Type: application/json' "$@"; }
 page() { bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" "$@"; }
 
-# The operator's shell less the running session's own Oh My Pi variables (controller-start-tmux.sh's
-# operator_env), with the run's HOME and profile, and this run's listener, NATS and Dispatch.
-# OMP_SKIP_SETUP keeps a fresh profile's first launch out of the first-run setup wizard, which
-# otherwise holds the terminal for the whole run (packages/tui/src/setup/wizard.ts at the pin).
+# The operator's shell less the running session's own Oh My Pi variables (omp_session_unsets,
+# lib/omp-home.sh), with the run's HOME and profile, and this run's listener, NATS and Dispatch. The
+# profile's model route shuts the first-run setup wizard (omp_setup_wizard_off, lib/omp-home.sh),
+# which otherwise holds the terminal for the whole run.
 launch_session() {
   local command
-  command=$(printf '%q ' env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH \
-    HOME="$omp_home" OMP_PROFILE="$profile" OMP_SKIP_SETUP=1 \
+  command=$(printf '%q ' env "${omp_session_unsets[@]}" \
+    HOME="$omp_home" OMP_PROFILE="$profile" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_TOKEN_FILE="$work/envoy-token" ENVOY_NATS_URL="$nats_url" \
     DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
     mise x "$omp_tool" -- omp "$@")

@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-const launcherUsage = "usage: legion launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)"
+const launcherUsage = "usage: legion launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)"
 
 // roleList collects a repeated --role: an issue pod's container names every resident role, the
 // controller's pod exactly one.
@@ -48,6 +48,9 @@ func runLauncher(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	sessionUser := flags.String("session-user", "", "the IAM login this pod signs in to the session database as")
 	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates with this pod's own credentials and signs in as; optional, and given only with the three other session flags")
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
+	microVM := flags.Bool("microvm", false, "the pod runs in a GKE Sandbox microVM rather than under gVisor")
+	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider (a microVM issue pod's container: with --microvm and --roles-dir)")
+	metadataProvider := flags.String("metadata-identity-provider", "", "the cluster's identity provider the metadata endpoint exchanges the pod's ServiceAccount token with: https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>")
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
 	}
@@ -57,10 +60,15 @@ func runLauncher(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	}
 	cfg := launcher.Config{
 		Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
-		Stdout: stdout, Stderr: stderr,
+		Stdout: stdout, Stderr: stderr, MicroVM: *microVM,
 		SessionDatabase: ompsessions.Database{
 			Instance: *sessionInstance, Name: *sessionDatabase, User: *sessionUser, ImpersonateServiceAccount: *sessionAccount,
 		},
+	}
+	// Either metadata flag names the endpoint, so one given without the other is refused as
+	// named in part (launcher.Config's validate), as are both outside a microVM issue pod.
+	if *metadataPool != "" || *metadataProvider != "" {
+		cfg.Metadata = &launcher.MetadataConfig{WorkloadPool: *metadataPool, IdentityProvider: *metadataProvider}
 	}
 	if *rolesDir != "" {
 		cfg.RolesDir, cfg.Roles, cfg.TestPostgres = *rolesDir, roles, *testPostgres

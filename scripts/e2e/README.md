@@ -2784,6 +2784,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The ticks are kept as `controller-ticks.json`, and `boot`'s set is in the note for context;
   the daemon that reported the gap keeps running, which every later checkpoint shows.
   Tree 3 stays held, its planner live, for `full-agent-negative`; `controller-walk` takes it out.
+  The operator-launched controller starts without the operator session's own Oh My Pi and Envoy variables ([`omp_session_unsets`](#libomp-homesh)), as `controller-start-tmux.sh` starts its own, so no settings overlay of that session reaches the run's profile.
   The operator-launched controller, started with `LEGION_GH_PATH` at mise's `gh` (the devbox's `gh` wrapper replaces `GH_CONFIG_DIR` in an agent session), holds its gh bundle under `$work/controller-state/gh`;
   read from the repository owner's directory there with mise's `gh`, it answers tree 1's pull request's state (`OPEN`, `MERGED` or `CLOSED`) and the review App's bot as viewer, with `GH_CONFIG_DIR=/nonexistent` failing, and its stderr names the review App and the bundle's owners, and `github-credential.log` exists
 
@@ -2962,6 +2963,7 @@ The Go daemon runs on a real Postgres with this checkout's two plugins in an iso
 The pinned Oh My Pi is launched through mise.
 The run needs no model route: the controller's one model turn, the start message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's `/legion-controller-start`, the word the command puts on Oh My Pi's command line, sends once Oh My Pi's startup is over, fails against the profile's default, a static-key provider that listens nowhere, and no check reads its answer.
 The profile names the roles the task agents use and that default, which is all the boot gate's agent-model check resolves.
+Its `config.yml` also shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which would otherwise hold both controller panes, so `controller-claims-the-role` would time out with the wizard's `Sign in to your providers` step on the screen.
 
 ```bash
 bash scripts/e2e/controller-start-tmux.sh
@@ -3025,7 +3027,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 
 - `liveness-probe-against-the-listener`
 
-  `controller.Prober` on the live listener calls the second session alive and the first gone
+  `controller.Prober` on the live listener calls the second session `live` and the first `gone`
 
 - `exit-code-is-oh-my-pis`
 
@@ -3213,7 +3215,8 @@ jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib
 ## dispatch-user-turns.sh
 
 LEGION-394's acceptance: a person's direct Send or Aside from Dispatch's conversation page is the session's own user turn, and everything else keeps its Envoy card.
-One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched with `controller-start-tmux.sh`'s `operator_env` line and `OMP_SKIP_SETUP=1` (a fresh profile's first launch otherwise sits in the first-run setup wizard), its cwd under `/tmp` — registers with a real Envoy listener and NATS.
+One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched with `controller-start-tmux.sh`'s `operator_env` line, its cwd under `/tmp` — registers with a real Envoy listener and NATS.
+The profile's model route shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which a fresh profile's first launch otherwise sits in.
 Dispatch, built from the checkout with NATS on and its trusted identity header, serves the SPA this checkout builds, and Playwright drives the conversation page as the person the header names.
 The session's model turns go through the route `LEGION_E2E_MODEL_ROUTE` names:
 the model gateway on the operator's own hawk login ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh)), or a local key file ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)).
@@ -5998,11 +6001,13 @@ It does not see a `docker run` continued over lines, `podman` or a launcher that
 ## lib/omp-home.sh
 
 The run's own `HOME` for Oh My Pi, so a stage proof's isolated profile lives in its work directory and the operator's `~/.omp/profiles` is never written or deleted.
-Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller and the controller proof source it.
+Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller and the controller proof source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
 
 ```sh
 . "$root/scripts/e2e/lib/omp-home.sh"     # sourced, never run
 make_omp_home "$work/omp-home"
+omp_setup_wizard_off "$work/omp-home/.omp/profiles/$profile/agent/config.yml"
+env "${omp_session_unsets[@]}" HOME="$work/omp-home" OMP_PROFILE="$profile" "$work/legion" controller start --config "$work/controller.yaml"
 ```
 
 Oh My Pi places a profile from the home directory alone: `os.homedir()/.omp/profiles/<name>` (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
@@ -6029,6 +6034,17 @@ Panes commit as their App's identity (`JJ_USER` and `JJ_EMAIL`), which `"own"` n
 
 A proof's panes and controller therefore see none of the operator's `~/.gitconfig`, `~/.claude`, `~/.codex` or `~/.aws`, which is what a Sandbox pod sees.
 The gateway key command alone runs under the operator's `HOME` ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh)).
+
+`omp_setup_wizard_off FILE` appends `startup.setupWizard: false` to `FILE`, the `agent/config.yml` of a profile the run writes, and every writer of a profile that an interactive Oh My Pi opens calls it: the three model-route libraries and the controller proof.
+An interactive Oh My Pi in a terminal, such as the one `legion controller start` runs in a tmux pane, opens its first-run setup wizard (`Setup step 1 of 5`, `Sign in to your providers`) while the profile's `setupVersion` is below the build's `CURRENT_SETUP_VERSION`, and on a fresh profile the wizard blocks the session's first command and normal editor interaction (`runInteractiveMode` in `packages/coding-agent/src/main.ts` and `selectSetupScenes` in `packages/tui/src/setup/wizard.ts`, at the pin).
+`startup.setupWizard: false` shuts the wizard whatever setup version the build counts to; an Oh My Pi in `--mode rpc`, as every daemon pane runs, never opens it.
+A named profile's own settings file is its `agent/config.yml`, and it inherits no other `config.yml` of the home (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
+Only the working directory's project settings and `PI_CONFIG_FILES` overlays merge over it, so each profile the run writes carries the line itself.
+
+`omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
+`-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH`.
+They are that session's id, the mark Oh My Pi puts on the shells its bash tool spawns, its settings overlays (laid over every profile Oh My Pi opens), the NATS its Envoy plugin dials, and the Oh My Pi binary that `legion controller start` and the daemon would run in place of `omp_invocation`.
+`legion controller start` hands Oh My Pi its caller's environment, so the four rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `parked-decision-devbox.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
 
 ## lib/leftovers.sh
 

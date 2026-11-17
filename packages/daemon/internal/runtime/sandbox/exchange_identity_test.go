@@ -107,6 +107,9 @@ func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
 // exchange identity and every Sandbox is the one it was before the key existed (R9): each golden
 // of manifestCases, the enrolled root's among them, is byte for byte unchanged, no pod projects a
 // ServiceAccount token for any audience but the enrollment's, and no role is told either variable.
+// A microVM case's metadata endpoint token (workloadIdentityTokenVolume), for the Workload Identity
+// pool's audience, is the endpoint's and no exchange identity
+// (TestAMicroVMPodWithMetadataMountsAProjectedTokenNoRoleSees pins it), so it is passed over.
 func TestNoIdentityWithoutTheKey(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -117,10 +120,10 @@ func TestNoIdentityWithoutTheKey(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			r.agentSecrets = tc.agentSecrets
+			tc.apply(r)
 			checkGolden(t, name, manifestOf(t, r, tc.spec))
 			for _, v := range podOf(t, r, tc.spec).Volumes {
-				if v.Projected == nil {
+				if v.Projected == nil || v.Name == workloadIdentityTokenVolume {
 					continue
 				}
 				for _, s := range v.Projected.Sources {

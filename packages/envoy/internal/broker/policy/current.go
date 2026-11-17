@@ -23,11 +23,11 @@ import (
 // and only a change of a secret's state writes a line: a load that finds what the one before
 // found writes nothing, however often it runs.
 //
-// It also reads each kind secret's stored value, once for each version, kind and shape a load or
+// It also reads each type secret's stored value, once for each version and type a load or
 // reread lists that this pod has not decoded together, and decodes it with secrets.ParseValue
-// under that kind and shape (readValues), so a value no mint could use is refused
+// under that type (readValues), so a value no mint could use is refused
 // (ReasonValueMalformed) from the load that first lists it, at pod start too, rather than at the
-// first mint an agent needed. A secret of no kind is never read, and a load that lists what the
+// first mint an agent needed. A secret of no type is never read, and a load that lists what the
 // one before listed reads no value. The value is decoded and dropped: it is never logged, counted
 // by value or kept.
 type Current struct {
@@ -52,20 +52,20 @@ type Current struct {
 	// value is refused: every set Current makes live is base with the secrets whose values are
 	// refused taken out (withhold), and a reread's answer is compared with base, not with that.
 	base *Set
-	// values is, for each kind secret base serves, by Name, what this pod knows of its stored
-	// value: the version, kind and shape a read now decodes under, the ones it last decoded under,
+	// values is, for each type secret base serves, by Name, what this pod knows of its stored
+	// value: the version and type a read now decodes under, the ones it last decoded under,
 	// whether that value is refused, and whether its reads are failing (valueState). A secret base
-	// stops serving as a kind secret leaves it, with whatever refusal it held.
+	// stops serving as a type secret leaves it, with whatever refusal it held.
 	values map[string]*valueState
 	now    func() time.Time
 }
 
-// valueKey is what a kind secret's value is decoded under: the version of the value the listing
-// names (secrets.Listing.Version), and the kind and shape tags that say how it is read, which a
+// valueKey is what a type secret's value is decoded under: the version of the value the listing
+// names (secrets.Listing.Version), and the type tag that says how it is read, which a
 // retag changes and leaves the version as it was.
-type valueKey struct{ version, kind, shape string }
+type valueKey struct{ version, secretType string }
 
-// valueState is what Current knows of one kind secret's stored value.
+// valueState is what Current knows of one type secret's stored value.
 type valueState struct {
 	// listed is the key the latest load or reread listed: what a read of the value decodes under
 	// now.
@@ -86,7 +86,7 @@ type valueState struct {
 }
 
 // valueRead is one value read a load or reread hands readValues: the secret's Name, its store
-// source (Secret.Source without the kind KindSource froze into it) and the key its value is
+// source (Secret.Source without the type TypeSource froze into it) and the key its value is
 // decoded under.
 type valueRead struct {
 	name, source string
@@ -102,7 +102,7 @@ type valueOutcome struct {
 }
 
 // NewCurrent loads the policy once, failing when that load fails, reads and decodes the value of
-// each kind secret it serves (readValues), on ctx like the load, so a value the decoder refuses
+// each type secret it serves (readValues), on ctx like the load, so a value the decoder refuses
 // is refused before NewCurrent answers and so before the first request, and then reloads it
 // every interval until ctx ends, each reload given that interval before it fails, so one stuck
 // on a Secrets Manager that does not answer holds the writer lock no longer. The first load
@@ -170,7 +170,7 @@ func (c *Current) unlock() { <-c.mu }
 // began - before its listing was fetched - is read again alone and kept as that read finds it,
 // since the full listing may not show the change yet. recent anchors a name a reread settled, and
 // one an earlier reload's own re-describe caught a change to. Any failed metadata read fails the
-// refresh. Then it reads the value of each kind secret the load lists at a version, kind or shape
+// refresh. Then it reads the value of each type secret the load lists at a version or type
 // this pod has not decoded (readValues), on ctx, and makes live what those decodes leave; a value
 // read that fails fails no refresh. No caller waits on a reload's value reads, so it records the
 // ones it finished however ctx ends, waiting for the writer lock on ctx without its cancellation:
@@ -254,7 +254,7 @@ var ErrValueUnchecked = errors.New("the reread merged the secret's tags, and its
 // the same way, so a lagging listing does not undo a reason the reread settled and write the line
 // back.
 //
-// A kind secret whose value this pod has not decoded at the version, kind and shape the reread
+// A type secret whose value this pod has not decoded at the version and type the reread
 // lists is then read and decoded (readValues), on ctx, and the answer is the policy's after that:
 // a served secret whose value is refused answers ReasonValueMalformed. A caller is waiting on a
 // reread, so it waits for the writer lock to record that read only while ctx lives, and records
@@ -380,7 +380,7 @@ func answers(set *Set, name, id string, lk Lookup) bool {
 	return served == lk.Served && secret == lk.Secret && set.versions[name] == lk.version && set.Refused[id] == lk.refusal() && set.Pending[id] == lk.pending()
 }
 
-// list records, for each kind secret base serves, the key a read of its value decodes under now
+// list records, for each type secret base serves, the key a read of its value decodes under now
 // (listOne), forgets every name base does not serve, with any refusal of its value, and answers
 // a read for each secret whose value this pod has not decoded under that key, in name order. The
 // caller holds mu.
@@ -400,18 +400,18 @@ func (c *Current) list() []valueRead {
 	return reads
 }
 
-// listOne is list for name alone: it records the version, kind and shape base lists for it as
-// the key a read of its value decodes under, or forgets it when base serves it as no kind secret
+// listOne is list for name alone: it records the version and type base lists for it as
+// the key a read of its value decodes under, or forgets it when base serves it as no type secret
 // or not at all, and answers the read of its value, with true, when this pod has not decoded the
 // value under that key. The caller holds mu.
 func (c *Current) listOne(name string) (valueRead, bool) {
 	secret, served := c.base.Secrets[name]
-	kind, source, minted, err := ParseKindSource(secret.Source)
+	secretType, source, minted, err := ParseTypeSource(secret.Source)
 	if !served || !minted || err != nil {
 		delete(c.values, name)
 		return valueRead{}, false
 	}
-	key := valueKey{version: c.base.versions[name], kind: kind, shape: secret.Shape}
+	key := valueKey{version: c.base.versions[name], secretType: secretType}
 	state, known := c.values[name]
 	if !known {
 		state = &valueState{}
@@ -425,7 +425,7 @@ func (c *Current) listOne(name string) (valueRead, bool) {
 }
 
 // readValues reads each value reads names through the loader's store (Store.Read, counted as
-// read=value), on ctx, and decodes it under its kind and shape (DecodeValue), dropping the value at
+// read=value), on ctx, and decodes it under its type (DecodeValue), dropping the value at
 // once; the reads are made without the writer lock. A read that fails once ctx has ended stops
 // them: it and the reads after it record nothing, and the next load or reread makes them again.
 // It then takes the writer lock for as long as wait lives (lock) to record the reads it finished.
@@ -472,7 +472,7 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 		case err != nil:
 			outcome.err = err
 		default:
-			outcome.refused = DecodeValue(read.key.kind, read.key.shape, value) != nil
+			outcome.refused = DecodeValue(read.key.secretType, value) != nil
 		}
 		outcomes = append(outcomes, outcome)
 	}
@@ -516,24 +516,24 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 	return cut
 }
 
-// RefuseValue refuses the value of the kind secret name at version, read as kind under shape, as
+// RefuseValue refuses the value of the type secret name at version, read as type, as
 // a load's decode refuses one (ReasonValueMalformed): the mint path calls it when
 // secrets.ParseValue refused the value a release read, with the version the live policy listed
-// for name when that release read it (Set.ValueVersion) and the kind and shape that release
+// for name when that release read it (Set.ValueVersion) and the type that release
 // decoded it under, so a pod whose own load could not read the value refuses the secret from its
 // first mint. A key that is no longer the one listed - a load or reread has listed a new value
-// since, or a retag a new kind or shape for the same value - is not refused, since that key is
-// decoded afresh; nor is a name Current holds no kind secret for. A secret it newly refuses is
+// since, or a retag a new type for the same value - is not refused, since that key is
+// decoded afresh; nor is a name Current holds no type secret for. A secret it newly refuses is
 // published, writing one RefusedMessage line. It waits on the writer lock for as long as ctx
 // lives, the release's own request: one whose caller has gone marks nothing, and the next mint of
 // the secret, or the next load that reads a new version, marks it then.
-func (c *Current) RefuseValue(ctx context.Context, name, version, kind, shape string) {
+func (c *Current) RefuseValue(ctx context.Context, name, version, secretType string) {
 	if c.lock(ctx) != nil {
 		return
 	}
 	defer c.unlock()
 	state, known := c.values[name]
-	if !known || state.listed != (valueKey{version: version, kind: kind, shape: shape}) {
+	if !known || state.listed != (valueKey{version: version, secretType: secretType}) {
 		return
 	}
 	wasRefused := state.refused
@@ -543,7 +543,7 @@ func (c *Current) RefuseValue(ctx context.Context, name, version, kind, shape st
 	}
 }
 
-// withhold is base as Current serves it: each kind secret whose value is refused
+// withhold is base as Current serves it: each type secret whose value is refused
 // (valueState.refused) taken out of Secrets and put in Refused under ReasonValueMalformed, with
 // its owner tag. With none refused it is base itself. The caller holds mu.
 func (c *Current) withhold() *Set {
