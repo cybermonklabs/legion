@@ -1,15 +1,18 @@
 // The operator's limit on the messages each agent session sends through this listener: the two
-// settings it is read from, and the start line that states it.
+// settings it is read from, the start line that states it, the take each counted message makes
+// from its sender's count, and the 429 a message past that count is answered with.
 
 package main
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -87,4 +90,128 @@ func describeSenderLimit(l *senderLimit) string {
 		return "listener sender limit: none"
 	}
 	return fmt.Sprintf("listener sender limit: %d messages a minute, %d at once, for each agent session in this process", l.perMinute, l.burst)
+}
+
+// take counts item against its sender's count at the limit's clock, and answers the charge the
+// route marks as it answers (senderCharge), or the refusal it answers 429 with when the count is
+// empty. Both routes call it after their own checks and before they read a session, resolve a
+// role, report a wake or store anything, so a refused message reaches nobody (R2).
+//
+// The sender is the session a secrets-broker token proved, else the request's trimmed
+// source_session: sessionNotBound has already refused a body that names a session the token does
+// not, so a token's session is the sender whether the body names it or not. A message whose source
+// is not agent (messageEnvelope writes agent for an absent one) is another system's delivery,
+// Dispatch's or Envoy's own among them, and a message with no sender is how the Legion daemon
+// sends its notices (packages/daemon/internal/notify): neither is counted, and both answer nil and
+// nil, as no limit does.
+func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCharge, *senderRefusal) {
+	if l == nil || item.Source != "agent" {
+		return nil, nil
+	}
+	sender := strings.TrimSpace(item.SourceSession)
+	if caller, ok := brokerCaller(r); ok && caller.Session != "" {
+		sender = caller.Session
+	}
+	if sender == "" {
+		return nil, nil
+	}
+	now := l.now()
+	giveBack, ok := l.counts.TakeAt(sender, now)
+	if !ok {
+		// The wait is read at the instant the take was refused at, so the seconds the answer
+		// names are the ones until this count holds a message again.
+		return nil, &senderRefusal{
+			sender:            sender,
+			perMinute:         l.perMinute,
+			burst:             l.burst,
+			retryAfterSeconds: ratelimit.RetryAfterSeconds(l.counts.WaitAt(sender, now)),
+		}
+	}
+	return &senderCharge{sender: sender, giveBack: giveBack}, nil
+}
+
+// senderCharge is one message's take from its sender's count (senderLimit.take). The route marks
+// it as it goes: spend where it stores the message, may have stored it or reports a wake for it,
+// and forgive where the stream or the role's kept lane answers that the message repeats one
+// already stored. settle, which the route defers right after the take, gives the take back unless
+// the charge is spent and not forgiven, so a path that marks nothing costs nothing: a refusal
+// before any store or wake, an echo, a repeat the role route's own record answers (R3). Each mark
+// comes before the route writes its answer, because the request's log line names the sender of a
+// charge that cost one (counted) at the moment it is written.
+//
+// A nil senderCharge is a message the limit does not count, and every method is safe on it. Only
+// the request's own goroutine marks and settles a charge.
+type senderCharge struct {
+	sender   string
+	giveBack func()
+	spent    bool
+	forgiven bool
+}
+
+// spend marks the message as one that costs its sender one: stored, maybe stored, or reported for
+// a wake.
+func (c *senderCharge) spend() {
+	if c != nil {
+		c.spent = true
+	}
+}
+
+// forgive marks the message as a repeat of one already stored, which costs nothing, also after a
+// wake report spent it.
+func (c *senderCharge) forgive() {
+	if c != nil {
+		c.forgiven = true
+	}
+}
+
+// counted is the sender the message has cost one so far, which the request's log line names, and
+// empty while it costs nothing.
+func (c *senderCharge) counted() string {
+	if c == nil || !c.spent || c.forgiven {
+		return ""
+	}
+	return c.sender
+}
+
+// settle gives the take back unless the message cost one. It runs once, after the answer.
+func (c *senderCharge) settle() {
+	if c != nil && c.counted() == "" {
+		c.giveBack()
+	}
+}
+
+// senderRefusal is a take the sender's empty count refused: the sender, which the request's log
+// line names, the limit, and the whole seconds until the count holds one message again, which the
+// answer's Retry-After and body both name (requestRecord.refuseSenderRateLimited).
+type senderRefusal struct {
+	sender            string
+	perMinute         int
+	burst             int
+	retryAfterSeconds int
+}
+
+// senderRateLimitedAnswer is the 429's body (R5). Error is what the agent reads: each client shows
+// a refusal's error as it is written and sends nothing below 500 again
+// (packages/envoy-client/src/transport.ts), so the sentence alone tells the agent that its sending
+// is limited, that this message went nowhere, and when to send it again. Reason is the outcome the
+// request's log line records, and not apiauth.go's rate_limited, which refuses a broker token's
+// check rather than a session's sending.
+type senderRateLimitedAnswer struct {
+	Error             string         `json:"error"`
+	Reason            requestOutcome `json:"reason"`
+	RetryAfterSeconds int            `json:"retry_after_seconds"`
+	MessagesPerMinute int            `json:"messages_per_minute"`
+	Burst             int            `json:"burst"`
+}
+
+// answer is the 429 body that names r's limit and wait.
+func (r *senderRefusal) answer() senderRateLimitedAnswer {
+	return senderRateLimitedAnswer{
+		Error: fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %d messages a minute and %d at once. You can send it again after %d seconds.",
+			r.perMinute, r.burst, r.retryAfterSeconds),
+		Reason:            outcomeSenderRateLimited,
+		RetryAfterSeconds: r.retryAfterSeconds,
+		MessagesPerMinute: r.perMinute,
+		Burst:             r.burst,
+	}
 }

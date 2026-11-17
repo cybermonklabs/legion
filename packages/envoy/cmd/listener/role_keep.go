@@ -463,6 +463,10 @@ type keptRoleCopy struct {
 	until int64
 	// sequence is the copy's stream sequence on the role's kept subject.
 	sequence uint64
+	// repeat is whether the keep stored nothing new because the lane already held this
+	// message's copy inside its hour (storeKeptRoleCopy), which the publish route's sender limit
+	// charges nothing for (roleSend.kept).
+	repeat bool
 }
 
 // keptRolePublish is the stored publish a keep makes (storeKeptRoleCopy):
@@ -536,6 +540,7 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
 		}
 		if inside {
+			held.repeat = true
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)

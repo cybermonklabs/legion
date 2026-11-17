@@ -57,9 +57,11 @@ type messageBody struct {
 // this message, so the stream stored nothing new; the publish still reached the agent's subject.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow here). It can only be true for a send whose
-// dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent), and Dispatch is
-// the one sender that uses it. Absent means false, which is what an older listener's answer reads
-// as.
+// dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent): one of
+// Dispatch's, and an agent's send under a key minted once for its message, which
+// @legion/envoy-client mints for every send that names none, so a repeat of either gets it. The
+// sender limit reads the same verdict and charges such a repeat nothing (senderCharge). Absent
+// means false, which is what an older listener's answer reads as.
 type sendResponse struct {
 	contracts.Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
@@ -805,6 +807,11 @@ const senderStampReadTimeout = 1 * time.Second
 // (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only a
 // record) is the 403 naming it. Every one of those answers is written through record, so this
 // route's one line per request is written with it.
+//
+// Before any of them, a message of an agent session whose count under the operator's sender limit
+// is empty is the 429 refuseSenderRateLimited writes, with nothing read, reported or stored
+// (senderLimit.take). A counted message costs its sender one where the wake is reported and where
+// the stream stores it, and nothing where the stream answers that it already held it.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -865,6 +872,13 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
 			return
 		}
+		charge, refusal := d.senderLimit.take(r, item)
+		if refusal != nil {
+			record.refuseSenderRateLimited(w, refusal)
+			return
+		}
+		record.charge = charge
+		defer charge.settle()
 		// The cache alone cannot say a session is gone: it trails the bucket it follows, and is
 		// still being refilled after a reconnect, so a miss is read through to the bucket itself.
 		// Only the bucket's own word for it (nats.ErrKeyNotFound, which Refresh also returns for a
@@ -882,6 +896,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
 			reportAgentWake(d.wakes, logger, targetSession)
+			// The wake is what this message costs its sender, whatever is answered below.
+			charge.spend()
 			var recorded bool
 			if known, recorded = d.known.Get(targetSession); !recorded {
 				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(d.sessions, targetSession, target, recipientState))
@@ -938,6 +954,13 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// which is what the counter's name and help say it counts.
 		if recipientState == session.Unresponsive && !duplicate {
 			d.sendsToUnresponsive.Inc()
+		}
+		// A duplicate costs its sender nothing, also after the wake above spent the charge; a
+		// message the stream stored costs one.
+		if duplicate {
+			charge.forgive()
+		} else {
+			charge.spend()
 		}
 		record.accept(w, sendResponse{
 			Envelope:       item,
@@ -1158,6 +1181,13 @@ const publishDedupePrefix = "publish."
 // which writes this route's one line per request with the answer; a confirmed send answers through
 // it too.
 //
+// After the refusal of a topic no stream subject captures, a message of an agent session whose
+// count under the operator's sender limit is empty is the 429 refuseSenderRateLimited writes, with
+// no holder resolved, nothing kept, no wake reported and nothing stored (senderLimit.take). A
+// counted message to a topic the stream captures costs its sender one where the stream stores it,
+// and nothing where the stream answers that it already held it; a role send marks its own
+// (roleSend).
+//
 // keep is this route's own request field, meaningful only for a role topic, and unset means true:
 // a role message the listener cannot deliver because no live session holds the role - no claim,
 // or a claim whose holder is not live - is kept on the role's kept lane for an hour and handed to
@@ -1267,6 +1297,24 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// The answer's own expects_reply, read from the request before any path answers: the three
 		// of them below each write it, and none of them changes the envelope that goes on the bus.
 		expectsReply := expectsReplyAnswer(request.ExpectsReply)
+		// Every topic that would deliver to no session is refused by name: a session reads
+		// only what its own consumer holds, so such a publish would reach nobody, now or later;
+		// nothing retries into success, so it is the 400 the refusals above answer rather than a
+		// 504. Team topics are the namespace an agent names itself and the stream stores them
+		// (bus.StreamSubjects). The role lanes bus.ReachesNoSession excepts are forwarded below.
+		// It comes before the sender limit's take, so such a publish keeps its 400 at any count.
+		if d.client.ReachesNoSession(request.Topic) {
+			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
+			return
+		}
+		charge, refusal := d.senderLimit.take(r, item)
+		if refusal != nil {
+			record.refuseSenderRateLimited(w, refusal)
+			return
+		}
+		record.charge = charge
+		defer charge.settle()
 		if role, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
@@ -1274,17 +1322,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
-			return
-		}
-		// Every other topic that would deliver to no session is refused by name: a session reads
-		// only what its own consumer holds, so such a publish would reach nobody, now or later;
-		// nothing retries into success, so it is the 400 the refusals above answer rather than a
-		// 504. Team topics are the namespace an agent names itself and the stream stores them
-		// (bus.StreamSubjects). The role lanes bus.ReachesNoSession excepts are forwarded above.
-		if d.client.ReachesNoSession(request.Topic) {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
+			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived, charge)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -1298,9 +1336,18 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		if err := d.client.PublishWithin(ctx, item); err != nil {
+		duplicate, err := d.client.PublishReportingDuplicateWithin(ctx, item)
+		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
+		}
+		// A repeat the stream recognises, which a key minted once for its message makes possible
+		// (contracts.DedupeKeyNamesTheUpstreamEvent), costs its sender nothing; a message the
+		// stream stored costs one.
+		if duplicate {
+			charge.forgive()
+		} else {
+			charge.spend()
 		}
 		record.accept(w, publishResponse{Envelope: item, ExpectsReply: expectsReply, Recipients: recipients, RecipientsConnected: connected})
 	}
