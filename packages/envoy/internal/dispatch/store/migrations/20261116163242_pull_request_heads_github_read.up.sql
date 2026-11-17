@@ -37,9 +37,10 @@
 -- and judged by no rule (attribution_rule 0, which the reconcile's merged arm offers once); and
 -- 20261116182209 replaces this function with one that also owes the pull request a read, since the
 -- reconcile reads no closed row (pull_request_reads_owed does not exist yet here). This
--- release's own writes set github_read_at on every write: the database's clock at the statement
--- for a write of GitHub's answer, null for any other, so a write of this release never leaves it
--- as it was. An update that changes no fact (a stamp of checked_at, a write of the same answer)
+-- release's own writes set github_read_at on every write: the moment the read of GitHub whose
+-- answer the write carries began (20261117114124; the database's clock at the statement before
+-- it), null for any other, so a write of this release never leaves it as it was. An update that
+-- changes no fact (a stamp of checked_at, a write of the same answer)
 -- keeps the mark. A foreign key's `on delete set null` of issue_key is an update too, and it
 -- costs that row one more read of GitHub.
 --

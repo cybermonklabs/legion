@@ -147,23 +147,29 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 
 // owePullRequestRead records that the pull request number of the repository given changed, that
 // no read of GitHub has answered for that change, and why (reason). given is canonicalised first
-// (refs.CanonicalRepo), so one pull request is owed under one name. Recording it again gives the
+// (refs.CanonicalRepo), so one pull request is owed under one name, or under the name given where
+// the canonical one is no name GitHub can have (below). Recording it again gives the
 // row a new revision, moves its time to now and its reason to the latest read's: the latest event
 // is the one a later read must answer for, and a read that read the row's revision before this
 // owe settles nothing (settleOwedRead). It keeps the count of the reconcile's reads, so publishing
 // the same envelope again moves no row ahead of the rows that have been read as often.
 //
 // The row is built here, and its values are checked here, before any statement: the name given,
-// which the read of its canonical name is a statement of, and then the canonical name, with the
-// number, must be a pull request GitHub can have (checkPullRequestKey), else the answer is
-// errNoPullRequestNamed and nothing is written. The canonical name is the one value of the row no
-// envelope gives: it is a repo_projects row's renamed_to, which the settings route holds to the
-// same rule (api's parseRepoRename, IsGitHubRepositoryName), and which a target stored before that
-// rule or by direct SQL holds to nothing, so a rename to a name of 3,500 characters would
-// otherwise fail the insert at the btree of the table (SQLSTATE 54000) at every delivery. The
-// reason is one of this package's two constants. So no value this writes is one the table refuses,
-// and a failure of a statement is the database's alone, which the intake hands back
-// (recordRefused).
+// which the read of its canonical name is a statement of, with the number, must be a pull request
+// GitHub can have (checkPullRequestKey), else the answer is errNoPullRequestNamed and nothing is
+// written. The canonical name is the one value of the row no envelope gives: it is a
+// repo_projects row's renamed_to, which the settings route holds to the same rule (api's
+// parseRepoRename, IsGitHubRepositoryName), and which a target stored before that rule or by
+// direct SQL holds to nothing. Where the canonical name is no name GitHub can have, the read is
+// owed under the name given, which the check took: a rename to a name of 3,500 characters would
+// otherwise fail the insert at the btree of the table (SQLSTATE 54000) at every delivery, and an
+// owe refused for it would end the envelope with nothing owed, so the pull request's head never
+// came, also after an operator corrected the target (acceptance of cybermonklabs/legion#4209 at
+// 3a21edb2c9, D1). The reconcile reads the pull request under its canonical name each pass
+// (RefreshPullRequestHead), so the read stays owed while the target stands and is read once it is
+// corrected. The reason is one of this package's two constants. So no value this writes is one
+// the table refuses, and a failure of a statement is the database's alone, which the intake hands
+// back (recordRefused).
 func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
 	if err := checkPullRequestKey(given, number); err != nil {
 		return fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)
@@ -172,8 +178,8 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 	if err != nil {
 		return err
 	}
-	if err := checkPullRequestKey(repoFull, number); err != nil {
-		return fmt.Errorf("the read %s#%d is owed under its canonical name: %w", given, number, err)
+	if checkPullRequestKey(repoFull, number) != nil {
+		repoFull = given
 	}
 	if _, err := pool.Exec(ctx, `
 		insert into pull_request_reads_owed (repo, number, reason) values ($1, $2, $3)

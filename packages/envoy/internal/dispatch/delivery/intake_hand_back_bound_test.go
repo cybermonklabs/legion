@@ -46,16 +46,25 @@ import (
 // target stored before the settings route held it to GitHub's name rule can, of 3,500 random
 // characters and of 101. With no failure of the owed record ending an envelope, the first of them
 // was handed back for ever and the second owed a refusal for a repository GitHub cannot have,
-// until the rows' values were checked where the rows are built. A GitHub answer no head row can
-// hold is no such envelope: its read is owed
+// until the rows' values were checked where the rows are built; at 3a21edb2c9 each was then
+// acknowledged with nothing owed, so its head never came, also after the target was corrected
+// (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1). Such an envelope is acknowledged at
+// its first delivery too, but its read is owed under the name it gave, which the check takes
+// (owePullRequestRead), and the reconcile reads it once the target is corrected
+// (TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCorrected). A GitHub
+// answer no head row can hold is no such envelope either: its read is owed
 // (TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile).
 func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
-	const namesNoPullRequest = "names no pull request"
+	const (
+		namesNoPullRequest = "names no pull request"
+		owedIsRecorded     = "the read it is owed is recorded"
+	)
 	for _, poison := range []struct {
 		name   string
 		repo   string
 		number func(i int) int
-		// renamedTo, where set, is the canonical name repo_projects maps repo to.
+		// renamedTo, where set, is the canonical name repo_projects maps repo to, and the read of
+		// each envelope is owed under repo.
 		renamedTo string
 	}{
 		{"number_3000000000_and_up", "acme/widgets", func(i int) int { return 3_000_000_000 + i }, ""},
@@ -119,21 +128,25 @@ func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
 			if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != uint64(intakeMaxAckPending+1) {
 				t.Errorf("the durable made %d deliveries of %d envelopes, want one each: an envelope no delivery can get past was handed back", delivered, intakeMaxAckPending+1)
 			}
-			var owed int
-			if err := pool.QueryRow(ctx, `select count(*) from pull_request_reads_owed`).Scan(&owed); err != nil {
+			var owed, owedUnderGiven int
+			if err := pool.QueryRow(ctx, `select count(*), count(*) filter (where repo = $1) from pull_request_reads_owed`, poison.repo).Scan(&owed, &owedUnderGiven); err != nil {
 				t.Fatal(err)
 			}
-			if owed != 0 {
-				t.Errorf("%d reads owed, want none: an envelope no delivery can get past owes no read", owed)
+			wantOwed, wantLine := 0, namesNoPullRequest
+			if poison.renamedTo != "" {
+				wantOwed, wantLine = intakeMaxAckPending, owedIsRecorded
+			}
+			if owed != wantOwed || owedUnderGiven != wantOwed {
+				t.Errorf("%d reads owed, %d of them under %.50q, want %d under it: an envelope no delivery can get past owes no read, and one whose canonical name is refused is owed under the name it gave", owed, owedUnderGiven, poison.repo, wantOwed)
 			}
 			lines := 0
 			for _, record := range logs() {
-				if message, _ := record["msg"].(string); record["level"] == "WARN" && strings.Contains(message, namesNoPullRequest) {
+				if message, _ := record["msg"].(string); record["level"] == "WARN" && strings.Contains(message, wantLine) {
 					lines++
 				}
 			}
 			if lines != intakeMaxAckPending {
-				t.Errorf("%d WARN lines say %q, want one for each of the %d envelopes", lines, namesNoPullRequest, intakeMaxAckPending)
+				t.Errorf("%d WARN lines say %q, want one for each of the %d envelopes", lines, wantLine, intakeMaxAckPending)
 			}
 		})
 	}
@@ -215,6 +228,97 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 	t.Logf("reconcile: owed=%q reads=%d heads=%d", reason, reads, heads)
 	if reason != string(owedFailure) || reads != 1 || heads != 0 {
 		t.Errorf("after one reconcile pass #%d is owed %q with %d reads and has %d head rows, want %q with 1 read and none: the pass reads it again, and the same answer keeps it owed", number, reason, reads, heads, owedFailure)
+	}
+}
+
+// An event of a repository whose stored rename target is no name GitHub can have (a target a
+// build before the settings route held it to the name rule stored, or direct SQL) is a head not
+// stored, owed a read under the name the envelope gave, since no canonical name can be formed for
+// it, and the reconcile reads it once an operator corrects the target: no path of the intake ends
+// an envelope with nothing owed while its head is not stored (R1 and R4 of dispatch://INFRA-3992).
+// #4243 has no row; #4241 has one, stored under the old name before the target went bad, and its
+// event moves its head. While the target stands, a pass reads both and both stay owed; after the
+// correction, one pass writes both heads under the new name. At 3a21edb2c9 the intake acknowledged
+// each event with one WARN line and owed nothing, so #4243's head never came and #4241 kept its
+// older head, also after the correction (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1:
+// no head 204 s after the correction).
+func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCorrected(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	const (
+		old, renamed = "acme/legacy", "acme/renamed"
+		opened       = 4243
+		pushed       = 4241
+		before       = "4241000000000000000000000000000000004241"
+		after        = "4241424142414241424142414241424142414241"
+		openedHead   = "4243424342434243424342434243424342434243"
+	)
+	refused := "acme/" + strings.Repeat("x", 101)
+	fake := newFakeGitHub(t)
+	fake.notInstalled.Store(refused, true)
+	github := serveGitHubPulls(t, fake, renamed)
+	client := fake.newTestClient()
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	earlier := at.Add(-time.Hour)
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		Repo: old, Number: pushed, HeadSHA: before, HeadRef: "feature/x", BaseRef: "main", State: "open",
+		AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &earlier, CheckedAt: &earlier,
+		GitHubReadAt: &earlier,
+	}); err != nil {
+		t.Fatalf("store #%d under %s before the target went bad: %v", pushed, old, err)
+	}
+	renameRepository(t, ctx, pool, old, refused)
+	github.set(renamed, pushed, "open", after, "feature/x", "", at)
+	github.set(renamed, opened, "open", openedHead, "feature/y", "", at)
+
+	natsClient := intakeTestClient(t)
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	awaitBoundDurable(t, natsClient)
+	publishPullRequestEnvelope(t, natsClient, "acme", "legacy", pushed,
+		prEnvelope(old, pushed, "synchronize", after, "feature/x", "", at))
+	publishPullRequestEnvelope(t, natsClient, "acme", "legacy", opened,
+		prEnvelope(old, opened, "opened", openedHead, "feature/y", "", at))
+	awaitAcknowledged(t, natsClient)
+	for _, number := range []int{pushed, opened} {
+		if owed := owedCount(t, ctx, pool, old, number); owed != 1 {
+			t.Errorf("#%d is owed %d read(s) under %s once its event is acknowledged while the stored target %.20q… stands, want 1: the envelope was ended with nothing owed", number, owed, old, refused)
+		}
+	}
+
+	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile.runOnce(ctx)
+	for _, number := range []int{pushed, opened} {
+		if owed := owedCount(t, ctx, pool, old, number); owed != 1 {
+			t.Errorf("#%d is owed %d read(s) after a pass while the target stands, want 1: no read succeeded", number, owed)
+		}
+		if heads := headRowCount(t, ctx, &Intake{pool: pool}, renamed, number); heads != 0 {
+			t.Errorf("#%d has %d head rows under %s while the target stands, want none", number, heads, renamed)
+		}
+	}
+
+	renameRepository(t, ctx, pool, old, renamed)
+	reconcile.runOnce(ctx)
+	for _, want := range []struct {
+		number int
+		head   string
+	}{{pushed, after}, {opened, openedHead}} {
+		heads := headRowCount(t, ctx, &Intake{pool: pool}, renamed, want.number)
+		owed := owedCount(t, ctx, pool, old, want.number)
+		var head string
+		if heads == 1 {
+			head = readHead(t, ctx, pool, renamed, want.number).HeadSHA
+		}
+		t.Logf("after the correction and one pass: #%d heads=%d head=%.12s owed=%d", want.number, heads, head, owed)
+		if heads != 1 || head != want.head {
+			t.Errorf("#%d after the correction and one pass has %d head rows under %s at %q, want one at %s: the event that came while the target stood is lost", want.number, heads, renamed, head, want.head[:12])
+		}
+		if owed != 0 {
+			t.Errorf("#%d is still owed %d read(s) under %s after its head was written, want none", want.number, owed, old)
+		}
+		if stale := headRowCount(t, ctx, &Intake{pool: pool}, old, want.number); stale != 0 {
+			t.Errorf("#%d keeps %d row(s) under the old name %s, want none: one pull request keeps one row", want.number, stale, old)
+		}
 	}
 }
 
@@ -407,9 +511,9 @@ func TestAHandedBackEnvelopeLogsItsCauseOnceEveryThirtyDeliveries(t *testing.T) 
 		// sequence>.<consumer sequence>.<time>.<pending>.
 		logHandBack(slog.Default(), &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr.7", Sub: &natsgo.Subscription{},
 			Reply: fmt.Sprintf("$JS.ACK.ENVOY.dispatch-delivery.%d.%d.%d.1794892314678155619.0", delivered, delivered, delivered)},
-			"acme/widgets", 7, ErrHeadNotStored, cause)
+			headWriteRedeliverAfter, "acme/widgets", 7, ErrHeadNotStored, cause)
 	}
-	logHandBack(slog.Default(), &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr.8"}, "acme/widgets", 8, ErrHeadNotStored, cause)
+	logHandBack(slog.Default(), &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr.8"}, headWriteRedeliverAfter, "acme/widgets", 8, ErrHeadNotStored, cause)
 	var warned []float64
 	for _, record := range logs() {
 		if record["level"] != "WARN" {

@@ -248,7 +248,7 @@ func TestAnOlderReadOverANewerRowOfTheReleaseBeforeIsReadAgain(t *testing.T) {
 			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: number,
 				HeadSHA: older, HeadRef: "topic", BaseRef: "main", State: olderState,
 				AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &t1, CheckedAt: &now,
-				GitHubRead: true}); err != nil {
+				GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
 			}
 			NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
@@ -294,7 +294,7 @@ func TestNoOrderOfTwoBuildsWritesLeavesAMarkedRowWithFactsThisBuildNeverWrote(t 
 				head := PullRequestHead{Repo: "acme/widgets", Number: number,
 					HeadSHA: fakeSHA("c", rng.IntN(1000)), State: states[rng.IntN(3)],
 					AttributionSource: string(sourceNone), AttributionComplete: true,
-					EventAt: &at, CheckedAt: &now, GitHubRead: true}
+					EventAt: &at, CheckedAt: &now, GitHubReadAt: &now}
 				ours[fmt.Sprintf("%s|%s|%d", head.HeadSHA, head.State, at.Unix())] = true
 				if err := UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
 					t.Fatal(err)

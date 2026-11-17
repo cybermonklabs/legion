@@ -48,7 +48,7 @@ func TestAcceptACloseTheReleaseBeforeWritesOverAReadRowIsReadAgain(t *testing.T)
 			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
 				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "open",
 				AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &at, CheckedAt: &now,
-				GitHubRead: true}); err != nil {
+				GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
 			}
 			closedAt := at.Add(kase.ahead)
