@@ -70,7 +70,7 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 // registeredSubjects is what a registration stores as the session's topics: its own agent subject
 // and each topic it follows.
 func registeredSubjects(sessionID string, topics []string) []string {
-	return append([]string{contracts.AgentSubject(sessionID)}, topics...)
+	return append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
 }
 
 // registerInterest subscribes interest in the KV store (envoy_interests bucket).

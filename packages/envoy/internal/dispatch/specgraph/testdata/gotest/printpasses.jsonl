@@ -1,0 +1,9 @@
+{"Time":"2026-11-16T16:19:26.27421097Z","Action":"start","Package":"example.com/acme/gotest/printpasses"}
+{"Time":"2026-11-16T16:19:26.294146051Z","Action":"run","Package":"example.com/acme/gotest/printpasses","Test":"TestPrintsTheKillLineThenPasses"}
+{"Time":"2026-11-16T16:19:26.294256105Z","Action":"output","Package":"example.com/acme/gotest/printpasses","Test":"TestPrintsTheKillLineThenPasses","Output":"=== RUN   TestPrintsTheKillLineThenPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.294296885Z","Action":"output","Package":"example.com/acme/gotest/printpasses","Test":"TestPrintsTheKillLineThenPasses","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:26.294309691Z","Action":"output","Package":"example.com/acme/gotest/printpasses","Test":"TestPrintsTheKillLineThenPasses","Output":"--- PASS: TestPrintsTheKillLineThenPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.294315181Z","Action":"pass","Package":"example.com/acme/gotest/printpasses","Test":"TestPrintsTheKillLineThenPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:26.294322818Z","Action":"output","Package":"example.com/acme/gotest/printpasses","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.297002181Z","Action":"output","Package":"example.com/acme/gotest/printpasses","Output":"ok  \texample.com/acme/gotest/printpasses\t0.022s\n"}
+{"Time":"2026-11-16T16:19:26.297059059Z","Action":"pass","Package":"example.com/acme/gotest/printpasses","Elapsed":0.023}

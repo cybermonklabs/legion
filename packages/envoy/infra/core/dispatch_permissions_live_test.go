@@ -486,7 +486,7 @@ func requireWebhookRedeliveryBucket(t *testing.T, conn *natsgo.Conn, js natsgo.J
 	t.Helper()
 	process.WaitForOutput(t, "dispatch: redelivering the GitHub App webhook's failed deliveries")
 	github.requireCalled(t, "GET /app/hook/deliveries")
-	kv, err := bus.OpenKeyValue(conn, js, bus.WebhookRedeliveryBucket)
+	kv, err := bus.OpenKeyValue(context.Background(), conn, js, bus.WebhookRedeliveryBucket)
 	require.NoError(t, err)
 	_, err = kv.Put("test", []byte("value"))
 	require.NoError(t, err)

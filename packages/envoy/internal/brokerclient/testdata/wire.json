@@ -281,7 +281,7 @@
     },
     {
       "name": "the broker's token endpoint is out of bucket",
-      "about": "The first of the three refusals a later trade may be answered differently: the endpoint spends a bucket per source address, and a bucket refills. A client with nothing live in hand still fails the call, and says what the broker said; a client holding a live token keeps writing with it instead (expect.permanent is false).",
+      "about": "The first of the four refusals a later trade may be answered differently: the endpoint spends a bucket per source address, and a bucket refills. A client with nothing live in hand still fails the call, and says what the broker said; a client holding a live token keeps writing with it instead (expect.permanent is false).",
       "subject": {
         "kind": "kubernetes-projected-file",
         "token": "projected.service.account.token",
@@ -310,6 +310,39 @@
         "outcome": "refuse",
         "permanent": false,
         "error_contains": "too many token requests; try again later"
+      }
+    },
+    {
+      "name": "the broker has no registration for this pod's session yet",
+      "about": "A pod trades under a session name its deployment registers for it, and its trade can reach the broker before that registration does: its daemon registers at the claim, a session's watch at the pod's creation, and either can be down for minutes. The broker refuses it invalid_grant with an error_description beginning pod_session_not_registered:, the one refusal of the broker's state a later trade cures, so neither client reads it as final (expect.permanent is false). A pod's trade sends no projects field: its entry decides its project. The Go client's Token answers the refusal and its Run trades again; the TypeScript client's token() trades again until its caller stops waiting, and then answers it.",
+      "subject": {
+        "kind": "kubernetes-projected-file",
+        "token": "projected.service.account.token",
+        "token_type": "urn:envoy:params:oauth:token-type:kubernetes-service-account"
+      },
+      "session": "example-worker-session",
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:envoy:params:oauth:token-type:kubernetes-service-account",
+        "session": "${session}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 400,
+        "body": {
+          "error": "invalid_grant",
+          "error_description": "pod_session_not_registered: No registration says this pod may write under the session name 'example-worker-session'. A pod writes under a session name its deployment registered for it."
+        }
+      },
+      "expect": {
+        "outcome": "refuse",
+        "permanent": false,
+        "error_contains": "pod_session_not_registered: No registration says this pod may write under the session name 'example-worker-session'."
       }
     },
     {

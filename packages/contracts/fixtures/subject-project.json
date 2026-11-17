@@ -1,0 +1,529 @@
+{
+  "families": [
+    "notifications.dispatch.issue.>",
+    "notifications.dispatch.document.>",
+    "notifications.dispatch.project.>",
+    "notifications.dispatch.server.>",
+    "notifications.agent.>",
+    "notifications.role.>",
+    "notifications.legion.>",
+    "notifications.github.>",
+    "notifications.slack.>",
+    "notifications.ghostwispr.>",
+    "notifications.whatsapp.>",
+    "notifications.team.>",
+    "notifications.envoy.exceptions.>",
+    "notifications.envoy.kept.>",
+    "notifications.envoy.resume.>"
+  ],
+  "builders": [
+    {
+      "fn": "dispatchIssueSubject",
+      "args": ["INFRA", "INFRA-12", "comment.created"],
+      "want": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created"
+    },
+    {
+      "fn": "agentSubject",
+      "args": ["PRIV", "ses_a"],
+      "want": "notifications.agent.PRIV.ses_a"
+    },
+    { "fn": "agentSubject", "args": ["_", "ses_a"], "want": "notifications.agent._.ses_a" },
+    { "fn": "legacyAgentSubject", "args": ["ses_a"], "want": "notifications.agent.ses_a" },
+    {
+      "fn": "roleSubject",
+      "args": ["PRIV", "legion-priv-priv-1-architect"],
+      "want": "notifications.role.PRIV.legion-priv-priv-1-architect"
+    },
+    {
+      "fn": "roleSubject",
+      "args": ["_", "lead-reviewer"],
+      "want": "notifications.role._.lead-reviewer"
+    },
+    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" }
+  ],
+  "issueProject": [
+    { "key": "INFRA-12", "project": "INFRA", "ok": true },
+    { "key": "PRIV-1", "project": "PRIV", "ok": true },
+    { "key": "INFRA", "project": "", "ok": false },
+    { "key": "infra-12", "project": "", "ok": false },
+    { "key": "A-1", "project": "", "ok": false },
+    { "key": "INFRA-12-x", "project": "", "ok": false },
+    { "key": "*", "project": "", "ok": false },
+    { "key": "", "project": "", "ok": false }
+  ],
+  "roleProject": [
+    { "role": "legion-priv-priv-1-architect", "project": "PRIV" },
+    { "role": "legion-infra-controller", "project": "INFRA" },
+    { "role": "legion-legion-legion-208-reviewer", "project": "LEGION" },
+    { "role": "lead-reviewer", "project": "_" },
+    { "role": "legion-x-controller", "project": "_" },
+    { "role": "legion-9priv-controller", "project": "_" },
+    { "role": "legion-cybermonklabslegion-controller", "project": "_" },
+    { "role": "legion-infra", "project": "_" },
+    { "role": "legion-", "project": "_" },
+    { "role": "", "project": "_" },
+    { "role": "legion-infra-\n", "project": "INFRA" },
+    { "role": "legion-infra-\r", "project": "INFRA" },
+    { "role": "legion-infra-\u2028", "project": "INFRA" },
+    { "role": "legion-INFRA-controller", "project": "_" },
+    { "role": "legion-ßk-controller", "project": "_" }
+  ],
+  "subjectProject": [
+    {
+      "subject": "notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.PRIV-1.comment.created",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.*.PRIV-1.>",
+      "project": "_",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.dispatch.issue.>", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.dispatch.document.PRIV.spec.version.created",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.project.PRIV.project.updated",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.dispatch.server.started", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.dispatch.unknown.PRIV.x", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.agent.PRIV.ses_a", "project": "PRIV", "repo": "", "ok": true },
+    { "subject": "notifications.agent._.ses_a", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.agent.ses_a", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.agent.priv.ses_a", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.role.PRIV.lead-reviewer",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.role._.lead-reviewer", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.role.legion-priv-priv-1-architect",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.role.lead-reviewer", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.legion.priv.controller",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.legion.priv.PRIV-1", "project": "PRIV", "repo": "", "ok": true },
+    { "subject": "notifications.legion.priv.wake", "project": "PRIV", "repo": "", "ok": true },
+    { "subject": "notifications.legion.wake", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.legion.INFRA.wake", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.legion.ßk.wake", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.github.acme.widgets.pull_request.4.opened",
+      "project": "",
+      "repo": "acme/widgets",
+      "ok": true
+    },
+    {
+      "subject": "notifications.github.sjawhar._github.push.branch.main",
+      "project": "",
+      "repo": "sjawhar/_github",
+      "ok": true
+    },
+    { "subject": "notifications.slack.T1.C1.message", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.ghostwispr.rec1.ended", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.whatsapp.15551234567.jid.message",
+      "project": "_",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.team.deploy-squad", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.envoy.exceptions.notifications.agent.PRIV.ses_a",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.exceptions.notifications.role.legion-priv-priv-1-architect",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.exceptions.notifications.team.deploy-squad",
+      "project": "_",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.kept.role.legion-priv-priv-1-architect",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.kept.role.PRIV.lead-reviewer",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.kept.cursor.PRIV.lead-reviewer",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.kept.cursor.lead-reviewer",
+      "project": "_",
+      "repo": "",
+      "ok": true
+    },
+    { "subject": "notifications.envoy.resume.ses_a", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.somethingnew.PRIV.x", "project": "_", "repo": "", "ok": true },
+    { "subject": "agent.stream.ses_a.frames", "project": "", "repo": "", "ok": false },
+    { "subject": "", "project": "", "repo": "", "ok": false }
+  ],
+  "canonicalTopic": [
+    {
+      "topic": "notifications.dispatch.issue.INFRA-12.>",
+      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.dispatch.issue.INFRA-12.comment.created",
+      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.dispatch.issue.INFRA-12",
+      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.dispatch.issue.>",
+      "canonical": "notifications.dispatch.issue.>",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.dispatch.issue.*.comment.created",
+      "canonical": "notifications.dispatch.issue.*.comment.created",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.dispatch.issue.A-1.>",
+      "canonical": "notifications.dispatch.issue.A-1.>",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.agent.ses_a",
+      "canonical": "notifications.agent.*.ses_a",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.agent.PRIV.ses_a",
+      "canonical": "notifications.agent.PRIV.ses_a",
+      "legacy": false
+    },
+    { "topic": "notifications.agent.>", "canonical": "notifications.agent.>", "legacy": false },
+    { "topic": "notifications.agent.*", "canonical": "notifications.agent.*", "legacy": false },
+    {
+      "topic": "notifications.role.legion-priv-priv-1-architect",
+      "canonical": "notifications.role.PRIV.legion-priv-priv-1-architect",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.role.lead-reviewer",
+      "canonical": "notifications.role._.lead-reviewer",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.role.PRIV.lead-reviewer",
+      "canonical": "notifications.role.PRIV.lead-reviewer",
+      "legacy": false
+    },
+    { "topic": "notifications.role.>", "canonical": "notifications.role.>", "legacy": false },
+    {
+      "topic": "notifications.envoy.exceptions.notifications.agent.ses_a",
+      "canonical": "notifications.envoy.exceptions.notifications.agent.*.ses_a",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.envoy.exceptions.notifications.role.lead-reviewer",
+      "canonical": "notifications.envoy.exceptions.notifications.role._.lead-reviewer",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.envoy.kept.role.lead-reviewer",
+      "canonical": "notifications.envoy.kept.role._.lead-reviewer",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.envoy.kept.cursor.legion-priv-controller",
+      "canonical": "notifications.envoy.kept.cursor.PRIV.legion-priv-controller",
+      "legacy": true
+    },
+    {
+      "topic": "notifications.legion.wake",
+      "canonical": "notifications.legion.wake",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.dispatch.document.PRIV.spec.>",
+      "canonical": "notifications.dispatch.document.PRIV.spec.>",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.github.acme.widgets.>",
+      "canonical": "notifications.github.acme.widgets.>",
+      "legacy": false
+    },
+    {
+      "topic": "notifications.team.deploy-squad",
+      "canonical": "notifications.team.deploy-squad",
+      "legacy": false
+    }
+  ],
+  "legacyTwin": [
+    {
+      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "twin": "notifications.dispatch.issue.INFRA-12.>"
+    },
+    { "canonical": "notifications.dispatch.issue.*.INFRA-12.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.*.INFRA-12.comment.created", "twin": null },
+    {
+      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12",
+      "twin": "notifications.dispatch.issue.INFRA-12"
+    },
+    { "canonical": "notifications.dispatch.issue.PRIV.INFRA-12.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.INFRA.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.INFRA-12.>", "twin": null },
+    { "canonical": "notifications.agent.*.ses_a", "twin": "notifications.agent.ses_a" },
+    { "canonical": "notifications.agent.PRIV.ses_a", "twin": "notifications.agent.ses_a" },
+    { "canonical": "notifications.agent._.ses_a", "twin": "notifications.agent.ses_a" },
+    { "canonical": "notifications.agent.PRIV.>", "twin": null },
+    { "canonical": "notifications.agent.PRIV.*", "twin": null },
+    { "canonical": "notifications.agent.ses_a", "twin": null },
+    { "canonical": "notifications.agent.ses_a.x", "twin": null },
+    {
+      "canonical": "notifications.role.PRIV.lead-reviewer",
+      "twin": "notifications.role.lead-reviewer"
+    },
+    {
+      "canonical": "notifications.role._.lead-reviewer",
+      "twin": "notifications.role.lead-reviewer"
+    },
+    { "canonical": "notifications.role.PRIV.*", "twin": null },
+    {
+      "canonical": "notifications.envoy.exceptions.notifications.agent.*.ses_a",
+      "twin": "notifications.envoy.exceptions.notifications.agent.ses_a"
+    },
+    {
+      "canonical": "notifications.envoy.kept.role.PRIV.lead-reviewer",
+      "twin": "notifications.envoy.kept.role.lead-reviewer"
+    },
+    { "canonical": "notifications.legion.priv.wake", "twin": null },
+    { "canonical": "notifications.team.deploy-squad", "twin": null }
+  ],
+  "canonicalRole": [
+    {
+      "role": "legion-priv-priv-1-architect",
+      "project": "PRIV",
+      "name": "legion-priv-priv-1-architect",
+      "legacy": true
+    },
+    { "role": "lead-reviewer", "project": "_", "name": "lead-reviewer", "legacy": true },
+    {
+      "role": "PRIV.legion-priv-priv-1-architect",
+      "project": "PRIV",
+      "name": "legion-priv-priv-1-architect",
+      "legacy": false
+    },
+    { "role": "_.lead-reviewer", "project": "_", "name": "lead-reviewer", "legacy": false },
+    {
+      "role": "INFRA.legion-priv-controller",
+      "project": "INFRA",
+      "name": "legion-priv-controller",
+      "legacy": false
+    },
+    { "role": "priv.lead", "project": "_", "name": "priv.lead", "legacy": true },
+    { "role": "PRIV.", "project": "_", "name": "PRIV.", "legacy": true },
+    { "role": "PRIV.a.b", "project": "_", "name": "PRIV.a.b", "legacy": true }
+  ],
+  "topicForms": [
+    {
+      "topic": "notifications.dispatch.issue.INFRA-12.>",
+      "forms": [
+        "notifications.dispatch.issue.INFRA-12.>",
+        "notifications.dispatch.issue.INFRA.INFRA-12.>"
+      ]
+    },
+    {
+      "topic": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "forms": [
+        "notifications.dispatch.issue.INFRA.INFRA-12.>",
+        "notifications.dispatch.issue.INFRA-12.>"
+      ]
+    },
+    {
+      "topic": "notifications.agent.ses_a",
+      "forms": ["notifications.agent.ses_a", "notifications.agent.*.ses_a"]
+    },
+    {
+      "topic": "notifications.agent.PRIV.ses_a",
+      "forms": ["notifications.agent.PRIV.ses_a", "notifications.agent.ses_a"]
+    },
+    {
+      "topic": "notifications.role.lead-reviewer",
+      "forms": ["notifications.role.lead-reviewer", "notifications.role._.lead-reviewer"]
+    },
+    {
+      "topic": "notifications.github.acme.widgets.>",
+      "forms": ["notifications.github.acme.widgets.>"]
+    },
+    { "topic": "notifications.dispatch.issue.>", "forms": ["notifications.dispatch.issue.>"] }
+  ],
+  "roleClaimKey": [
+    { "project": "INFRA", "role": "legion-infra-controller", "key": "legion-infra-controller" },
+    {
+      "project": "PRIV",
+      "role": "legion-priv-priv-1-architect",
+      "key": "legion-priv-priv-1-architect"
+    },
+    { "project": "_", "role": "lead-reviewer", "key": "lead-reviewer" },
+    { "project": "_", "role": "legion-x-controller", "key": "legion-x-controller" },
+    { "project": "INFRA", "role": "reviewer", "key": "INFRA.reviewer" },
+    { "project": "PRIV", "role": "reviewer", "key": "PRIV.reviewer" },
+    { "project": "_", "role": "legion-infra-controller", "key": "_.legion-infra-controller" },
+    {
+      "project": "PRIV",
+      "role": "legion-infra-controller",
+      "key": "PRIV.legion-infra-controller"
+    },
+    { "project": "LEGION", "role": "lead-reviewer", "key": "LEGION.lead-reviewer" }
+  ],
+  "issueEventKey": [
+    {
+      "subject": "notifications.dispatch.issue.TEST1A0A2A10F5EC-2.issue.updated",
+      "key": "TEST1A0A2A10F5EC-2",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.TEST1A0A2A10F5EC.TEST1A0A2A10F5EC-2.issue.updated",
+      "key": "TEST1A0A2A10F5EC-2",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.T-1.issue.created",
+      "key": "T-1",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.T.T-1.issue.created",
+      "key": "T-1",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA-12.comment.created",
+      "key": "INFRA-12",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created",
+      "key": "INFRA-12",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA-12",
+      "key": "INFRA-12",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.INFRA-12",
+      "key": "INFRA-12",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.PRIV.PRIV-1.issue.updated",
+      "key": "PRIV-1",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.LINUX-5.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    {
+      "subject": "notifications.dispatch.issue._.INFRA-12.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    { "subject": "notifications.dispatch.issue.INFRA", "key": "", "legacy": false, "ok": false },
+    {
+      "subject": "notifications.dispatch.issue.infra-12.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    { "subject": "notifications.dispatch.issue.", "key": "", "legacy": false, "ok": false },
+    {
+      "subject": "notifications.dispatch.document.INFRA.INFRA-12.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    { "subject": "notifications.agent.INFRA-12", "key": "", "legacy": false, "ok": false }
+  ],
+  "claimProject": [
+    { "role": "legion-infra-infra-12-architect", "requested": "", "project": "INFRA" },
+    { "role": "legion-infra-infra-12-architect", "requested": "INFRA", "project": "INFRA" },
+    { "role": "legion-infra-infra-12-architect", "requested": "PRIV", "error": true },
+    { "role": "legion-infra-infra-12-architect", "requested": "_", "error": true },
+    { "role": "legion-infra-controller", "requested": "INFRA", "project": "INFRA" },
+    { "role": "lead-reviewer", "requested": "", "project": "_" },
+    { "role": "lead-reviewer", "requested": "_", "project": "_" },
+    { "role": "lead-reviewer", "requested": "INFRA", "project": "INFRA" },
+    { "role": "reviewer", "requested": "PRIV", "project": "PRIV" },
+    { "role": "reviewer", "requested": "infra", "error": true },
+    { "role": "reviewer", "requested": "INFRA.PRIV", "error": true },
+    { "role": "reviewer", "requested": "*", "error": true }
+  ]
+}
