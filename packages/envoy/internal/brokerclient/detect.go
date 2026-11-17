@@ -175,7 +175,7 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 		}
 		return "", "", fmt.Errorf("mint %s's access token with the external_account credential %s names: %s", e.ServiceAccount, credentialsFileVar, cause)
 	}
-	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.Audience, access.AccessToken)
+	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.ServiceAccount, e.Audience, access.AccessToken)
 	if err != nil {
 		return "", "", err
 	}

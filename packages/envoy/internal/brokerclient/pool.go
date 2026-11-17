@@ -74,19 +74,36 @@ type PoolIdentity struct {
 // they are plainly that, and by the variable that names them otherwise: the token audience as
 // internal/redact's allow-list prints a URL, beside MachineAudienceVar; the pool audience whole
 // where it is a workload identity pool provider's resource name (poolProvider), else by
-// PoolAudienceVar alone, since it is no http URL the allow-list could print; and the account as
-// written, a label. A setting is where a person who pasted a credential in the wrong place puts it.
+// PoolAudienceVar alone, since it is no http URL the allow-list could print; and the account where
+// it is a service account's email or unique id (serviceAccountWords), else by PoolAccountVar. A
+// setting is where a person who pasted a credential in the wrong place puts it.
 func (p *PoolIdentity) Describe() string {
 	pool := "that " + PoolAudienceVar + " names"
 	if poolProvider.MatchString(p.Audience) {
 		pool = p.Audience + " (" + PoolAudienceVar + " names it)"
 	}
-	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + p.ServiceAccount
+	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + serviceAccountWords(p.ServiceAccount, PoolAccountVar)
 }
 
 // poolProvider is a workload identity pool provider's full resource name, as Google spells it:
 // the one shape of AGENT_SECRETS_POOL_AUDIENCE Describe prints.
 var poolProvider = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$`)
+
+// serviceAccountEmail and serviceAccountID are the two ways Google names a service account, its
+// email and its numeric unique id: the shapes of an account serviceAccountWords prints.
+var (
+	serviceAccountEmail = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com$`)
+	serviceAccountID    = regexp.MustCompile(`^[0-9]{1,32}$`)
+)
+
+// serviceAccountWords is account as a message names it: whole where it is a service account's
+// email or unique id, else as the service account setting names, which is not printed.
+func serviceAccountWords(account, setting string) string {
+	if serviceAccountEmail.MatchString(account) || serviceAccountID.MatchString(account) {
+		return account
+	}
+	return "the service account " + setting + " names (not printed: it is no service account's email or unique id)"
+}
 
 // Token trades the external credential for a federated access token and spends it on one
 // generateIdToken, answering the identity token that mint produced. Every error names the call
@@ -100,7 +117,7 @@ func (p *PoolIdentity) Token(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, p.TokenAudience, federated)
+	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, serviceAccountWords(p.ServiceAccount, PoolAccountVar), p.TokenAudience, federated)
 	if err != nil {
 		return "", "", err
 	}
@@ -139,9 +156,10 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 
 // generateIDToken is IAM Credentials' half of a mint: an access token that may act as
 // serviceAccount (bearer) spent on one generateIdToken for audience, with includeEmail set, at
-// iamURL, or Google's own service where it is empty. A workload identity pool spends its
-// federated token here, and an external_account credential the access token it mints.
-func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, audience, bearer string) (string, error) {
+// iamURL, or Google's own service where it is empty. Every error names the account as named
+// says. A workload identity pool spends its federated token here, and an external_account
+// credential the access token it mints.
+func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, named, audience, bearer string) (string, error) {
 	origin := iamURL
 	if origin == "" {
 		origin = DefaultIAMCredentialsURL
@@ -156,8 +174,8 @@ func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAc
 		Token string `json:"token"`
 	}
 	// The endpoint's path holds the account, whose `@` internal/redact's allow-list never prints,
-	// so a message names the service by its origin and the account beside it.
-	at := "IAM Credentials' generateIdToken at " + redact.URL(origin) + " for " + serviceAccount
+	// so a message names the service by its origin and the account beside it, as named says.
+	at := "IAM Credentials' generateIdToken at " + redact.URL(origin) + " for " + named
 	if err := postGoogle(ctx, client, endpoint, bearer, body, &answer); err != nil {
 		return "", fmt.Errorf("mint this machine's identity token with %s: %w", at, err)
 	}

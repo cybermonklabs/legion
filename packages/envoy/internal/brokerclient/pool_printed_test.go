@@ -25,10 +25,11 @@ const accessField = "access" + "_token"
 
 // TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariables: the pool identity
 // AGENT_SECRETS_MACHINE_IDENTITY=pool builds names, in the line each trade logs, an
-// AGENT_SECRETS_MACHINE_AUDIENCE that carries a credential as not printed and an
-// AGENT_SECRETS_POOL_AUDIENCE that is no provider's resource name by its variable, never either
-// value. A plain audience and a provider's resource name still print whole, and the account as
-// written (the control).
+// AGENT_SECRETS_MACHINE_AUDIENCE that carries a credential as not printed, and an
+// AGENT_SECRETS_POOL_AUDIENCE that is no provider's resource name and an AGENT_SECRETS_POOL_ACCOUNT
+// that is no service account's email or unique id by their variables, never any of those values.
+// A plain audience, a provider's resource name, a service account's email and its numeric unique
+// id still print whole (the controls).
 func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariables(t *testing.T) {
 	const (
 		secret   = "hunter2pw-poolsettings-1c94e7"
@@ -36,19 +37,25 @@ func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariabl
 		account  = "example-fleet@example-project.iam.gserviceaccount.com"
 	)
 	for _, row := range []struct {
-		name, audience, pool string
-		want                 []string
+		name, audience, pool, account string
+		want                          []string
 	}{
-		{"an audience URL with a user and password", "https://tokuser9f3:" + secret + "@aud.example", provider,
+		{"an audience URL with a user and password", "https://tokuser9f3:" + secret + "@aud.example", provider, account,
 			[]string{MachineAudienceVar, provider, account}},
-		{"an audience URL with a query", "https://aud.example/?key=" + secret, provider,
+		{"an audience URL with a query", "https://aud.example/?key=" + secret, provider, account,
 			[]string{MachineAudienceVar, provider, account}},
-		{"a pool audience that is a pasted credential", "https://aud.example", secret,
+		{"a pool audience that is a pasted credential", "https://aud.example", secret, account,
 			[]string{"https://aud.example", PoolAudienceVar, account}},
-		{"a provider's resource name with more after it", "https://aud.example", provider + "?token=" + secret,
+		{"a provider's resource name with more after it", "https://aud.example", provider + "?token=" + secret, account,
 			[]string{"https://aud.example", PoolAudienceVar, account}},
-		{"control: a plain audience and a provider's resource name", "https://aud.example", provider,
+		{"an account that is a pasted credential", "https://aud.example", provider, secret,
+			[]string{"https://aud.example", provider, PoolAccountVar}},
+		{"an account that is no service account's email", "https://aud.example", provider, "tokuser9f3:" + secret + "@example.iam.gserviceaccount.com",
+			[]string{"https://aud.example", provider, PoolAccountVar}},
+		{"control: a plain audience, a provider's resource name and a service account's email", "https://aud.example", provider, account,
 			[]string{"https://aud.example", provider, account}},
+		{"control: a service account's numeric unique id", "https://aud.example", provider, "100000000000000000001",
+			[]string{"https://aud.example", provider, "as 100000000000000000001"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			external := filepath.Join(t.TempDir(), "token")
@@ -57,7 +64,7 @@ func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariabl
 			}
 			env := map[string]string{
 				IdentityVar: IdentityPool, MachineTokenFileVar: external, MachineAudienceVar: row.audience,
-				PoolAudienceVar: row.pool, PoolAccountVar: account,
+				PoolAudienceVar: row.pool, PoolAccountVar: row.account,
 			}
 			source, err := MachineIdentity(func(name string) string { return env[name] })
 			if err != nil {
@@ -98,6 +105,39 @@ func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariabl
 			for _, want := range row.want {
 				if !strings.Contains(line, want) {
 					t.Errorf("the trade's line %q does not say %q", line, want)
+				}
+			}
+		})
+	}
+	// IAM Credentials' refusal of the mint names the account the same way, whether it is one
+	// (the control) or a pasted credential.
+	for _, row := range []struct{ account, want string }{
+		{secret, PoolAccountVar},
+		{account, "for " + account},
+	} {
+		t.Run("a refused mint for "+row.account, func(t *testing.T) {
+			pool := &PoolIdentity{
+				Subject:  &scriptedSource{token: "external", tokenType: "urn:ietf:params:oauth:token-type:jwt", describe: "a test credential"},
+				Audience: provider, ServiceAccount: row.account, TokenAudience: "https://aud.example",
+				SecurityTokenServiceURL: newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"` + accessField + `":"federated-access-token"}`))
+				}) + "/v1/token",
+				IAMCredentialsURL: newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED"}}`))
+				}),
+			}
+			_, _, err := pool.Token(context.Background())
+			if err == nil {
+				t.Fatal("the pool minted through a refusing IAM Credentials")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("the refusal %q holds the account", err)
+			}
+			for _, want := range []string{row.want, "HTTP 403 PERMISSION_DENIED"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not say %q", err, want)
 				}
 			}
 		})
