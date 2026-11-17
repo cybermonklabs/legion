@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -373,6 +374,191 @@ func TestRunReturnsOnlyOnceThePodsTrimmerHasStopped(t *testing.T) {
 	// The stop was taken at an entry boundary, as the trimmer's own cases hold it to: what it
 	// deleted stands and nothing is half removed.
 	f.assertNothingHalfRemoved()
+	f.assertProtected()
+}
+
+// The container's stop that arrives while a sweep lists a tree whose listing alone runs past the
+// sweep's budget ends the sweep where its listing stands, and Run returns inside the pod's stop
+// grace. The budget bounds a sweep at five minutes (volumeSweepBudget), and the grace is the
+// --stop-grace the launcher is given, ten seconds by default (shim.DefaultStopGrace, the pod's
+// terminationGracePeriodSeconds): a listing that heard only its budget would hold the container's
+// stop for what is left of those five minutes. The tree is a hundred and sixty entries and the
+// trimmer's clock moves two seconds at each of its readings, which the listing takes at least once
+// for every entry (list), so the listing alone runs past the budget. The stop arrives at the
+// trimmer's tenth reading, the listing's eighth, and each reading of the listing after it costs
+// the wall clock 150 ms, as the walk of a large tree does. The negative control is a listing that
+// asks its budget and not the container's stop: it reads on through its tree until its budget ends
+// it, some twenty seconds after the stop, and Run is still waiting for it when the grace runs out.
+func TestTheContainersStopWhileAListingRunsPastTheBudgetEndsTheSweepAndRunInsideTheGrace(t *testing.T) {
+	const (
+		step    = 2 * time.Second        // the trimmer's clock at each of its readings
+		stopAt  = 10                     // the reading the stop arrives at: the sweep's start, the used-path set's, then the listing's eighth
+		listing = 150 * time.Millisecond // the wall clock each reading of the listing costs once the stop has arrived
+	)
+	grace := shim.DefaultStopGrace
+	f := newTrimFixture(t, 40)
+	if listed := time.Duration(len(f.entries)) * step; listed <= volumeSweepBudget {
+		t.Fatalf("the listing reads the trimmer's clock at least once for each of %d entries, %s of it, want past the %s budget: the case would not stage a listing longer than the budget",
+			len(f.entries), listed, volumeSweepBudget)
+	}
+	f.clock.step = step
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	trims := useLauncherTrimmer(t, f)
+
+	pod := newFleetDialed(t, grace, podRoles...)
+	ackPod(pod, trimSettings())
+	trims.await()
+
+	// Only the trimmer's own goroutine reads its clock, so the hook's count needs no lock.
+	readings := 0
+	var stoppedAt time.Time
+	stopping := make(chan struct{})
+	var released atomic.Bool
+	t.Cleanup(func() { released.Store(true) })
+	f.clock.setHook(func(*fakeClock) {
+		readings++
+		switch {
+		case readings < stopAt:
+		case readings == stopAt:
+			stoppedAt = time.Now()
+			pod.cancel()
+			close(stopping)
+		case !released.Load() && f.logged("the sweep ended") == 0:
+			time.Sleep(listing)
+		}
+	})
+	offerTick(t, f)
+	awaitClosed(t, stopping, "the container's stop to arrive while the sweep lists")
+
+	var err error
+	select {
+	case err = <-pod.result:
+		pod.result <- err
+	case <-time.After(grace - time.Since(stoppedAt)):
+		released.Store(true)
+		t.Fatalf("Run had not returned %s after the container's stop, the pod's stop grace: the sweep went on listing past the stop", grace)
+	}
+	t.Logf("Run returned %s after the container's stop", time.Since(stoppedAt))
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Run = %v, want the container's own context ending it", err)
+	}
+	if !trims.hasStopped() {
+		t.Fatal("Run returned with the pod's trimmer still running")
+	}
+	if ended := f.logged("the sweep ended: the container is stopping. 0 entries deleted"); ended != 1 {
+		t.Errorf("the trimmer wrote %d lines of a sweep the container's stop ended in its listing, want one: %q", ended, f.linesWritten())
+	}
+	if gone := len(f.gone()); gone != 0 {
+		t.Errorf("%d entries are gone, want none: the stop arrived while the sweep was still listing", gone)
+	}
+	if moved := f.clock.moved(); moved >= volumeSweepBudget {
+		t.Errorf("the trimmer's clock moved %s before the trimmer stopped, want less than the %s budget: the stop and not the budget ended the sweep", moved, volumeSweepBudget)
+	}
+	f.assertProtected()
+}
+
+// The container's stop cuts a size walk where it stands, a report the trimmer holds for a
+// connection that is down is dropped rather than waited on, and Run returns inside the pod's stop
+// grace. A walk is bounded at a minute (volumeWalkBudget), past the grace the launcher is given,
+// ten seconds by default (shim.DefaultStopGrace), so a walk that heard only its budget would hold
+// the container's stop for what is left of that minute. The bound connection goes down before the
+// first sweep and stays down, its redial accepted and never answered, so the first sweep's report
+// is held. An hour and a minute then pass on the trimmer's clock, which makes the next report's
+// walk a fresh one (trimmer.sizes), and the second sweep's walk blocks in its third target until
+// its context ends, as a measurement of a million-file tree reads its context between directories
+// (measureTree); the stop arrives there. The negative control is a walk whose context the
+// container's stop does not reach: it waits for its budget, which nothing here ticks, and Run is
+// still waiting for it when the grace runs out.
+func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTheGrace(t *testing.T) {
+	const blockAt = 3 // the target of the second walk the stop arrives in
+	grace := shim.DefaultStopGrace
+	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86%, still at the high mark
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+
+	var armed atomic.Bool
+	var blocked string // the name of the target the walk blocks in, written before walking closes
+	walking, release := make(chan struct{}), make(chan struct{})
+	releaseWalk := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseWalk)
+	trims := useLauncherTrimmer(t, f, func(trim *trimmer) {
+		measure := trim.measure
+		calls := 0
+		trim.measure = func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+			if !armed.Load() {
+				return measure(ctx, dir, name, at)
+			}
+			if calls++; calls != blockAt {
+				return measure(ctx, dir, name, at)
+			}
+			blocked = name
+			close(walking)
+			select {
+			case <-ctx.Done():
+				return measured{cut: true}
+			case <-release:
+				return measure(ctx, dir, name, at)
+			}
+		}
+	})
+
+	pod := newFleetDialed(t, grace, podRoles...)
+	ackPod(pod, trimSettings())
+	trim := trims.await()
+
+	// The daemon goes away for the rest of the case. The redial, accepted and left unanswered,
+	// says the launcher has seen the drop: until an answer is applied there is no writer, and
+	// every report the trimmer makes is held.
+	_ = pod.role(podRoles[0]).conn.Close()
+	acceptRole(t, pod.listener)
+
+	f.tick("the sweep ended")
+	testwait.Eventually(t, "the trimmer to hold the first sweep's report", func() bool {
+		return f.logged("the report could not be sent (no daemon connection is up to carry it); holding it for the next attempt") == 1
+	})
+
+	f.clock.advance(volumeWalkInterval + time.Minute)
+	armed.Store(true)
+	f.tick("the sweep ended")
+	awaitClosed(t, walking, "the second sweep's size walk to reach its third target")
+
+	stoppedAt := time.Now()
+	pod.cancel()
+	var err error
+	select {
+	case err = <-pod.result:
+		pod.result <- err
+	case <-time.After(grace):
+		releaseWalk()
+		t.Fatalf("Run had not returned %s after the container's stop, the pod's stop grace: the trimmer went on past the stop, walking the volume or waiting for a connection to take its held report", grace)
+	}
+	t.Logf("Run returned %s after the container's stop", time.Since(stoppedAt))
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Run = %v, want the container's own context ending it", err)
+	}
+	if !trims.hasStopped() {
+		t.Fatal("Run returned with the pod's trimmer still running")
+	}
+
+	// The walk was cut where it stood: the report the trimmer still holds, the second sweep's in
+	// place of the first's, carries the sizes of the two targets the walk measured before the stop
+	// and names the third, the one it was in, first among what it did not measure. The trimmer
+	// returned holding it: nothing waited for the connection to come back.
+	held := trim.held
+	switch {
+	case held == nil:
+		t.Fatalf("the trimmer holds no report, want the one its connection could not take when the container stopped: %q", f.linesWritten())
+	case !held.SizesPartial:
+		t.Errorf("the held report's walk is not partial, want the walk the container's stop cut: %+v", held.Sizes)
+	case len(held.Sizes) != blockAt-1:
+		t.Errorf("the held report carries %d sizes, want the %d the walk measured before the stop: %+v", len(held.Sizes), blockAt-1, held.Sizes)
+	case len(held.SizesMissing) == 0 || filepath.Base(held.SizesMissing[0].Path) != blocked:
+		t.Errorf("the held report names %v as unmeasured, want %s, the target the walk was in when the stop came, first", missingPaths(held.SizesMissing), blocked)
+	}
+	if replaced := f.logged("it replaces the held report"); replaced != 1 {
+		t.Errorf("the second sweep's report replaced the held one %d times, want once: %q", replaced, f.linesWritten())
+	}
 	f.assertProtected()
 }
 

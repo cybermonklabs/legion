@@ -53,6 +53,9 @@ const (
 	// set itself is derived from the renderer and never written out, so this number is only a
 	// floor: it exists because a derivation that broke and matched nothing would otherwise hold
 	// the two lists to an empty set and report agreement.
+	// renderedVolumeVariables and renderedIssueVolumePathsOf below hold each backend's set to
+	// those members and that count exactly, beside the floor: a renderer change that adds a path
+	// one list already names, or drops one, leaves the floor and the rule both green.
 	renderedIssueVolumePaths = 13
 	// newToolCache, newMount and newAgentCache are the three additions the negative controls make
 	// to a copy of what the renderer gave. Each is a path no list names, and each stands for the
@@ -61,6 +64,26 @@ const (
 	newToolCache  = "legion-a-new-tools-cache"
 	newMount      = TreeRoot + "/artifacts"
 	newAgentCache = "legion-a-new-agent"
+)
+
+// renderedVolumeVariables is, for each backend the role runs on, the start-environment variables
+// whose values put a path on the issue's volume, which the comment on renderedIssueVolumePaths
+// counts: the ten of an Oh My Pi launch — roleEnvironment's eight less XDG_CONFIG_HOME, uv's two
+// and PUBLIC_LEAK_CHECK — and those ten and CLAUDE_CONFIG_DIR for a Claude Code launch.
+// renderedIssueVolumePathsOf is each set with the three mounts and constants beside it
+// (issueVolumePaths), thirteen and fourteen. Each set is still read out of the renderer
+// (issueVolumePaths); these are what the read must find, written out so that a path the renderer
+// adds to the volume or takes off it changes a number a reader can see here.
+var (
+	ompVolumeVariables = []string{
+		"XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR", "GOCACHE", "GOMODCACHE",
+		"BUN_INSTALL_CACHE_DIR", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "PUBLIC_LEAK_CHECK",
+	}
+	renderedVolumeVariables = map[runtime.Backend][]string{
+		runtime.BackendOmp:    ompVolumeVariables,
+		runtime.BackendClaude: append(slices.Clone(ompVolumeVariables), "CLAUDE_CONFIG_DIR"),
+	}
+	renderedIssueVolumePathsOf = map[runtime.Backend]int{runtime.BackendOmp: 13, runtime.BackendClaude: 14}
 )
 
 // Every path the pod renderer puts on the issue's volume is named by one of the trimmer's two
@@ -85,6 +108,25 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 				t.Errorf("the renderer puts %d paths on the issue's volume, want at least %d: %v. The set is read "+
 					"out of the renderer, so a derivation that matched nothing would hold the trimmer's two lists to "+
 					"an empty set and report agreement", len(rendered), renderedIssueVolumePaths, rendered)
+			}
+			// The exact set, by count and by member: the variables of the start environment whose
+			// values these are, and the three mounts and constants beside them.
+			wantVariables, written := renderedVolumeVariables[backend]
+			if !written {
+				t.Fatalf("no set of rendered volume paths is written here for the %s backend: write the variables its "+
+					"launch puts on the issue's volume beside the others in renderedVolumeVariables", backend)
+			}
+			if want := renderedIssueVolumePathsOf[backend]; len(rendered) != want {
+				t.Errorf("the renderer puts %d paths on the issue's volume for a launch on the %s backend, want exactly %d: %v",
+					len(rendered), backend, want, rendered)
+			}
+			if got := volumeVariableNames(t, issue, role, backend, environment); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(wantVariables))) {
+				t.Errorf("the renderer's values on the issue's volume for a launch on the %s backend are those of %v, want exactly %v",
+					backend, got, wantVariables)
+			}
+			if wantMounts := []string{FeedDir, workspace.CloneRoot(TreeRoot), TreeRoot + "/workspaces"}; !slices.Equal(mounts, wantMounts) {
+				t.Errorf("the volume's mounts and constants beside the environment are %v, want the feed, the clone root "+
+					"and the workspaces root %v", mounts, wantMounts)
 			}
 			// base is what the rule earns over the rendered set alone, and the controls below are
 			// read against it rather than against a whole list: a control that asked for one complaint
@@ -170,6 +212,30 @@ func issueVolumePaths(t *testing.T, issue string, role claim.Role, backend runti
 	}
 	workspacesRoot := path.Dir(path.Dir(path.Dir(located.Dir)))
 	return issueVolumeDirectories(t, issue, role, backend), []string{FeedDir, workspace.CloneRoot(TreeRoot), workspacesRoot}
+}
+
+// volumeVariableNames is the name of each variable of the start environment a launch on backend
+// renders (mainEnvironment, as issueVolumeDirectories reads it) whose value is one of values: the
+// set issueVolumePaths read, named by the variables that put it there.
+func volumeVariableNames(t *testing.T, issue string, role claim.Role, backend runtime.Backend, values []string) []string {
+	t.Helper()
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(testProject, issue, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := testSpec(t, token, role, issue)
+	spec.Backend = backend
+	var names []string
+	for _, env := range r.mainEnvironment(launchOf(t, r, spec)) {
+		if slices.Contains(values, env.Value) {
+			names = append(names, env.Name)
+		}
+	}
+	return names
 }
 
 // trimmerListComplaints is the rule, as one complaint per path the two lists fail: it is a

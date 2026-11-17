@@ -170,6 +170,7 @@ func newTrimFixture(t *testing.T, perRoot int) *trimFixture {
 	f.proc, _ = writeProcFixture(t)
 	f.buildProtected()
 	f.buildRoots(perRoot)
+	f.assertKeptBuilt()
 	return f
 }
 
@@ -212,6 +213,22 @@ func rebasedRoots(root string) []ReclaimableRoot {
 	return out
 }
 
+// rebasedOnto is roots on a case's own tree, with every rule and every exception as roots holds
+// them. The fixture's trimmer takes the roots newTrimmer built through it (trimFixture.trimmer),
+// so a case that empties the environment before it builds the trimmer sweeps the roots the
+// trimmer built under that environment, and not a list the fixture built before it.
+func rebasedOnto(root string, roots []ReclaimableRoot) []ReclaimableRoot {
+	out := make([]ReclaimableRoot, 0, len(roots))
+	for _, reclaimable := range roots {
+		out = append(out, ReclaimableRoot{
+			Path:   rebase(root, reclaimable.Path),
+			Entry:  reclaimable.Entry,
+			Except: reclaimable.Except,
+		})
+	}
+	return out
+}
+
 func (f *trimFixture) buildProtected() {
 	f.t.Helper()
 	at := f.clock.at.Add(-90 * time.Minute)
@@ -238,6 +255,51 @@ func (f *trimFixture) keep(path string, at time.Time) {
 		f.t.Fatal(err)
 	}
 	f.protected = append(f.protected, fixtureFile{path: path, content: content, at: at})
+}
+
+// assertKeptBuilt counts, before any sweep, the files of the case's tree the trimmer must never
+// touch, as they stand on the volume: one under each protected path — the workspaces, the clone,
+// the feed, a role's state home, the data home, the Go module cache, uv's two directories,
+// ms-playwright, legion-claude-code and the leak check — the role's own work and a directory's
+// notes in $TMPDIR outside any `go-build` tree, and the Go build cache's three names that are no
+// entry. Every case builds its tree in newTrimFixture, which asks this, so every sweeping case
+// asserts the count before its sweep as well as after it (assertProtected), and a fixture that
+// built none of one kind fails here rather than passing a case that never showed the trimmer
+// leaving that kind alone.
+func (f *trimFixture) assertKeptBuilt() {
+	f.t.Helper()
+	present := 0
+	for _, file := range f.protected {
+		if f.exists(file.path) {
+			present++
+		}
+	}
+	if present != fixtureKeptFiles {
+		f.t.Fatalf("before any sweep the fixture holds %d of the files the trimmer must never touch (%d recorded), want the %d every case counts: %v",
+			present, len(f.protected), fixtureKeptFiles, f.protected)
+	}
+	holds := func(under string, kept func(path string) bool) bool {
+		return slices.ContainsFunc(f.protected, func(file fixtureFile) bool {
+			return strings.HasPrefix(file.path, under+"/") && kept(file.path) && f.exists(file.path)
+		})
+	}
+	for _, protected := range ProtectedPaths {
+		if under := rebase(f.root, protected); !holds(under, func(string) bool { return true }) {
+			f.t.Fatalf("before any sweep the fixture holds no file under the protected path %s (%s): a case would pass without ever showing the trimmer leaves it alone", protected, under)
+		}
+	}
+	for _, root := range f.roots {
+		if root.Entry != GoBuildTrees {
+			continue
+		}
+		outsideGoBuild := func(path string) bool {
+			first, _, _ := strings.Cut(strings.TrimPrefix(path, root.Path+"/"), "/")
+			return !isGoBuildTree(first)
+		}
+		if !holds(root.Path, outsideGoBuild) {
+			f.t.Fatalf("before any sweep the fixture holds no file in $TMPDIR (%s) outside a go-build directory: a case would pass without ever showing the trimmer leaves a role's own work there alone", root.Path)
+		}
+	}
 }
 
 // buildRoots fills each reclaimable root with perRoot entries in its own tool's layout.
@@ -547,6 +609,10 @@ func (f *trimFixture) assertPrefixed() {
 // trimmer is the trimmer of this case: the pod's own constructor, with the machine it reads
 // pointed at the case's tree.
 //
+// Its roots are the ones newTrimmer built, rebased onto that tree (rebasedOnto), rather than the
+// fixture's own list, which was built with the tree: a constructor that read the environment
+// would otherwise never reach a sweep, whatever environment the case built the trimmer under.
+//
 // Its removals are made in this process through the handle the listing opened, where the pod's
 // are made by a child in a mount namespace of its own: what the cases of this file are about is
 // which entries a sweep chooses and which it passes over, and a fork, an exec and a mount per
@@ -555,7 +621,8 @@ func (f *trimFixture) assertPrefixed() {
 // deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
 	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover, &pidGuard{})
-	tr.volumeRoot, tr.procRoot, tr.self, tr.roots = f.root, f.proc, f.self, f.roots
+	tr.volumeRoot, tr.procRoot, tr.self = f.root, f.proc, f.self
+	tr.roots = rebasedOnto(f.root, tr.roots)
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	tr.removals = inProcessRemovals
 	return tr
@@ -1497,6 +1564,11 @@ func (f *trimFixture) assertProtected() {
 // Its negative control is the same tree swept by name: the entries a trimmer ordering by name
 // would delete are a different set, and the case shows the ones it would wrongly have taken are
 // still there.
+//
+// The trimmer is built after the environment is emptied, and the roots it sweeps are the ones
+// newTrimmer built then (trimFixture.trimmer), held here to the written-out constant before the
+// sweep reads them: a constructor that read TMPDIR or GOCACHE would build a different list under
+// the empty environment, and the sweep below would run on it.
 func TestTheSweepDeletesOldestFirstAcrossEveryRootUntilTheLowMark(t *testing.T) {
 	const perRoot = 80
 	f := newTrimFixture(t, perRoot)
@@ -1508,6 +1580,13 @@ func TestTheSweepDeletesOldestFirstAcrossEveryRootUntilTheLowMark(t *testing.T) 
 		t.Fatalf("the fixture made %d entries, want %d: four roots of %d", len(f.entries), 4*perRoot, perRoot)
 	}
 	tr := f.trimmer()
+	sameRoot := func(a, b ReclaimableRoot) bool {
+		return a.Path == b.Path && a.Entry == b.Entry && slices.Equal(a.Except, b.Except)
+	}
+	if !slices.EqualFunc(tr.roots, f.roots, sameRoot) {
+		t.Fatalf("the trimmer built under an empty environment sweeps the roots %+v, want the written-out ReclaimableRoots %+v on this case's tree: its roots are a read of the environment",
+			tr.roots, f.roots)
+	}
 	out := tr.sweep(context.Background(), *trimSettings(), f.modelled(90)(0))
 
 	// 90 per cent, with each entry a tenth of a point: the low mark of 70 is 200 entries away,
@@ -2956,12 +3035,39 @@ func TestTheSweepLeavesItsOwnProcessOutOfTheUsedPathSet(t *testing.T) {
 // walk of a whole `go-build` tree — so a budget that started at the first deletion would bound
 // the cheaper half alone. A sweep that ended on its budget still reports, with the sizes of a
 // walk: it is the sweep most worth telling the daemon about.
+// Its sizes carry their two age splits, the bytes untouched for more than an hour and for more
+// than a day, which is what tells a reader a working set from cold bytes: one target of the
+// volume holds a file written ten minutes before the sweep, one two hours before it and one two
+// days before it, and its size in that report is held to each split.
 func TestTheSweepsBudgetRunsFromItsStartWithTheListingIncluded(t *testing.T) {
 	f := newTrimFixture(t, 20)
 	// A minute of the trimmer's clock per reading of it, which the listing asks at every entry.
 	f.clock.step = time.Minute
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
+	// The target whose two splits the report is held to, beside the fixture's own tree: three
+	// files of three ages and of sizes that tell every sum apart. Their ages are the trimmer's
+	// clock's at the walk less its few minutes of readings, which leaves each on its own side of
+	// both splits.
+	splits := filepath.Join(f.root, "workspaces", "age-splits")
+	mkdirFixture(t, splits)
+	for _, file := range []struct {
+		name  string
+		age   time.Duration
+		bytes int
+	}{
+		{"fresh", 10 * time.Minute, 100},
+		{"hour", 2 * time.Hour, 20},
+		{"day", 48 * time.Hour, 3},
+	} {
+		path, at := filepath.Join(splits, file.name), f.clock.at.Add(-file.age)
+		if err := os.WriteFile(path, make([]byte, file.bytes), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	tr := f.trimmer()
 	out := tr.sweep(context.Background(), *trimSettings(), f.modelled(90)(0))
@@ -2981,6 +3087,18 @@ func TestTheSweepsBudgetRunsFromItsStartWithTheListingIncluded(t *testing.T) {
 	}
 	if report.SizesAt.IsZero() {
 		t.Error("the report carries no time for its sizes, want when they were read")
+	}
+	at := slices.IndexFunc(report.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == splits })
+	if at < 0 {
+		t.Fatalf("the report of a sweep that ended on its budget carries no size of %s: %+v", splits, report.Sizes)
+	}
+	switch size := report.Sizes[at]; {
+	case size.Bytes != 123:
+		t.Errorf("the report's size of %s is %d B, want the 123 of the three files in it", splits, size.Bytes)
+	case size.BytesOverHour != 23:
+		t.Errorf("the report's size of %s carries %d B untouched for more than an hour, want the 23 of the two files written before it: the report of a sweep that ended on its budget carries each size's two age splits", splits, size.BytesOverHour)
+	case size.BytesOverDay != 3:
+		t.Errorf("the report's size of %s carries %d B untouched for more than a day, want the 3 of the one file written before it: the report of a sweep that ended on its budget carries each size's two age splits", splits, size.BytesOverDay)
 	}
 	f.assertProtected()
 	f.assertNothingHalfRemoved()
@@ -3704,6 +3822,78 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 			t.Error("the report says the trimmer switched itself off after one fault, want it to go on")
 		}
 	})
+}
+
+// The report of a trimmer that switched itself off triggers no size walk: it carries the faults
+// and the last reading and no sizes (switchOff), because the volume may be perfectly healthy and a
+// walk would cost the pod a minute for a number nobody asked for. Each walk takes its budget's
+// clock from the trimmer's ticker seam (sizeWalk.after), so the walks are counted there, and the
+// targets each measured at the measurement seam beside it. The first sweep reports and walks, which
+// is the control that a report needing sizes is counted. An hour and a minute then pass on the
+// trimmer's clock, so a report made after them would walk afresh rather than carry that walk's
+// numbers (trimmer.sizes), and three panics in a row switch the trimmer off. The negative control
+// is a switchOff that asks for sizes as a sweep's report does: it walks the volume a second time,
+// which this case counts whether or not the report then carries what the walk measured.
+func TestTheSwitchedOffReportTriggersNoSizeWalk(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: the first sweep frees nothing, reports and pauses
+	f.setOnRead(func(call int) {
+		if call >= 2 && call <= 4 {
+			panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+		}
+	})
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	var measuredTargets atomic.Int32
+	measure := tr.measure
+	tr.measure = func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+		measuredTargets.Add(1)
+		return measure(ctx, dir, name, at)
+	}
+	walks := func() int {
+		count := 0
+		for at := range f.ticks.count() {
+			if f.ticks.periodOf(at) == volumeWalkBudget {
+				count++
+			}
+		}
+		return count
+	}
+	_, done := f.start(tr)
+
+	f.tick("the sweep ended")
+	testwait.Eventually(t, "the first sweep's report", func() bool { return len(f.reports()) == 1 })
+	first := f.reports()[0]
+	if walked, targets := walks(), measuredTargets.Load(); walked != 1 || targets == 0 || len(first.Sizes) == 0 {
+		t.Fatalf("the first sweep's report made %d walks measuring %d targets and carries %d sizes, want one walk with sizes: the case would count no walk at all",
+			walked, targets, len(first.Sizes))
+	}
+
+	f.clock.advance(volumeWalkInterval + time.Minute)
+	if since := f.clock.now().Sub(first.SizesAt); since < volumeWalkInterval {
+		t.Fatalf("the first walk is %s old, want at least the %s after which a report walks afresh", since, volumeWalkInterval)
+	}
+	targetsBefore := measuredTargets.Load()
+	for range volumeFaultLimit {
+		f.tick("recovered a panic")
+	}
+	awaitClosed(t, done, "the switched-off trimmer's loop to return once its last report is sent")
+
+	reports := f.reports()
+	if len(reports) != 2 || !reports[1].SwitchedOff {
+		t.Fatalf("the trimmer sent %d reports, want the first sweep's and the switched-off trimmer's last: %+v", len(reports), reports)
+	}
+	if walked := walks(); walked != 1 {
+		t.Errorf("the trimmer made %d size walks, want the one of the first sweep's report: the switched-off report walked the volume", walked)
+	}
+	if targets := measuredTargets.Load(); targets != targetsBefore {
+		t.Errorf("the trimmer measured %d targets after the first sweep's report, want none: the switched-off report walked the volume", targets-targetsBefore)
+	}
+	last := reports[1]
+	if len(last.Sizes) != 0 || last.SizesOmitted != 0 || !last.SizesAt.IsZero() || last.SizesPartial || len(last.SizesMissing) != 0 {
+		t.Errorf("the switched-off report carries %d sizes (%d omitted) read at %s, partial %t, missing %v, want no size walk at all in it",
+			len(last.Sizes), last.SizesOmitted, last.SizesAt, last.SizesPartial, last.SizesMissing)
+	}
 }
 
 // R1 has the trimmer, "after three in a row", stay off "and send one last report saying so", and
@@ -4788,6 +4978,171 @@ func TestASweepTheSettingsStoppedNeitherAnchorsNorPairs(t *testing.T) {
 	if said := f.logged("the settings stopped the trimmer"); said != 2 {
 		t.Errorf("the settings stopped %d sweeps, want the two the case stopped: %q", said, f.linesWritten())
 	}
+}
+
+// A sweep the settings stopped right after a recovery neither anchors the chain that recovery
+// started nor pairs with that chain's first reported sweep: it sends no report, and riseAt reads
+// only a reported sweep (tick). The case above stops a sweep before the first episode has an anchor
+// and inside it; this one stops the first sweep of a new chain. The first sweep starts at 86% and
+// reports, anchoring episode 1; an interval after its pause reads 65%, below the low mark, which is
+// a recovery; the next sweep starts at 86% and an answer with no settings stops it at its first
+// entry boundary; the trimmer runs again once settings are back, and the two reported sweeps after
+// it start at 91% and 91%. Read as the code reads them, the first 91% anchors episode 2 and the
+// second raises nothing. The negative control is a copy that reads the stopped sweep's start in
+// the settings' branch of tick: the 86% anchors the new chain and is the start the first 91% pairs
+// with, and the second 91%, a floor five points above it, raises a rise.
+func TestASweepTheSettingsStoppedRightAfterARecoveryNeitherAnchorsNorPairs(t *testing.T) {
+	pause := func(percent float64) []float64 { return slices.Repeat([]float64{percent}, volumeQuietIntervals) }
+	f := newTrimFixture(t, 0) // no entry it may delete: every sweep frees nothing and takes no reading of its own
+	for _, root := range f.roots {
+		if root.Entry == ImmediateChildren {
+			// One entry too young to delete: the listing asks the settings before it reads an
+			// entry's age (list), so each sweep has an entry boundary the answer stops it at, and
+			// the sweeps that run delete nothing.
+			mkdirFixture(t, filepath.Join(root.Path, "tool-fresh"))
+		}
+	}
+	f.useVolume(script(slices.Concat(
+		[]float64{86},     // reported: anchors episode 1 at 86%
+		pause(86),         // its pause
+		[]float64{65},     // below the low mark after the high one: episode 2, recovery
+		[]float64{86},     // stopped by the settings, the first sweep of the new chain
+		[]float64{91},     // reported: anchors episode 2 at 91%
+		pause(91),         // its pause
+		[]float64{91, 91}, // reported: a floor of 91%, no rise, and the reading after it
+	)...))
+	f.setSettings(trimSettings())
+	var stopping atomic.Bool
+	f.clock.setHook(func(*fakeClock) {
+		// The clock's first reading of an interval is the sweep's own start (sweep): the answer
+		// with no settings arrives there, after the interval's own read of the settings.
+		if stopping.CompareAndSwap(true, false) {
+			f.setSettings(nil)
+		}
+	})
+	f.start(f.trimmer())
+	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+
+	f.tick("the sweep ended:")
+	for range volumeQuietIntervals {
+		f.tick("no sweep for another")
+	}
+	f.tick("nothing to sweep")
+	if recovered := f.logged("episode 2 (" + shimwire.VolumeEpisodeRecovery + "): the volume fell to 65.0%"); recovered != 1 {
+		t.Fatalf("the reading of 65%% after the pause raised %d recoveries, want the one the case stops the next sweep after: %q", recovered, f.linesWritten())
+	}
+
+	waited, started := f.logged("no settings are in force, so the trimmer stays off"), f.logged("started:")
+	stopping.Store(true)
+	f.tick("the settings stopped the trimmer")
+	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+		return f.logged("no settings are in force, so the trimmer stays off") == waited+1
+	})
+	f.setSettings(trimSettings())
+	offerSettingsTicksUntil(t, f, "the interval loop to start again", func() bool { return f.logged("started:") == started+1 })
+
+	f.tick("the sweep ended:")
+	for range volumeQuietIntervals {
+		f.tick("no sweep for another")
+	}
+	f.tick("the sweep ended:")
+	if t.Failed() {
+		t.FailNow()
+	}
+	testwait.Eventually(t, "the last sweep's report", func() bool { return len(f.reports()) == 3 })
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst},    // from 86%: anchors episode 1 at 86%
+		{2, shimwire.VolumeEpisodeRecovery}, // from 91%, after the 65% and the stopped 86%: anchors episode 2 at 91%
+		{2, shimwire.VolumeEpisodeRecovery}, // from 91%, after the 91%: a floor of 91%, no rise
+	})
+	assertRises(t, f)
+	if said := f.logged("the settings stopped the trimmer"); said != 1 {
+		t.Errorf("the settings stopped %d sweeps, want the one the case stopped: %q", said, f.linesWritten())
+	}
+}
+
+// A sweep that reached the low mark neither anchors an episode nor pairs with the next reported
+// sweep's start: it sends no report, and riseAt reads only a reported sweep (tick), so its start is
+// no start at all to the rise. The first chain's sweeps start at 86% and 91%, which anchors episode
+// 1 at 86% and leaves the 91% as the start the next reported sweep pairs with. Then five old
+// entries arrive, and the next sweep, from 91%, deletes them and leaves the volume at 69.9%: a
+// recovery, and no report. The two sweeps after it start at 96% and 96%, and both report the
+// recovery's episode, anchored afresh at the first 96%, with no rise. The negative controls are the
+// two places a copy could read the clearing sweep's start, each turning this case red: before the
+// recovery its 91% pairs with the 91% before it, a floor five points above the 86% anchor, and
+// raises a rise of the old chain, so the reports after it carry episode 3; after the recovery it
+// anchors the new chain at 91%, so the second 96% raises a rise. The clearing sweep starts at 91%
+// rather than higher, because a start above every start after it anchors nothing those starts do
+// not lower at once (riseAt), and then the second control is green.
+func TestASweepThatReachedTheLowMarkNeitherAnchorsNorPairs(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	var mu sync.Mutex
+	level := 86.0
+	sweepReads := map[int]float64{} // the clearing sweep's own two readings, by read
+	f.useVolume(func(call int) volumeUsage {
+		mu.Lock()
+		defer mu.Unlock()
+		if reading, ok := sweepReads[call]; ok {
+			return usageAt(reading)
+		}
+		return usageAt(level)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	at := func(reading float64, ends string) {
+		t.Helper()
+		mu.Lock()
+		level = reading
+		mu.Unlock()
+		f.tick(ends)
+		if t.Failed() {
+			t.FailNow()
+		}
+	}
+	reported := func(start float64, pauses int) {
+		t.Helper()
+		at(start, "the sweep ended")
+		for range pauses {
+			at(start, "no sweep for another")
+		}
+	}
+	reported(86, volumeQuietIntervals)
+	reported(91, volumeQuietIntervals)
+
+	for _, root := range f.roots {
+		if root.Entry == ImmediateChildren {
+			for n := range 5 {
+				f.addTree(filepath.Join(root.Path, fmt.Sprintf("late-%d", n)), root.Entry)
+			}
+			break
+		}
+	}
+	mu.Lock()
+	next := f.readCount() + 1
+	sweepReads[next], sweepReads[next+1] = 91, 69.9
+	mu.Unlock()
+	before := len(f.reports())
+	at(91, "the sweep ended")
+	if got := len(f.reports()); got != before {
+		t.Fatalf("the sweep that left the volume at 69.9%% sent %d reports, want none: it ended below the low mark", got-before)
+	}
+	if recovered := f.logged("(" + shimwire.VolumeEpisodeRecovery + "): the volume fell to 69.9%"); recovered != 1 {
+		t.Fatalf("the sweep that left the volume at 69.9%% raised %d recoveries, want one: %q", recovered, f.linesWritten())
+	}
+
+	reported(96, volumeQuietIntervals)
+	reported(96, 0)
+	testwait.Eventually(t, "the last sweep's report", func() bool { return len(f.reports()) == before+2 })
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst},    // from 86%: anchors episode 1 at 86%
+		{1, shimwire.VolumeEpisodeFirst},    // from 91%, after the 86%: a floor of 86%, no rise
+		{2, shimwire.VolumeEpisodeRecovery}, // from 96%, after the clearing sweep from 91% to 69.9%: anchors episode 2 at 96%
+		{2, shimwire.VolumeEpisodeRecovery}, // from 96%, after the 96%: a floor of 96%, no rise
+	})
+	assertRises(t, f)
 }
 
 // A sweep whose report panics while it is being made has been read for a rise all the same: tick
