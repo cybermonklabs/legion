@@ -1101,16 +1101,15 @@ The component renders no TLS for the cluster, so NATS sends each route URL's pas
 on every route a server opens. The route URLs name the pods by their headless Service,
 `<n>-<i>.<n>-headless:6222`, which resolves to the pods' internal IPs, and `noAdvertise` keeps a
 server from offering any other address, so a route never leaves the cluster's VPC. Between nodes,
-Google's network layer encrypts that traffic, not NATS and not GKE: VM-to-VM connections inside
-Google's production network are integrity-protected and encrypted
+the route traffic has only Google's default VPC encryption, with Google-held keys, and neither NATS
+nor GKE adds any: VM-to-VM connections inside Google's production network are
+integrity-protected and encrypted
 ([Encryption in transit](https://cloud.google.com/docs/security/encryption-in-transit), "Google
-Cloud virtual network authentication and encryption"). GKE's own inter-node transparent encryption
-(`networkConfig.inTransitEncryptionConfig`) is a separate setting, and it is unset on the
-deployment's cluster (read 2026-11-17 with `gcloud container clusters describe`). On each node the
-password is in clear, so the residual is node-level: a process with access to a node's network
-namespace or its traffic, which can read the password and then join as a route, and the
-infrastructure provider. The credential fences a process that can connect to port 6222, and not
-that one. Route TLS fences both, and it is this residual's fix. Its cost is a CA and per-server
+Cloud virtual network authentication and encryption"). On each node the password is in clear, so
+the residual is node-level: a process with access to a node's network namespace or its traffic,
+which can read the password and then join as a route, and the infrastructure provider. The
+credential fences a process that can connect to port 6222, and not that one. Route TLS fences
+both, and it is this residual's fix. Its cost is a CA and per-server
 certificates, new component inputs, the `tls://` switch and a staged rollout: the chart has the
 switch (`config.cluster.tls`, a `secretName` holding `tls.crt` and `tls.key`, and `tlsCA` for the
 CA that verifies a peer), but the component exposes none of it and mints no certificate, and a
