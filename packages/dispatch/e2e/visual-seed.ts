@@ -23,7 +23,10 @@ if (path === undefined) {
 }
 
 await resetDatabase();
-const seed = await seedReviewRoutes();
+// No Playwright row runs this seed, so no expect timeout applies; 15 s is what the seed's
+// waits had before their caller set them, far above the 230 ms the Inbox was read settling in.
+const seedBoundMs = 15_000;
+const seed = await seedReviewRoutes({ boundMs: seedBoundMs });
 
 // A write that fails is the whole run's failure and not the container's: without this file every
 // row of the visual spec skips itself, and the run would pass having compared nothing. So the
