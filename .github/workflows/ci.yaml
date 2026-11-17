@@ -4646,8 +4646,9 @@ jobs:
   # The same two halves of the Bun install, proved again on an arm64 runner.
   # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
   # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
-  # python3 with PyYAML. No other step of this repository that runs on ubuntu-24.04-arm imports
-  # yaml, so nothing says that runner image carries it until the arm64 leg of
+  # python3 with PyYAML. The one other arm64 step that imports yaml is that same action in
+  # dispatch-browser.yaml's `merge` job, which runs only when a change selects the browser suite,
+  # so on most pull requests nothing says that runner image carries it until the arm64 leg of
   # .github/workflows/release-envoy-listener.yaml runs, which happens on a push to main and so
   # only after a merge. This job says it on the pull request instead, and a release that would
   # have failed on the first push fails here.
