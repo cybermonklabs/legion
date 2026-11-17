@@ -5706,9 +5706,12 @@ omp_invocation: mise x $pin -- omp
 state_dir: $work/controller-state
 EOF
 # LEGION_GH_PATH is the real gh the controller's `legion gh` runs, mise's: the devbox's gh on PATH
-# is a wrapper that replaces GH_CONFIG_DIR in an agent session.
+# is a wrapper that replaces GH_CONFIG_DIR in an agent session. The pane is the operator's shell
+# less the running session's own Oh My Pi and Envoy variables, as in controller-start-tmux.sh:
+# `legion controller start` hands Oh My Pi its caller's environment, so an operator session's
+# PI_CONFIG_FILES would lay that session's own settings overlays over the run's profile.
 tmux -L "legion-e2e4b-$$" new-session -d -s controller -x 200 -y 50 \
-  "cd '$work' && HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
+  "cd '$work' && env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
 until_true 300 "controllerLocator in the state" sh -c "'$work/legion' state --json --config '$work/legion.yaml' | jq -e '.controllerLocator.sessionId != null' >/dev/null"
 controller_session=$(daemon_state | jq -r .controllerLocator.sessionId)
 note "controllerLocator $(daemon_state | jq -c .controllerLocator)"
