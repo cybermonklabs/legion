@@ -1302,3 +1302,5 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	}
 	return nil
 }
+
+// the cluster's legion NodePool
