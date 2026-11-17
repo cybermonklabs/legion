@@ -4748,8 +4748,8 @@ The reviewer of R25 reads each text for what these rules cannot refuse.
   Nothing in code font ends a sentence.
   A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
   Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
-  An address that the words show, such as `https://example.com/Web.Config`, is one word, so no stop in it breaks this rule.
-  A stop after the address ends the sentence.
+  A word that starts with a scheme and `//`, such as `https://`, or with `www.` is an address that the words show.
+  Such an address is one word, so no stop in it breaks this rule, and a stop after the address ends the sentence.
   A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
   `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
   Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
@@ -4767,14 +4767,43 @@ A link to a record of Dispatch, and the name of an incident, a pull request or a
   A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
   So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
   The finding of each rule lists the forms that it reads.
-  A person's name is the name of one person who signed in: the parts of that person's email, in order, each with a capital letter.
+
+- How the rules read a person and a record: a person's name is the name of one person who signed in.
+  It is the parts of that person's email, in order, each with a capital letter.
   A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
   So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
+  Each part of a name is a whole word, as the next item says, so `Ada Lovelace2` names no person.
   Parts of the emails of two people are no name.
   A part that is a word of an approved component name or term is no part of a name.
+  Such a word is a whole word too, so the approved name `Dispatch_Admin` does not hide the name `Dispatch Admin`.
+  The way out is to write the name of the system as the person approved it.
+  A letter such as `é` can be one character, or a letter and a combining mark.
+  Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
+  The reviewer of R25 reads such a text.
   An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
-  A word that starts with `@` is the handle of a person, also in code font, so write a name of the system without `@`.
+  A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
+  So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
+  A bare key of a project of Dispatch, such as `ACME-12`, names a record of Dispatch, also when no record has that key.
+  A key of another project, such as `UTF-8` or `SHA-256`, names nothing.
+  A bare id such as a UUID names a record of Dispatch too, also when no record has it.
+  Its rule is `dispatch-link`, so write such a value by its kind, as in "the UUID of the request", not by its characters.
   The rules also read the name of a term (kind `term`).
+
+- When a form is a whole word: each form of a name above, a key and an id among them, is a whole word.
+  A character of a word right before it or right after it makes it part of a longer word, which names nothing.
+  A character of a word is a letter, a mark, a decimal digit or `_`, of any script, so `#12abcd` and `#12é` name no pull request.
+  Some forms also continue with other characters: `@` before a handle, and `/` or `@` after it.
+  So the package `@types/node` names no person.
+  `.`, `-` or `/` before `<owner>/<repo>#<n>`, and `.` or `-` before the host of a pull request's address, continue them too.
+  A `:` that no white space follows continues an email address, so the SSH address `git@github.com:owner/repo.git` names no person.
+  An email address and a handle take the characters of a word beside them into their own parts.
+  So `xada@example.com` is an email address too.
+  A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
+  So a letter of another script in one of them makes it no form.
+  A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
+  So write such a colour in words.
+  A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
+  So it names nothing, and the reviewer of R25 reads such a text.
 
 A definition of a term has one sentence, and a term has one definition.
 A footnote of a definition is part of it, so the sentences of the footnote count.
@@ -4787,7 +4816,9 @@ The list of terms holds these definitions, and no approval adds a second definit
 Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
 So a decision block under that heading breaks the form at its question line.
 A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
-The finding names the line by its text, and it says where a decision block goes.
+The finding names the line by its text, and it names two ways out.
+A line that defines no term, such as an example or a note, moves out from under the heading `Terms`.
+A decision block goes above the heading.
 A heading whose text reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
 Such a heading reads as `terms` in another case or with a last colon, such as `## TERMS` or `## Terms:`.
 Emphasis is no part of the text that a person reads, so `## **Terms**` is the heading `Terms`.

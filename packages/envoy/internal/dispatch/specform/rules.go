@@ -32,9 +32,11 @@ const ruleTermLine Rule = "term-line"
 const ruleUnreadable Rule = "unreadable"
 
 // termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
-// of a term line, and the way out for a decision block, whose question line is such a line: the
-// block stands above the heading, and the chosen definition goes under it after the answer.
+// of a term line, and the two ways out. A line that defines no term, such as an example or a note,
+// moves out from under the heading. A decision block, whose question line is such a line, stands
+// above the heading, and the chosen definition goes under it after the answer.
 const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+	`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 	`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
@@ -55,26 +57,99 @@ var steRules = map[string]string{
 	"dangling-conjunction": "a list item that ends with and or or",
 }
 
+// wordClass is the one class of a character of a word, as the content of a bracket expression: a
+// letter, a mark, a decimal digit or connector punctuation such as "_", of any script, which are
+// Unicode's characters of a word. Each form of a name is built on it (newWordForm), its boundaries
+// and the parts of it that are words, and so is each word of a person's name and of an approved
+// name (nameWord), so the rules read one alphabet.
+const wordClass = `\p{L}\p{M}\p{Nd}\p{Pc}`
+
+// otherWordNotions are the notions of a word of the regular expressions themselves, which read
+// ASCII only. No regular expression of this file holds one (wordRegexp).
+var otherWordNotions = []string{`\w`, `\W`, `\b`, `\B`, `[:word:]`}
+
+// wordRegexp is the regular expression expr, which holds no notion of a word of its own
+// (otherWordNotions), so it reads a word only as wordClass does: wordRegexp panics on one.
+func wordRegexp(expr string) *regexp.Regexp {
+	for _, notion := range otherWordNotions {
+		if strings.Contains(expr, notion) {
+			panic(fmt.Sprintf("specform: %q holds %s, a notion of a word other than wordClass", expr, notion))
+		}
+	}
+	return regexp.MustCompile(expr)
+}
+
+// nameWord is a word of a person's name and of an approved name (personNames, peopleNames).
+var nameWord = wordRegexp(`[` + wordClass + `]+`)
+
+// The forms of a name that the reference rules read, each a whole word (newWordForm), so "#12abcd"
+// is a colour, "@types/node" a package and "xACME-12" no key. A part of a form that the rule of its
+// own system writes in ASCII is ASCII: a key of Dispatch (text.issueKeyPattern), an id (hexadecimal
+// digits), the owner and the repository of GitHub (letters, digits, ".", "_" and "-"), a number
+// and a date. So a letter of another script in such a part makes it no form. A part that a person
+// names, the key of an incident, an email address and a handle, is of wordClass.
 var (
 	// bareKey is an issue key standing as a word: the server's own reference grammar finds
 	// only dispatch:// and http(s):// references, so this one is this package's.
-	bareKey  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
-	recordID = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	// incident and pullRequestName name a record only by a form that only a name has: "#" and
-	// digits, the word "number" and digits, an incident's key or date, and a pull request's
-	// <owner>/<repo>#<digits>. A bare number after the words is a count, such as "each pull request
-	// 10 minutes after", and names nothing. pullRequestAddress is the address of a pull request,
-	// the one form of a name that an address holds (its group 1): its host is github.com or
-	// www.github.com in any case, as a host has no case, at the start of the text or after a
-	// character that no host holds, so github.com at the end of another host names nothing.
-	incident           = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
-	pullRequestName    = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|#\d+`)
-	pullRequestAddress = regexp.MustCompile(`(?:^|[^\w.-])((?i:(?:www\.)?github\.com)/[\w.-]+/[\w.-]+/pull/\d+)`)
+	bareKey  = newWordForm(`[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*`, "", "")
+	recordID = newWordForm(`(?i:(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, "", "")
+	// incident, pullRequestName and pullRequestRepo name a record only by a form that only a name
+	// has: "#" and digits, the word "number" and digits, an incident's key or date, and a pull
+	// request's <owner>/<repo>#<digits>, which no "/", "." or "-" comes before, since that is a
+	// longer path. A bare number after the words is a count, such as "each pull request 10 minutes
+	// after", and names nothing. pullRequestAddress is the address of a pull request, the one form
+	// of a name that an address holds: its host is github.com or www.github.com in any case, as a
+	// host has no case, which no "." or "-" comes before, so github.com at the end of another host
+	// names nothing.
+	incident = newWordForm(`(?i:incident\s*#[0-9]+|incident\s+(?:number\s+#?[0-9]+|[0-9]{4}-[0-9]{2}-[0-9]{2}|\p{L}[`+
+		wordClass+`]*-[0-9]+))|INC-[0-9]+`, "", "")
+	pullRequestName    = newWordForm(`(?i:(?:pr|pull request)(?:\s*#[0-9]+|\s+number\s+#?[0-9]+))|#[0-9]+`, "", "")
+	pullRequestRepo    = newWordForm(`[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#[0-9]+`, `./\-`, "")
+	pullRequestAddress = newWordForm(`(?i:(?:www\.)?github\.com)/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/pull/[0-9]+`, `.\-`, "")
 	// email is an e-mail address: its domain's last label is letters, so a version after an at
-	// sign, as in "checker@v1.2.3", is no address.
-	email  = regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)
-	handle = regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`)
+	// sign, as in "checker@v1.2.3", is no address. Its local part and its domain take the letters
+	// beside them, so a letter there makes a longer address. A ":" that no white space follows
+	// continues it, as the host and the path of an SSH address, "git@github.com:owner/repo.git".
+	email = newWordForm(`[`+wordClass+`.+\-]+@(?:[`+wordClass+`\-]+\.)+\p{L}[\p{L}\p{M}]+`, "", `:[^\s\p{Z}]`)
+	// handle is an @handle, which no "@" comes before and no "/" or "@" comes after, so the scope
+	// of a package such as "@types/node" is no handle.
+	handle = newWordForm(`@\p{L}[`+wordClass+`\-]*`, "@", `[/@]`)
 )
+
+// wordForm is a form of a name that a rule finds only as a whole word (newWordForm).
+type wordForm struct {
+	// pattern is the form, its group 1, after the start of the line or a character that does not
+	// continue it; continues matches at the start of what follows the form when that continues it.
+	pattern, continues *regexp.Regexp
+}
+
+// newWordForm is the form of a name whose regular expression is form. Its match is a whole word
+// when the character before it is the start of the line, or no character of a word (wordClass) and
+// none of left, and what follows it is the end of the line, or no character of a word and no match
+// of right. left is the content of a bracket expression of the characters that continue the form
+// on its left, and right a regular expression of what continues it on its right. Both regular
+// expressions are wordRegexp's, so none of the three holds a notion of a word of its own.
+func newWordForm(form, left, right string) wordForm {
+	continues := `^[` + wordClass + `]`
+	if right != "" {
+		continues = `^(?:[` + wordClass + `]|` + right + `)`
+	}
+	return wordForm{
+		pattern:   wordRegexp(`(?:^|[^` + wordClass + left + `])(` + form + `)`),
+		continues: wordRegexp(continues),
+	}
+}
+
+// find is the span of each whole word of the form in line, in the order of the line.
+func (form wordForm) find(line string) []span {
+	var found []span
+	for _, match := range form.pattern.FindAllStringSubmatchIndex(line, -1) {
+		if !form.continues.MatchString(line[match[3]:]) {
+			found = append(found, span{start: match[2], end: match[3]})
+		}
+	}
+	return found
+}
 
 // incidentForms and pullRequestForms say, in a finding, which forms the two rules read as a name.
 const (
@@ -168,7 +243,8 @@ type span struct {
 // address of a link or an image) names a record only by the forms that an address holds: a
 // reference to a record of Dispatch, the address of a pull request and an email address. A form
 // of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
-// nor in a reference that words hold, such as "https://example.com/guide#12".
+// nor in a reference that words hold, such as "https://example.com/guide#12". A "#12" in the name
+// of an incident names no pull request.
 func referenceBreaks(c Context, people [][]string, line string, address bool) []broken {
 	var references, links []span
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
@@ -181,17 +257,17 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	inReference := func(at int) bool {
 		return inSpans(references, at)
 	}
-	for _, match := range bareKey.FindAllStringIndex(line, -1) {
-		key := line[match[0]:match[1]]
+	for _, each := range bareKey.find(line) {
+		key := line[each.start:each.end]
 		project := key[:strings.LastIndexByte(key, '-')]
 		ref, ok := text.ParseRef("dispatch://"+key, "")
-		if !inReference(match[0]) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
-			links = append(links, span{match[0], match[1], broken{ruleDispatchLink, linkDetail(key)}})
+		if !inReference(each.start) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
+			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("key", key)}})
 		}
 	}
-	for _, match := range recordID.FindAllStringIndex(line, -1) {
-		if !inReference(match[0]) {
-			links = append(links, span{match[0], match[1], broken{ruleDispatchLink, linkDetail(line[match[0]:match[1]])}})
+	for _, each := range recordID.find(line) {
+		if !inReference(each.start) {
+			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("id", line[each.start:each.end])}})
 		}
 	}
 	sort.SliceStable(links, func(a, b int) bool { return links[a].start < links[b].start })
@@ -199,19 +275,20 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	for _, link := range links {
 		found = append(found, link.broken)
 	}
+	var incidents []span
 	if !address {
-		for _, match := range incident.FindAllString(line, -1) {
-			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
+		incidents = incident.find(line)
+		for _, each := range incidents {
+			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", line[each.start:each.end], incidentForms)})
 		}
 	}
-	var pullRequests []span
-	for _, match := range pullRequestAddress.FindAllStringSubmatchIndex(line, -1) {
-		pullRequests = append(pullRequests, span{start: match[2], end: match[3]})
-	}
+	pullRequests := pullRequestAddress.find(line)
 	if !address {
-		for _, match := range pullRequestName.FindAllStringIndex(line, -1) {
-			if !inReference(match[0]) && !inSpans(pullRequests, match[0]) {
-				pullRequests = append(pullRequests, span{start: match[0], end: match[1]})
+		for _, form := range []wordForm{pullRequestRepo, pullRequestName} {
+			for _, each := range form.find(line) {
+				if !inReference(each.start) && !inSpans(pullRequests, each.start) && !inSpans(incidents, each.start) {
+					pullRequests = append(pullRequests, each)
+				}
 			}
 		}
 	}
@@ -221,9 +298,9 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	}
 	var names []string
 	if address {
-		for _, match := range email.FindAllStringIndex(line, -1) {
-			if !inReference(match[0]) {
-				names = append(names, line[match[0]:match[1]])
+		for _, each := range email.find(line) {
+			if !inReference(each.start) {
+				names = append(names, line[each.start:each.end])
 			}
 		}
 	} else {
@@ -237,6 +314,12 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 
 func linkDetail(reference string) string {
 	return fmt.Sprintf("it links to a record of Dispatch: %q", reference)
+}
+
+// recordNameDetail is the detail of a bare key or id of a record of Dispatch, which names the
+// record by its key or its id and links to none.
+func recordNameDetail(by, name string) string {
+	return fmt.Sprintf("it names a record of Dispatch by its %s: %q", by, name)
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar
@@ -263,14 +346,14 @@ func referenceAt(line string, offset int) string {
 
 // peopleNames is the name of each signed-in person: the parts of the local part of the person's
 // email, split at ".", "_" or "-", that hold at least three letters, in order and in lower case.
-// A part that is a word of a name that a person approved, one of the context's system names or a
-// term of the approved list, is no part of a name: such a word is a noun of the system. A name
-// that the judged text writes itself, a component's or a term's, is no such name, so it cannot
-// hide a person. One part alone is no name.
+// A part that is a word (nameWord) of a name that a person approved, one of the context's system
+// names or a term of the approved list, is no part of a name: such a word is a noun of the
+// system. A name that the judged text writes itself, a component's or a term's, is no such name,
+// so it cannot hide a person. One part alone is no name.
 func peopleNames(c Context, in Input) [][]string {
 	system := map[string]bool{}
 	addWords := func(name string) {
-		for _, word := range strings.FieldsFunc(name, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		for _, word := range nameWord.FindAllString(name, -1) {
 			system[strings.ToLower(word)] = true
 		}
 	}
@@ -303,33 +386,24 @@ func peopleNames(c Context, in Input) [][]string {
 }
 
 // personNames is each person line names, in the order of the line: an email address, an
-// @handle, and the name of one signed-in person (peopleNames), its parts in order as words that
-// only white space parts, each with a capital first letter as a name is written. A reference
-// holds none.
+// @handle, and the name of one signed-in person (peopleNames), its parts in order as whole words
+// (nameWord) that only white space parts, each with a capital first letter as a name is written.
+// A reference holds none.
 func personNames(people [][]string, line string, inReference func(int) bool) []string {
 	var found []span
-	for _, match := range email.FindAllStringIndex(line, -1) {
-		if !inReference(match[0]) {
-			found = append(found, span{start: match[0], end: match[1]})
+	for _, each := range email.find(line) {
+		if !inReference(each.start) {
+			found = append(found, each)
 		}
 	}
-	for _, match := range handle.FindAllStringSubmatchIndex(line, -1) {
-		if !inReference(match[2]) && !inSpans(found, match[2]) {
-			found = append(found, span{start: match[2], end: match[3]})
+	for _, each := range handle.find(line) {
+		if !inReference(each.start) && !inSpans(found, each.start) {
+			found = append(found, each)
 		}
 	}
 	var words []span
-	inWord := false
-	for index, r := range line {
-		if !unicode.IsLetter(r) {
-			inWord = false
-			continue
-		}
-		if !inWord {
-			words = append(words, span{start: index})
-			inWord = true
-		}
-		words[len(words)-1].end = index + utf8.RuneLen(r)
+	for _, each := range nameWord.FindAllStringIndex(line, -1) {
+		words = append(words, span{start: each[0], end: each[1]})
 	}
 	writes := func(at int, name []string) bool {
 		for index, part := range name {

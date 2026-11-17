@@ -368,8 +368,8 @@ func (r *specFormRefusal) body() specFormError {
 // specFormOf judges the form of documents, each at the version it names, in q. A document in
 // scope is judged on every act; the read route's act (actRead) judges every document, in scope or
 // not. With no root named, the other acts read nothing at all. It reads each version's stored
-// markdown, the projects (a bare key of a project is a link), the emails of the people who signed
-// in (a piece of one is a name) and, under a root, the approved covered documents under it
+// markdown, the projects (a bare key of a project names a record), the emails of the people who
+// signed in (a piece of one is a name) and, under a root, the approved covered documents under it
 // (approvedSpecTexts): the names of their components and interfaces, which are nouns of the
 // system and no person, and their terms, which are the root's list of terms (R50). It reads every
 // document before it judges one, so that a line of the term-line form outside Terms is judged

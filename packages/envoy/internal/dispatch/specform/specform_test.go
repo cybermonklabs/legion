@@ -192,25 +192,26 @@ func TestReferenceRuleReadsInsideCodeSpans(t *testing.T) {
 }
 
 // TestCheckFindsEachLinkToARecordOfDispatch holds the dispatch-link rule to what names a record:
-// a reference, a bare key of a project that exists, a message id and a bare id.
+// a reference, which links to it, and a bare key of a project that exists, a message id and a bare
+// id, which name it.
 func TestCheckFindsEachLinkToARecordOfDispatch(t *testing.T) {
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
 	for _, test := range []struct {
-		body      string
-		reference string
+		body   string
+		detail string
 	}{
-		{"Dispatch keeps ACME-3 for each reader.", "ACME-3"},
+		{"Dispatch keeps ACME-3 for each reader.", `it names a record of Dispatch by its key: "ACME-3"`},
 		{"Dispatch keeps XYZ-3 for each reader.", ""},
-		{"Dispatch keeps message:" + id + " for each reader.", "message:" + id},
-		{"Dispatch keeps " + id + " for each reader.", id},
-		{"Dispatch keeps dispatch://ACME-1/ask/" + id + " for each reader.", "dispatch://ACME-1/ask/" + id},
+		{"Dispatch keeps message:" + id + " for each reader.", `it names a record of Dispatch by its id: "message:` + id + `"`},
+		{"Dispatch keeps " + id + " for each reader.", `it names a record of Dispatch by its id: "` + id + `"`},
+		{"Dispatch keeps dispatch://ACME-1/ask/" + id + " for each reader.", `it links to a record of Dispatch: "dispatch://ACME-1/ask/` + id + `"`},
 		{"Dispatch keeps https://example.org/ACME-3 for each reader.", ""},
-		{"Dispatch keeps it (dispatch://ACME-4).", "dispatch://ACME-4"},
+		{"Dispatch keeps it (dispatch://ACME-4).", `it links to a record of Dispatch: "dispatch://ACME-4"`},
 	} {
 		text := statement(test.body)
 		var want []Finding
-		if test.reference != "" {
-			want = []Finding{finding(text, "dispatch-link", fmt.Sprintf("it links to a record of Dispatch: %q", test.reference))}
+		if test.detail != "" {
+			want = []Finding{finding(text, "dispatch-link", test.detail)}
 		}
 		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)

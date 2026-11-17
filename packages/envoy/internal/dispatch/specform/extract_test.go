@@ -248,6 +248,7 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 		t.Errorf("Counts = %v, want 2 lines and 2 definitions", got.Counts)
 	}
 	detail := `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+		`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 	want := []Finding{finding(prose, "term-line", detail), finding(drift, "term-line", detail)}
 	if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {

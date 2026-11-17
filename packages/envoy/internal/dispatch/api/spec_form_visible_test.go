@@ -79,10 +79,10 @@ func TestTheRequestJudgesNoOtherProse(t *testing.T) {
 	})
 }
 
-// The red team's inputs of this round, through the approval request route: a name or the address
-// of a record that code font splits is refused as the page shows it, and so is one wholly in code
-// font; a definition wholly in its footnote opens; an address that the words show is one word of a
-// sentence; the address of a pull request whose host is in capitals is refused.
+// The red team's inputs of the page's words, through the approval request route: a name or the
+// address of a record that code font splits is refused as the page shows it, and so is one wholly
+// in code font; a definition wholly in its footnote opens; an address that the words show is one
+// word of a sentence; the address of a pull request whose host is in capitals is refused.
 func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -111,6 +111,68 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 		{name: "the control: a host that ends in github.com", spec: formRequirement("other-host", "Dispatch shows [the change](https://notgithub.com/acme/repo/pull/12)."),
 			reads: specform.KindStatement},
 	})
+}
+
+// The red team's inputs of a form inside a longer word, through the approval request route: a
+// colour, the scope of a package, an SSH address and a person's name joined to a digit open, and
+// the number of a pull request, a handle, an email address and a person's name alone are still
+// refused, also with a letter of another script in them. A bare id names a record, and the
+// refusal says so.
+func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireFormRows(t, tree, []formRow{
+		{name: "a colour of six digits and letters", spec: formRequirement("colour", "Dispatch stores the color `#12abcd`."),
+			reads: specform.KindStatement},
+		{name: "the scope of a package", spec: formRequirement("npm", "Dispatch installs `@types/node`."),
+			reads: specform.KindStatement},
+		{name: "the SSH address of a repository", spec: formRequirement("ssh", "Legion clones `git@github.com:owner/repo.git` for each run."),
+			reads: specform.KindStatement},
+		{name: "the control: the number of a pull request", spec: formRequirement("number", "Legion merges each change, as `#12` says."),
+			want: []string{"statement number pull-request"}},
+		{name: "the control: a handle", spec: formRequirement("handle", "Dispatch asks `@legion` about each change."),
+			want: []string{"statement handle person"}},
+		{name: "an email address with a letter of another script", spec: formRequirement("accent-mail", "Dispatch sends each summary to `josé.garcia@example.com`."),
+			want: []string{"statement accent-mail person"}},
+		{name: "a handle with a letter of another script", spec: formRequirement("accent-handle", "Dispatch asks @josé about each change."),
+			want: []string{"statement accent-handle person"}},
+		{name: "the control: an email address and then a colon", spec: formRequirement("mail-colon", "Dispatch mails one person: ada@example.com: she approves each change."),
+			want: []string{"statement mail-colon person"}},
+		{name: "a name of a person joined to a digit", spec: formRequirement("name-digit", "Dispatch asks Ada Lovelace2 about each change."),
+			reads: specform.KindStatement},
+		{name: "the control: a name of a person", spec: formRequirement("name", "Dispatch asks Ada Lovelace about each change."),
+			want: []string{"statement name person"}},
+	})
+	const id = "12345678-1234-1234-1234-123456789abc"
+	issue := createFormIssue(t, tree.handler, tree.root, "A bare id", "# Spec\n\n"+formRequirement("id", "Dispatch stores the value `"+id+"`."))
+	response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+	const line = `- statement id in spec.md version 1: it names a record of Dispatch by its id: "` + id + `".`
+	if body := response.Body.String(); response.Code != http.StatusConflict || !strings.Contains(body, strings.ReplaceAll(line, `"`, `\"`)) {
+		t.Errorf("a bare id: status=%d body=%s, want 409 with the line %q", response.Code, body, line)
+	}
+}
+
+// A line under the heading Terms that is no term line is refused, and the refusal names both ways
+// out: a line that defines no term, such as an example or a note, moves out from under the heading,
+// and a decision block goes above it. The decision block alone is no way out for a line of prose or
+// for an example below a term.
+func TestALineUnderTermsIsRefusedWithBothWaysOut(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const moveOut = "Move a line that defines no term, such as an example or a note, out from under the heading Terms."
+	const decision = "Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading."
+	for _, test := range []struct{ name, spec, node string }{
+		{"a line of prose", "## Terms\n\nEach term has one definition.\n\n- **lease**: One record of a claim.\n", `"Each term has one definition."`},
+		{"an example below a term", "## Terms\n\n- **lease**: One record of a claim.\n  - For example, one lease of a work unit.\n",
+			`"For example, one lease of a work unit."`},
+	} {
+		issue := createFormIssue(t, tree.handler, tree.root, test.name, "# Spec\n\n"+test.spec)
+		response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+		body := decodeBody[map[string]any](t, response)
+		message, _ := body["error"].(string)
+		if response.Code != http.StatusConflict || !strings.Contains(message, "- line "+test.node+" in spec.md version 1:") ||
+			!strings.Contains(message, moveOut) || !strings.Contains(message, decision) {
+			t.Errorf("%s: status=%d error=%q, want 409 naming the line %s and both ways out", test.name, response.Code, message, test.node)
+		}
+	}
 }
 
 // unreadableMarkdown is markdown that today's parser refuses, as a version that an earlier release
