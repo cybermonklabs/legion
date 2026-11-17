@@ -597,12 +597,17 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	for {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		// The carried approval is the person's: its actor's kind and login. Whether the actor also
-		// reads proven depends on which of the two builds wrote the carry and which one lists it (a
-		// build that predates the field neither stores nor answers it), so that flag is no part of
-		// what crosses the builds.
+		// The carried approval is the person's, and its whole actor crosses the builds but one
+		// field: whether the actor reads proven depends on which of the two builds wrote the carry
+		// and which one lists it (a build that predates the field neither stores nor answers it),
+		// so the comparison leaves that flag out and holds every other field of the actor.
+		var carried model.Actor
+		if len(reviews) > 0 {
+			carried = reviews[0].Actor
+			carried.Proven = false
+		}
 		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor.Kind == "user" && reviews[0].Actor.ID == dispatchTestLogin {
+			carried == (model.Actor{Kind: "user", ID: dispatchTestLogin}) {
 			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
 			return
 		}
