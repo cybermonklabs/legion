@@ -257,8 +257,7 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets identity: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "identity")
 	}
 	if *source {
 		return identitySource(stdout, stderr)

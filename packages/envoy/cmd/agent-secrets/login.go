@@ -42,8 +42,7 @@ func cmdLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets login: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "login")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

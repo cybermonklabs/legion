@@ -740,3 +740,39 @@ func TestTheSignInStoreIsNamedByItsSettingNeverItsPath(t *testing.T) {
 		}
 	})
 }
+
+// wantUnexpectedArgument is the refusal of an argument a form does not take, as every form prints
+// it, written out by hand.
+const wantUnexpectedArgument = "unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)"
+
+// TestAnUnexpectedArgumentIsNotPrinted: a form that takes no such argument refuses it, exit 2,
+// without quoting it: an argument a form does not take is where a credential pasted in the wrong
+// place lands. Each form run without it goes on past the check (the control).
+func TestAnUnexpectedArgumentIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw-positional-4e7a19"
+	for _, form := range [][]string{
+		{"grant", "list"}, {"identity"}, {"login"}, {"keygen"}, {"self"}, {"whoami"}, {"register"}, {"secret", "list"}, {"sign"},
+	} {
+		name := strings.Join(form, " ")
+		t.Run(name, func(t *testing.T) {
+			useBareEnvironment(t)
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "none.sock"))
+			stdout, stderr, code := runIn(append(append([]string{}, form...), secret)...)
+			if code != exitUsageError {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
+			}
+			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"agent-secrets " + name + ": " + wantUnexpectedArgument})
+		})
+		if name == "register" {
+			continue // register with nothing after it waits on the helper; its row above is the check
+		}
+		t.Run("control: "+name+" with no such argument", func(t *testing.T) {
+			useBareEnvironment(t)
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "none.sock"))
+			stdout, stderr, _ := runIn(form...)
+			if strings.Contains(stdout+stderr, "unexpected argument") {
+				t.Errorf("the output %q refuses an argument it was not given", stdout+stderr)
+			}
+		})
+	}
+}

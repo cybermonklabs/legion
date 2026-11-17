@@ -26,7 +26,7 @@ func TestMachineAndGrantUsage(t *testing.T) {
 		{[]string{"machine", "revoke", "a", "b"}, "agent-secrets machine revoke: exactly one CREDENTIAL_ID is required\n"},
 		{[]string{"grant", "revoke"}, "agent-secrets grant revoke: exactly one GRANT_ID is required\n"},
 		{[]string{"machine", "list", "hunter2pw-extra"}, "agent-secrets machine list: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n"},
-		{[]string{"grant", "list", "extra"}, "agent-secrets grant list: unexpected argument \"extra\"\n"},
+		{[]string{"grant", "list", "hunter2pw-extra"}, "agent-secrets grant list: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n"},
 	} {
 		stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(), []string{"AGENT_SECRETS_HELPER_SOCK=" + filepath.Join(t.TempDir(), "none.sock")}, tc.args...)
 		if exit != exitUsageError || stdout != "" || stderr != tc.want {

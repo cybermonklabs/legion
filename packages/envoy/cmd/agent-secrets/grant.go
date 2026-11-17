@@ -33,8 +33,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument %q\n", form, positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, form)
 	}
 	base, signer, err := machineContext()
 	if err != nil {

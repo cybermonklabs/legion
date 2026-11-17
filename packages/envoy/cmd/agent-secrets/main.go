@@ -537,6 +537,10 @@ func reportError(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 }
 
+// unexpectedArgument is how a form refuses an argument it does not take (refuseUnexpectedArgument):
+// without the argument, which is where a credential pasted in the wrong place lands.
+const unexpectedArgument = "unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)"
+
 // refuse prints a command's refusal together with where this CLI looked for the secret
 // (source.go): reportError's line with the source named, so a refusal of this CLI's can never be
 // read as another secrets CLI's answer about the same name. The one exception is the helper's
@@ -763,8 +767,7 @@ func nextBackoff(cur time.Duration) time.Duration {
 func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"out": true})
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets keygen: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "keygen")
 	}
 	flags := newFlagSet("keygen", stderr)
 	out := flags.String("out", os.Getenv("AGENT_SECRETS_KEY_DIR"), "directory to write key.pem into")
@@ -1092,8 +1095,7 @@ func revokeAsSession(grantID string) (c *client, failed, err error) {
 func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument %q\n", name, positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, name)
 	}
 	flags := newFlagSet(name, stderr)
 	asJSON := flags.Bool("json", false, "print the response body verbatim")

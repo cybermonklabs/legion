@@ -25,11 +25,10 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// refuseUnexpectedArgument prints form's refusal of an argument it does not take and answers
-// exitUsageError. The argument itself is not printed: an argument a form does not take is where
-// a credential pasted in the wrong place shows up.
+// refuseUnexpectedArgument prints form's refusal of an argument it does not take
+// (unexpectedArgument) and answers exitUsageError.
 func refuseUnexpectedArgument(stderr io.Writer, form string) int {
-	fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n", form)
+	fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unexpectedArgument)
 	return exitUsageError
 }
 

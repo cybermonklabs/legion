@@ -1048,7 +1048,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		return secretFail(stderr, form, usageErr{fmt.Errorf("unexpected argument %q", positional[0])})
+		return secretFail(stderr, form, usageErr{errors.New(unexpectedArgument)})
 	}
 	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
