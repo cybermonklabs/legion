@@ -1,0 +1,320 @@
+package routes
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// natsContainer is the hub pods' NATS server container, as the nats chart names it.
+const natsContainer = "nats"
+
+// Target is the hub a command reads, and how: the namespace and the StatefulSet, the kubectl to
+// run and the kubeconfig context to give it, and the pods' monitoring and route ports.
+type Target struct {
+	Namespace   string
+	StatefulSet string
+	Kubectl     string
+	Context     string
+	MonitorPort int
+	RoutePort   int
+}
+
+// Opener opens the Source a command reads target through.
+type Opener func(target Target) (Source, error)
+
+// OpenKubectl is the Source a command reads a live hub through: kubectl, as the caller's
+// kubeconfig allows it. It needs get on the StatefulSet and on each of its pods, and create on
+// pods/portforward and get on pods/log of each pod, each of which a Role can grant by name.
+func OpenKubectl(target Target) (Source, error) {
+	path, err := exec.LookPath(target.Kubectl)
+	if err != nil {
+		return nil, fmt.Errorf("find %s: %w", target.Kubectl, err)
+	}
+	return &Kubectl{Target: target, path: path, forwards: map[string]*forward{}}, nil
+}
+
+// Kubectl reads a hub through kubectl: `get statefulset` for its replica count and `get pod` for
+// each ordinal pod, a `port-forward` per pod to its monitoring port and one to its route port, each
+// held for the check's pass over it, and `logs -c nats`.
+type Kubectl struct {
+	Target
+	path     string
+	mu       sync.Mutex
+	forwards map[string]*forward
+}
+
+// forward is a running `kubectl port-forward` and the local port it listens on.
+type forward struct {
+	cmd  *exec.Cmd
+	port int
+	done chan struct{}
+}
+
+// kubectl runs kubectl with args after the context and namespace and returns its stdout, or an
+// error carrying its stderr.
+func (k *Kubectl) kubectl(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, k.path, k.args(args...)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+func (k *Kubectl) args(args ...string) []string {
+	var all []string
+	if k.Context != "" {
+		all = append(all, "--context", k.Context)
+	}
+	return append(append(all, "--namespace", k.Namespace), args...)
+}
+
+// Pods reads the StatefulSet's replica count and then each of its pods by name, <statefulset>-<i>,
+// as a Role that names the pods allows; a list of the namespace's pods would need more.
+func (k *Kubectl) Pods(ctx context.Context) ([]Pod, error) {
+	out, err := k.kubectl(ctx, "get", "statefulset", k.StatefulSet, "--output", "json")
+	if err != nil {
+		return nil, err
+	}
+	var sts struct {
+		Spec struct {
+			Replicas *int `json:"replicas"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(out, &sts); err != nil {
+		return nil, fmt.Errorf("decode the StatefulSet %s: %w", k.StatefulSet, err)
+	}
+	replicas := 1
+	if sts.Spec.Replicas != nil {
+		replicas = *sts.Spec.Replicas
+	}
+	pods := make([]Pod, 0, replicas)
+	for i := range replicas {
+		name := fmt.Sprintf("%s-%d", k.StatefulSet, i)
+		out, err := k.kubectl(ctx, "get", "pod", name, "--output", "json")
+		if err != nil {
+			return nil, err
+		}
+		pod, err := decodePod(out)
+		if err != nil {
+			return nil, fmt.Errorf("decode the pod %s: %w", name, err)
+		}
+		pods = append(pods, pod)
+	}
+	return pods, nil
+}
+
+// decodePod is the Pod a `kubectl get pod --output json` answer describes: its Ready condition,
+// and its nats container's restart count and running start, zero when that container is not
+// running.
+func decodePod(body []byte) (Pod, error) {
+	var pod struct {
+		Metadata struct {
+			Name string `json:"name"`
+			UID  string `json:"uid"`
+		} `json:"metadata"`
+		Status struct {
+			PodIP      string `json:"podIP"`
+			Conditions []struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"conditions"`
+			ContainerStatuses []struct {
+				Name         string `json:"name"`
+				RestartCount int32  `json:"restartCount"`
+				State        struct {
+					Running *struct {
+						StartedAt time.Time `json:"startedAt"`
+					} `json:"running"`
+				} `json:"state"`
+			} `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(body, &pod); err != nil {
+		return Pod{}, err
+	}
+	p := Pod{Name: pod.Metadata.Name, UID: pod.Metadata.UID, IP: pod.Status.PodIP}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == "Ready" {
+			p.Ready = c.Status == "True"
+		}
+	}
+	found := false
+	for _, c := range pod.Status.ContainerStatuses {
+		if c.Name != natsContainer {
+			continue
+		}
+		found = true
+		p.RestartCount = c.RestartCount
+		if c.State.Running != nil {
+			p.StartedAt = c.State.Running.StartedAt
+		}
+	}
+	if !found {
+		p.Ready = false
+	}
+	return p, nil
+}
+
+// forwardLine is the line `kubectl port-forward --address 127.0.0.1 :<port>` prints once it
+// listens, naming the local port it chose.
+var forwardLine = regexp.MustCompile(`^Forwarding from 127\.0\.0\.1:(\d+) -> \d+`)
+
+// forwardTimeout is how long a port-forward may take to print its local port.
+const forwardTimeout = 30 * time.Second
+
+// forwardTo is the running port-forward to pod's port, started at the first call for that pair.
+func (k *Kubectl) forwardTo(ctx context.Context, pod string, port int) (*forward, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	key := pod + ":" + strconv.Itoa(port)
+	if f, ok := k.forwards[key]; ok {
+		return f, nil
+	}
+	// The forward outlives this call, so it runs under no context of the call's, and Close ends it.
+	cmd := exec.Command(k.path, k.args("port-forward", "pod/"+pod, "--address", "127.0.0.1", ":"+strconv.Itoa(port))...)
+	// Its stdout goes through an io.Pipe rather than StdoutPipe, so Wait, which waits for exec's
+	// copy into the pipe, may run while the scanner still reads.
+	reader, writer := io.Pipe()
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = writer, &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("kubectl port-forward pod/%s: %w", pod, err)
+	}
+	f := &forward{cmd: cmd, done: make(chan struct{})}
+	ports := make(chan int, 1)
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			if match := forwardLine.FindStringSubmatch(scanner.Text()); match != nil {
+				port, _ := strconv.Atoi(match[1])
+				select {
+				case ports <- port:
+				default:
+				}
+			}
+		}
+		_, _ = io.Copy(io.Discard, reader)
+	}()
+	go func() {
+		_ = cmd.Wait()
+		_ = writer.Close()
+		close(f.done)
+	}()
+	timer := time.NewTimer(forwardTimeout)
+	defer timer.Stop()
+	select {
+	case f.port = <-ports:
+		k.forwards[key] = f
+		return f, nil
+	case <-f.done:
+		return nil, fmt.Errorf("kubectl port-forward pod/%s exited before it listened: %s", pod, strings.TrimSpace(stderr.String()))
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	_ = cmd.Process.Kill()
+	<-f.done
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return nil, fmt.Errorf("kubectl port-forward pod/%s printed no local port within %s", pod, forwardTimeout)
+}
+
+// monitorClient is the HTTP client of the monitoring port, through the forward.
+var monitorClient = &http.Client{Timeout: 10 * time.Second}
+
+// Monitor answers a GET of path on the pod's monitoring port through its port-forward.
+func (k *Kubectl) Monitor(ctx context.Context, pod, path string) ([]byte, error) {
+	f, err := k.forwardTo(ctx, pod, k.MonitorPort)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s", f.port, path), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := monitorClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s of %s: %w", path, pod, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s of %s: %w", path, pod, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s of %s: %s", path, pod, resp.Status)
+	}
+	return body, nil
+}
+
+// Log is the pod's nats container log, as `kubectl logs` returns it: the running container's
+// newest file.
+func (k *Kubectl) Log(ctx context.Context, pod string) ([]byte, error) {
+	return k.kubectl(ctx, "logs", "pod/"+pod, "--container", natsContainer)
+}
+
+// infoTimeout is how long the route port may take to send its INFO.
+const infoTimeout = 10 * time.Second
+
+// RouteInfo is the first line the pod's route port sends a connection through its port-forward:
+// the INFO a server sends every route connection it accepts at once (route.go:1981, :2097-2100).
+// The connection is closed after that line, before it sends anything.
+func (k *Kubectl) RouteInfo(ctx context.Context, pod string) ([]byte, error) {
+	f, err := k.forwardTo(ctx, pod, k.RoutePort)
+	if err != nil {
+		return nil, err
+	}
+	return FirstLine(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)))
+}
+
+// FirstLine dials address and returns the first line it sends, within infoTimeout.
+func FirstLine(ctx context.Context, address string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, infoTimeout)
+	defer cancel()
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, err
+	}
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read the first line from %s: %w", address, err)
+	}
+	return line, nil
+}
+
+// Close stops every port-forward and waits for each to exit.
+func (k *Kubectl) Close() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var errs []error
+	for key, f := range k.forwards {
+		if err := f.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			errs = append(errs, fmt.Errorf("stop the port-forward to %s: %w", key, err))
+		}
+		<-f.done
+		delete(k.forwards, key)
+	}
+	return errors.Join(errs...)
+}

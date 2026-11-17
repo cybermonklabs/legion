@@ -1137,59 +1137,107 @@ server dialed the address such a process named with the user and the password; w
 it sent no credential. So `authorization` fences a process that tries to join after it, and not one
 that joined before.
 
-So once `authorization` has reached every pod, check every pod's routes, in one pass over the
-three pods (`kubectl port-forward` to each pod's 8222): read each pod's IP from the API server and
-each server's `server_id` from its `/varz`, then read each pod's `/routez` and require every
-route's `ip` to be one of the three pod IPs and every `remote_id` to be one of the three
-`server_id`s. A route's `remote_name` proves nothing: a peer chooses its own name, and nats-server
-refuses an accepted route's name only when it equals the accepting server's own
-(`server/route.go:745-751`; `isDuplicateServerName` runs for gateways alone, `gateway.go:1090`,
-`:1166`), so the process this check looks for can join as `<n>-1` and pass a check of names.
-Do not require the route's `port` to be 6222 either: `/routez` gives the TCP peer's port, and a
-route a peer opened comes from an ephemeral one, so one server's four routes to another showed four
-ports.
+So the rollout runs two commands of `envoy-infra`, as an identity whose kubeconfig may `get` the
+StatefulSet and each of its pods, and `create` `pods/portforward` and `get` `pods/log` on each pod,
+all of which a Role grants by name:
 
-`/routez` shows only who still holds a route, so a process that read the password and then left
-passes it. In the same pass, read each pod's nats container log since the `env` roll and require
-the IP of every `Route connection created` peer (`server/route.go:2104`; each log line names the
-peer's address) to be one of the three pod IPs, by IP alone, since a peer-opened connection's port
-is ephemeral. `routes` and `authorization` are reloads, so the container's log since `env` covers
-the rollout, but `kubectl logs` returns only the latest log file, which the kubelet rotates at
-10 MiB by default
-([Logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/)),
-and the process this check looks for can rotate the earlier lines away, for example with failed
-client logins. So a read covers the rollout only when it begins with the container's first line,
-`Starting nats-server` (`server/server.go:2295`), which it wrote at the `env` roll; or read the
-pod's whole log since `env` from Cloud Logging, which keeps the rotated files. Any other address
-or id in either read means a process joined during `env` or `routes`, and a read that does not
-begin at that line, or a pod that restarted since `env`, keeps no log of the routes before it, so
-neither can be ruled out. Either way, treat the password as read, cut that process's reach, and
+```sh
+# once env has rolled every pod:
+envoy-infra routes record --namespace envoy --statefulset envoy-nats --out routes-record.json
+# once authorization has reached every pod:
+envoy-infra routes check --namespace envoy --statefulset envoy-nats --record routes-record.json
+```
+
+`routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, and
+the time, and refuses while any pod is not Ready with a running nats container. `routes check`
+reads, in one pass over the pods, each pod's IP from the API server, each server's `server_id`
+from its `/varz` and its routes from its `/routez` through a port-forward to 8222, the first line
+its route port sends through a port-forward to 6222, and its nats container's log. It exits 0
+when every rule below holds, 1 when one shows the password may be read, and 2 when it could not
+read all it needs or authorization is not yet in force; it prints no password, since it never
+has one.
+
+- **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
+  another pod's `server_id`, and each pod has a route to each of its peers. A route's
+  `remote_name` proves nothing: a peer chooses its own name, and nats-server refuses an accepted
+  route's name only when it equals the accepting server's own (`server/route.go:745-751`;
+  `isDuplicateServerName` runs for gateways alone, `gateway.go:1090`, `:1166`), so the process
+  this check looks for can join as `<n>-1` and pass a check of names. Nor is the route's `port`
+  6222: `/routez` gives the TCP peer's port, and a route a peer opened comes from an ephemeral
+  one, so one server's four routes to another showed four ports.
+- **No peer that left had the password.** `/routez` shows only who still holds a route, so a
+  process that read the password and then left passes it. The log keeps it: every
+  `Route connection created` line (`server/route.go:2104`) names the connection's peer, and the
+  peer of each one the server logged from the hangup that began the reload which loaded
+  authorization (`Trapped "hangup" signal`, then `Reloaded: cluster`, `server/reload.go:470`) is
+  a pod IP, by IP alone, or the pod's own loopback. Lines before that hangup are not judged: an
+  implicit route carries the password only once authorization applies (`route.go:1092-1094`),
+  and the `env` roll gives each new pod a new IP, so the logs of the pods it rolled first name
+  the old IPs of the ones it rolled after. A log in which no reload loaded authorization is
+  judged whole when the route port requires authorization, since the server then had it from its
+  start.
+- **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
+  are the ones `routes record` saved, and its log begins with `Starting nats-server`
+  (`server/server.go:2295`). `kubectl logs` returns only the latest log file, which the kubelet
+  rotates at 10 MiB by default
+  ([Logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/)),
+  and the process this check looks for can rotate the earlier lines away, for example with failed
+  client logins. A pod restarted since the record, or a log that does not begin at its start
+  line, keeps no log of the routes before it, so neither can be ruled out.
+- **Authorization is in force.** `/varz` shows no route authorization (`ClusterOptsVarz` has no
+  field for it), so the check reads the INFO each route port sends a new connection first, and
+  requires `"auth_required":true`, and a `Reloaded server configuration` line after the reload
+  that loaded authorization. Without either, the apply may have succeeded while every server
+  still takes a route with no credential: a reload that fails leaves the server on its old
+  configuration.
+- **No reload failed.** A `Failed to reload server configuration` line can hold the route
+  password whole: a password outside the minter's rule below is printed in it (`integer … is out
+  of the range` with the value, or `error parsing route url` with the URL), and so is a start on
+  that file, which exits 1. The check cannot tell which failure printed it, so any failed reload
+  counts.
+- **The hub holds one password.** A pod that started with a password its peers do not hold has
+  routes to none of them, and their logs name its failed route logins (`authentication error -
+  User "route"`). When a pod's routes do not reach all its peers and its log names such logins
+  from pod IPs since authorization, the check says the servers do not hold one password; the
+  pods are brought to one password from `env`, below.
+
+Exit 1 means: treat the password as read, cut the reach of any process the check names, and
 change the password, below. One process neither read can see: one in a hub pod's own network
 namespace, such as the reloader or the exporter, has that pod's IP, so the log check passes it,
 and `remote_id` catches it only while it holds a route. A change of the password goes back to
-`env`, which drops `authorization` from `nats.conf`, so the routes are open again during its
-`env` and `routes` applies, and the same two reads follow its own `authorization` apply. The
-component cannot make that check, since it runs at an apply and reads no pod; the rollout that
-applies the stages runs it.
+`env`, which drops `authorization` from `nats.conf`, so the routes are open again during its `env`
+and `routes` applies, and its rollout runs `routes record` and `routes check` again. The component
+cannot make that check, since it runs at an apply and reads no pod; the rollout that applies the
+stages runs it.
 
 Lowering `stage` below `routes`, or removing `routeAuthorization` from a hub at `routes` or
 `authorization`, makes each server log every route URL it removes with the route password in it
-(nats-server 2.15.1 `server/reload.go:543`). So after such a rollback, treat the old password as
-read by whoever can read the hub's logs, and change it. A new value under the same Secret key
-reaches no running pod: a container reads a `secretKeyRef` only when it starts, so the `env` apply
-would do nothing. A second sync entry for the same Secret Manager secret does not help either: the
-sync names its source by the secret's ID, so both entries would read the same version. Mint the
-new password into a new Secret Manager secret, sync it under a new `secretKey`, check by its hash,
-never by its value, that the key holds the new password, set `routeAuthorization` to that key at
-`env` so the apply rolls the pods, then apply `routes` and `authorization` again.
+(nats-server 2.15.1 `server/reload.go:543`). So after such a rollback, or a failed reload, treat
+the old password as read by whoever can read the hub's logs, and change it. A new value under the
+same Secret key reaches no running pod: a container reads a `secretKeyRef` only when it starts, so
+the `env` apply would do nothing. A second sync entry for the same Secret Manager secret does not
+help either: the sync names its source by the secret's ID, so both entries would read the same
+version. Mint the new password into a new Secret Manager secret, sync it under a new `secretKey`,
+check by its hash, never by its value, that the key holds the new password, set
+`routeAuthorization` to that key at `env` so the apply rolls the pods, then apply `routes` and
+`authorization` again.
+
+A new `secretKey` at `authorization`, without `stage: env` in the same apply, splits the mesh: the
+change rolls the pods at any stage, and a pod that starts with the new password at
+`authorization` is refused by every peer still on the old one. Measured in this change's review:
+three servers at `authorization`, one restarted with a new value, had no route to either peer 15 s
+later. A new value under the same key does the same at the next pod start, an eviction or a node
+upgrade, with no apply at all, so never add a version to the route password's Secret Manager
+secret, and pin its sync to a version number.
 
 Measured on two local servers: lowering `routes` to `env` logged 4 `Removed route` lines carrying
 the password, while the forward step from `env` to `routes` logged none.
 
 The password holds letters and digits only, a letter first. It is written into the route URLs
 whole, and nats-server types a variable's value as it types a literal of `nats.conf`: a password of
-digits alone is an integer it refuses (`could not be parsed: integer … is out of the range`), and
-one such as `1k` is a size. The component never sees the password, so its minter holds it to that.
+digits alone is an integer it refuses (`could not be parsed: integer … is out of the range`, with
+the value), and one such as `1k` is a size. The component never sees the password, so its minter
+holds it to that.
 
 `gcp/clusteredhub_route_test.go` pins each stage's chart values, and
 `gcp/clusteredhub_route_live_test.go` renders each stage with helm: the variables in the rendered
@@ -1199,6 +1247,16 @@ credential in any stage, where the chart's own `routeURLs` credential, its contr
 without them and with a password of digits alone; and three servers on that render forming their
 mesh while a server with no credential, and one with a wrong password, are refused, where the
 same server with no credential joins a server on the `env` render.
+
+`routes/` tests the check's rules on a hub held in memory, one row per rule with a clean hub as
+its control, and its kubectl reads through a fake kubectl. `gcp/clusteredhub_routecheck_live_test.go`
+runs `routes record` and `routes check`'s functions over three local servers that move through
+the stages: the servers alone pass, and fail at `routes` alone; an impostor named `<n>-1` that
+joined during `env` fails by `ip` and `remote_id`; a peer that read the password after
+`authorization` and left fails by the log; a peer that left before `authorization` passes,
+though the logs name it before that reload; a password of digits fails every server's
+`authorization` reload, which logs it, and the check; and a refused `/varz`, a rotated log and a
+restart since the record each fail.
 
 ### The tailnet hosts
 

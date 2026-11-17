@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/routes"
 	"github.com/sjawhar/envoy/infra/seed"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
@@ -61,6 +62,16 @@ func TestVersionPrintsTheStampedRelease(t *testing.T) {
 	}
 }
 
+// noHub fails the test if a command opens a hub: only `envoy-infra routes record` and `check` read
+// one.
+func noHub(t *testing.T) routes.Opener {
+	return func(routes.Target) (routes.Source, error) {
+		t.Helper()
+		t.Fatal("the command opened a hub")
+		return nil, nil
+	}
+}
+
 // noStore fails the test if a command opens a store: neither --version nor the usage reads one.
 func noStore(t *testing.T) seed.Stores {
 	return seed.Stores{seed.AWSSecretsManager: {Open: func(context.Context, string, string) (seed.Store, error) {
@@ -81,7 +92,7 @@ func (brokenStdout) Write([]byte) (int, error) {
 // so a script that reads it is not told the version was printed.
 func TestVersionItCannotPrintExitsOne(t *testing.T) {
 	var stderr bytes.Buffer
-	if code := run(context.Background(), []string{"--version"}, brokenStdout{}, &stderr, noStore(t)); code != 1 {
+	if code := run(context.Background(), []string{"--version"}, brokenStdout{}, &stderr, noStore(t), noHub(t)); code != 1 {
 		t.Fatalf("exit %d, want 1", code)
 	}
 	if want := "envoy-infra: could not print the version: write /dev/stdout: bad file descriptor\n"; stderr.String() != want {
@@ -94,13 +105,13 @@ func TestVersionItCannotPrintExitsOne(t *testing.T) {
 func TestVersionStandsAlone(t *testing.T) {
 	const canary = "SUCANARYNOTASEED"
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"--version", canary}, &stdout, &stderr, noStore(t)); code != 2 {
+	if code := run(context.Background(), []string{"--version", canary}, &stdout, &stderr, noStore(t), noHub(t)); code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("stdout %q, want none", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed or render, or --version alone\n") {
+	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed, render or routes, or --version alone\n") {
 		t.Errorf("stderr %q does not say what the command takes", stderr.String())
 	}
 	if strings.Contains(stderr.String(), canary) {
@@ -108,16 +119,19 @@ func TestVersionStandsAlone(t *testing.T) {
 	}
 }
 
-// TestHelpNamesVersion: the usage names --version beside the seed and render commands' own usage.
+// TestHelpNamesVersion: the usage names --version beside the seed, render and routes commands' own
+// usage.
 func TestHelpNamesVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"--help"}, &stdout, &stderr, noStore(t)); code != 0 {
+	if code := run(context.Background(), []string{"--help"}, &stdout, &stderr, noStore(t), noHub(t)); code != 0 {
 		t.Fatalf("exit %d, want 0", code)
 	}
 	for _, line := range []string{
 		"usage: envoy-infra --version\n",
 		"usage: envoy-infra seed {check|generate|verify}",
 		"usage: envoy-infra render {nats-start-script|webhook-listener-env|metric-filters}",
+		"usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file>",
+		"       envoy-infra routes check --namespace <ns> --statefulset <name> --record <file>",
 	} {
 		if !strings.Contains(stderr.String(), line) {
 			t.Errorf("the usage lacks %q: %q", line, stderr.String())
@@ -132,7 +146,7 @@ func TestHelpNamesVersion(t *testing.T) {
 // GCP Secret Manager, as its usage error for another --store names them.
 func TestTheCommandKnowsBothStores(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"seed", "check", "--store", "elsewhere", "--name", "example"}, &stdout, &stderr, stores)
+	code := run(context.Background(), []string{"seed", "check", "--store", "elsewhere", "--name", "example"}, &stdout, &stderr, stores, noHub(t))
 	if code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
@@ -141,12 +155,32 @@ func TestTheCommandKnowsBothStores(t *testing.T) {
 	}
 }
 
+// TestRoutesOpensTheHubItIsGiven: `envoy-infra routes` runs the routes command over the opener main
+// gives it, with the hub its flags name, and reports that opener's error; main's own opener is
+// routes.OpenKubectl.
+func TestRoutesOpensTheHubItIsGiven(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var opened routes.Target
+	open := func(target routes.Target) (routes.Source, error) {
+		opened = target
+		return nil, errors.New("no kubeconfig here")
+	}
+	code := run(context.Background(), []string{"routes", "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", filepath.Join(t.TempDir(), "r.json")},
+		&stdout, &stderr, noStore(t), open)
+	if code != 2 || opened.Namespace != "envoy" || opened.StatefulSet != "envoy-nats" || opened.Kubectl != "kubectl" {
+		t.Fatalf("exit %d, opened %+v; want 2 and envoy/envoy-nats through kubectl", code, opened)
+	}
+	if want := "envoy-infra routes record: no kubeconfig here\n"; stderr.String() != want {
+		t.Errorf("stderr %q, want %q", stderr.String(), want)
+	}
+}
+
 // TestRenderPrintsToStdout: `envoy-infra render` runs the render command, which opens no store.
 func TestRenderPrintsToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	args := []string{"render", "metric-filters", "--component", "nats-service", "--metric-namespace", "example/NATS",
 		"--logical-name-prefix", "example-bus", "--json"}
-	if code := run(context.Background(), args, &stdout, &stderr, noStore(t)); code != 0 {
+	if code := run(context.Background(), args, &stdout, &stderr, noStore(t), noHub(t)); code != 0 {
 		t.Fatalf("exit %d, want 0; stderr %q", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), `"logicalName": "example-bus-route-disconnect-filter"`) || stderr.Len() != 0 {
@@ -199,7 +233,7 @@ func TestRenderNatsStartScriptWithACallout(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		args := []string{"render", "nats-start-script", "--authorization-file", path,
 			"--config-header", "x", "--server-arg", "-js", "--config-path", "/tmp/n.conf"}
-		code := run(context.Background(), args, &stdout, &stderr, noStore(t))
+		code := run(context.Background(), args, &stdout, &stderr, noStore(t), noHub(t))
 		return stdout.String(), stderr.String(), code
 	}
 

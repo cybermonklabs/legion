@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,11 +273,17 @@ func stopRogue(t *testing.T, p *cmdtest.Process) {
 	p.WaitExit(t, "SIGKILL")
 }
 
-// listeningForRoutes is ready once the server's output says it listens on its route port, its
-// last bind.
+// listeningForRoutes is ready once the server's output says it listens on its route port on
+// 127.0.0.1, its last bind.
 func listeningForRoutes(port int) func(*cmdtest.Process) error {
+	return listeningForRoutesOn("127.0.0.1", port)
+}
+
+// listeningForRoutesOn is ready once the server's output says it listens on its route port on host,
+// its last bind.
+func listeningForRoutesOn(host string, port int) func(*cmdtest.Process) error {
 	return func(p *cmdtest.Process) error {
-		if !strings.Contains(p.Output.String(), fmt.Sprintf("Listening for route connections on 127.0.0.1:%d", port)) {
+		if !strings.Contains(p.Output.String(), "Listening for route connections on "+net.JoinHostPort(host, strconv.Itoa(port))) {
 			return errors.New("not listening yet")
 		}
 		return nil

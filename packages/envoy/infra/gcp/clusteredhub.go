@@ -236,16 +236,17 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 // env, routes or authorization, each one apply after the one before has finished
 // (clusteredHubRouteStageNames says what each renders and why the order holds). The password is
 // written into the route URLs whole, and nats-server types a variable's value as it types a
-// literal of nats.conf, so a password of digits alone is an integer it refuses and one such as 1k
-// is a size: the password holds letters and digits only, a letter first. The component never sees
-// it, so its minter holds it to that. Lowering stage below routes, or removing routeAuthorization
-// from routes or authorization, makes each server log every route URL it removes, password
-// included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"), so the password must be
-// changed after such a rollback, and authorization fences no process that joined as a route
-// before it applied, which can then read the password, so after it the rollout checks each pod's
-// /routez and its log since env, a log that begins with the container's own "Starting
-// nats-server" line, against the pods' own IPs and server ids (docs/nats-hub.md, Route
-// authorization).
+// literal of nats.conf, so a password of digits alone is an integer it refuses, printing the value
+// in its error, and one such as 1k is a size: the password holds letters and digits only, a letter
+// first. The component never sees it, so its minter holds it to that. Lowering stage below routes,
+// or removing routeAuthorization from routes or authorization, makes each server log every route
+// URL it removes, password included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"),
+// so the password must be changed after such a rollback. A new secretKey, or a new value under it,
+// reaches each pod as it starts, and at authorization a pod on a password its peers do not hold
+// has no route to them, so secretKey changes only with stage env in the same apply, and the
+// password's sync names a version, never the latest. Authorization fences no process that joined
+// as a route before it applied, which can then read the password, so after it the rollout runs
+// `envoy-infra routes check` (docs/nats-hub.md, Route authorization).
 type ClusteredHubRouteAuthorizationArgs struct {
 	SecretName string `pulumi:"secretName"`
 	SecretKey  string `pulumi:"secretKey"`

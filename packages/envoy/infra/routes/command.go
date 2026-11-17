@@ -1,0 +1,186 @@
+package routes
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"time"
+)
+
+const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>]
+       envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
+  record, once routeAuthorization's env stage has rolled every pod: saves each pod's uid and its nats
+    container's restart count and start; exit 0 when recorded, 2 otherwise.
+  check, once authorization is on every pod: exit 0 when authorization is in force and every route
+    since it loaded joined two of the hub's servers; 1 when another process held one or may have been
+    handed the password, or a log line may hold it (treat the route password as read, cut its reach,
+    rotate the password, then record and check again); 2 when it could not read all it needs, when
+    authorization is not in force, or when the mesh is not whole.
+`
+
+// timeout bounds a whole command: every kubectl call, port-forward and read it makes.
+const timeout = 5 * time.Minute
+
+// Command runs `envoy-infra routes` on args, the words after "routes", reading the hub through
+// the Source open makes, and returns its exit code.
+func Command(ctx context.Context, args []string, stdout, stderr io.Writer, open Opener) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "envoy-infra routes: the subcommand is record or check")
+		fmt.Fprint(stderr, usageText)
+		return 2
+	}
+	switch args[0] {
+	case "-h", "-help", "--help":
+		fmt.Fprint(stderr, usageText)
+		return 0
+	case "record", "check":
+	default:
+		// The word given is not echoed, as the rest of the command echoes none: a seed pasted there
+		// must not reach the terminal.
+		fmt.Fprintln(stderr, "envoy-infra routes: the subcommand is record or check")
+		fmt.Fprint(stderr, usageText)
+		return 2
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("envoy-infra routes "+sub, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var target Target
+	var out, recordPath string
+	fs.StringVar(&target.Namespace, "namespace", "", "the hub's namespace")
+	fs.StringVar(&target.StatefulSet, "statefulset", "", "the hub's StatefulSet")
+	fs.StringVar(&target.Context, "context", "", "the kubeconfig context")
+	fs.StringVar(&target.Kubectl, "kubectl", "kubectl", "the kubectl to run")
+	if sub == "record" {
+		fs.StringVar(&out, "out", "", "the file the record is written to")
+	} else {
+		fs.StringVar(&recordPath, "record", "", "the file routes record wrote")
+		fs.IntVar(&target.MonitorPort, "monitor-port", 8222, "the pods' monitoring port")
+		fs.IntVar(&target.RoutePort, "route-port", 6222, "the pods' route port")
+	}
+	usage := func(problem string) int {
+		fmt.Fprintf(stderr, "envoy-infra routes %s: %s\n", sub, problem)
+		fmt.Fprint(stderr, usageText)
+		return 2
+	}
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stderr, usageText)
+			return 0
+		}
+		// The flag package's message quotes the word or value it refused; this one does not.
+		return usage("a flag it does not take, or a value it cannot parse")
+	}
+	if fs.NArg() > 0 {
+		return usage(fmt.Sprintf("it takes no words after its flags, and was given %d", fs.NArg()))
+	}
+	if target.Namespace == "" || target.StatefulSet == "" {
+		return usage("--namespace and --statefulset are required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if sub == "record" {
+		if out == "" {
+			return usage("--out is required")
+		}
+		return record(ctx, target, out, stdout, stderr, open)
+	}
+	if recordPath == "" {
+		return usage("--record is required")
+	}
+	for _, port := range []struct {
+		flag  string
+		value int
+	}{{"--monitor-port", target.MonitorPort}, {"--route-port", target.RoutePort}} {
+		if port.value < 1 || port.value > 65535 {
+			return usage(port.flag + " is a port, 1 to 65535")
+		}
+	}
+	return check(ctx, target, recordPath, stdout, stderr, open)
+}
+
+func record(ctx context.Context, target Target, out string, stdout, stderr io.Writer, open Opener) int {
+	src, err := open(target)
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes record: %v\n", err)
+		return 2
+	}
+	defer src.Close()
+	rec, err := Take(ctx, src, target.Namespace, target.StatefulSet, time.Now())
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: %v\n", err)
+		return 2
+	}
+	body, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes record: %v\n", err)
+		return 2
+	}
+	if err := os.WriteFile(out, append(body, '\n'), 0o644); err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "recorded the %d pods of %s/%s at %s in %s\n", len(rec.Pods), rec.Namespace, rec.StatefulSet,
+		rec.RecordedAt.Format(time.RFC3339), out)
+	return 0
+}
+
+func check(ctx context.Context, target Target, recordPath string, stdout, stderr io.Writer, open Opener) int {
+	rec, err := readRecord(recordPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes check: %v\n", err)
+		return 2
+	}
+	if rec.Namespace != target.Namespace || rec.StatefulSet != target.StatefulSet {
+		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record of %s/%s, not of %s/%s\n", recordPath,
+			rec.Namespace, rec.StatefulSet, target.Namespace, target.StatefulSet)
+		return 2
+	}
+	src, err := open(target)
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes check: %v\n", err)
+		return 2
+	}
+	defer src.Close()
+	report := Check(ctx, src, rec)
+	for _, f := range report.Findings {
+		fmt.Fprintln(stdout, f)
+	}
+	verdict := report.Verdict()
+	switch verdict {
+	case Clean:
+		fmt.Fprintf(stdout, "clean: authorization is in force on the %d pods of %s/%s, every route joins two of the hub's servers, and their logs "+
+			"since the record of %s name no failed reload and, since authorization loaded, no other peer\n",
+			len(rec.Pods), rec.Namespace, rec.StatefulSet, rec.RecordedAt.Format(time.RFC3339))
+	case PasswordRead:
+		fmt.Fprintln(stdout, "password read: treat the route password as read; cut the reach of each process named above, rotate the password "+
+			"(docs/nats-hub.md, Route authorization), and end the rotation with routes record and routes check again")
+	default:
+		fmt.Fprintln(stdout, "unknown: the check could not read all it needs, or authorization or the mesh is not yet whole, so it concludes nothing; "+
+			"fix what is named above and run it again")
+	}
+	return int(verdict)
+}
+
+// readRecord decodes the record at path, refusing a field it does not know and a record that
+// names no pod.
+func readRecord(path string) (Record, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return Record{}, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	var rec Record
+	if err := dec.Decode(&rec); err != nil {
+		return Record{}, fmt.Errorf("decode the record %s: %w", path, err)
+	}
+	if len(rec.Pods) == 0 {
+		return Record{}, fmt.Errorf("the record %s names no pod", path)
+	}
+	return rec, nil
+}

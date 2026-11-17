@@ -25,8 +25,10 @@ More than 1 needs a clustered NATS: a single server, which is what `aws:NatsServ
 `ENVOY_NATS_REPLICAS`.
 
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
-stored there ([NATS seeds](#nats-seeds)), and prints what the AWS components register for a program
-that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)).
+stored there ([NATS seeds](#nats-seeds)), prints what the AWS components register for a program
+that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), and checks a
+clustered hub's routes after its route authorization's rollout (`envoy-infra routes`,
+[docs/nats-hub.md](docs/nats-hub.md#route-authorization)).
 
 ## Install
 
