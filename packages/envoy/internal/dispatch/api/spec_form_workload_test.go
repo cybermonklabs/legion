@@ -122,3 +122,48 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 		})
 	}
 }
+
+// A judgment under a root reads the latest approved version of each other covered document under
+// that root, for the names of the system that those versions define, in one statement to the
+// database: a judgment under a root of 4 approved documents sends as many statements as one under
+// a root of 1, and so does one under 7. Each approved document defines one component, and the
+// judgment reads the name of each.
+func TestAJudgmentReadsTheApprovedDocumentsUnderItsRootInOneStatement(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	served := &server{deps: tree.deps}
+	approved := 0
+	approve := func(count int) {
+		for ; approved < count; approved++ {
+			spec := fmt.Sprintf("# Components\n\n## Part %d (component `part-%d`)\n\nThe server keeps each issue and each document.\n", approved, approved)
+			issue := createFormIssue(t, tree.handler, tree.root, fmt.Sprintf("Approved %d", approved), spec)
+			awaitSettled(t, tree.database, issue.PrimaryArtifactID)
+			if response := reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "approved", ""); response.Code != http.StatusCreated {
+				t.Fatalf("approve document %d: status=%d body=%s", approved, response.Code, response.Body.String())
+			}
+		}
+	}
+	judged := createFormIssue(t, tree.handler, tree.root, "The judged document",
+		"# Spec\n\n:::requirement{#judged}\nDispatch shows the person each question.\n:::\n")
+	awaitSettled(t, tree.database, judged.PrimaryArtifactID)
+	documents := []model.AskApprovalDocument{{ArtifactID: judged.PrimaryArtifactID, Name: "spec.md", Version: 1}}
+	sent := map[int]int{}
+	for _, count := range []int{1, 4, 7} {
+		approve(count)
+		read, err := served.approvedSpecTexts(context.Background(), tree.database.Pool, tree.root, map[string]bool{judged.PrimaryArtifactID: true})
+		if err != nil {
+			t.Fatalf("read the approved documents under a root of %d: %v", count, err)
+		}
+		if len(read.SystemNames) != count {
+			t.Fatalf("under a root of %d approved documents the judgment read the names %q, want %d", count, read.SystemNames, count)
+		}
+		counter := &countingQueryer{q: tree.database.Pool}
+		if _, err := served.specFormOf(context.Background(), counter, documents, specform.ActRequest); err != nil {
+			t.Fatalf("judge under a root of %d approved documents: %v", count, err)
+		}
+		sent[count] = counter.statements
+	}
+	t.Logf("statements sent for 1, 4 and 7 approved documents: %v", sent)
+	if sent[4] != sent[1] || sent[7] != sent[1] {
+		t.Errorf("the judgment sent %v statements for 1, 4 and 7 approved documents under its root, want one count for all three", sent)
+	}
+}

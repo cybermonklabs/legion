@@ -541,8 +541,11 @@ type approvedSpec struct {
 // approvedSpecTexts reads the latest approved version of each covered document under root but
 // those skip names: the root's terms.md, and the spec and the Verification document of each issue
 // whose nearest named root is root (refs.IssueDescendants, less each named root below root and
-// its own subtree). An approved version that the parser refuses gives nothing to compare: the
-// judgment goes on without its texts, logs it once, and names it in Unread.
+// its own subtree). One statement reads every such document with the markdown of that version,
+// in the order of docs.LatestApprovedReview, so the statements of a judgment do not grow with the
+// documents under its root; a document that no person approved has no row. An approved version
+// that the parser refuses gives nothing to compare: the judgment goes on without its texts, logs
+// it once, and names it in Unread.
 func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, skip map[string]bool) (approvedSpec, error) {
 	issues, err := refs.IssueDescendants(ctx, q, root)
 	if err != nil {
@@ -559,44 +562,55 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, 
 		issues = slices.DeleteFunc(issues, func(issue string) bool { return issue == inner || slices.Contains(below, issue) })
 	}
 	rows, err := q.Query(ctx, `
-		select `+artifactColumns+` from artifacts
-		where kind = 'doc' and (
-			(issue_key = any($1::text[]) and (is_primary or `+documentRolePredicate("", model.ArtifactRoleVerification)+`))
-			or (issue_key = $2 and slug = $3)
+		select covered.id::text, covered.name, covered.issue_key, approved.version, stored.number, coalesce(stored.markdown, '')
+		from artifacts covered
+		cross join lateral (
+			select artifact_reviews.version from artifact_reviews
+			where artifact_reviews.artifact_id = covered.id and artifact_reviews.state = 'approved'
+			order by `+docs.ReviewOrder+`
+			limit 1
+		) approved
+		left join artifact_versions stored on stored.artifact_id = covered.id and stored.number = approved.version
+		where covered.kind = 'doc' and (
+			(covered.issue_key = any($1::text[]) and (covered.is_primary or `+documentRolePredicate("covered", model.ArtifactRoleVerification)+`))
+			or (covered.issue_key = $2 and covered.slug = $3)
 		)
-		order by issue_key, id
+		order by covered.issue_key, covered.id
 	`, issues, root, termsSlug)
 	if err != nil {
-		return approvedSpec{}, fmt.Errorf("list the covered documents under %s: %w", root, err)
+		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
 	}
-	covered, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Artifact, error) { return scanArtifact(row) })
+	type approvedVersion struct {
+		id, name string
+		issue    *string
+		version  int
+		stored   *int
+		markdown string
+	}
+	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (approvedVersion, error) {
+		var each approvedVersion
+		err := row.Scan(&each.id, &each.name, &each.issue, &each.version, &each.stored, &each.markdown)
+		return each, err
+	})
 	if err != nil {
-		return approvedSpec{}, fmt.Errorf("list the covered documents under %s: %w", root, err)
+		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
 	}
 	var approved approvedSpec
-	for _, artifact := range covered {
-		if skip[artifact.ID] {
+	for _, each := range versions {
+		if skip[each.id] {
 			continue
 		}
-		review, err := docs.LatestApprovedReview(ctx, q, artifact.ID)
-		if err != nil {
-			return approvedSpec{}, err
+		if each.stored == nil {
+			return approvedSpec{}, errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", each.name, each.version)
 		}
-		if review == nil {
-			continue
-		}
-		markdown, err := specFormMarkdown(ctx, q, artifact, review.Version)
-		if err != nil {
-			return approvedSpec{}, err
-		}
-		extracted, err := specform.ExtractDocument(artifact.Name, review.Version, markdown)
+		extracted, err := specform.ExtractDocument(each.name, each.version, each.markdown)
 		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-			issue := deref(artifact.IssueKey)
+			issue := deref(each.issue)
 			slog.Warn("dispatch: the form of The Spec compares no text with an approved version that it cannot read",
-				"artifact", artifact.ID, "document", artifact.Name, "issue", issue, "version", review.Version, "error", err)
+				"artifact", each.id, "document", each.name, "issue", issue, "version", each.version, "error", err)
 			approved.Unread = append(approved.Unread, specFormUnread{
-				Document: artifact.Name, ArtifactID: artifact.ID, Issue: issue, Version: review.Version,
-				Line: specform.UnreadLine(artifact.Name, review.Version, issue),
+				Document: each.name, ArtifactID: each.id, Issue: issue, Version: each.version,
+				Line: specform.UnreadLine(each.name, each.version, issue),
 			})
 			continue
 		}

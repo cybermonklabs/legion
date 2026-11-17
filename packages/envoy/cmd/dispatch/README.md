@@ -4096,7 +4096,9 @@ Each item below names a path with its method and identity, then its purpose.
   The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
   it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
   Dispatch judges the request at the versions that it names when the reopen ends.
-  So a request that the reopen moves to a version that breaks the form stays `resolved` too.
+  A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
+  The request then waits on its agent, unless the new version holds the text that Dispatch judged.
+  And Dispatch refuses a person's approval of a version that breaks the form.
   The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
   For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
@@ -4574,9 +4576,11 @@ Each item below names a path with its method and identity, then its purpose.
       So code font hides no name or link, also when it holds the whole name or a part of it.
       These rules also read each address and title of a link or an image.
       An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
-      Dispatch reads the address of a link one time when the address is the words of the link, with or without `mailto:`.
-      It reads that address in the words of the page, beside the words before and after it.
-      Dispatch stores a plain address in the words, such as `ada@example.com`, as such a link.
+      Dispatch reads the address of each link as an address, whatever stands beside the link.
+      A `mailto:` link whose address is its own words is the one other form.
+      Dispatch stores an email address in the words as such a link, such as the host in `git@github.com:owner/repo.git`.
+      So it reads that address in the words of the page, beside the words before and after it.
+      Where the address and the words give the same finding, the text holds it once.
       A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
       A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
       A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
@@ -4645,9 +4649,10 @@ Each item below names a path with its method and identity, then its purpose.
       So the package `@types/node` names no person.
       `.`, `-` or `/` before `<owner>/<repo>#<n>`, and `.` or `-` before the host of a pull request's address, continue them too.
       The owner of `<owner>/<repo>#<n>` starts with a letter or a digit, as an owner on GitHub does, so `-acme/widgets#12` and `.github/workflows#12` name no pull request.
-      An email address after a `/`, or before a `:` and a character of a path, is part of a longer address, which names nothing.
-      So `ssh://git@github.com/owner/repo.git` and the SSH address `git@github.com:owner/repo.git` name no person.
-      A character of a path is a character of a word, `/`, `~`, `.` or `-`, so `(ada@example.com:)` and `ada@example.com: she` name a person.
+      An email address after a `/` is part of a longer address, which names nothing, so `ssh://git@github.com/owner/repo.git` names no person.
+      A `:` after an email address makes it part of a remote path, unless white space, a closing mark or `,;!?` follows, or the text ends.
+      Such an address names no person, so `git@github.com:owner/repo.git` and `deploy@build.example.com:'/srv/my reports/'` name none.
+      But `(ada@example.com:)` and `ada@example.com: she` name a person.
       An email address takes letters and marks beside it into its own parts, and a digit or connector punctuation before it too.
       So `xada@example.com` is an email address too.
       A digit or connector punctuation after its domain makes it no address, as in `ada@example.com5`.
