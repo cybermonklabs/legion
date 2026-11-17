@@ -570,8 +570,9 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 // the last event's send to the session is never made: the first event backs off, and every later
 // one is blocked behind it, with no attempt of its own and a next attempt, rather than sent or
 // released. Once the topic family takes sends again, the retry reaches the session only after every
-// event reached the topic family. The last row has two earlier events, so the session send waits
-// on the second's topic send, which the first's failure held back and which was never made.
+// earlier event reached the topic family; the last event's own two copies have no order between
+// them. The last row has two earlier events, so the session send waits on the second's topic send,
+// which the first's failure held back and which was never made.
 func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T) {
 	const topic = "notifications.dispatch.issue.T-1.message.created"
 	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
@@ -633,9 +634,13 @@ func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T)
 				t.Fatalf("make the retry due: %v", err)
 			}
 			outbox.scan(ctx, unfenced{})
-			want := append(slices.Repeat([]string{topic}, len(written)), tc.copyTopic)
-			if got := topicsOf(publisher.all()); !slices.Equal(got, want) {
-				t.Fatalf("the retry sent %v, want %v: the session's copy only once every event reached the topic family", got, want)
+			// The last event's own topic send and its session copy may go either way round: the
+			// copies of one event have no order among themselves (planChains).
+			earlier := slices.Repeat([]string{topic}, len(written)-1)
+			want := append(slices.Clone(earlier), topic, tc.copyTopic)
+			alsoWant := append(slices.Clone(earlier), tc.copyTopic, topic)
+			if got := topicsOf(publisher.all()); !slices.Equal(got, want) && !slices.Equal(got, alsoWant) {
+				t.Fatalf("the retry sent %v, want %v or %v: the session's copy only once every earlier event reached the topic family", got, want, alsoWant)
 			}
 			for _, event := range written {
 				if publishedAt(t, database, event.ID) == nil {
