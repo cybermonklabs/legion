@@ -185,16 +185,26 @@ lock_record_runs() {
 # \xc3\xa9. .github/scripts/race_memory.py's printable differs there: it keeps é, and writes a
 # character Python does not print, such as U+202E, as \u202e. Both keep every control character
 # out of the log.
-printable() {
+printable() { escape_bytes "$1" "\\\\"; }
+
+# printable_field TEXT: TEXT as printable writes it, but each backslash kept as it is. A lock record
+# lock_take wrote holds its command through printable already, only printable ASCII and its escapes,
+# so it prints once, as it is; a record another writer left on a shared LOADTEST_ROOT, such as an
+# older checkout, can hold any byte, and its control characters are escaped too.
+printable_field() { escape_bytes "$1" "\\"; }
+
+# escape_bytes TEXT BACKSLASH: TEXT with each byte outside printable ASCII written as an escape, as
+# printable says, and each backslash written as BACKSLASH.
+escape_bytes() {
   local LC_ALL=C
-  local text=$1 out="" char i
+  local text=$1 backslash=$2 out="" char i
   for ((i = 0; i < ${#text}; i++)); do
     char=${text:i:1}
     case $char in
       $'\n') out+='\n' ;;
       $'\r') out+='\r' ;;
       $'\t') out+='\t' ;;
-      \\) out+="\\\\" ;;
+      \\) out+=$backslash ;;
       [[:print:]]) out+=$char ;;
       *)
         printf -v char '\\x%02x' "'$char"
@@ -219,7 +229,8 @@ lock_holders() {
 
 # lock_take FILE: this process has just locked FILE on descriptor 9; write its record. The command
 # line goes through printable, so the record keeps one line per field whatever the command line
-# holds, and a refusal that quotes it (lock_root) prints no control character.
+# holds. lock_root prints a record's fields through printable_field, which leaves this one as it is
+# and escapes a record another writer left.
 lock_take() {
   local file=$1 command token
   # Empty the file before anything else, so that a refused caller never reads the previous
@@ -285,6 +296,9 @@ lock_root() {
     run="pid $pid"
   fi
   run+=", started $(lock_field started "$record"): $(lock_field command "$record")"
+  # Every field of the record, which another writer on a shared root can have written with any
+  # byte, prints with its control characters escaped.
+  run=$(printable_field "$run")
   $runs || [ -n "$holders" ] || holders=$(lock_holders "$file")
   if $runs; then
     printf '%s: LOADTEST_ROOT %s is in use by another run (%s)\n' "$me" "$root" "$run" >&2

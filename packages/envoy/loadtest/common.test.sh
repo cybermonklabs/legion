@@ -501,10 +501,12 @@ case_stack_ports() {
 # refusal prints it: lock_holders (the lock's descriptor 9), the lock record's command, which a
 # refusal quotes, and stack.sh's port_holder (a listening socket) print each one with a carriage
 # return, a newline, a tab, an escape, a backslash and a byte that is not ASCII written as escapes,
-# so nothing a process names itself reaches a terminal or a log as it is.
+# so nothing a process names itself reaches a terminal or a log as it is. lock_root's refusal prints
+# a record another writer left with its control characters escaped, and one lock_take wrote, which
+# is escaped already, as it is.
 case_holder_names_escaped() {
   out=""
-  local dir="${temporary_dir}/escaped" weird want holder listener port line i
+  local dir="${temporary_dir}/escaped" weird want holder listener port line i writer taker
   mkdir -p "$dir"
   weird=$'a\rb\nc\td\e[0m\\e\xff'
   want='a\rb\nc\td\x1b[0m\\e\xff'
@@ -531,6 +533,38 @@ case_holder_names_escaped() {
   line=$(grep '^command=' "$dir/record")
   [ "$line" = "command=bash -c source \"\$1\"; exec 9>\"\$2\"; lock_take \"\$2\" taker $helper $dir/record $want" ] ||
     { fail "lock_take's record does not hold the command line escaped"; return; }
+
+  # A record another writer left, such as an older checkout on a shared LOADTEST_ROOT: written as
+  # it is, its command and its start with control characters in them (none with a newline, which
+  # would end the field), by a process of this PID namespace that holds the lock on descriptor 7
+  # under its own pid. lock_root's refusal names that run and must print those fields escaped. Its
+  # backslash stays as it is: a record lock_take wrote holds only printable ASCII, its escapes
+  # among it, and must print once, as it is (the next row).
+  mkdir -p "$dir/root-foreign"
+  bash -c 'exec 7<>"$1/.run.lock"; flock 7
+printf "pid=%s\npidns=%s\ncommand=%s\nstarted=%s\ntoken=0123456789abcdef0123456789abcdef\n" "$$" "$(readlink /proc/self/ns/pid)" "$2" "$3" >"$1/.run.lock"
+echo ready >"$4"; exec sleep 300' writer "$dir/root-foreign" $'a\rb\tc\e[0m\\e\xff' $'2026-11-17T00:00:00Z\e[2J' \
+    "$dir/foreign-ready" >/dev/null 2>&1 &
+  writer=$!
+  pids+=("$writer")
+  wait_for "$dir/foreign-ready" || { fail "the other writer wrote no record"; return; }
+  try_lock "$dir/root-foreign"
+  ((rc != 0)) || { fail "a caller was admitted to a root another run holds"; return; }
+  [[ $out == *"(pid $writer, started 2026-11-17T00:00:00Z\x1b[2J: a\rb\tc\x1b[0m\e\xff)"* ]] ||
+    { fail "lock_root did not print another writer's record with its control characters escaped"; return; }
+  [[ $out != *[$'\r\t\e']* && $out != *$'\xff'* ]] ||
+    { fail "lock_root printed a control character or a byte that is not ASCII as it is"; return; }
+
+  # A record lock_take wrote, through a lock_root run whose command line holds the line under test.
+  bash -c 'source "$1"; lock_root "$2"; echo ready >"$3"; exec sleep 300' taker "$helper" "$dir/root-taken" \
+    "$dir/taken-ready" "$weird" >/dev/null 2>&1 &
+  taker=$!
+  pids+=("$taker")
+  wait_for "$dir/taken-ready" || { fail "the lock_root run was not admitted"; return; }
+  try_lock "$dir/root-taken"
+  ((rc != 0)) || { fail "a caller was admitted to a root another run holds"; return; }
+  [[ $out == *"(pid $taker, started "*": bash -c "*" taker $helper $dir/root-taken $dir/taken-ready $want)"* ]] ||
+    { fail "lock_root did not print lock_take's record as it is, escaped once"; return; }
 
   # stack.sh's port_holder, its function as stack.sh defines it, over a listener named the same.
   # Its proc root holds the network tables and the listener alone: over the host's /proc the walk
