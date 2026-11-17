@@ -56,7 +56,7 @@ and `instanceGroup`, the group's name.
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
-| `monitorThroughIap` | `false` | IAP TCP forwarding reaches NATS's monitoring port, 8222: the firewall rule `<h>-iap-monitor` and the VM's own host firewall admit IAP's range, `35.235.240.0/20`, to 8222 alone. The component grants no one a tunnel. Taken beside `privateProjects` (see [The auth service](#the-auth-service) for why). A change of it rewrites the VM's user data, so the group replaces the VM. See [The monitoring port through IAP](#the-monitoring-port-through-iap). |
+| `monitorThroughIap` | `false` | IAP TCP forwarding reaches NATS's monitoring port, 8222: the firewall rule `<h>-iap-monitor` and the VM's own host firewall admit IAP's range, `35.235.240.0/20`, to 8222 alone. The component grants no one a tunnel. Taken beside `privateProjects` (see [The auth service](#the-auth-service) for why). Before turning it on beside `privateProjects`, list the project's and the instance's tunnel grants and condition or remove each that holds no `destination.port` condition: each reaches 8222 too (see [The monitoring port through IAP](#the-monitoring-port-through-iap)). A change of it rewrites the VM's user data, so the group replaces the VM. |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -512,7 +512,15 @@ drops the tunnel's connection. Who may open a tunnel is IAM's alone
 (`iap.tunnelInstances.accessViaIAP`), which the consumer grants and the component never does: grant
 it to one principal, conditioned on `destination.port == 8222` alone. The rule's target account
 keeps the path to the hub's VM. A condition on the instance's name lets no tunnel through, and one
-on its numeric id stops working when the group recreates the VM. The health
+on its numeric id stops working when the group recreates the VM. IAP admits every principal whose
+`iap.tunnelInstances.accessViaIAP` reaches the instance, not only the one this grant names: a
+tunnel grant already in place with no `destination.port` condition, such as a project-wide
+SSH-through-IAP grant to a team, or a role that holds every permission, reaches 8222 too once the
+firewall rule exists, and 8222 answers `/connz`, `/subsz` and `/jsz` with no authentication of its
+own. So before turning `monitorThroughIap` on beside `privateProjects`, list the project's and the
+instance's tunnel grants, and condition or remove every one that holds no `destination.port`
+condition. For the deployment this hub serves, that is its plan F's go-live item 8(h), which covers
+research@'s project-wide IAP grant. The health
 checks' rule and its `/healthz` are unchanged. The input rewrites the VM's user data, so turning it
 on or off replaces the VM (see [Updating a hub](#updating-a-hub)).
 
@@ -1035,7 +1043,8 @@ as they were, and the reloader applies it. A
 Without `routeAuthorization`, the servers' routes carry no credential: any process that reaches a
 hub pod's port 6222 can join the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the
 hub pods alone, and that is then the routes' only guard. A NetworkPolicy cannot fence a pod's own
-node, so [Route authorization](#route-authorization) adds a credential.
+node, so [Route authorization](#route-authorization) adds a credential, which fences a process that
+can connect to 6222 and not one that can read the node's traffic (see that section).
 
 Beside a callout, the routes keep their own ping. The top-level `ping_interval` of 20 s the callout
 adds to `auth.conf` would also govern the routes, since a route reads `cluster.ping_interval` and
@@ -1086,6 +1095,14 @@ finished:
 | `env` | The two variables in the nats container. `nats.conf` is as without `routeAuthorization`. | Rolls the pods, one at a time; no route changes. |
 | `routes` | Also `routes: $NATS_ROUTE_URLS` in the `cluster` block. | The reloader applies it: each server presents the credential on the routes it opens. |
 | `authorization` | Also `authorization { user: "route", password: $NATS_ROUTE_PASSWORD }` in the `cluster` block. | The reloader applies it: each server refuses a route that does not present the credential. |
+
+The component renders no TLS for the cluster, so each route URL's password crosses the pod
+network in clear text, on every route a server opens. The credential fences a process that can
+connect to port 6222, and not one that can read the node's traffic: such a process reads the
+password and can then join as a route. Route TLS fences both, and it is this residual's fix. The
+chart has the switch (`config.cluster.tls`, a `secretName` holding `tls.crt` and `tls.key`, and
+`tlsCA` for the CA that verifies a peer), but the component exposes none of it and mints no
+certificate, and a route URL of `tls://` replaces `nats://` in `NATS_ROUTE_URLS` when it is on.
 
 The order holds because nats-server reads a variable of `nats.conf` from its own environment at
 each load. A `nats.conf` that names `$NATS_ROUTE_URLS` before the container holds it fails every
