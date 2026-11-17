@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 146,
-    "caller": 146
+    "daemon": 151,
+    "caller": 151
   },
   "admission": {
     "cap": 5,
@@ -928,6 +928,10 @@
             "wait_seconds": 8,
             "interval_milliseconds": 250
           }
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
         }
       }
     },

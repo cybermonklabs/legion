@@ -68,7 +68,7 @@ PROGRAMS = [
 #           refusal carries
 BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
-     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42 runs "
+     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42-46 runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
 ]
 
