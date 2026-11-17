@@ -276,10 +276,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			spec = *input.Spec
 		}
 		outcome = s.runNearCopyGate(r.Context(), input.Project, input.Title, spec, ancestors, input.Force)
-		nearCopyRecord = nearCopyCheckRow{
-			id: s.newNearCopyRowID(), project: input.Project, actor: actor,
-			title: input.Title, spec: spec, parent: parentKey,
-		}
+		nearCopyRecord = newNearCopyCheckRow(s.newNearCopyRowID(), input.Project, actor, input.Title, spec, parentKey, outcome.Check)
 		if len(outcome.Refuse) > 0 {
 			if s.recordNearCopyRefusal(r.Context(), nearCopyRecord, outcome.Check) {
 				WriteJSON(w, http.StatusConflict, issueDuplicateError{
@@ -558,7 +555,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// refused row. It is one of the create's inline writes, after its first (the project's next
 	// number, which already holds the projects row its foreign key shares) and so after the read
 	// phase's owner lock, document work and advice; its result steers the route, since a row that
-	// cannot land admits no create. Every other row is written after the commit.
+	// cannot land admits no create. It binds values worked out before the transaction opened
+	// (newNearCopyCheckRow), so the spec's hash and the candidates' encoding run outside the
+	// create's transaction id. Every other row is written after the commit.
 	if recordInTx {
 		if err := s.writeNearCopyCheck(r.Context(), tx, nearCopyRecord, outcome.Check); err != nil {
 			s.writeHandlerError(w, err)

@@ -51,6 +51,12 @@ func (m *fakeMinter) minted() []mintCall {
 // password, dropped when t ends, and returns its name and a URL that signs in as it with no
 // password, as an IAM-form URL does. Postgres asks the role for a password over TCP (the test
 // server's pg_hba), so only a connection that brings one signs in.
+//
+// The server's login need not be a superuser. One with CREATEROLE is given ADMIN alone on a role
+// it creates (Postgres 16 and later), so it grants the role to itself with SET, which `create
+// schema ... authorization` of the role needs, and INHERIT, which the cleanup's `drop owned by`
+// needs. A role spans the server, so the cleanup is registered as soon as the role exists and
+// drops the role whatever failed first.
 func passwordRole(t *testing.T, password string) (role, databaseURL string) {
 	t.Helper()
 	raw := testDatabaseURL(t)
@@ -60,7 +66,23 @@ func passwordRole(t *testing.T, password string) (role, databaseURL string) {
 	}
 	role = "broker_iam_test_" + hex.EncodeToString(suffix[:])
 	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
-	t.Cleanup(func() { adminExec(t, raw, "drop owned by "+role+" cascade; drop role "+role) })
+	t.Cleanup(func() {
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, raw)
+		if err != nil {
+			t.Errorf("connect to BROKER_TEST_DATABASE_URL to drop the role %s: %v", role, err)
+			return
+		}
+		defer conn.Close(ctx)
+		// What the role owns and the grants it holds first, then the role, each a statement of
+		// its own, so the role's drop runs even when the first fails.
+		for _, statement := range []string{"drop owned by " + role + " cascade", "drop role " + role} {
+			if _, err := conn.Exec(ctx, statement); err != nil {
+				t.Errorf("%s: %v", statement, err)
+			}
+		}
+	})
+	adminExec(t, raw, "grant "+role+" to current_user with set true, inherit true")
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)

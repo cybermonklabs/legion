@@ -2,97 +2,20 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's arrival
 // and the owner lock gate a writer of this build holds or tries.
 
 // ───── an earlier build's arrival and the owner lock gate ──────────────────
-
-// registryLockKey is the registry's lock (processes.registryLock), which a registration takes
-// before it reads the live rows and writes its own, and every heartbeat takes too;
-// registryLiveWindow the registry's live window (processes.LiveWindow), within which a heartbeat
-// counts its process as live; and dashboardAssetsLock the advisory lock every dashboard publish
-// takes shared first (dashboard.lockName). Each spelled here because this package's tests cannot
-// import those.
-const (
-	registryLockKey     int64 = 0x4450524F43524547
-	registryLiveWindow        = 15 * time.Second
-	dashboardAssetsLock       = "dispatch-dashboard-assets"
-)
-
-// earlierBuildArrival is one way an earlier build arrives in the fleet, its statements as its boot
-// sends them (legion-envoy-v30.24.0's dashboard.Publish and processes.admit).
-type earlierBuildArrival struct {
-	name string
-	// arrive runs the arrival in tx, which the caller commits, for key: the build's id, or the
-	// process's instance.
-	arrive func(ctx context.Context, tx pgx.Tx, key string) error
-}
-
-var earlierBuildArrivals = []earlierBuildArrival{
-	{"its dashboard publish", func(ctx context.Context, tx pgx.Tx, build string) error {
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock_shared(hashtext($1))`, dashboardAssetsLock); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `select path from dashboard_build_assets where build = $1`, build); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `
-			insert into dashboard_builds (build, entry, commit) values ($1, $2, $3)
-			on conflict (build) do update set last_started_at = now()`, build, "/assets/index-earlier.js", "")
-		return err
-	}},
-	{"its registration", func(ctx context.Context, tx pgx.Tx, instance string) error {
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `select instance from server_processes where heartbeat_at > now() - make_interval(secs => $1)`,
-			registryLiveWindow.Seconds()); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `
-			insert into server_processes (instance, commit, dashboard_build, signing_keys,
-				schema_version, schema_creatable, embedder_identity, file_store)
-			values ($1, '', '', '{fingerprint}', 1, 1, '', false)
-			on conflict (instance) do update set heartbeat_at = now()`, instance)
-		return err
-	}},
-}
-
-// arriveOn runs arrival for key in a transaction of its own on conn, bounded by a lock timeout so
-// a wait that never ends fails rather than hangs, and commits it.
-func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
-	if err := arrival.arrive(ctx, tx, key); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-// arrive runs arrival for key on a connection of the pool's (arriveOn).
-func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key string) error {
-	conn, err := s.Pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	return arriveOn(ctx, conn, arrival, key)
-}
 
 // An earlier build's arrival - its dashboard publish, the first thing its boot writes, or its
 // registration - waits while a transaction of this build that read no earlier build in the fleet
@@ -189,31 +112,11 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 	}
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
-func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return
-		}
-		select {
-		case err := <-ended:
-			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 // fleetReadPauseNamespace and fleetReadPauseKey are the two keys of the advisory lock a test holds
-// to stop a writer inside its first fleet read ("PAUS", 0; pauseFleetReadsAt): a namespace of its
-// own among the module's two-key locks (OwnerLockNamespace's list).
+// to stop a writer inside its first fleet read ("PAUS", 0; pauseFleetReadsAt). No two-key lock the
+// module's code takes has that first key - OwnerLockNamespace's comment lists those, and this
+// test's lock, which no code outside this file takes, is not one of them - so the pause and the
+// module's own locks never wait on each other.
 const (
 	fleetReadPauseNamespace int32 = 0x50415553
 	fleetReadPauseKey       int32 = 0
@@ -226,13 +129,37 @@ const (
 // reads, so a fleet read stops inside its statement, after that statement's snapshot is taken.
 // The policy then hides the row, which the caller leaves a live process of an earlier build to
 // every other condition of the fleet read, so the policy reaches it in whatever order the scan
-// checks them. Superusers skip row-level security, so the writer runs as the role (`set local
-// role`), which may read the fleet read's two tables and take an issue's row.
+// checks them. Superusers and the table's owner - the test's login, which migrated the database -
+// skip row-level security, so the writer runs as the role (`set local role`), which may read the
+// fleet read's two tables and take an issue's row.
+//
+// The login need not be a superuser: one with CREATEROLE creates the role and grants it to itself
+// with SET, which Postgres 16 and later give such a creator only on a grant of its own (the create
+// gives it ADMIN alone), and with INHERIT, which the cleanup's `drop owned by` needs. A login that
+// cannot create a role skips the test. A role spans the cluster, so its cleanup is registered as
+// soon as it exists and drops it whatever failed first.
 func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pause pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
 	role = "fleet_read_pause_" + randomDatabaseSuffix(t)
+	if _, err := s.Pool.Exec(ctx, "create role "+role+" nologin"); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+			t.Skipf("the test server's login cannot create the role the fleet read's pause runs as (it needs CREATEROLE or superuser): %v", err)
+		}
+		t.Fatalf("create the fleet read's pause role: %v", err)
+	}
+	t.Cleanup(func() {
+		// The grants in this database first, then the role, each a statement of its own, so the
+		// role's drop runs even when the first fails.
+		for _, statement := range []string{"drop owned by " + role, "drop role " + role} {
+			if _, err := s.Pool.Exec(context.Background(), statement); err != nil {
+				t.Errorf("%s: %v", statement, err)
+			}
+		}
+	})
 	if _, err := s.Pool.Exec(ctx, fmt.Sprintf(`
+		grant %s to current_user with set true, inherit true;
 		create function public.fleet_read_pause(instance uuid) returns boolean language plpgsql as $$
 		begin
 			if instance = '%s'::uuid then
@@ -244,17 +171,11 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 		alter table public.server_processes enable row level security;
 		create policy fleet_read_pause on public.server_processes for select
 			using (public.fleet_read_pause(instance));
-		create role %s nologin;
 		grant select on public.server_processes, public.owner_lock_legacy_mark to %s;
 		grant select, update on public.issues to %s;`,
-		instance, fleetReadPauseNamespace, fleetReadPauseKey, role, role, role)); err != nil {
+		role, instance, fleetReadPauseNamespace, fleetReadPauseKey, role, role)); err != nil {
 		t.Fatalf("set the fleet read's pause up: %v", err)
 	}
-	t.Cleanup(func() {
-		if _, err := s.Pool.Exec(context.Background(), "drop owned by "+role+"; drop role "+role); err != nil {
-			t.Errorf("drop the role %s: %v", role, err)
-		}
-	})
 	pause, err := s.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

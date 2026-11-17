@@ -61,9 +61,9 @@ const OwnerLockProtocol = 1
 // database - has its row pruned and is not in the fleet again until a heartbeat's admit of it,
 // whose insert is an arrival, commits. Each such admit waits for the gate at most 2 seconds, its
 // heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that
-// process serves writes in its row-first order meanwhile. That is the registry's own model: every other decision over the
-// fleet (the signing keys, the embedder, the schema admission) counts a process silent past
-// processes.LiveWindow as gone.
+// process serves writes in its row-first order meanwhile. That is the registry's own model:
+// every other decision over the fleet (the signing keys, the embedder, the schema admission)
+// counts a process silent past processes.LiveWindow as gone.
 //
 // OwnerLockMarkWindow covers an earlier build's boot from its dashboard publish, the arrival its
 // boot makes first, to its registration, which then keeps it in the fleet. Every step of that
@@ -136,9 +136,9 @@ func OwnerOf(issueKey, artifactID *string) *Owner {
 func (o Owner) LockKey() string { return string(o.Kind) + ":" + o.Key }
 
 // OwnerLocker is what an owner lock runs on: a transaction, or a savepoint of one, whose rollback
-// gives back the locks taken under it. The pool satisfies it too, for a try that holds its lock only
-// for its own statement. A lock that takes the owners' rows beside an earlier build, or runs the
-// read it guards in its own round trip, sends a batch (lockOwnersAt).
+// gives back the locks taken under it. The pool satisfies it too, for a try that holds its lock
+// only for its own statement. A lock that takes the owners' rows beside an earlier build, or runs
+// the read it guards in its own round trip, sends a batch (lockOwnersAt).
 type OwnerLocker interface {
 	Query(ctx context.Context, sql string, arguments ...any) (pgx.Rows, error)
 	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
@@ -302,15 +302,14 @@ func (level *ownerLockLevel) scan(rows pgx.Rows, owners []Owner, keys []string) 
 }
 
 // ownerLockMode is which owner lock a transaction of this process took, by its fleet read
-// (public.owner_lock_fleet, the owner lock statements above).
+// (public.owner_lock_fleet, the owner lock statements above). Its zero value, which String names
+// unknown, is a process that has taken no owner lock yet.
 type ownerLockMode int32
 
 const (
-	// ownerLockModeUnknown is a process that has taken no owner lock yet.
-	ownerLockModeUnknown ownerLockMode = iota
 	// ownerLockAdvisory is the advisory lock alone, behind the owner lock gate taken shared: no
 	// earlier build, which serialises on the owner row, is in the fleet.
-	ownerLockAdvisory
+	ownerLockAdvisory ownerLockMode = iota + 1
 	// ownerLockAdvisoryAndRow is the advisory lock and then the owner's row, before any read the
 	// lock guards, and no gate: an earlier build, which serialises on that row, is in the fleet,
 	// or its arrival holds the gate or waits for it (lockOwnerRows).
@@ -376,8 +375,8 @@ func noteOwnerLockMode(legacy bool) {
 // the lock (OwnerLockGateNamespace) and holds it to the transaction's end, so an earlier build that
 // arrives meanwhile - its dashboard publish, or its registration for up to 5 seconds - waits for
 // this transaction to end before that arrival commits, and every owner lock after it reads the
-// earlier build in the fleet. A try that fails, while an arrival holds the gate or waits for it, takes the
-// owner's row as beside an earlier build, so no owner lock waits on an arrival.
+// earlier build in the fleet. A try that fails, while an arrival holds the gate or waits for it,
+// takes the owner's row as beside an earlier build, so no owner lock waits on an arrival.
 //
 // The lock and the read it guards must be separate statements. Under READ COMMITTED a statement's
 // snapshot is taken when it starts, before it waits, so a statement that both took this lock and
@@ -417,6 +416,10 @@ func LockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 // fleet read. With no earlier build in the fleet the lock is that one statement, which assigns the
 // transaction no transaction id.
 //
+// Only a test reads the fleet read it answers: raceWriter (ownerlock_fleet_test.go), whose writers
+// in the owner lock's races run at once and so each need their own transaction's answer, which
+// lastOwnerLockMode, the latest of the process's, is not. Every caller here drops it.
+//
 // read, when it is not nil, is the statement the locks guard, sent with them (LockOwnersAndRead):
 // in one batch behind the advisory lock's statement, one round trip. The batch is sent before the
 // fleet read is answered, so read has already run when the answer says the owners' rows must be
@@ -445,13 +448,13 @@ func lockOwnersAt(ctx context.Context, q OwnerLocker, level *ownerLockLevel, own
 		held, legacy, err = level.scan(rows, owners, keys)
 	}
 	if err != nil {
-		if results != nil {
+		if read != nil {
 			results.Close()
 		}
 		return nil, false, level.failed(owners, err)
 	}
 	if legacy && len(held) > 0 {
-		if results != nil {
+		if read != nil {
 			// read ran ahead of the row locks: drop its answer (Close reads it and keeps only its
 			// failure) and run it again behind them.
 			if err := results.Close(); err != nil {
@@ -592,7 +595,7 @@ func lockOwnerRows(ctx context.Context, q OwnerLocker, level *ownerLockLevel, ow
 		}
 		results := q.SendBatch(ctx, batch)
 		for _, lock := range locks {
-			if err := lock.take(results, taken); err != nil {
+			if err := lock.take(results, level, taken); err != nil {
 				results.Close()
 				return nil, lock.failed(err)
 			}
@@ -619,11 +622,11 @@ func lockOwnerRows(ctx context.Context, q OwnerLocker, level *ownerLockLevel, ow
 	return held, nil
 }
 
-// take reads the row lock's answer, the next result of results. At a level that waits, whose
-// statement takes every row it names, taken is nil and the answer is left unread; at one that
-// skips, every row the statement took is marked in taken.
-func (l ownerRowLock) take(results pgx.BatchResults, taken map[Owner]bool) error {
-	if taken == nil {
+// take reads the row lock's answer at level, the next result of results. At a level that waits,
+// whose statement takes every row it names, the answer is left unread and taken is nil; at one
+// that skips, every row the statement took is marked in taken.
+func (l ownerRowLock) take(results pgx.BatchResults, level *ownerLockLevel, taken map[Owner]bool) error {
+	if !level.skips {
 		_, err := results.Exec()
 		return err
 	}

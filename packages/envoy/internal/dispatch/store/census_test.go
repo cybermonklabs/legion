@@ -740,6 +740,13 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 				}
 			}
 		})
+		// `drop owned by` needs the privileges of the role, which a login that is no superuser
+		// does not have of a role it creates (Postgres 16 and later give such a creator ADMIN
+		// alone): it grants the role to itself with INHERIT, so the cleanup drops the role's
+		// grants and then the role.
+		if _, err := store.Pool.Exec(ctx, "grant "+role+" to current_user with inherit true"); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.Pool.Exec(ctx, "grant select on all tables in schema public to "+role); err != nil {
 			t.Fatal(err)
 		}

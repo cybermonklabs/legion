@@ -179,23 +179,27 @@ func sqlStatements(file *ast.File, constants map[string]string) []string {
 	return statements
 }
 
-// locatedStatement is one statement sqlStatements finds, with the name of the function declared
-// at the top level of the file that holds it, its function literals included; empty for one
-// outside any function, such as a constant's value.
+// locatedStatement is one statement sqlStatements finds, with where it is declared. function is
+// the name of the function declared at the top level of the file that holds it, its function
+// literals included, and empty for one outside any function, such as a constant's value. value is
+// the name of the package-level constant or variable whose declaration holds one outside any
+// function - the names of a declaration of several, comma-joined, where its values are not one per
+// name (`a, b = f()`) - and empty for one in a function or in no value (an import path, a struct
+// tag).
 type locatedStatement struct {
 	function  string
+	value     string
 	statement string
 }
 
-// sqlStatementsByFunction is sqlStatements with the function each statement is in.
+// sqlStatementsByFunction is sqlStatements with the function, or the package-level value, each
+// statement is in.
 func sqlStatementsByFunction(file *ast.File, constants map[string]string) []locatedStatement {
 	var statements []locatedStatement
-	for _, declared := range file.Decls {
-		function := ""
-		if fn, ok := declared.(*ast.FuncDecl); ok {
-			function = fn.Name.Name
-		}
-		ast.Inspect(declared, func(node ast.Node) bool {
+	// locate adds the statements under node, which is in function or, outside any function, in
+	// the package-level value named value.
+	locate := func(node ast.Node, function, value string) {
+		ast.Inspect(node, func(node ast.Node) bool {
 			expression, ok := node.(ast.Expr)
 			if !ok {
 				return true
@@ -206,11 +210,49 @@ func sqlStatementsByFunction(file *ast.File, constants map[string]string) []loca
 			}
 			statements = append(statements, locatedStatement{
 				function:  function,
+				value:     value,
 				statement: sqlWhitespace.ReplaceAllString(strings.ToLower(text), " "),
 			})
 			// The whole concatenation is one statement; its parts are not statements of their own.
 			return false
 		})
+	}
+	for _, declared := range file.Decls {
+		general, ok := declared.(*ast.GenDecl)
+		if !ok {
+			function := ""
+			if fn, ok := declared.(*ast.FuncDecl); ok {
+				function = fn.Name.Name
+			}
+			locate(declared, function, "")
+			continue
+		}
+		for _, spec := range general.Specs {
+			values, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				locate(spec, "", "")
+				continue
+			}
+			// Each part of the spec is walked in the order ast.Walk takes it, so the statements
+			// come out as a walk of the whole spec finds them: the names, the type, the values.
+			// A name and, one per name, its value are in that name; the rest is in all of them.
+			names := make([]string, len(values.Names))
+			for index, name := range values.Names {
+				names[index] = name.Name
+				locate(name, "", name.Name)
+			}
+			every := strings.Join(names, ", ")
+			if values.Type != nil {
+				locate(values.Type, "", every)
+			}
+			for index, value := range values.Values {
+				if len(values.Values) == len(values.Names) {
+					locate(value, "", names[index])
+				} else {
+					locate(value, "", every)
+				}
+			}
+		}
 	}
 	return statements
 }

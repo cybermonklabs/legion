@@ -454,9 +454,13 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 	admin := connect(t, ctx, url)
 	// A role spans the cluster that every test shares, so each role takes the name of the test's
 	// own database, which is random. other and login are members of group. login signs in with a
-	// password, as a deployment's login does.
+	// password, as a deployment's login does. The test database's own login is granted group with
+	// SET, for the row whose runner signs in as it and sets the role: a login that is no superuser
+	// but creates roles (CREATEROLE) is given ADMIN alone on a role it creates (Postgres 16 and
+	// later), which lets it grant that role but not set it.
 	group, other, login := config.Database+"_group", config.Database+"_other", config.Database+"_login"
 	if _, err := admin.Exec(ctx, "create role "+group+"; create role "+other+" in role "+group+"; create role "+login+" login password 'exec-test' in role "+group+"; "+
+		"grant "+group+" to current_user with set true; "+
 		"create schema x; create table seen (search_path text, current_user_name text, session_user_name text); grant insert on seen to public"); err != nil {
 		t.Fatal(err)
 	}

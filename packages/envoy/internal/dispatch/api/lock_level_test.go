@@ -42,18 +42,18 @@ var ownerLockTables = []string{"issues", "artifacts", "projects", "asks"}
 // lock while a process of an earlier build, which serialises on the row, is live.
 var ownerRowTables = []string{"issues", "artifacts", "projects"}
 
-// ownerRowLockSites are the functions allowed to lock an owner row, keyed by the file that
-// declares them: the events' lockEventOwner, which takes the row `for no key update` when the
-// transaction appends, under the owner's advisory lock it takes first; and the store's owner lock
-// levels (store.ownerLockExclusive, ownerLockShared, ownerLockTry), whose row locks are the
-// statements the owner lock runs right after its advisory lock, before the read it guards, while
-// its fleet read answers that a process of an earlier build is live (store.lockOwnerRows). The
-// levels are package-level values, and a statement declared outside any function is named by no
-// function (sqlStatementsByFunction), so the store's entry is "": the package-level declarations
-// of ownerlock.go, among which the levels alone lock an owner row.
+// ownerRowLockSites are the places allowed to lock an owner row, keyed by the file that declares
+// them, each named as a statement's locatedStatement names where it is: a function, or a
+// package-level value. They are the events' lockEventOwner, which takes the row `for no key
+// update` when the transaction appends, under the owner's advisory lock it takes first; and the
+// store's three owner lock levels, the package-level variables ownerLockExclusive,
+// ownerLockShared and ownerLockTry, whose row locks are the statements the owner lock runs right
+// after its advisory lock, before the read it guards, while its fleet read answers that a process
+// of an earlier build is live (store.lockOwnerRows). Every other declaration and function of
+// ownerlock.go is under the rule.
 var ownerRowLockSites = map[string][]string{
 	"internal/dispatch/events/broker.go":   {"lockEventOwner"},
-	"internal/dispatch/store/ownerlock.go": {""},
+	"internal/dispatch/store/ownerlock.go": {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
 }
 
 var (
@@ -129,7 +129,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
 		for _, located := range sqlStatementsByFunction(source.file, constants) {
-			offence := path + ": " + located.statement
+			offence := statementAt(path, located)
 			if _, repeat := seen[offence]; repeat {
 				continue
 			}
@@ -138,7 +138,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 				forUpdates = append(forUpdates, offence)
 				continue
 			}
-			if locksOwnerRow(located.statement) && !ownerRowLockSite(path, located.function) {
+			if locksOwnerRow(located.statement) && !ownerRowLockSite(path, located) {
 				seen[offence] = struct{}{}
 				rowLocks = append(rowLocks, offence)
 			}
@@ -151,7 +151,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 			strings.Join(ownerLockTables, ", "), strings.Join(forUpdates, "\n\t"))
 	}
 	if len(rowLocks) > 0 {
-		t.Errorf("a row lock on %s is refused outside the owner lock's own owner-row locks (events.lockEventOwner, the row locks of store's owner lock levels):\n\t%s\n"+
+		t.Errorf("a row lock on %s is refused outside the owner lock's own owner-row locks (events.lockEventOwner; store.ownerLockExclusive, ownerLockShared and ownerLockTry, the owner lock levels):\n\t%s\n"+
 			"Take the owner's advisory lock (store.LockOwner, LockOwners, LockOwnersShared or TryLockOwners) "+
 			"and read the row plainly in the statement after it.",
 			strings.Join(ownerRowTables, ", "), strings.Join(rowLocks, "\n\t"))
@@ -172,13 +172,29 @@ func locksOwnerRow(statement string) bool {
 	return rowLockClause.MatchString(statement) && ownerRowTable.MatchString(statement)
 }
 
-// ownerRowLockSite reports whether function, declared in the file at path, is one the owner-row
-// rule allows (ownerRowLockSites).
-func ownerRowLockSite(path, function string) bool {
-	for file, functions := range ownerRowLockSites {
-		if strings.HasSuffix(path, "/"+file) && slices.Contains(functions, function) {
+// ownerRowLockSite reports whether the statement located, declared in the file at path, is in a
+// function or a package-level value the owner-row rule allows (ownerRowLockSites).
+func ownerRowLockSite(path string, located locatedStatement) bool {
+	for file, sites := range ownerRowLockSites {
+		if !strings.HasSuffix(path, "/"+file) {
+			continue
+		}
+		if located.function != "" && slices.Contains(sites, located.function) ||
+			located.value != "" && slices.Contains(sites, located.value) {
 			return true
 		}
 	}
 	return false
+}
+
+// statementAt names a statement as a failure prints it: its file, the function or package-level
+// value it is declared in when it is in one, and its text.
+func statementAt(path string, located locatedStatement) string {
+	switch {
+	case located.function != "":
+		path += " " + located.function
+	case located.value != "":
+		path += " " + located.value
+	}
+	return path + ": " + located.statement
 }

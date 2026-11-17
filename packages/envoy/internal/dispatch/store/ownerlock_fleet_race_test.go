@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,120 +20,26 @@ import (
 
 // ───── deadlocks and lost updates across the writers ───────────────────────
 
-// writerShape is how one writer of the races below serialises: this build beside a process of an
-// earlier build (advisory lock, then the rows), this build in the advisory mode (advisory lock,
-// the rows only in the write phase), this build as its fleet read answers (either of those two,
-// as LockOwners runs it), and the earlier build itself (the rows first, no advisory lock).
-type writerShape string
-
-const (
-	legacyModeWriter writerShape = "this build, advisory and row"
-	advisoryWriter   writerShape = "this build, advisory alone"
-	fleetModeWriter  writerShape = "this build, as its fleet read answers"
-	rowFirstWriter   writerShape = "earlier build, row first"
-)
-
-// raceWriter runs one transaction of shape over owners: the read phase reads each owner's
-// last_seq, the write phase writes each one back plus one, in touch's order, as a read-modify-write
-// whose base the read phase decided. It answers whether the transaction's fleet read found an
-// earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
-// error. This build's writers take their write phase's row locks in touch's order, an order of the
-// handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front.
-func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return false, err
-	}
-	switch shape {
-	case legacyModeWriter:
-		if err := LockOwners(ctx, tx, owners...); err != nil {
-			return false, err
-		}
-	case advisoryWriter:
-		// The advisory statement alone, whatever its fleet read answers: the writer whose fleet
-		// read found no earlier build.
-		if _, err := tx.Exec(ctx, ownerLockExclusive.statement, ownerLockArgs(lockKeys(owners))...); err != nil {
-			return false, err
-		}
-	case fleetModeWriter:
-		if _, legacy, err = lockOwnersAt(ctx, tx, ownerLockExclusive, owners, nil); err != nil {
-			return legacy, err
-		}
-	case rowFirstWriter:
-		sorted := slices.Clone(owners)
-		slices.SortFunc(sorted, func(a, b Owner) int { return strings.Compare(a.LockKey(), b.LockKey()) })
-		for _, owner := range sorted {
-			table, column := ownerRowTable(owner)
-			if _, err := tx.Exec(ctx, `select 1 from `+table+` where `+column+`::text = $1 for no key update`, owner.Key); err != nil {
-				return legacy, err
-			}
-		}
-	}
-	seen := map[Owner]int{}
-	for _, owner := range owners {
-		table, column := ownerRowTable(owner)
-		var seq int
-		if err := tx.QueryRow(ctx, `select last_seq from `+table+` where `+column+`::text = $1`, owner.Key).Scan(&seq); err != nil {
-			return legacy, err
-		}
-		seen[owner] = seq
-	}
-	time.Sleep(time.Duration(rand.IntN(3)) * time.Millisecond)
-	for _, owner := range touch {
-		table, column := ownerRowTable(owner)
-		if shape != rowFirstWriter {
-			if _, err := tx.Exec(ctx, ownerLock, OwnerLockNamespace, owner.LockKey()); err != nil {
-				return legacy, err
-			}
-			if _, err := tx.Exec(ctx, `select 1 from `+table+` where `+column+`::text = $1 for no key update`, owner.Key); err != nil {
-				return legacy, err
-			}
-		}
-		if _, err := tx.Exec(ctx, `update `+table+` set last_seq = $2 where `+column+`::text = $1`, owner.Key, seen[owner]+1); err != nil {
-			return legacy, err
-		}
-	}
-	return legacy, tx.Commit(ctx)
-}
-
 // raceTally is what one pair's rounds came to.
 type raceTally struct {
 	rounds, deadlocks, otherFailures, lost int
 }
 
-// raceShapes runs rounds of shape a and shape b at once over random subsets of owners, and counts
-// the rounds Postgres broke with `deadlock detected` (40P01), the transactions that failed any
-// other way, and the increments lost: every committed transaction adds one to each owner it
-// touched, so an owner whose last_seq grew by less than its commits lost the difference.
+// raceShapes runs rounds of shape a and shape b at once over random subsets of owners
+// (randomOwners), and counts the rounds Postgres broke with `deadlock detected` (40P01), the
+// transactions that failed any other way, and the increments lost (lostIncrements).
 func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, rounds int) raceTally {
 	t.Helper()
 	ctx := context.Background()
 	all := owners.all()
-	start := map[Owner]int{}
-	for _, owner := range all {
-		table, column := ownerRowTable(owner)
-		var seq int
-		if err := s.Pool.QueryRow(ctx, `select last_seq from `+table+` where `+column+`::text = $1`, owner.Key).Scan(&seq); err != nil {
-			t.Fatal(err)
-		}
-		start[owner] = seq
-	}
+	start := ownerSeqs(t, s, all)
 	committed := map[Owner]int{}
 	tally := raceTally{rounds: rounds}
 	var mu sync.Mutex
 	for range rounds {
 		var wg sync.WaitGroup
 		for _, shape := range []writerShape{a, b} {
-			subset := slices.Clone(all)
-			rand.Shuffle(len(subset), func(i, j int) { subset[i], subset[j] = subset[j], subset[i] })
-			subset = subset[:2+rand.IntN(len(subset)-1)]
-			touch := slices.Clone(subset)
-			rand.Shuffle(len(touch), func(i, j int) { touch[i], touch[j] = touch[j], touch[i] })
+			subset, touch := randomOwners(all)
 			wg.Go(func() {
 				_, err := raceWriter(ctx, s, shape, subset, touch)
 				mu.Lock()
@@ -155,14 +60,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 		}
 		wg.Wait()
 	}
-	for _, owner := range all {
-		table, column := ownerRowTable(owner)
-		var seq int
-		if err := s.Pool.QueryRow(ctx, `select last_seq from `+table+` where `+column+`::text = $1`, owner.Key).Scan(&seq); err != nil {
-			t.Fatal(err)
-		}
-		tally.lost += start[owner] + committed[owner] - seq
-	}
+	tally.lost = lostIncrements(t, s, all, start, committed)
 	return tally
 }
 
@@ -210,135 +108,12 @@ func TestTheOwnerLockModesRaceEachOtherAndTheEarlierBuildsWriter(t *testing.T) {
 // ───── the gate raced by an earlier build arriving, writing and leaving ────
 
 // gateRace is what the race below sizes: how many times the earlier build arrives, writes and
-// leaves, how many row-first writes it makes each time on each of its two writers, and how many
-// writers of this build run all the while.
+// leaves, and how many row-first writes it makes each time on each of its two writers. How many
+// writers of this build run all the while is gateRaceWriters (ownerlock_fleet_test.go).
 const (
 	gateRaceCycles        = 100
 	gateRaceEarlierWrites = 6
-	gateRaceWriters       = 4
 )
-
-// gateRaceTally is what one role of the races came to.
-type gateRaceTally struct {
-	commits, deadlocks, failures int
-}
-
-// raceLedger is what the writers of a race committed: each role's tally, every increment they
-// committed by owner, and how many of this build's writers committed in each mode (true: beside an
-// earlier build). The race's goroutines share it.
-type raceLedger struct {
-	mu        sync.Mutex
-	committed map[Owner]int
-	tallies   map[string]*gateRaceTally
-	modes     map[bool]int
-}
-
-func newRaceLedger() *raceLedger {
-	return &raceLedger{committed: map[Owner]int{}, tallies: map[string]*gateRaceTally{}, modes: map[bool]int{}}
-}
-
-// record counts one transaction of role that touched touched: its commit, or its failure, a
-// deadlock (40P01) or any other, logged.
-func (l *raceLedger) record(t *testing.T, role string, err error, touched []Owner) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	tally := l.tallies[role]
-	if tally == nil {
-		tally = &gateRaceTally{}
-		l.tallies[role] = tally
-	}
-	var pgErr *pgconn.PgError
-	switch {
-	case err == nil:
-		tally.commits++
-		for _, owner := range touched {
-			l.committed[owner]++
-		}
-	case errors.As(err, &pgErr) && pgErr.Code == "40P01":
-		tally.deadlocks++
-		t.Logf("%s: deadlock: %s", role, pgErr.Detail)
-	default:
-		tally.failures++
-		t.Logf("%s: %v", role, err)
-	}
-}
-
-// write runs one writer of shape over a random subset of all and records it, and for this
-// build's writer as its fleet read answers, the mode it committed in.
-func (l *raceLedger) write(ctx context.Context, t *testing.T, s *Store, shape writerShape, all []Owner) {
-	subset, touch := randomOwners(all)
-	legacy, err := raceWriter(ctx, s, shape, subset, touch)
-	if err == nil && shape == fleetModeWriter {
-		l.mu.Lock()
-		l.modes[legacy]++
-		l.mu.Unlock()
-	}
-	l.record(t, string(shape), err, touch)
-}
-
-// settle logs each role's tally and answers the increments lost, every owner's last_seq read
-// against start and the increments committed, and the deadlocks and other failures of every role.
-// It is called once the race's goroutines have ended.
-func (l *raceLedger) settle(t *testing.T, s *Store, all []Owner, start map[Owner]int) (lost, deadlocks, failures int) {
-	t.Helper()
-	end := ownerSeqs(t, s, all)
-	for _, owner := range all {
-		lost += start[owner] + l.committed[owner] - end[owner]
-	}
-	for role, tally := range l.tallies {
-		t.Logf("%s: %d committed, %d deadlocks (40P01), %d other failures",
-			role, tally.commits, tally.deadlocks, tally.failures)
-		deadlocks += tally.deadlocks
-		failures += tally.failures
-	}
-	return lost, deadlocks, failures
-}
-
-// ownerSeqs is every owner's last_seq.
-func ownerSeqs(t *testing.T, s *Store, owners []Owner) map[Owner]int {
-	t.Helper()
-	seq := map[Owner]int{}
-	for _, owner := range owners {
-		table, column := ownerRowTable(owner)
-		var value int
-		if err := s.Pool.QueryRow(context.Background(), `select last_seq from `+table+` where `+column+`::text = $1`, owner.Key).Scan(&value); err != nil {
-			t.Fatal(err)
-		}
-		seq[owner] = value
-	}
-	return seq
-}
-
-// randomOwners is a random subset of all, at least two, and the same owners in another random
-// order: what a writer of the races reads, and the order it writes them in.
-func randomOwners(all []Owner) (subset, touch []Owner) {
-	subset = slices.Clone(all)
-	rand.Shuffle(len(subset), func(i, j int) { subset[i], subset[j] = subset[j], subset[i] })
-	subset = subset[:2+rand.IntN(len(subset)-1)]
-	touch = slices.Clone(subset)
-	rand.Shuffle(len(touch), func(i, j int) { touch[i], touch[j] = touch[j], touch[i] })
-	return subset, touch
-}
-
-// heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own.
-func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `update server_processes set heartbeat_at = now() where instance = $1::uuid`, instance); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
 
 // An earlier build arrives, writes and leaves, over and over, while writers of this build run
 // throughout, each in the mode its own fleet read answers, and this build's process heartbeats.
