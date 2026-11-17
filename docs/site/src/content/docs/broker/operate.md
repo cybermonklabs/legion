@@ -249,7 +249,10 @@ mint or read a pod's token — the same kind of access over that pod's account a
 below names over a listed one — and it stops short of them: the caller needs a
 `BROKER_SERVICE_LOGINS` token of its own, and the pod's
 account must be one `BROKER_EXCHANGE_ACCOUNTS` lists, `403 POD_ACCOUNT_NOT_LISTED`. A
-deployment that does not want that lists no such account.
+deployment that does not want that lists no such account. An account `BROKER_EXCHANGE_READ_ACCOUNTS`
+lists (below) is refused `409 SESSION_FIXED`, as is an account whose `BROKER_EXCHANGE_ACCOUNTS`
+entry fixes a session: such an entry fixes the session its tokens name, so its pods need no
+registration.
 A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
@@ -273,6 +276,27 @@ bucket drained for the rest of the credential's life stops it logging in.
 A service login a person approved through a device code before this broker keeps working until
 it expires, at most `BROKER_LAUNCHER_CREDENTIAL_SECONDS` (30 days by default) after its approval:
 nothing refreshes it.
+
+A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
+the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
+tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
+no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+`BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
+`<service account>=<service>=<session>` entries, for example
+`BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.
+The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
+that service and that session, and names no person and no project. Dispatch serves it on the routes
+its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it
+`403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of
+`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
+source, each component, and every issue of the project, closed and iceboxed ones included. No
+setting holds a read entry to some projects. The Envoy listener answers it `401`. Both settings need
+`BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
+read entry without the audience. It also refuses an entry with a missing field, a namespace's
+`default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is
+`shared`, and an account that one setting lists twice or that both settings list. A broker of a
+build older than this setting does not read it, so it mints those accounts no token. The boot line
+`token exchange state=on` counts the read entries as `read_accounts`.
 
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
@@ -450,8 +474,8 @@ reads that variable for nothing: an agent session's id is minted when the sessio
 token must name it, since the Envoy listener refuses a subscribe, an unsubscribe, a role claim or a
 send from a session whose token names another. So a fleet whose entry fixes a session, or whose
 pods write under registered names, is a fleet no agent session can trade at: the broker refuses
-the trade, naming what the entry writes as. For a person to sign in there, give the machine the
-device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
+the trade, naming the session the entry's tokens carry. For a person to sign in there, give the
+machine the device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
 `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, the client whose
 id is `BROKER_SIGNIN_DEVICE_AUDIENCE`. With `AGENT_SECRETS_MACHINE_IDENTITY` unset nothing trades
 and every machine works as it did, through a machine login a person approves.

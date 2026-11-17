@@ -127,8 +127,9 @@ jobs:
       # and so is internal/integration, which the integration step below tests, and
       # internal/textcheck, whose tests are the text-check job's: that job runs them in a job
       # with no database and no Bun, and a change to only what they read must not start this
-      # one. So are internal/dispatch/architecture/notes and cmd/architecture-check, which
-      # envoy-go-checks tests on every push (ARCHITECTURE_CHECK_PACKAGES). The pattern is built
+      # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
+      # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
+      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
       # in .github/scripts/ci_job_reads.py from the same list those
       # jobs' own steps are built from, so what this step leaves out and what the other jobs run
       # cannot drift apart. What is left is the rest of the module, the two longest packages of
@@ -141,7 +142,7 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/cmd/architecture-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.

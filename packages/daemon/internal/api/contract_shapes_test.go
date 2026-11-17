@@ -201,6 +201,7 @@ projects:
         mode: on
         on_variant: short
         unit: issue
+        roles: [planner, implementer]
         variants:
           - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md}
           - {name: long}

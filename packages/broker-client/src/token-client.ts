@@ -181,7 +181,7 @@ export interface BrokerTokenClientOptions {
   /** The machine a person signed in on, presented as the actor token beside their own Google
    *  identity token. Absent for every trade a machine makes for itself. */
   readonly actor?: TokenSource | undefined;
-  /** The session name the minted token writes under, which an entry that fixes one refuses to be
+  /** The session name the minted token carries, which an entry that fixes one refuses to be
    *  told and an entry that fixes none requires. */
   readonly session?: string | undefined;
   /**

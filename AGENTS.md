@@ -438,8 +438,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   writes each claim's recorded session file (from `legion claims list --json`) into Oh My Pi's session table under its recorded path, read from the tree volume mounted at --tree-volume;
   one line per selected claim (copied, copied before, recorded no session, failed, refused), then a `missing` line for every claim of the list whose session the table lacks, then a count of each;
   exit 1 on a failure, a refusal, a missing session of the selection, or a --tree that selects no claim;
-  a session the table already holds byte for byte is not copied again, and one it holds with other content is refused and left as it is;
-  `scripts/sessions-import-pods.sh` runs the copy in one worker-image pod per tree, finding each tree's volume and root Sandbox by legion-v10.0.0's labels and scheduling the pod as that Sandbox's pods were, and refuses a project on a later release, one with a Sandbox not Suspended, or one with a pod that has not ended (docs/kubernetes.md "Copying file sessions before turning it on")
+  a session the table already holds byte for byte is not copied again, and one it holds with other content is refused and left as it is (docs/kubernetes.md "Copying file sessions before turning it on")
 
 - `legion probe-boot [--config <legion.yaml>]`
 

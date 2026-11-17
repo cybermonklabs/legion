@@ -2147,6 +2147,11 @@ package api
 // of shaping.go's stateNarrowings, and this contract is served above it: a caller below 146 is
 // served every issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`
 // (`withoutEntryTimes`, the band of `entryTimesContract`).
+// `settings.projects.<KEY>.experiments.<name>.roles`, which main's #4241 (4357585e) added with no
+// contract number of its own, is read loosely and recorded at every contract, on the same
+// measurement made at 146's commit (858e9644), at #4241's and at this change's merge with it:
+// `legionSettings` is still that `z.looseObject`, nothing types `projects` or `experiments` under
+// it, and no plugin source names `roles` there.
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller
