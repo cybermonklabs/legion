@@ -692,7 +692,8 @@ Either way the server logs the address it serves on once it serves, as `dispatch
 
 Set `DISPATCH_PPROF_PORT` to a port to serve the Go profiler (`net/http/pprof`) on `127.0.0.1:<port>`, on a mux of its own, apart from the server's routes.
 It binds the loopback address only, so nothing outside the pod reaches it; unset or empty, nothing listens.
-A value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
+`0` serves it on a port the kernel chooses, which the server logs as `dispatch: pprof listening addr=127.0.0.1:<port>`: a test harness asks for that, since a port it picked and let go of is any program's to take before the server binds it.
+Any other value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
 The profiler binds before anything connects, so a slow boot can be profiled too.
 The listener closes at once when the process is told to stop, cutting off a profile in flight, so it never delays the shutdown (and the shutdown's own drain cannot be profiled).
 A `gcp:Dispatch` deployment turns it on with the component's `pprofPort` input (`packages/envoy/infra/README.md`), which sets the variable on the `envoy-dispatch` container;
@@ -3226,7 +3227,7 @@ It holds at most two answered question asks of projects other than the one asked
 An ask is offered only when it is a question, somebody answered it, the answer carries text, and it scores at or above the meaning floor the meaning search already uses.
 An issue create and the `GET` form answer none, so a client that predates the field reads what it read before, and the dashboard's new-issue dialog is unchanged.
 The leg runs beside the asking project's own meaning query, on a connection of its own, and reuses the one embedding the check already made.
-The stage waits for it at most 300 ms after its own query answered, and never past its own allowance;
+The check waits for it at most 300 ms after that query answered, and never past the meaning search's own allowance, holding the asking project's answer while it waits, so the wait never costs the check its meaning result;
 a leg that is slower than that, that fails, or that finds nothing leaves the asking project's result whole, with no cross-project item and no reason recorded.
 An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`;
 an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.

@@ -1049,7 +1049,7 @@ func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
 	for _, topic := range []string{
 		"notifications.agent.ses_a",
 		"notifications.dispatch.issue.KEY-1.ask.answered",
-		ExceptionTopicPrefix + contracts.AgentSubject("ses_a"),
+		ExceptionTopicPrefix + contracts.LegacyAgentSubject("ses_a"),
 		"notifications.envoy.deliver.ses_a",
 		"notifications.envoy.>",
 		"notifications.>",

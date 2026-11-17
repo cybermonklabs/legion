@@ -28,12 +28,13 @@ source, unless it drops it more than an hour late. A `notifications.team.<name>`
 like any other followed topic; every other `notifications.` topic the stream does not capture is
 refused by name, at publish and at subscribe, because no session would ever be delivered it.
 
-This extension claims the role for the session the host has open, and every automatic claim is
-soft: it names the session it continues, which is a fork's or branch's parent, or the session
-this process last held the role under. The listener moves the role off that predecessor only
-when the predecessor has no live registration, when its live registration carries this extension
-instance's own client instance id, or when either side carries no instance id. A predecessor
-another process still runs keeps the role, and the claim is refused naming that holder. A claim
+This extension claims the role for the session the host has open, and every automatic claim but
+the launch role's (below) is soft: it names the session it continues, which is a fork's or
+branch's parent, or the session this process last held the role under. The listener moves the
+role off that predecessor only when the predecessor has no live registration, when its live
+registration carries this extension instance's own client instance id, or when either side
+carries no instance id. A predecessor another process still runs keeps the role, and the claim
+is refused naming that holder. A claim
 of a role already held under this session's own id is decided on the standing claim rather than
 on the registration: the listener grants it to the process that claim names, grants it once
 nobody renewed the claim inside its live window, and otherwise refuses it naming this very
@@ -68,6 +69,26 @@ another process wrote is pressed only while this process holds none. The queues,
 shared role state behind all of this are `src/registration-state.ts`, beside the extension's
 other `src/` modules: a queued task acts through a handle that refuses every step past the
 task's deadline, or once its session is no longer the open session.
+
+A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, which
+agent-infra's sessions workload sets once t-e-32 renames its `RoleEnv` (it sets
+`AGENT_SESSION_ROLE` today). While the session's own records name no other role, every
+pass that registers the session — its start, each session event and each heartbeat — claims that
+role for it outright, last-claim-wins, under the session's own credential, which the listener
+holds to that very session. A holder that is another session is stale or wrong, such as an
+evicted pod's session the registry still lists as live for some minutes, so the role comes back
+to the live session at its next registration. The claim writes its transcript record once: a
+later claim the newest record already names writes none. A move the model makes with
+`envoy_role_set` is a record of its own, which no pass undoes. Without the variable no pass
+claims a role the session's records do not name.
+
+When it loads, the extension takes the role into a slot every extension instance of the process
+reads, and leaves the variable set to the empty string, which names no role. A delete would not
+do: it reaches `process.env` alone, and the C environment the process started with keeps the
+value, which a child Oh My Pi starts in a PTY begins from. The empty string lies over that value
+in every environment built from `Bun.env`, the PTY's and the plain shell's, so an `omp` an agent
+starts inside the pod claims none of the pod's roles. A `Bun.spawn` that names no `env` still
+hands a child the value, since it passes the environment the process started with.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
