@@ -171,20 +171,59 @@ type unreachableError struct {
 	// none of those names.
 	what string
 	// base is the broker's address as AGENT_SECRETS_URL gave it, method and url the call tried;
-	// Error prints base as the Address prints and url through base.Call, so a credential the
-	// variable carries never prints, while an id the call path-escaped still does.
+	// Error prints base as the Address prints and url through callWords, so a credential the
+	// variable carries never prints, while an id the call path-escaped still does, unless route
+	// names the call with the id a person typed left out (withoutTypedID).
 	base        brokeraddr.Address
 	method, url string
 	// cause is the transport's own error through base.Cause: without net/http's *url.Error
 	// wrapper, which repeats the URL, or its class alone where its text may not print.
 	cause error
+	// route is the call's path as a message prints it where that path holds an id the person
+	// typed, with the id left out; "" for every other call (withoutTypedID).
+	route string
 }
 
 func (e *unreachableError) Error() string {
-	return fmt.Sprintf("%s: %s %s (%s names %s): %v", e.what, e.method, e.base.Call(e.url), brokerURLVar, e.base, e.cause)
+	return fmt.Sprintf("%s: %s %s (%s names %s): %v", e.what, e.method, callWords(e.base, e.url, e.route), brokerURLVar, e.base, e.cause)
 }
 
 func (e *unreachableError) Unwrap() error { return e.cause }
+
+// callWords is a call's URL as a message prints it: callURL through base.Call, or, where route is
+// set because the call's path held an id the person typed, the broker's address followed by route,
+// which leaves the id out, and redact.NotPrinted beside an address that is not clean. The broker
+// never accepted that id, and an argument that is no id is where a credential pasted in the wrong
+// place lands.
+func callWords(base brokeraddr.Address, callURL, route string) string {
+	if route == "" {
+		return base.Call(callURL)
+	}
+	if !base.Clean() {
+		return redact.NotPrinted
+	}
+	return strings.TrimSuffix(base.String(), "/") + route
+}
+
+// withoutTypedID is err, the failure of a call whose path holds an id the person typed, with that
+// id left out of the URL it prints: route is the call's path with the id spelled as
+// `(the machine id, not printed)`. Only a call that did not complete prints its URL
+// (unreachableError, cutOffError); a broker's refusal prints none, and every other error is err.
+// The result is of err's own type and unwraps as err does, so errors.Is and errors.As still
+// classify it, and retryable still reads it.
+func withoutTypedID(err error, route string) error {
+	switch failed := err.(type) {
+	case *unreachableError:
+		typed := *failed
+		typed.route = route
+		return &typed
+	case *cutOffError:
+		typed := *failed
+		typed.route = route
+		return &typed
+	}
+	return err
+}
 
 // unreachable classifies a failed HTTP exchange, sending its reader to the layer that failed.
 // Any resolver error is name resolution, before the generic timeout branch. A dial that made no
@@ -196,7 +235,7 @@ func (e *unreachableError) Unwrap() error { return e.cause }
 func unreachable(base brokeraddr.Address, method, callURL string, err error) error {
 	cause := base.Cause(err)
 	host := brokerHost(base)
-	failed := func(what string) error { return &unreachableError{what, base, method, callURL, cause} }
+	failed := func(what string) error { return &unreachableError{what, base, method, callURL, cause, ""} }
 	var dns *net.DNSError
 	var timeout net.Error
 	var op *net.OpError
@@ -237,14 +276,20 @@ func peerAnswered(err error) bool {
 }
 
 // cutOffError is a broker answer lost after its headers came: the status line arrived and the
-// body did not, because the stream broke while doStatus read it. Its text is the call, then
-// "read response:", then the transport's own cause.
+// body did not, because the stream broke while doStatus read it. Its text is the method and the
+// call's URL as unreachableError prints it (callWords), then "read response:", then the
+// transport's own cause.
 type cutOffError struct {
-	call  string
-	cause error
+	base        brokeraddr.Address
+	method, url string
+	cause       error
+	// route is the call's path with the id the person typed left out, as unreachableError's is.
+	route string
 }
 
-func (e *cutOffError) Error() string { return e.call + ": read response: " + e.cause.Error() }
+func (e *cutOffError) Error() string {
+	return e.method + " " + callWords(e.base, e.url, e.route) + ": read response: " + e.cause.Error()
+}
 
 func (e *cutOffError) Unwrap() error { return e.cause }
 
@@ -299,7 +344,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		if c.baseURL.Clean() {
 			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
-		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent}
+		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent, ""}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -314,7 +359,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, &cutOffError{method + " " + c.baseURL.Call(named), c.baseURL.Error(err)}
+		return 0, nil, &cutOffError{base: c.baseURL, method: method, url: named, cause: c.baseURL.Error(err)}
 	}
 	if resp.StatusCode/100 == 3 {
 		// A redirect this client refuses to follow (redirects.Refused), handed back as the
@@ -620,7 +665,7 @@ func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitS
 	}
 	raw, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
 	if err != nil {
-		return RequestStatus{}, nil, err
+		return RequestStatus{}, nil, withoutTypedID(err, "/v1/requests/(the request id, not printed)")
 	}
 	var status RequestStatus
 	if err := json.Unmarshal(raw, &status); err != nil {
@@ -634,7 +679,7 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests/"+id+"/cancel", nil)
-	return err
+	return withoutTypedID(err, "/v1/requests/(the request id, not printed)/cancel")
 }
 
 // --- POST /v1/grants/{id}/values, POST /v1/grants/{id}/revoke ---
@@ -763,7 +808,7 @@ func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string)
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/revoke", nil)
-	return err
+	return withoutTypedID(err, "/v1/grants/(the grant id, not printed)/revoke")
 }
 
 // --- GET /v1/enrollments/self, POST /v1/enrollments/{id}/renew ---
@@ -939,7 +984,7 @@ func (c *client) RevokeOperatorMachine(ctx context.Context, signer proofSigner, 
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/operator/machines/"+id+"/revoke", nil)
-	return err
+	return withoutTypedID(err, "/v1/operator/machines/(the machine id, not printed)/revoke")
 }
 
 // OperatorGrantEnrollment mirrors a grant's session, the broker's recordEnrollmentResp.
@@ -994,5 +1039,5 @@ func (c *client) RevokeOperatorGrant(ctx context.Context, signer proofSigner, id
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/operator/grants/"+id+"/revoke", nil)
-	return err
+	return withoutTypedID(err, "/v1/operator/grants/(the grant id, not printed)/revoke")
 }

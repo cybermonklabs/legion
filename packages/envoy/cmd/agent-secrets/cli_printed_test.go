@@ -15,14 +15,20 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"flag"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -882,4 +888,82 @@ func TestAnUnknownFormIsNotPrinted(t *testing.T) {
 			}
 		})
 	}
+}
+
+// useUnreachableBroker leaves the rest of t with a bare environment whose broker is url, a key dir
+// that holds a session to sign with, and a helper that signs every call this machine's login makes.
+func useUnreachableBroker(t *testing.T, url string) {
+	t.Helper()
+	useBareEnvironment(t)
+	t.Setenv("AGENT_SECRETS_URL", url)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+	sock, _ := fakeHelper(t, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+}
+
+// TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute: a form that puts an id the person typed in a
+// call's path, and whose call fails before the broker answers it - nothing answers, or the answer
+// is cut off - names the route with the id left out, as `(the machine id, not printed)`: the
+// broker never accepted the id, and an argument that is no id is where a credential pasted in the
+// wrong place lands. A call whose path holds no typed id still prints its URL whole (the control),
+// and the failure still classifies as it did (errors.Is).
+func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
+	const secret = "hunter2pw-typedid-60b1e4"
+	forms := []struct {
+		args  []string
+		route string
+	}{
+		{[]string{"status", secret}, "GET %s/v1/requests/(the request id, not printed)"},
+		{[]string{"cancel", secret}, "POST %s/v1/requests/(the request id, not printed)/cancel"},
+		{[]string{"revoke", secret}, "POST %s/v1/grants/(the grant id, not printed)/revoke"},
+		{[]string{"machine", "revoke", secret}, "POST %s/v1/operator/machines/(the machine id, not printed)/revoke"},
+		// In a session (the key dir here holds one), grant revoke is the session's own revoke.
+		{[]string{"grant", "revoke", secret}, "POST %s/v1/grants/(the grant id, not printed)/revoke"},
+	}
+	cutOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"partial":`))
+	}))
+	t.Cleanup(cutOff.Close)
+	for _, broker := range []struct{ name, url, says string }{
+		{"nothing answers", "http://127.0.0.1:1", "the connection was refused"},
+		{"the answer is cut off", cutOff.URL, "read response"},
+	} {
+		for _, form := range forms {
+			t.Run(broker.name+", "+strings.Join(form.args[:len(form.args)-1], " "), func(t *testing.T) {
+				useUnreachableBroker(t, broker.url)
+				stdout, stderr, code := runIn(form.args...)
+				if code == 0 {
+					t.Fatalf("exit 0, stdout %q; want a failure", stdout)
+				}
+				requireSays(t, "the output", stdout+stderr, []string{secret}, []string{fmt.Sprintf(form.route, broker.url), broker.says})
+			})
+		}
+	}
+	t.Run("control: a call whose path holds no typed id", func(t *testing.T) {
+		useUnreachableBroker(t, "http://127.0.0.1:1")
+		_, stderr, code := runIn("grant", "list")
+		if code == 0 || !strings.Contains(stderr, "GET http://127.0.0.1:1/v1/operator/grants") || strings.Contains(stderr, "not printed)") {
+			t.Fatalf("exit %d, stderr %q; want a failure naming the call's URL whole", code, stderr)
+		}
+	})
+	t.Run("the failure still classifies", func(t *testing.T) {
+		key, err := proof.NewKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := newClient(brokeraddr.New("http://127.0.0.1:1"))
+		signer := &fileSigner{key: key, enrollmentID: "enr-test"}
+		for route, err := range map[string]error{
+			"POST http://127.0.0.1:1/v1/operator/machines/(the machine id, not printed)/revoke": c.RevokeOperatorMachine(context.Background(), signer, secret),
+			"POST http://127.0.0.1:1/v1/operator/grants/(the grant id, not printed)/revoke":     c.RevokeOperatorGrant(context.Background(), signer, secret),
+		} {
+			var unreachable *unreachableError
+			if !errors.Is(err, syscall.ECONNREFUSED) || !errors.As(err, &unreachable) {
+				t.Fatalf("%s = %v; want an unreachableError that is ECONNREFUSED", route, err)
+			}
+			requireSays(t, "the error", err.Error(), []string{secret}, []string{route})
+		}
+	})
 }
