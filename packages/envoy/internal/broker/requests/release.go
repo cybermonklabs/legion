@@ -141,8 +141,9 @@ func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 // holds back. Once every value is read, each stored one is checked against the policy as it
 // stands then (recheckStoredSources), so a retag that lands during the reads never releases
 // what the secret stores once it is a kind. A read that fails after it minted a value for an
-// earlier name hands that value to nobody, so it gives each such value back (giveBack) before it
-// answers the failure.
+// earlier name, or for this one, hands that value to nobody, so it starts each such value's
+// give-back (giveBack) before it answers the failure; the give-back runs in the background, and a
+// broker that stops first cuts it short and leaves the token to lapse.
 func (m *Machine) readRelease(ctx context.Context, grantID string, checked grantRelease, want releaseRead) (_ []releasedName, err error) {
 	read := make([]releasedName, 0, len(checked.granted))
 	defer func() {
