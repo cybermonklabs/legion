@@ -1,9 +1,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +24,13 @@ import (
 // The wrapper's real-process tests: the wrapper this directory builds, run as the held-port image
 // runs it, against the socket server the live tests use (pulumitest.HoldPort) and the real
 // envoy-listener of this branch.
+
+// TestMain makes this test process the subreaper of what it starts (becomeSubreaper), so what the
+// wrapper leaves behind stays among the test's descendants, which is all requireTheTestsAlone walks.
+func TestMain(m *testing.M) {
+	becomeSubreaper()
+	os.Exit(m.Run())
+}
 
 // The wrapper takes the socket the test holds and becomes the listener, which serves on it: the
 // listener runs in the wrapper's process, and of the socket it holds only its own close-on-exec
@@ -200,26 +205,8 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	t.Helper()
 	addr := held.Addr().String()
 	inode := listeningInode(t, held.Addr().(*net.TCPAddr).Port)
-	processes, err := filepath.Glob("/proc/[0-9]*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, dir := range processes {
-		pid, err := strconv.Atoi(filepath.Base(dir))
-		if err != nil || pid == os.Getpid() {
-			continue
-		}
-		fds, err := sockettest.Descriptors(pid, inode)
-		// A process of another user's, whose descriptors this test may not read, is passed over.
-		if errors.Is(err, fs.ErrPermission) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("read process %d's descriptors: %v", pid, err)
-		}
-		if len(fds) > 0 {
-			t.Errorf("process %d holds the socket on %s on descriptors %v", pid, addr, fds)
-		}
+	for pid, fds := range holdersOf(t, inode) {
+		t.Errorf("process %d holds the socket on %s on descriptors %v", pid, addr, fds)
 	}
 	if err := held.Close(); err != nil {
 		t.Fatalf("close the test's copy of the socket on %s: %v", addr, err)
@@ -230,6 +217,64 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	}
 	if listed := slices.DeleteFunc(rows, func(row sockettest.Row) bool { return row.Inode != inode }); len(listed) != 0 {
 		t.Fatalf("the TCP tables still list the socket on %s once the test closed its copy: %+v", addr, listed)
+	}
+}
+
+// holdersOf returns each of this test's descendants that holds the socket of inode, with the
+// descriptors it holds it on. Only a process the test started, or one that started, can have it:
+// the test handed the socket to the wrapper alone, and a process the wrapper left behind is still
+// the test's, its subreaper's (TestMain). So it reads those processes and no other of the machine.
+func holdersOf(t *testing.T, inode uint64) map[int][]int {
+	t.Helper()
+	descendants, err := descendantsOf(os.Getpid())
+	if err != nil {
+		t.Fatalf("list this test's descendants: %v", err)
+	}
+	holders := map[int][]int{}
+	for _, pid := range descendants {
+		fds, err := sockettest.Descriptors(pid, inode)
+		if err != nil {
+			t.Fatalf("read process %d's descriptors: %v", pid, err)
+		}
+		if len(fds) > 0 {
+			holders[pid] = fds
+		}
+	}
+	return holders
+}
+
+// A process that holds the socket after the process it was started from has exited is still found:
+// it was handed to this test, the subreaper, and not to the machine's init, so walking the test's
+// descendants alone reaches what the wrapper could leave behind.
+func TestAnOrphanThatHoldsTheSocketIsAHolder(t *testing.T) {
+	skipOffLinux(t)
+	held := pulumitest.HoldPort(t)
+	inode := listeningInode(t, held.Addr().(*net.TCPAddr).Port)
+	file, err := held.File()
+	if err != nil {
+		t.Fatalf("copy the held socket: %v", err)
+	}
+	pidFile := filepath.Join(t.TempDir(), "orphan")
+	// The shell starts a sleep holding the socket on descriptor 3, records its pid and exits, so
+	// the sleep's parent is gone before the walk.
+	cmd := exec.Command("sh", "-c", `sleep 300 & echo $! >"$1"`, "orphan", pidFile)
+	cmd.ExtraFiles = []*os.File{file}
+	err = cmd.Run()
+	_ = file.Close()
+	if err != nil {
+		t.Fatalf("start the orphan: %v", err)
+	}
+	text, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := strconv.Atoi(strings.TrimSpace(string(text)))
+	if err != nil {
+		t.Fatalf("the orphan's pid %q: %v", text, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(orphan, syscall.SIGKILL) })
+	if fds := holdersOf(t, inode)[orphan]; len(fds) == 0 {
+		t.Fatalf("the orphan %d, whose parent exited, holds the socket, and the walk of this test's descendants did not find it", orphan)
 	}
 }
 
