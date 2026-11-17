@@ -140,7 +140,8 @@ func newIdleRig(t *testing.T) *idleRig {
 	st := outboxTreeStore(t, pool, issue.Key)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
 	// the role-holder publication (store.PublishRoleHolders), so the seeded idle implementer
-	// leaves one queued row of that kind before any release is decided.
+	// leaves one queued row of that kind before any release is decided, and a test reads what a
+	// pass queued with queuedBy.
 	st.PublishRoleHolders(nil)
 
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true,
@@ -225,27 +226,75 @@ func (r *idleRig) drain(t *testing.T) {
 	}
 }
 
-// rows is every outbox row of the issue, by kind and the supervise op where it has one.
-func (r *idleRig) rows(t *testing.T) []string {
+// idleRigRow is one outbox row of the rig's issue: its id, the version of it the table holds
+// (xmin, which each insert and each update of the row gives it anew), and its kind with the
+// supervise op where it has one.
+type idleRigRow struct {
+	id      int64
+	version string
+	label   string
+}
+
+// outboxRows is every outbox row of the issue, in id order.
+func (r *idleRig) outboxRows(t *testing.T) []idleRigRow {
 	t.Helper()
-	found, err := r.pool.Query(context.Background(), `select kind, coalesce(payload->>'op', '') from outbox
-		where issue = $1 order by id`, r.issue.Key)
+	found, err := r.pool.Query(context.Background(), `select id, xmin::text, kind, coalesce(payload->>'op', '')
+		from outbox where issue = $1 order by id`, r.issue.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer found.Close()
-	var kinds []string
+	var rows []idleRigRow
 	for found.Next() {
-		var kind, op string
-		if err := found.Scan(&kind, &op); err != nil {
+		var row idleRigRow
+		var op string
+		if err := found.Scan(&row.id, &row.version, &row.label, &op); err != nil {
 			t.Fatal(err)
 		}
 		if op != "" {
-			kind += ":" + op
+			row.label += ":" + op
 		}
-		kinds = append(kinds, kind)
+		rows = append(rows, row)
+	}
+	if err := found.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// rows is every outbox row of the issue, by kind and the supervise op where it has one: what is
+// left, as a drain reads it. What a pass queued is queuedBy's.
+func (r *idleRig) rows(t *testing.T) []string {
+	t.Helper()
+	var kinds []string
+	for _, row := range r.outboxRows(t) {
+		kinds = append(kinds, row.label)
 	}
 	return kinds
+}
+
+// queuedBy is what act queued: each outbox row of the issue that act inserted or wrote again, in id
+// order and named as rows names them. A test that asserts what a pass queued reads this and not
+// rows, because the seed queues a row before any pass: the rig's store publishes, so the seeded
+// idle implementer's write queues its issue's role-holder publication (store.putClaim). That row
+// is true of the state the rig builds, and it is no row of the pass. A row the act wrote again is
+// the act's: a second queue of that publication makes the standing row due again rather than add
+// one beside it (store.EnqueueRoleHolders), so it adds no id, and only the row's new version shows
+// the write.
+func (r *idleRig) queuedBy(t *testing.T, act func()) []string {
+	t.Helper()
+	seeded := map[int64]string{}
+	for _, row := range r.outboxRows(t) {
+		seeded[row.id] = row.version
+	}
+	act()
+	var queued []string
+	for _, row := range r.outboxRows(t) {
+		if version, ok := seeded[row.id]; !ok || version != row.version {
+			queued = append(queued, row.label)
+		}
+	}
+	return queued
 }
 
 func (r *idleRig) boundary(t *testing.T) int64 {
@@ -385,9 +434,9 @@ func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
 	ctx := context.Background()
 	architect := rig.releasedArchitect(t)
 
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if got, want := rig.rows(t), []string{string(record.OutboxKindRoleHoldersPublish), "issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(got, want) {
-		t.Fatalf("queued rows = %v, want the publication of the seeded implementer's role, then the save, the implementer's stop and the teardown: the architect is already released", got)
+	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) })
+	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+		t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown: the architect is already released", queued)
 	}
 	rig.rt.beforeAuthorize = func() {
 		if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
@@ -524,9 +573,9 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
-	rig.w.releaseIdlePods(ctx)
-	if got, want := rig.rows(t), []string{string(record.OutboxKindRoleHoldersPublish), "issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(got, want) {
-		t.Fatalf("queued rows = %v, want the publication of the seeded implementer's role, then the save, then the role stop, then the teardown", got)
+	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+		t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", queued)
 	}
 	if !rig.marked(t) {
 		t.Fatal("the release left no mark")
