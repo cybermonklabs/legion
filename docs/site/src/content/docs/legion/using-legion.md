@@ -104,7 +104,7 @@ The issue's events show each status change, and the architect's messages there s
 and why. The implementer links the pull request from the issue as soon as it opens it, so the pull
 request appears under the issue's external links. Outside cybermonklabs/legion its body also carries
 the line `Dispatch: <KEY>` pointing back to the issue; in that public repository, no pull request
-title, body or commit message names a Dispatch key.
+title, body, comment, review or commit message names a Dispatch key or links into Dispatch.
 
 ## Review the pull request
 
