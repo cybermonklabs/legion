@@ -208,11 +208,12 @@ describe("version 3: the list of trees the final test cannot take", () => {
     expect(reserveOf(listedCase("older-build", atCut, undefined))).toBe("held");
   });
 
-  test("before its cut, version 2 holds as registered, less what is on a tree in the list", () => {
+  test("before its cut, version 2 holds as registered, less what opened on a tree in the list", () => {
     expect(reserveOf(listedCase("picked", beforeCut, false, false, PICKED))).toBe("held");
     expect(reserveOf(listedCase("not-picked", beforeCut, false))).toBe("kept");
     expect(reserveOf(listedCase("released", beforeCut, true, false, PICKED))).toBe("kept");
-    expect(reserveOf(listedCase("released-at-build", beforeCut, false, true, PICKED))).toBe("kept");
+    // A move under a listed issue before a build releases nothing: it could move back after.
+    expect(reserveOf(listedCase("moved-under-list", beforeCut, false, true, PICKED))).toBe("held");
   });
 
   test("a build that never looked roots up in the list releases nothing", () => {

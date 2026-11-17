@@ -31,8 +31,9 @@ import type { CommentReply, DispatchEvent } from "./dispatch-read";
  * version 2 held whole (`TreeLog.reserveListOf`). The build takes that list from the log and
  * refuses one whose sha256 is not `RESERVE_LIST_SHA256`, and records for each case whether each
  * root is in it (`askRootListed`, `issueRootListed`). Version 2's hash picks nothing from that cut,
- * and its cases on a tree in the list are released: such a tree had an ask before version 2's cut
- * or an ask whose root version 2 did not pick, so item 6 takes none of them.
+ * and its cases whose root at their ask's opening is in the list are released: such a tree had an
+ * ask before version 2's cut or an ask whose root version 2 did not pick, so item 6 takes none of
+ * them.
  *
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
@@ -106,12 +107,14 @@ export function askTimeOf(row: Pick<CaseSeed, "askCreatedAt" | "answeredAt">): n
  * cut, is kept. From that cut, `unknown` is a case from a corpus built before `build-corpus.ts`
  * recorded its tree's roots, which a caller refuses, and a case is kept when a read spent its
  * tree. Before version 3's cut a case is held when version 2's rule picks its root at the opening
- * or at the build (a root the build could not follow is null and picks nothing), unless either
- * root is in version 3's list, which released it. From version 3's cut a case is held unless both
- * roots are in that list. A root the build did not look up in the list (an older build, or one
- * pinned before the list's event) counts as not in it, so such a build releases nothing and holds
- * every case from version 3's cut. Once `ended` names the record that ended the reserve
- * (`claim.ts`), every case is kept.
+ * or at the build (a root the build could not follow is null and picks nothing), unless its root at
+ * the opening is in version 3's list, which released it. The root at the build releases nothing:
+ * it moves with each parent change, so a tree moved under a listed issue for one build would put
+ * its cases in a development corpus and could then move back. From version 3's cut a case is held
+ * unless both roots are in that list. A root the build did not look up in the list (an older
+ * build, or one pinned before the list's event) counts as not in it, so such a build releases
+ * nothing and holds every case from version 3's cut. Once `ended` names the record that ended the
+ * reserve (`claim.ts`), every case is kept.
  */
 export function reserveOf(
   row: CaseSeed,
@@ -128,7 +131,7 @@ export function reserveOf(
   if (askTime >= LIST_CUT_TIME) {
     return row.askRootListed === true && row.issueRootListed === true ? "kept" : "held";
   }
-  if (row.askRootListed === true || row.issueRootListed === true) return "kept";
+  if (row.askRootListed === true) return "kept";
   return roots.some(pickedRoot) ? "held" : "kept";
 }
 
