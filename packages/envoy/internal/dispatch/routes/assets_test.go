@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // fakeAssetStore answers from assets, or with err, and records every key it is asked for.

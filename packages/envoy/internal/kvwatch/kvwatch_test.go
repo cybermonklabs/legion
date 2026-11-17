@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // seen is a recording Cache that keeps a copy the way the stores do (kvwatch.Copy): each delivered

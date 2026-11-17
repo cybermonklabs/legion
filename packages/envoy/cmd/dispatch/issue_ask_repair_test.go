@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // The boot's repair withdraws the open ask a close by an older release left on a closed issue,

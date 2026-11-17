@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // knownRig is a listener's routes over one NATS server with the known-session store on a clock the
@@ -284,7 +285,7 @@ func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
 // grant does not let it read. This is a listener whose hub's grant does not carry the bucket, and
 // the store it holds there is open for business in every way but the bucket.
 func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.ConnectOwningStream([]string{grant.URL}, bus.WithReplicas(1))

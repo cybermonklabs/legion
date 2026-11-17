@@ -9,7 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // restartPath is one path that keeps or restarts a session's consumer, run on the consumer of

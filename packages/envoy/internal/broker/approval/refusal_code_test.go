@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID drives every refusal the approval page

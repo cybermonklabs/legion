@@ -19,11 +19,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testport"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // signInStatus is GET /signin/status's answer, as a production check reads it.

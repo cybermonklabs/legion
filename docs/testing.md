@@ -4,14 +4,15 @@ Rules for this repository's tests that the code under test does not show.
 
 ## The fixtures a test takes rather than copies
 
-Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
+Each of these is one body, and a test that needs what it does calls it rather than writing the body again.
+A helper both Go modules use is one public package of `packages/envoy` that both import ("Test helpers the two Go modules share", below).
 Each bullet says what the helper does not do, so a site that must keep its own body is not folded into it.
 
-- A test that captures a log takes its buffer from the module's own: `packages/daemon/internal/testlog`'s `Buffer`, and `packages/envoy/internal/logtest`'s, which lives beside that package's default-logger swap and carries `Lines`, the logged lines holding a substring.
+- A test that captures a log takes its buffer from `packages/envoy/logtest`'s `Buffer`, in both Go modules. It lives beside that package's default-logger swap, and carries `Lines`, the logged lines holding a substring, and `Reset`, which drops what was written so far for a test that reads one phase of its subject at a time.
   `packages/envoy/internal/cmdtest`'s `LockedBuffer` and `storetest`'s `LockedLog` are both aliases of it, so either name reaches the same body.
   It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
 
-- A bounded wait is the module's `internal/testwait`.
+- A bounded wait is `packages/envoy/testwait`, in both Go modules.
   `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
@@ -21,7 +22,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   The runner chooses no binary — `argv[0]` does, so a fixture that runs a pinned git or jj passes that path itself.
   `packages/envoy` has no Go git or jj fixture runner, so this one is the daemon module's alone.
 
-- A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
+- A fake GitHub server is `packages/envoy/githubtest`, in both Go modules: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
   `Spec` carries the opt-in bearer gate and the opt-in request recorder.
   The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
@@ -34,6 +35,18 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP.
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+
+## Test helpers the two Go modules share
+
+`packages/daemon` is a Go module of its own, and Go's internal-package rule keeps it from importing `github.com/sjawhar/envoy/internal/...`.
+So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `sourcecheck`, `testnatsimages` and `brokertest`.
+A helper of `packages/envoy/internal` that the daemon needs moves out of `internal/` first, and its callers in both modules import it from there; it is never copied.
+The daemon's own `internal/fixtureenv`, the guard that keeps its git and jj off a Legion pod's workspace, shares only a name with Envoy's, so a daemon file that needs both imports Envoy's under another name.
+
+`packages/daemon/internal/textcheck`'s `TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper` fails a copy, naming the daemon file and the Envoy file.
+It reads each Go file as its code lines, without comments, blank lines and the package clause, and counts two files a copy when four fifths or more of the code lines of the smaller one are lines of the other and the smaller one has 8 code lines or more.
+It compares every Go file of `packages/daemon` with every Go file of an Envoy test-helper package: a directory under `packages/envoy`, `infra` included, whose package name begins or ends with `test`, or whose non-test files import `testing`. Neither side's `testdata` is read.
+A copy of a file of any other Envoy package is out of its reach.
 
 
 ## Bun tests
@@ -168,17 +181,17 @@ and a socket under it, or under a directory made from it (an `XDG_RUNTIME_DIR`, 
 directory a test sets to `t.TempDir()`), a temporary directory of about 20 bytes is enough to pass
 the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
-- Take a test's socket directory from the module's `internal/testtmp`, the one helper every test
-  that binds a socket calls (`packages/daemon/internal/testtmp`, and the same file in
-  `packages/envoy`). `testtmp.Dir(t, longest)` is a fresh directory of the test's own, removed
-  when the test ends, where `longest` is the longest path the test puts inside it, written
-  relative to the directory (`"g9/.s.PGSQL.5432"`); `testtmp.Socket(t, name)` is the path of a
-  socket named `name` in such a directory. `Dir` makes the directory under `TMPDIR` and measures
-  what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds no
-  directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does. Each
-  module's `internal/testtmp` keeps a test that fails a new `os.TempDir()`, or a new
-  `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that
-  module's tests. It reads no other shape: a directory named by a variable or a constant, or an
+- Take a test's socket directory from `packages/envoy/testtmp`, the one helper every test that
+  binds a socket calls, in both Go modules. `testtmp.Dir(t, longest)` is a fresh directory of the
+  test's own, removed when the test ends, where `longest` is the longest path the test puts inside
+  it, written relative to the directory (`"g9/.s.PGSQL.5432"`); `testtmp.Socket(t, name)` is the
+  path of a socket named `name` in such a directory. `Dir` makes the directory under `TMPDIR` and
+  measures what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds
+  no directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does.
+  `testtmp.CheckPlacements` fails a new `os.TempDir()`, or a new `os.MkdirTemp` whose first
+  argument is a string literal naming a directory, anywhere in a module's tests: each module's
+  `internal/textcheck` runs it over that module, `packages/envoy`'s with `infra` included, in the
+  text-check job. It reads no other shape: a directory named by a variable or a constant, or an
   `os.CreateTemp`, is left to review.
 - Two kinds of site keep a directory of their own on purpose.
   `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long
@@ -192,11 +205,11 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
   `TestMain`.
 - A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test
-  that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`,
-  never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the process held when the
-  test ends, and Go refuses it in a parallel test or under a parallel parent, while a parallel
-  test runs only beside other parallel tests, so no test can read a value another test changed.
-  A bare call has neither fence.
+  that must unset one calls `packages/envoy/fixtureenv`'s `Unset`, in either Go module, which goes
+  through `t.Setenv`, never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the
+  process held when the test ends, and Go refuses it in a parallel test or under a parallel
+  parent, while a parallel test runs only beside other parallel tests, so no test can read a value
+  another test changed. A bare call has neither fence.
 - Before you call a test that binds a socket done, run it with a temporary directory of about 64
   bytes. A pass under `/tmp` does not show that the test works under a longer one. Set `GOTMPDIR`
   as well, since `t.TempDir()` reads it first:
@@ -300,7 +313,8 @@ migrated template, which made one run of the `api` and `docs` packages write 16 
 copy writes a few hundred bytes. `storetest`'s own test fails when a clone writes more than a
 hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
-database's creation in a string without `strategy file_copy` on the same line.
+database's creation in a string without `strategy file_copy` on the same line. Both run the one
+body, `packages/envoy/sourcecheck`'s `CheckFileCopies`, each over its own module.
 
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links

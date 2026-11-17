@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }

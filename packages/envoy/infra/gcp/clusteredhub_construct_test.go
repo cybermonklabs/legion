@@ -13,7 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // clusteredResolvedSeedInputs are gcp:ClusteredNatsHub's string Inputs, which may come from
@@ -192,7 +192,7 @@ func TestConstructRefusesAFractionalTailnetReplicaCount(t *testing.T) {
 // the value, and the value stays secret. Each arrives as another resource's output under the
 // mocks, as a consumer's does.
 func TestClusteredNatsHubRefusesABlankOrSeededSecretOnceItResolves(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, input := range clusteredResolvedSeedInputs {
 		for _, row := range []struct{ name, value, want string }{
 			{"empty", "", input + " is blank, which no credential is"},
@@ -229,7 +229,7 @@ func TestClusteredNatsHubRefusesABlankOrSeededSecretOnceItResolves(t *testing.T)
 // one holding an nkey seed, each another resource's secret output sent through Construct, fail
 // the update naming kubeconfig and never the value, and no registration carries the value.
 func TestConstructRefusesABlankOrSeededKubeconfig(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct{ name, value, want string }{
 		{"blank", " \n\t", "kubeconfig is blank, which no credential is"},
 		{"a seed inside it", kubeconfig + "# " + strings.ToLower(seed) + "\n", "kubeconfig holds an nkey seed (not echoed)"},

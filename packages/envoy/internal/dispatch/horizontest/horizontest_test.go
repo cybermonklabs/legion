@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // processDefault is the default logger as the process starts, before any test swapped it: slog's

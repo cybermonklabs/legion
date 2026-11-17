@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/seed"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The handoff a consumer relies on: the server's authorization takes the public key Generate
@@ -50,7 +51,7 @@ func TestAGeneratedSeedReachesNATS(t *testing.T) {
 				require.ErrorIs(t, err, natsgo.ErrAuthorization)
 			})
 			t.Run("a client with another user's seed is refused", func(t *testing.T) {
-				other, _ := testnats.User(t)
+				other, _ := testnkeys.User(t)
 				_, err := testnats.ConnectSeed(t, uri, other)
 				require.ErrorIs(t, err, natsgo.ErrAuthorization)
 			})

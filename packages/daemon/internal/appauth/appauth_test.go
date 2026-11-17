@@ -24,10 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 func testAppKey(t *testing.T) (*rsa.PrivateKey, string) {

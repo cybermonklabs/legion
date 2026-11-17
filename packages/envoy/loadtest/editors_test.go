@@ -14,7 +14,7 @@ import (
 	ygows "github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // seededDocument is a document holding a seeded spec, written as Dispatch writes a document it

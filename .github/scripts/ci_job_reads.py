@@ -476,7 +476,15 @@ RULES = {
         ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
         (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
-        (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:17 has packages/envoy/sourcecheck walk every .go file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/temp_dir_placement_test.go": reads(
+        (f"{DAEMON}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:22 has packages/envoy/testtmp's CheckPlacements walk every "
+                                   "test file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/envoy_helper_copies_test.go": reads(
+        (f"{DAEMON}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:73 reads every .go file under packages/daemon (../.., :58) "
+                              "but testdata's"),
+        (f"{ENVOY}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:59 reads the imports of every non-test .go file under "
+                             "packages/envoy (../../../envoy, :58) but testdata's, infra included, and every .go file of a test-helper package whole")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
@@ -780,7 +788,10 @@ RULES = {
         for root in ("cmd/dispatch", "internal/dispatch")
         for path in files_but_tests(f"{ENVOY}/{root}", tree=True, skip=("testdata",))],
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
-        (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+        (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:17 has packages/envoy/sourcecheck walk every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/temp_dir_placement_test.go": reads(
+        (f"{ENVOY}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:24 has packages/envoy/testtmp's CheckPlacements walk every "
+                                  "test file under packages/envoy (../..), infra included")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     # --- envoy-infra

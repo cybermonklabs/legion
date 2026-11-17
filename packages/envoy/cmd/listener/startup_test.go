@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // During a rolling deploy the replacement listener cannot bind its durable consumer until the task
@@ -679,7 +680,7 @@ const v1OpenWithoutTheBucket = 5000
 // bucket out, keeps running, and opens the bucket itself once the grant arrives - the order
 // production applies them in - with no restart.
 func TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), grant.URL, "test-machine", "NATS_NKEY_SEED="+seed)

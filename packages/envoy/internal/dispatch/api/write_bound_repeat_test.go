@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // TestTheWriteBoundBenchmarksOpenTheirIssues opens the four issues

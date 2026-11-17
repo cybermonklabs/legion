@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const grantedTopic = "notifications.lxspec.granted"
@@ -164,7 +165,7 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 // A publish to an ad-hoc topic the server denies the publisher is a refusal naming the subject, not
 // a five-second wait: a listener whose grant leaves the topic out reports that at once.
 func TestAnAdHocPublishNATSDeniesReturnsTheDenial(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	uri := testnats.StartNkeyGranted(t, public, grantedTopic, "_INBOX.>").URL
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := Connect([]string{uri})

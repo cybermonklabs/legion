@@ -12,7 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // clusteredTailnetName is clusteredArgs' tailnet hosts' name, <name>-tailnet: their ConfigMap's,
@@ -223,7 +223,7 @@ func TestClusteredNatsHubWithoutTailnetRegistersNoTailnetHost(t *testing.T) {
 // key, is another workload's, so the hosts' absence is read by name over every registration,
 // counted.
 func TestConstructRefusesABlankOrSeededTailnetAuthKey(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct{ name, value, want string }{
 		{"blank", " \n\t", "tailnetAuthKey is blank, which no credential is"},
 		{"a seed", strings.ToLower(seed), "tailnetAuthKey holds an nkey seed (not echoed)"},

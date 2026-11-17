@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 	"golang.org/x/sys/unix"
 )

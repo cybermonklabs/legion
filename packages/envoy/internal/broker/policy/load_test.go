@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // TestLoadServesEveryWellTaggedSecretOnTheKey pins what the loader reads from Secrets Manager: a

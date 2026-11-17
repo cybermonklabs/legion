@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // Configure's Cancel runs in the race window between ctx firing and the process finishing on its

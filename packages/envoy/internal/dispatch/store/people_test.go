@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // A sign-in and a confirmation are each dated by the database's now(), and Membership answers the

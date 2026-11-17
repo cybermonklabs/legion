@@ -585,7 +585,7 @@ func TestPrepareAirlockFallsBackToTheTemporaryDirectory(t *testing.T) {
 //
 // The row names the system temporary directory by setting this process's own TMPDIR, which is
 // where os.TempDir reads it, rather than calling os.TempDir itself: a test file of this module
-// that calls it is one internal/testtmp's placement check refuses, since that is how a test
+// that calls it is one testtmp's placement check refuses, since that is how a test
 // comes to place a directory wherever it runs.
 func TestTheSharedTemporaryRootNamesThisUser(t *testing.T) {
 	joined := func(environ []string) string {

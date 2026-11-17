@@ -11,8 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // A copy that waits holds the owner's later events back and holds no copy of its own event: the

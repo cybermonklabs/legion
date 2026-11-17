@@ -15,7 +15,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // A request that cannot get room holds nothing the budget has not charged: its next buffer is

@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
-	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // fakeGitHub is an httptest stand-in for the GitHub App and REST APIs a reconcile pass calls,

@@ -484,11 +484,18 @@ who may run code on a machine of the fleet, which can fetch that machine's token
 
 On the machine itself there is no enrollment command to run and no key to place: `agent-secrets`,
 `agent-secrets-helper` and the Legion controller trade the identity the machine already holds
-whenever they find no key directory, no sign-in and no helper. What they read is
-`AGENT_SECRETS_URL`, the broker's public URL, and `AGENT_SECRETS_MACHINE_IDENTITY`, which says
+whenever they find no key directory, no sign-in and no helper session. `agent-secrets` needs no
+setting for it beyond `AGENT_SECRETS_URL`, the broker's public URL: it reads the broker's Google
+exchange audience from `GET /v1/settings` and finds the identity that can carry it, an
+`external_account` credential file or the metadata server
+([where a command takes its identity](/legion/broker/concepts/#where-a-command-takes-its-identity)).
+The helper and the Legion controller detect nothing; they read `AGENT_SECRETS_MACHINE_IDENTITY`,
+which also makes `agent-secrets` trade that one identity and no other, and which says
 which identity this machine proves: `metadata` with `AGENT_SECRETS_MACHINE_AUDIENCE`, a Compute
 Engine machine's own token from its metadata server, which is the fleet above; `kubernetes` with
-`AGENT_SECRETS_MACHINE_TOKEN_FILE`, a pod's projected service-account token; or `pool`, a token
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`, a pod's projected service-account token, which `agent-secrets`
+refuses (exit 2) since the broker mints no launcher credential for it, so no session could be
+registered under it; or `pool`, a token
 minted through a workload identity pool, which takes all four of
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`, the projected service-account token the pool federates as the
 external credential; `AGENT_SECRETS_POOL_AUDIENCE`, the pool provider that credential is
@@ -509,8 +516,20 @@ pods write under registered names, is a fleet no agent session can trade at: the
 the trade, naming the session the entry's tokens carry. For a person to sign in there, give the
 machine the device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
 `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, the client whose
-id is `BROKER_SIGNIN_DEVICE_AUDIENCE`. With `AGENT_SECRETS_MACHINE_IDENTITY` unset nothing trades
-and every machine works as it did, through a machine login a person approves.
+id is `BROKER_SIGNIN_DEVICE_AUDIENCE`; `agent-secrets login` finds the machine's identity the way
+a command does, so it needs no `AGENT_SECRETS_MACHINE_IDENTITY` either. With
+`AGENT_SECRETS_MACHINE_IDENTITY` unset the helper and the controller trade nothing and work as they
+did, through a machine login a person approves, and `agent-secrets` trades only once the broker
+names a Google exchange audience, which a broker with no `BROKER_GOOGLE_OIDC_AUDIENCE` never does.
+The broker names its Google audience only where
+`BROKER_VM_SERVICES` lists a machine: a Google audience set for API callers alone
+(`BROKER_API_ACCOUNTS`' `google:` entries) is not published, since its exchange takes no machine.
+`agent-secrets` reads those settings only from an `https` broker, or an `http` one on loopback,
+and keeps the first Google audience it finds an identity for, refusing a later one that differs.
+That file is per user: change `BROKER_GOOGLE_OIDC_AUDIENCE` on a deployed broker only together
+with removing `agent-secrets/machine/google-exchange-audience` from each user's state directory
+(`$XDG_STATE_HOME`, else `~/.local/state`) on each machine whose `agent-secrets` has used its own
+identity.
 
 ## Approval sign-in
 
@@ -777,7 +796,11 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.
 - The settings and reread routes take no credential. `GET /v1/settings` answers the store, the
   namespace prefix and, per store, the agent-secrets key's ARN with its AWS account and region, or
-  the Cloud KMS key's name with the project number.
+  the Cloud KMS key's name with the project number; and, on either store,
+  `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`, absent unless `BROKER_VM_SERVICES`
+  lists a machine), from which `agent-secrets` finds the machine's own identity with no setting.
+  It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
+  machine could register a session under it.
   `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store at once,
   and answers whether it now serves it, as which kind (`kind`: `github-app` or `google-login`,
   absent for a stored secret) and, if not, why. Neither releases a value. What a reread

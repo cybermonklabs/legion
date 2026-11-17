@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // uploadVersionHistory is how many versions the benchmark spec has before its timed uploads.

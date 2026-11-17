@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
@@ -385,8 +386,8 @@ func startSplitServer(t *testing.T, image string) (string, natsServer, string) {
 // listener, ListenerHostPermissions for a listener's own user elsewhere.
 func startSplitGrantServer(t *testing.T, image string, grant core.Permissions) (string, natsServer, string) {
 	t.Helper()
-	seed, public := testnats.User(t)
-	_, sessionKey := testnats.User(t)
+	seed, public := testnkeys.User(t)
+	_, sessionKey := testnkeys.User(t)
 	session := core.SessionPermissions()
 	config, err := core.Authorization{Users: []core.User{
 		{Name: liveMachineID, NKey: public, Publish: &grant.Publish, Subscribe: &grant.Subscribe, HasSeed: true},
@@ -408,7 +409,7 @@ func buildEnvoyCommand(t *testing.T, name string) string {
 // and returns the user's seed, the server and its client URL.
 func startGrantServer(t *testing.T, image string, grant core.Permissions) (string, natsServer, string) {
 	t.Helper()
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	config, err := core.Authorization{Users: []core.User{{
 		Name:      liveMachineID,
 		NKey:      public,

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/fixtureenv"
 )
 
 // startupOAuthToken is what the process held of GOOGLE_OAUTH_ACCESS_TOKEN when the test binary

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 func registryFile(t *testing.T) string {

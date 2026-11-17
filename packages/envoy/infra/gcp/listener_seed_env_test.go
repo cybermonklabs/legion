@@ -14,7 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The script these tests run is the listener's seed script the golden cloud-config writes, byte for
@@ -64,7 +64,7 @@ func seedEnv(t *testing.T, f *fakeGCP) seedEnvRun {
 // directory holds nothing else: neither the raw fetch nor a temporary file is left behind.
 func TestListenerSeedEnvWritesTheSeedAsOneVariableReadableByRootAlone(t *testing.T) {
 	t.Parallel()
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	f := newFakeGCP(t, func(w http.ResponseWriter, _ int32) { fmt.Fprint(w, accessResponse(seed)) })
 	run := seedEnv(t, f)
 
@@ -86,7 +86,7 @@ func TestListenerSeedEnvWritesTheSeedAsOneVariableReadableByRootAlone(t *testing
 // refused, and no env file is written.
 func TestListenerSeedEnvRefusesASeedOfMoreThanOneLine(t *testing.T) {
 	t.Parallel()
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	f := newFakeGCP(t, func(w http.ResponseWriter, _ int32) {
 		fmt.Fprint(w, accessResponse(seed+"\nENVOY_API_TOKEN=x"))
 	})

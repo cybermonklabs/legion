@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const (
@@ -25,7 +26,7 @@ const (
 // through.
 func grantedClient(t *testing.T) (*bus.Client, *natsgo.Conn) {
 	t.Helper()
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	uri := testnats.StartNkeyGranted(t, public, grantedRole, "_INBOX.>").URL
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.Connect([]string{uri})
@@ -87,7 +88,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 // its stream and to be answered on it.
 func jetStreamGrantedClient(t *testing.T, allow ...string) *bus.Client {
 	t.Helper()
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	uri := testnats.StartNkeyGranted(t, public, append([]string{"$JS.API.>", "_INBOX.>"}, allow...)...).URL
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.ConnectOwningStream([]string{uri})
@@ -194,7 +195,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 		queue   = "refusal-test"
 		topic   = "notifications.team.refusal-test"
 	)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	granted := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
 	server, uri := testnats.StartConfig(t, granted, []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -273,7 +274,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 		subject = "notifications.>"
 		queue   = "revocation-test"
 	)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	granted := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
 	server, uri := testnats.StartConfig(t, granted, []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)

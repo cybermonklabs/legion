@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // The broker-call ops (login, enroll-session-key, unenroll-session-key) against server_test.go's

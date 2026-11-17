@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/envoy/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 

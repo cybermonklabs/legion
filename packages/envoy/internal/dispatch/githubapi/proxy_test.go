@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
-	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // fakeGitHub answers the App's installation lookup and token mint, and records every other read.

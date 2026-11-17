@@ -13,7 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const dispatchConstructURN = "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch"
@@ -274,7 +274,7 @@ func TestConstructRefusesDispatchDisruptionInputsFromAnotherResource(t *testing.
 // value, so no child is registered with it, plainly or as a secret. Each arrives as another
 // resource's output, as a consumer's does.
 func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct {
 		name, input string
 		value       property.Value
@@ -408,7 +408,7 @@ func TestConstructRefusesAnAzureMisconfigurationBeforeRegistering(t *testing.T) 
 // only once they resolve: a value holding an nkey seed is refused then, naming the input and never
 // the value, so no child is registered with it.
 func TestConstructRefusesASeedInAnAzureInput(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	lower := strings.ToLower(seed)
 	for _, row := range []struct {
 		name, form, input, value string
@@ -530,7 +530,7 @@ func TestConstructAcceptsUnknownAnswererInputsUnderPreview(t *testing.T) {
 // read only once they resolve: a value holding an nkey seed is refused then, naming the input and
 // never the value, so no child is registered with it.
 func TestConstructRefusesASeedInAnAnswererInput(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	lower := strings.ToLower(seed)
 	for _, row := range []struct {
 		name, form, input, value string

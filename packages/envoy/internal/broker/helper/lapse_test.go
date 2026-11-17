@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/goroutinetest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // lapseRig is a logged-in rig whose one session (this test process) enrolls and then has its

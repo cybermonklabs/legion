@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // ghReadLeafCalls is one call of each leaf ghReadLeaves lists, keyed by that leaf, each naming

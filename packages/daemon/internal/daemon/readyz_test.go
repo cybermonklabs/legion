@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // GET /readyz is 503 while the daemon has not reached serving and 200 from the moment it has, and

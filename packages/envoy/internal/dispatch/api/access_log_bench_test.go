@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // BenchmarkARouteWithAndWithoutItsAccessLogLine measures what the one line per request costs on a

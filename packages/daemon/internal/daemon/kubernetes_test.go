@@ -23,6 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -32,9 +35,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // kubernetesConfig is testConfig under runtime: kubernetes, its client a kubeconfig whose current
@@ -570,6 +570,52 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.sandbox reaches sandbox.Options member for member: the type, the canary list
+// and the microvm block with its ComputeClass, its storage class (the one the loader settled,
+// runtime.kubernetes.storage_class where the file names none) and its metadata endpoint, while
+// leaving the block out runs every pod in gVisor.
+func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
+	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
+	k := config.Kubernetes{
+		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+	}
+	k.Sandbox = config.SandboxConfig{
+		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
+		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &config.MetadataConfig{
+			WorkloadPool:     "example-project.svc.id.goog",
+			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
+		}},
+	}
+	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	want := sandbox.SandboxConfig{
+		Type: sandbox.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
+		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &sandbox.MetadataEndpoint{
+			WorkloadPool:     "example-project.svc.id.goog",
+			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
+		}},
+	}
+	if !reflect.DeepEqual(opts.Sandbox, want) {
+		t.Errorf("Options.Sandbox = %+v, want %+v", opts.Sandbox, want)
+	}
+	if opts.Sandbox.Of("TEST-7") != sandbox.SandboxGVisor || opts.Sandbox.Of("TEST-8") != sandbox.SandboxMicroVM {
+		t.Errorf("Options.Sandbox runs TEST-7 in %s and TEST-8 in %s, want the canary in gVisor and every other issue in a microVM",
+			opts.Sandbox.Of("TEST-7"), opts.Sandbox.Of("TEST-8"))
+	}
+
+	k.Sandbox = config.SandboxConfig{}
+	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions without a sandbox block: %v", err)
+	}
+	if opts.Sandbox.AnyMicroVM() || opts.Sandbox.MicroVM != nil {
+		t.Errorf("Options.Sandbox = %+v without runtime.kubernetes.sandbox, want every pod in gVisor", opts.Sandbox)
+	}
+}
+
 // runtime.kubernetes.repository_cache reaches the runtime's Options as its volume, its intervals and
 // its container's requirements, a settled reservation's lower memory request under its limit.
 func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
@@ -1053,7 +1099,7 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 }
 
 // lockedBuffer is a log a test reads while a goroutine writes it.
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 // A hello carrying an agent-secrets identity maps to the machine's StreamHello with it; a hello
 // with none maps to one with no identity.

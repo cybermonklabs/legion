@@ -10,7 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const (
@@ -303,7 +303,7 @@ func TestClusteredNatsHubRollsThePodsOnlyForASessionUserOrStoreChange(t *testing
 	before := chartValues(t, runClusteredHub(t, clusteredArgs()))
 	require.Equal(t, "9Gi", podAnnotations(before)["envoy-infra.sjawhar.dev/max-file-store"])
 
-	_, added := testnats.User(t)
+	_, added := testnkeys.User(t)
 	args := clusteredArgs()
 	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
 	users := chartValues(t, runClusteredHub(t, args))
@@ -311,7 +311,7 @@ func TestClusteredNatsHubRollsThePodsOnlyForASessionUserOrStoreChange(t *testing
 	require.Contains(t, users["configMap"].(map[string]any)["merge"].(map[string]any)["data"].(map[string]any)["auth.conf"], added)
 	require.Equal(t, withoutKeys(chartValues(t, runClusteredHub(t, clusteredArgs())), authConfPath), withoutKeys(users, authConfPath))
 
-	_, session := testnats.User(t)
+	_, session := testnkeys.User(t)
 	args = clusteredArgs()
 	args.SessionUser.NKey = session
 	changed := chartValues(t, runClusteredHub(t, args))

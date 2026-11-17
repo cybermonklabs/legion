@@ -47,7 +47,7 @@ func roleTempDir(t *testing.T) string {
 // the longest-named test here lands past the limit and `net.Listen` answers `bind: invalid
 // argument` before the test does anything. Measured on 2026-10-20 in this issue's own pod,
 // against a 31-byte TMPDIR: `go test ./internal/shim/` failed 16 times that way, where a short
-// directory passes. This package and cmd/legion both answer that break with internal/testtmp,
+// directory passes. This package and cmd/legion both answer that break with packages/envoy/testtmp,
 // which makes a directory of the test's own with room for the socket's path under it, placed by
 // TMPDIR and falling back to /tmp for that length alone (socketPath, shim_test.go;
 // testtmp.Socket, worker_shim_test.go); this subtest is what keeps that from being reverted. The

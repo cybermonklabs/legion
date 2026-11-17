@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/envoy/testtmp"
 )
 
 // The bug socket-writer.ts exists for (socket-writer.ts:19-25): an ~350 KiB rpc_chunk line

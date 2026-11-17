@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const (
@@ -412,7 +412,7 @@ func TestClusteredNatsHubRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 // seed there is refused first, before anything registers, as NewNatsHub refuses one in its own
 // name.
 func TestClusteredNatsHubRefusesASeedInTheComponentName(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct{ name, hub string }{
 		{"a whole seed", seed},
 		{"a seed inside a longer name", "hub-" + seed},

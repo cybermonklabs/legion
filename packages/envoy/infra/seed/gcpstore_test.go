@@ -34,14 +34,14 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/sjawhar/envoy/infra/core"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 func TestGCPCheck(t *testing.T) {
 	// The date is printed as the AWS store prints DeletedDate, whose format TestAWSCheck pins;
 	// time.Local is left alone, since the gRPC client's goroutines read it.
 	expires := time.Unix(1759190400, 500_000_000)
-	seedValue, _ := testnats.User(t)
+	seedValue, _ := testnkeys.User(t)
 	metadataOnly := []string{"GetSecret", "GetSecretVersion"}
 	rows := []struct {
 		name  string
@@ -123,7 +123,7 @@ func TestGCPPutRefusesWhenItCannotReadVersionOne(t *testing.T) {
 // secret empty, just before B writes. B's Put finds version 1 by number and refuses: exit 2, no
 // version id line, nothing written, and A's seed stays the one served.
 func TestGCPOverlappingGenerateRunsLeaveTheFirstSeedServed(t *testing.T) {
-	seedA, keyA := testnats.User(t)
+	seedA, keyA := testnkeys.User(t)
 	f := newFakeGCP(t)
 	f.landing = &gcpVersion{value: seedA, state: enabled}
 	f.landsAfter = "AccessSecretVersion 1" // B's last check before its write
@@ -144,7 +144,7 @@ func TestGCPOverlappingGenerateRunsLeaveTheFirstSeedServed(t *testing.T) {
 }
 
 func TestGCPGenerateRefusesBeforeWriting(t *testing.T) {
-	seedValue, _ := testnats.User(t)
+	seedValue, _ := testnkeys.User(t)
 	rows := []struct {
 		name  string
 		fake  func(*fakeGCP) *fakeGCP
@@ -233,7 +233,7 @@ func TestGCPGenerateRefusesBeforeWriting(t *testing.T) {
 }
 
 func TestGCPGenerateAfterItsWrite(t *testing.T) {
-	theirs, _ := testnats.User(t)
+	theirs, _ := testnkeys.User(t)
 	rows := []struct {
 		name string
 		fake func(*fakeGCP) *fakeGCP
@@ -312,7 +312,7 @@ func TestGCPGenerateCallsAFailedWriteUnknownNotRefused(t *testing.T) {
 // means for A's key, and the gcloud and envoy-infra commands that recover; nothing is read back.
 // verify then shows the consequence it states: the served seed derives B's key, not A's.
 func TestGCPOverlappingGenerateRunsWhoseReadsBothPrecedeBothAdds(t *testing.T) {
-	seedA, keyA := testnats.User(t)
+	seedA, keyA := testnkeys.User(t)
 	f := newFakeGCP(t)
 	f.earlyWriter = &gcpVersion{value: seedA, state: enabled} // A's add lands between B's read and B's add
 	serveGCP(t, f)
@@ -398,8 +398,8 @@ func TestGCPAnErrorQuotingTheRequestNeverPrintsIt(t *testing.T) {
 }
 
 func TestGCPVerify(t *testing.T) {
-	seedValue, public := testnats.User(t)
-	_, another := testnats.User(t)
+	seedValue, public := testnkeys.User(t)
+	_, another := testnkeys.User(t)
 	t.Run("yes", func(t *testing.T) {
 		f := newFakeGCP(t).with(seedValue, enabled)
 		serveGCP(t, f)
@@ -465,7 +465,7 @@ func TestGCPVerify(t *testing.T) {
 // --expect-account and --region are Secrets Manager's: a Secret Manager secret's name names its
 // project, and the store refuses both before it opens a client.
 func TestGCPRefusesTheAWSFlagsBeforeAnyCall(t *testing.T) {
-	_, public := testnats.User(t)
+	_, public := testnkeys.User(t)
 	for _, flag := range [][]string{{"--expect-account", "000000000000"}, {"--region", "us-central1"}} {
 		for _, mode := range [][]string{{"check"}, {"generate"}, {"verify", "--public-key", public}} {
 			t.Run(flag[0]+"/"+mode[0], func(t *testing.T) {
@@ -484,7 +484,7 @@ func TestGCPRefusesTheAWSFlagsBeforeAnyCall(t *testing.T) {
 // --name is a global secret's name, projects/<project>/secrets/<secret>; anything else is refused
 // before any call, without echoing what was given, since a seed may have been pasted there.
 func TestGCPRefusesANameThatIsNoGlobalSecret(t *testing.T) {
-	_, public := testnats.User(t)
+	_, public := testnkeys.User(t)
 	names := []string{
 		gcpSecretID,
 		gcpSecret + "/versions/1",
@@ -510,7 +510,7 @@ func TestGCPRefusesANameThatIsNoGlobalSecret(t *testing.T) {
 // A seed pasted as --name is refused by the command's flag rule, before the store's name rule and
 // before the store opens, so no refusal of the open quotes it, whatever else is wrong.
 func TestGCPRefusesAMalformedNameBeforeOpeningTheStore(t *testing.T) {
-	pasted, _ := testnats.User(t)
+	pasted, _ := testnkeys.User(t)
 	for _, row := range []struct {
 		name  string
 		flags []string
@@ -595,7 +595,7 @@ func TestGCPRefusesASeedInItsConfiguration(t *testing.T) {
 			func(s string) string { return "https://" + split(s, ".") + ".example.com" }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			seedValue, _ := testnats.User(t)
+			seedValue, _ := testnkeys.User(t)
 			f := newFakeGCP(t)
 			serveGCP(t, f)
 			t.Setenv(row.variable, row.value(seedValue))
@@ -781,8 +781,8 @@ func TestGCPClientLogsNothing(t *testing.T) {
 // The seeds the store holds, a seed passed where the public key belongs, and a request a failing call
 // quotes, reach no output, in any mode and whatever the secret's state.
 func TestGCPNoSeedReachesAnOutput(t *testing.T) {
-	stored, public := testnats.User(t)
-	pasted, otherPublic := testnats.User(t)
+	stored, public := testnkeys.User(t)
+	pasted, otherPublic := testnkeys.User(t)
 	states := map[string]func(*fakeGCP) *fakeGCP{
 		"enabled":      func(f *fakeGCP) *fakeGCP { return f.with(stored, enabled) },
 		"disabled":     func(f *fakeGCP) *fakeGCP { return f.with(stored, disabled) },

@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/seed"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const secretName = "example/envoy/nats-nkey-seed-example-host-a"
@@ -287,7 +287,7 @@ func TestGenerateWritesOneSeedAndReadsBackTheVersionItWrote(t *testing.T) {
 
 // Every refusal exits 2, names the secret, writes nothing and prints nothing on stdout.
 func TestEveryRefusalExitsTwoAndWritesNothing(t *testing.T) {
-	_, otherPublic := testnats.User(t)
+	_, otherPublic := testnkeys.User(t)
 	denied := errors.New("describe-secret " + secretName + " failed: AccessDeniedException")
 	rows := []struct {
 		name  string
@@ -375,7 +375,7 @@ func TestTheOpenerGetsTheRegionAndTheExpectedAccount(t *testing.T) {
 }
 
 func TestVerify(t *testing.T) {
-	_, otherPublic := testnats.User(t)
+	_, otherPublic := testnkeys.User(t)
 	t.Run("the stored seed derives the key", func(t *testing.T) {
 		store := newStore(t).holding(readmeSeed)
 		code, out, errs, _ := run(t, store, mode("verify", "--public-key", readmePublicKey)...)
@@ -509,7 +509,7 @@ func TestVerifyReportsAStoredValueThatIsNoUserSeed(t *testing.T) {
 // printed before the write, and the version id Put answered, or "unknown" when Put answered none:
 // a version may exist either way, and verify needs the key.
 func TestGenerateReportsEveryFailureAfterItsWrite(t *testing.T) {
-	otherSeed, _ := testnats.User(t)
+	otherSeed, _ := testnkeys.User(t)
 	rows := []struct {
 		name    string
 		store   func(*fakeStore) *fakeStore
@@ -759,7 +759,7 @@ func TestGenerateReportsAVersionIDItCannotPrintAsAFailureAfterItsWrite(t *testin
 // result, and running again is safe. A verify mismatch is no exception, since its line is the
 // result.
 func TestCheckAndVerifyExitTwoWhenTheirLineCannotBePrinted(t *testing.T) {
-	_, otherPublic := testnats.User(t)
+	_, otherPublic := testnkeys.User(t)
 	rows := []struct {
 		name string
 		args []string
@@ -782,7 +782,7 @@ func TestCheckAndVerifyExitTwoWhenTheirLineCannotBePrinted(t *testing.T) {
 // The canary seed, and every value a store holds or is handed, appears in no byte the command
 // writes and in no error or line the functions return, whatever the store's state.
 func TestNoSeedReachesAnOutputOrAnError(t *testing.T) {
-	_, otherPublic := testnats.User(t)
+	_, otherPublic := testnkeys.User(t)
 	states := map[string]func(*fakeStore) *fakeStore{
 		"seeded":             func(f *fakeStore) *fakeStore { return f.holding(readmeSeed) },
 		"two versions":       func(f *fakeStore) *fakeStore { return f.holding(readmeSeed, readmeSeed) },

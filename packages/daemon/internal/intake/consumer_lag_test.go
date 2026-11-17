@@ -13,10 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A consumer the daemon is not running counts every message published to it as waiting, the

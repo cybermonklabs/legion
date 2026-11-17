@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // testInstance is a placeholder connection name: this repository names no real instance.

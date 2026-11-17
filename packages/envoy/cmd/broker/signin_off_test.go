@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest/podclient"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // The secrets the brokers below serve: two of one person's, the human-tier one any session needs

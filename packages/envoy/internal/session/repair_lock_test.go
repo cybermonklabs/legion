@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The background retry holds repairMu through each of its attempts (retryRepair), and an attempt's
@@ -49,7 +50,7 @@ func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
 		{
 			name: "a store whose bucket never opened",
 			open: func(t *testing.T) (*KnownSessions, *nats.Conn) {
-				seed, public := testnats.User(t)
+				seed, public := testnkeys.User(t)
 				grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
 				conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 				if err != nil {

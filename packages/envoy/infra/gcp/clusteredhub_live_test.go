@@ -39,7 +39,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // The tests in this file run what gcp:ClusteredNatsHub deploys on this machine, so they carry the
@@ -170,9 +171,9 @@ func renderClusteredHub(t *testing.T) *clusteredHubRender {
 func newLiveHubKeys(t *testing.T) liveHubKeys {
 	t.Helper()
 	var keys liveHubKeys
-	keys.operatorSeed, keys.operatorKey = testnats.User(t)
-	keys.hostSeed, keys.hostKey = testnats.User(t)
-	_, keys.sessionKey = testnats.User(t)
+	keys.operatorSeed, keys.operatorKey = testnkeys.User(t)
+	keys.hostSeed, keys.hostKey = testnkeys.User(t)
+	_, keys.sessionKey = testnkeys.User(t)
 	return keys
 }
 
@@ -1486,7 +1487,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		}
 		return before
 	}
-	addedSeed, addedKey := testnats.User(t)
+	addedSeed, addedKey := testnkeys.User(t)
 	withAdded := liveHubArgs(r.keys)
 	withAdded.Users = append(withAdded.Users, gcp.NATSUserArgs{Name: "live-added", NKey: addedKey, Permissions: &gcp.PermissionsArgs{
 		Publish: nats.RulesArgs{Allow: []string{"live.added.>"}}, Subscribe: nats.RulesArgs{Allow: []string{"_INBOX.>"}},
@@ -1549,7 +1550,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		serverID, cid, pids)
 
 	// (e) A session-user change: every server's reload refuses it.
-	_, newSessionKey := testnats.User(t)
+	_, newSessionKey := testnkeys.User(t)
 	withNewSession := liveHubArgs(r.keys)
 	withNewSession.SessionUser.NKey = newSessionKey
 	refusal := "config reload not supported for NoAuthUser"

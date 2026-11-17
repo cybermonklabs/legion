@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The tests in this file run the rendered callout block on the hub's image (testnats.HubImage, the
@@ -45,8 +46,8 @@ type calloutRig struct {
 
 func newCalloutRig(t *testing.T, session bool) *calloutRig {
 	t.Helper()
-	staticSeed, staticKey := testnats.User(t)
-	serviceSeed, serviceKey := testnats.User(t)
+	staticSeed, staticKey := testnkeys.User(t)
+	serviceSeed, serviceKey := testnkeys.User(t)
 	issuer, err := nkeys.CreateAccount()
 	require.NoError(t, err)
 	issuerKey, err := issuer.PublicKey()
@@ -75,7 +76,7 @@ func newCalloutRig(t *testing.T, session bool) *calloutRig {
 		Callout: &core.AuthCallout{Issuer: issuerKey, XKey: curveKey, ServiceUser: "example-auth"},
 	}
 	if session {
-		_, sessionKey := testnats.User(t)
+		_, sessionKey := testnkeys.User(t)
 		a.Users = append(a.Users, core.User{
 			Name:      "example-sessions",
 			NKey:      sessionKey,

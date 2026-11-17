@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // testAzureKey is the API key azureEmbedEnvironment sets, which no log line or refusal may carry.

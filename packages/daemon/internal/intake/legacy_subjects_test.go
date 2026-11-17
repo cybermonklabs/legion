@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // The two forms of an issue event's name (dispatch://INFRA-3862): the old form names the issue's

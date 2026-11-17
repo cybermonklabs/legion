@@ -25,7 +25,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // leakSettle bounds the wait for the ending test's connections to be gone, and leakPoll is how

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 

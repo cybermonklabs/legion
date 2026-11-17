@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // renewTestBound is how long a renewal test waits for any one step before it fails, so a

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/fixtureenv"
 )
 
 // listeningDescriptor opens a listening loopback socket and returns its descriptor number and

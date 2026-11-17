@@ -26,8 +26,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // jwkThumbprint is the RFC 7638 thumbprint of the ECDSA JWK a JWS header embeds.
@@ -285,7 +285,7 @@ var podEnrollment = PodEnrollment{
 }
 
 // lockedLog is a log a test reads while the login loop writes it.
-type lockedLog = testlog.Buffer
+type lockedLog = logtest.Buffer
 
 // TestLoginPostsTheTokenAndAKeyItThenSignsWith pins the token login: Login reads the token file and
 // posts its token beside a request object naming legion-daemon, signed by a fresh key, to

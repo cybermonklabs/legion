@@ -17,10 +17,11 @@ import (
 	"testing"
 	"time"
 
+	envoyfixtureenv "github.com/sjawhar/envoy/fixtureenv" // the bare name is this module's fixtureenv
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -196,7 +197,7 @@ var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSIT
 // setenv is the volume's environment for an in-process run of `provision`.
 func (v *issueVolume) setenv(t *testing.T) {
 	t.Helper()
-	fixtureenv.Unset(t, runtimeOptionalEnv...)
+	envoyfixtureenv.Unset(t, runtimeOptionalEnv...)
 	for name, value := range v.env {
 		t.Setenv(name, value)
 	}
@@ -209,7 +210,7 @@ func (v *issueVolume) fetch(t *testing.T) {
 	v.setenv(t)
 	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
 	code, _, stderr := runWorkspaceInitHere(v.fetchArgs())
-	fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE")
+	envoyfixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE")
 	if code != 0 {
 		t.Fatalf("workspace-init fetch: exit %d, stderr %q", code, stderr)
 	}
@@ -797,7 +798,7 @@ type initProcess struct {
 }
 
 // lockedBuffer is a process's stderr, readable while the process still writes it.
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 // start runs workspace-init for issue as a separate process whose jj invocations carry tag, in
 // its own process group so a test can kill it with whatever it spawned.

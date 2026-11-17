@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The tests in this file start nats-server containers through testnats, so they run only under the
@@ -26,9 +27,9 @@ type liveUsers struct {
 
 func newLiveUsers(t *testing.T, fallback bool) liveUsers {
 	t.Helper()
-	listenerSeed, listener := testnats.User(t)
-	daemonSeed, daemon := testnats.User(t)
-	_, fallbackKey := testnats.User(t)
+	listenerSeed, listener := testnkeys.User(t)
+	daemonSeed, daemon := testnkeys.User(t)
+	_, fallbackKey := testnkeys.User(t)
 	a := core.Authorization{Users: []core.User{
 		{
 			Name:      "example-listener",
@@ -153,8 +154,8 @@ func TestRenderedAuthorizationOnRealServers(t *testing.T) {
 // allowed subscription does. The queue-scoped form, which nats-server before 2.15 enforces more
 // loosely than it reads, never reaches a server: Render refuses it.
 func TestSubscribeDenyOnRealServers(t *testing.T) {
-	subscriberSeed, subscriber := testnats.User(t)
-	publisherSeed, publisher := testnats.User(t)
+	subscriberSeed, subscriber := testnkeys.User(t)
+	publisherSeed, publisher := testnkeys.User(t)
 	authorization := func(deny ...string) core.Authorization {
 		return core.Authorization{Users: []core.User{
 			{

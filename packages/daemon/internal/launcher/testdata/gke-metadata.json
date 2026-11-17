@@ -1,0 +1,714 @@
+{
+  "source": "GKE metadata server (Workload Identity), read from a Legion issue pod with curl-equivalent GETs on 2026-11-15; access token, project id, project number, cluster and node names replaced by placeholders before writing; the query forms (alt=json, alt=text, alt=xml) added from the same pod on 2026-11-16 the same way",
+  "answers": [
+    {
+      "name": "root",
+      "path": "/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "computeMetadata/\n"
+    },
+    {
+      "name": "root-no-flavor",
+      "path": "/",
+      "requestHeaders": {},
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "computeMetadata/\n"
+    },
+    {
+      "name": "computeMetadata",
+      "path": "/computeMetadata/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "v1/\n"
+    },
+    {
+      "name": "v1",
+      "path": "/computeMetadata/v1/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "instance/\nproject/\nuniverse/\n"
+    },
+    {
+      "name": "v1-no-flavor",
+      "path": "/computeMetadata/v1/",
+      "requestHeaders": {},
+      "status": 403,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Missing required header \"Metadata-Flavor\": \"Google\"\n"
+    },
+    {
+      "name": "project-dir",
+      "path": "/computeMetadata/v1/project/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "numeric-project-id\nproject-id\n"
+    },
+    {
+      "name": "project-id",
+      "path": "/computeMetadata/v1/project/project-id",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "example-project"
+    },
+    {
+      "name": "instance-redirect",
+      "path": "/computeMetadata/v1/instance",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 301,
+      "headers": {
+        "Content-Type": "text/html; charset=utf-8",
+        "Location": "/computeMetadata/v1/instance/"
+      },
+      "body": "<a href=\"/computeMetadata/v1/instance/\">Moved Permanently</a>.\n\n"
+    },
+    {
+      "name": "instance-redirect-no-flavor",
+      "path": "/computeMetadata/v1/instance",
+      "requestHeaders": {},
+      "status": 403,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Missing required header \"Metadata-Flavor\": \"Google\"\n"
+    },
+    {
+      "name": "computeMetadata-no-flavor",
+      "path": "/computeMetadata/",
+      "requestHeaders": {},
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "v1/\n"
+    },
+    {
+      "name": "project-id-no-flavor",
+      "path": "/computeMetadata/v1/project/project-id",
+      "requestHeaders": {},
+      "status": 403,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Missing required header \"Metadata-Flavor\": \"Google\"\n"
+    },
+    {
+      "name": "universe-dir",
+      "path": "/computeMetadata/v1/universe/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "universe-domain\nuniverse_domain\n"
+    },
+    {
+      "name": "service-accounts-redirect",
+      "path": "/computeMetadata/v1/instance/service-accounts",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 301,
+      "headers": {
+        "Content-Type": "text/html; charset=utf-8",
+        "Location": "/computeMetadata/v1/instance/service-accounts/"
+      },
+      "body": "<a href=\"/computeMetadata/v1/instance/service-accounts/\">Moved Permanently</a>.\n\n"
+    },
+    {
+      "name": "default-redirect",
+      "path": "/computeMetadata/v1/instance/service-accounts/default",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 301,
+      "headers": {
+        "Content-Type": "text/html; charset=utf-8",
+        "Location": "/computeMetadata/v1/instance/service-accounts/default/"
+      },
+      "body": "<a href=\"/computeMetadata/v1/instance/service-accounts/default/\">Moved Permanently</a>.\n\n"
+    },
+    {
+      "name": "default-token-two-scopes",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/token?scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/userinfo.email",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"access_token\":\"<token>\",\"expires_in\":1831,\"token_type\":\"Bearer\"}"
+    },
+    {
+      "name": "instance-dir",
+      "path": "/computeMetadata/v1/instance/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "attributes/\ngke/\nhostname\nid\nname\nservice-accounts/\nzone\n"
+    },
+    {
+      "name": "service-accounts",
+      "path": "/computeMetadata/v1/instance/service-accounts/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "default/\nexample-project.svc.id.goog/\n"
+    },
+    {
+      "name": "default-dir",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "aliases\nemail\nidentity\nscopes\ntoken\n"
+    },
+    {
+      "name": "default-recursive",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/?recursive=true",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"aliases\":[\"default\"],\"email\":\"example-project.svc.id.goog\",\"scopes\":[\"https://www.googleapis.com/auth/cloud-platform\",\"https://www.googleapis.com/auth/userinfo.email\"]}"
+    },
+    {
+      "name": "default-email",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/email",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "example-project.svc.id.goog"
+    },
+    {
+      "name": "default-aliases",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/aliases",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "default\n"
+    },
+    {
+      "name": "default-scopes",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/scopes",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "https://www.googleapis.com/auth/cloud-platform\nhttps://www.googleapis.com/auth/userinfo.email\n"
+    },
+    {
+      "name": "default-token",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/token",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"access_token\":\"<token>\",\"expires_in\":1836,\"token_type\":\"Bearer\"}"
+    },
+    {
+      "name": "default-token-scopes",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/token?scopes=https://www.googleapis.com/auth/cloud-platform",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"access_token\":\"<token>\",\"expires_in\":1834,\"token_type\":\"Bearer\"}"
+    },
+    {
+      "name": "default-token-no-flavor",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/token",
+      "requestHeaders": {},
+      "status": 403,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Missing required header \"Metadata-Flavor\": \"Google\"\n"
+    },
+    {
+      "name": "default-token-forwarded",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/token",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google",
+        "X-Forwarded-For": "10.0.0.1"
+      },
+      "status": 403,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Request cannot contain header: X-Forwarded-For\n"
+    },
+    {
+      "name": "default-identity",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://example.com",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 404,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Not Found\n"
+    },
+    {
+      "name": "email-dir",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "aliases\nemail\nidentity\nscopes\ntoken\n"
+    },
+    {
+      "name": "email-recursive",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/?recursive=true",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"aliases\":[\"default\"],\"email\":\"example-project.svc.id.goog\",\"scopes\":[\"https://www.googleapis.com/auth/cloud-platform\",\"https://www.googleapis.com/auth/userinfo.email\"]}"
+    },
+    {
+      "name": "email-email",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/email",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "example-project.svc.id.goog"
+    },
+    {
+      "name": "email-aliases",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/aliases",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "default\n"
+    },
+    {
+      "name": "email-scopes",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/scopes",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "https://www.googleapis.com/auth/cloud-platform\nhttps://www.googleapis.com/auth/userinfo.email\n"
+    },
+    {
+      "name": "email-token",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/token",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"access_token\":\"<token>\",\"expires_in\":1836,\"token_type\":\"Bearer\"}"
+    },
+    {
+      "name": "universe-domain",
+      "path": "/computeMetadata/v1/universe/universe-domain",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "googleapis.com"
+    },
+    {
+      "name": "unknown-path",
+      "path": "/computeMetadata/v1/instance/no-such-path",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 404,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Not Found\n"
+    },
+    {
+      "name": "unknown-top",
+      "path": "/no-such-path",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 404,
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8"
+      },
+      "body": "Not Found\n"
+    },
+    {
+      "name": "project-id-alt-json",
+      "path": "/computeMetadata/v1/project/project-id?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "\"example-project\""
+    },
+    {
+      "name": "project-id-alt-text",
+      "path": "/computeMetadata/v1/project/project-id?alt=text",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "example-project"
+    },
+    {
+      "name": "default-email-alt-json",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/email?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "\"example-project.svc.id.goog\""
+    },
+    {
+      "name": "default-email-alt-json-upper",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/email?alt=JSON",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "\"example-project.svc.id.goog\""
+    },
+    {
+      "name": "default-email-alt-other",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/email?alt=xml",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/text"
+      },
+      "body": "example-project.svc.id.goog"
+    },
+    {
+      "name": "default-aliases-alt-json",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/aliases?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"default\"]"
+    },
+    {
+      "name": "default-scopes-alt-json",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/scopes?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"https://www.googleapis.com/auth/cloud-platform\",\"https://www.googleapis.com/auth/userinfo.email\"]"
+    },
+    {
+      "name": "default-token-alt-text",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/token?alt=text",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"access_token\":\"<token>\",\"expires_in\":944,\"token_type\":\"Bearer\"}"
+    },
+    {
+      "name": "email-email-alt-json",
+      "path": "/computeMetadata/v1/instance/service-accounts/example-project.svc.id.goog/email?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "\"example-project.svc.id.goog\""
+    },
+    {
+      "name": "default-dir-alt-json",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"aliases\",\"email\",\"identity\",\"scopes\",\"token\"]"
+    },
+    {
+      "name": "default-recursive-alt-text",
+      "path": "/computeMetadata/v1/instance/service-accounts/default/?recursive=true&alt=text",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"aliases\":[\"default\"],\"email\":\"example-project.svc.id.goog\",\"scopes\":[\"https://www.googleapis.com/auth/cloud-platform\",\"https://www.googleapis.com/auth/userinfo.email\"]}"
+    },
+    {
+      "name": "project-dir-alt-json",
+      "path": "/computeMetadata/v1/project/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"numeric-project-id\",\"project-id\"]"
+    },
+    {
+      "name": "universe-domain-alt-json",
+      "path": "/computeMetadata/v1/universe/universe-domain?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "\"googleapis.com\""
+    },
+    {
+      "name": "root-alt-json",
+      "path": "/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"computeMetadata/\"]"
+    },
+    {
+      "name": "computeMetadata-alt-json",
+      "path": "/computeMetadata/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"v1/\"]"
+    },
+    {
+      "name": "v1-alt-json",
+      "path": "/computeMetadata/v1/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"instance/\",\"project/\",\"universe/\"]"
+    },
+    {
+      "name": "instance-dir-alt-json",
+      "path": "/computeMetadata/v1/instance/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"attributes/\",\"gke/\",\"hostname\",\"id\",\"name\",\"service-accounts/\",\"zone\"]"
+    },
+    {
+      "name": "service-accounts-alt-json",
+      "path": "/computeMetadata/v1/instance/service-accounts/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"default/\",\"example-project.svc.id.goog/\"]"
+    },
+    {
+      "name": "universe-dir-alt-json",
+      "path": "/computeMetadata/v1/universe/?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "[\"universe-domain\",\"universe_domain\"]"
+    },
+    {
+      "name": "universe-domain-underscore-alt-json",
+      "path": "/computeMetadata/v1/universe/universe_domain?alt=json",
+      "requestHeaders": {
+        "Metadata-Flavor": "Google"
+      },
+      "status": 200,
+      "headers": {
+        "Metadata-Flavor": "Google",
+        "Content-Type": "application/json"
+      },
+      "body": "\"googleapis.com\""
+    }
+  ]
+}

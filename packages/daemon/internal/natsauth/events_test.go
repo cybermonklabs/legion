@@ -13,10 +13,10 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // signalled is the option, after natsauth.LogEvents, that sends on each channel once the handler
@@ -56,7 +56,7 @@ func notify(ch chan<- struct{}) {
 }
 
 // lockedBuffer is a log destination the connection's callback goroutine writes while the test reads.
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 // wait fails t unless ch receives within 10s.
 func wait(t *testing.T, ch <-chan struct{}, what string, out *lockedBuffer) {

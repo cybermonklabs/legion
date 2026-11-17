@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/kvwatch"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // jsonLogger is a JSON logger over a buffer, the shape of the one the listener hands a watcher, and

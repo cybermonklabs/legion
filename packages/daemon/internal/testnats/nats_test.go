@@ -18,8 +18,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/testbinary"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A start that fails after Docker created the container — here a readiness wait that can never

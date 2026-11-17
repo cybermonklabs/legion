@@ -26,7 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret

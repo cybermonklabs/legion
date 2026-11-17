@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 func authConfOf(t *testing.T, args *gcp.ClusteredNatsHubArgs) string {
@@ -50,7 +51,7 @@ func TestClusteredNatsHubReloadRefusesACalloutChange(t *testing.T) {
 			require.NoError(t, server.Reload(t, authConfOf(t, changed)))
 		})
 		t.Run("a user added to auth_users is refused", func(t *testing.T) {
-			_, added := testnats.User(t)
+			_, added := testnkeys.User(t)
 			changed := calloutClusteredHub()
 			changed.Users = append(changed.Users, authServiceUser())
 			changed.Users[len(changed.Users)-1].Name, changed.Users[len(changed.Users)-1].NKey = "example-auth-b", added

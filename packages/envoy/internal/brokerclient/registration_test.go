@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // registeredSession is the session name a pod of these tests trades under, and landedToken the

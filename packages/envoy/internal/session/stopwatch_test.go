@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // openWatchedRegistry opens a session registry whose KV watcher has finished its initial scan.

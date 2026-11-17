@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // StartImageConfig gives the server config as its whole configuration and serverArgs after it, on
@@ -16,7 +17,7 @@ import (
 func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 	for _, image := range Images {
 		t.Run(image.Name, func(t *testing.T) {
-			seed, public := User(t)
+			seed, public := testnkeys.User(t)
 			config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 			_, uri := StartImageConfig(t, image.Ref, config, []string{"-js"}, false)
 			conn, err := ConnectSeed(t, uri, seed)
@@ -42,7 +43,7 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 func TestStartImageConfigRunsNoArgumentItWasNotGiven(t *testing.T) {
 	for _, image := range Images {
 		t.Run(image.Name, func(t *testing.T) {
-			seed, public := User(t)
+			seed, public := testnkeys.User(t)
 			config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 			_, uri := StartImageConfig(t, image.Ref, config, nil, false)
 			conn, err := ConnectSeed(t, uri, seed)
@@ -66,7 +67,7 @@ func TestStartImageConfigRunsNoArgumentItWasNotGiven(t *testing.T) {
 func TestStartImageConfigWaitsForAnAnonymousServerToAdmitAClient(t *testing.T) {
 	for _, image := range Images {
 		t.Run(image.Name, func(t *testing.T) {
-			_, public := User(t)
+			_, public := testnkeys.User(t)
 			config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\nno_auth_user: %q\n", public, public)
 			_, uri := StartImageConfig(t, image.Ref, config, nil, true)
 			conn, err := ConnectSeed(t, uri, "")

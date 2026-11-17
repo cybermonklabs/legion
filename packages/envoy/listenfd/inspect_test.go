@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testtmp"
 )
 
 const variable = "TEST_LISTEN_FD"

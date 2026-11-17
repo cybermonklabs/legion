@@ -11,18 +11,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // syncBuffer is a log sink a daemon writes while the test reads it.
-type syncBuffer = testlog.Buffer
+type syncBuffer = logtest.Buffer
 
 // notRegisteredLine is what the daemon logs, at most once per worker boot timeout, while no live
 // controller holds the project's controller record. It is the whole line under `controller:

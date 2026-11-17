@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // The command's refusals come before anything starts, each naming what is missing, as a usage error.
