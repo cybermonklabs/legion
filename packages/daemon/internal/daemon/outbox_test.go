@@ -700,6 +700,26 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	}
 }
 
+// The workflow's one move that no worker's act on Dispatch explains, a head that conflicts with
+// its base, carries its reason on an ordinary row (workflow's moveReason): the runner posts it on
+// the issue, under the row's marker, before it moves the issue, as it does a done write's.
+func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
+	reason := "Legion moved this issue from testing back to implementing: the head conflicts with main: GitHub runs no checks on it; merge main forward (pull request #42 at head c0de)."
+	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
+	row.ID = 57
+	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}}
+
+	if err := (&outbox{dispatch: client}).execute(context.Background(), row); err != nil {
+		t.Fatalf("execute the move: %v", err)
+	}
+	if want := reason + "\n\n<!-- legion-outbox:57 -->"; len(client.messages) != 1 || client.messages[0] != want {
+		t.Fatalf("messages %q, want the reason once under the row's marker", client.messages)
+	}
+	if fmt.Sprint(client.statuses) != "[in_progress]" {
+		t.Fatalf("statuses %v, want the one move to in_progress", client.statuses)
+	}
+}
+
 func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "Dispatch message."}, time.Now())
 	row.ID = 55
