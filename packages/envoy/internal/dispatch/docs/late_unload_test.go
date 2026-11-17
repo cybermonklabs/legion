@@ -310,6 +310,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 	// opens then. The hold ends once the writer has forked from the room, which it does with the
 	// writer slot taken (afterForkRead), or once it waits for the retirement (awaitingRetirement).
 	forked, waiting := make(chan struct{}, 1), make(chan struct{}, 1)
+	var waited atomic.Bool
 	r.service.afterForkRead = func(room string) {
 		if room == r.room {
 			signal(forked)
@@ -317,6 +318,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 	}
 	r.service.awaitingRetirement = func(room string) {
 		if room == r.room {
+			waited.Store(true)
 			signal(waiting)
 		}
 	}
@@ -350,6 +352,24 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 			t.Error("the writer neither forked from the retiring room nor waited for its retirement")
 		}
 	}
+	// The retirement keeps its reservation until it has left the room, which is after ygo's close
+	// of the room has returned (afterRetireLeft): the writer is still waiting for it then, with no
+	// writer slot, so the close takes no room from under it, and the write forks from what the
+	// close left.
+	var left atomic.Bool
+	r.service.afterRetireLeft = func(room string) {
+		if room != r.room || !reserved.Load() || left.Swap(true) {
+			return
+		}
+		state := r.service.lockExistingState(r.room)
+		writing := state != nil && state.liveWriter != nil
+		if state != nil {
+			r.service.unlockState(r.room, state)
+		}
+		if !waited.Load() || writing {
+			t.Errorf("once ygo's close of the retiring room has returned, the writer that opened as it retired waited for the retirement: %v, and holds the writer slot: %v; want it waiting, with no slot, until the retirement ends its reservation", waited.Load(), writing)
+		}
+	}
 	held, letDeparture := r.holdDeparture()
 	_ = r.socket.Close()
 	r.awaitHeld(held, "the second room's browser")
@@ -361,6 +381,9 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 	r.awaitSocketEnd("the second room's browser")
 	if !reserved.Load() {
 		t.Fatal("no retirement reserved the room the late departure's settlement loaded, so nothing here is tested")
+	}
+	if !left.Load() {
+		t.Fatal("the retirement that reserved the room's record ended its reservation before it left the room (afterRetireLeft never ran): a writer can take up the room before ygo's close of it returns")
 	}
 	select {
 	case err := <-wrote:
@@ -399,16 +422,18 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 	// taken its room and the document's lock (afterSettleLock), or once it waits for the
 	// retirement (awaitingRetirement). settledOn is the room it took.
 	locked, waiting := make(chan struct{}, 1), make(chan struct{}, 1)
-	var started atomic.Bool
+	var started, reachedLock, waited atomic.Bool
 	var settledOn atomic.Pointer[crdt.Doc]
 	r.service.afterSettleLock = func(room string) {
 		if room == r.room && started.Load() {
+			reachedLock.Store(true)
 			settledOn.CompareAndSwap(nil, r.service.srv.GetDoc(room))
 			signal(locked)
 		}
 	}
 	r.service.awaitingRetirement = func(room string) {
 		if room == r.room {
+			waited.Store(true)
 			signal(waiting)
 		}
 	}
@@ -431,6 +456,18 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 			t.Error("the settlement neither took the retiring room nor waited for its retirement")
 		}
 	}
+	// The retirement keeps its reservation until it has left the room, which is after ygo's close
+	// of the room has returned (afterRetireLeft): the settlement is still waiting for it then, and
+	// has taken no room, so the close takes no room from under it.
+	var left atomic.Bool
+	r.service.afterRetireLeft = func(room string) {
+		if room != r.room || !reserved.Load() || left.Swap(true) {
+			return
+		}
+		if !waited.Load() || reachedLock.Load() {
+			t.Errorf("once ygo's close of the retiring room has returned, the settlement that started as it retired waited for the retirement: %v, and has taken its room and the document's lock (afterSettleLock): %v; want it waiting, with no room, until the retirement ends its reservation", waited.Load(), reachedLock.Load())
+		}
+	}
 	held, letDeparture := r.holdDeparture()
 	_ = r.socket.Close()
 	r.awaitHeld(held, "the second room's browser")
@@ -442,6 +479,9 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 	r.awaitSocketEnd("the second room's browser")
 	if !reserved.Load() {
 		t.Fatal("no retirement reserved the room the late departure's settlement loaded, so nothing here is tested")
+	}
+	if !left.Load() {
+		t.Fatal("the retirement that reserved the room's record ended its reservation before it left the room (afterRetireLeft never ran): a settlement can take up the room before ygo's close of it returns")
 	}
 	var settleErr error
 	select {
