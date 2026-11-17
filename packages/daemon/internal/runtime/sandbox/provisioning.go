@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -75,4 +76,35 @@ func provisioning(pod *corev1.Pod) bool {
 	return slices.ContainsFunc(pod.Status.InitContainerStatuses, func(status corev1.ContainerStatus) bool {
 		return status.State.Running != nil || (initEnd(status) != nil && startingAgain(pod, status))
 	})
+}
+
+// neverStarted is how long pod has been scheduled onto a node that has not made it ready to start
+// its containers, and whether that is longer than bound at now. The kubelet reports
+// PodReadyToStartContainers False until it has mounted the pod's volumes and made its sandbox, and
+// no container of the pod runs before then, an init container or the launcher its roles run in: a
+// node that cannot surface the new persistent disk an issue pod owns (FailedMount) holds the pod
+// there for as long as the pod lives, and a launch that keeps such a pod waits for its launcher in
+// vain at every try (relaunch). Such a pod is Pending, PodScheduled True and
+// PodReadyToStartContainers False, counted from that condition's last transition, or from
+// PodScheduled's where the condition carries none. Nothing else is judged: a pod whose kubelet has
+// not reported the condition, whose wait for its image pull is the launcher wait's own
+// (awaitRoleLauncher); a pod that is not scheduled, whose wait is the scheduler's (verdict); a pod
+// that has left Pending, which has started; and a pod whose moment is unknown.
+func neverStarted(pod *corev1.Pod, now time.Time, bound time.Duration) (time.Duration, bool) {
+	if pod == nil || phaseOf(pod) != corev1.PodPending {
+		return 0, false
+	}
+	scheduled, ready := podCondition(pod, corev1.PodScheduled), podCondition(pod, corev1.PodReadyToStartContainers)
+	if scheduled == nil || scheduled.Status != corev1.ConditionTrue || ready == nil || ready.Status != corev1.ConditionFalse {
+		return 0, false
+	}
+	since := ready.LastTransitionTime.Time
+	if since.IsZero() {
+		since = scheduled.LastTransitionTime.Time
+	}
+	if since.IsZero() {
+		return 0, false
+	}
+	unstarted := now.Sub(since)
+	return unstarted, unstarted > bound
 }

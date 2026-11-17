@@ -1,12 +1,14 @@
 package sandbox
 
 import (
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -28,6 +30,25 @@ func pulling(p *corev1.Pod) {
 		{Name: fetchContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}},
 		{Name: initContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}},
 	}}
+}
+
+// unstartedNode is the node a pod that never started is scheduled on (unstartedSince).
+const unstartedNode = "ip-192-0-2-9"
+
+// unstartedSince is a pod's status on a node that has not made it ready to start its containers
+// since at, as a node that cannot surface the pod's new disk leaves it (FailedMount): scheduled
+// there, PodReadyToStartContainers False, and its init containers waiting.
+func unstartedSince(at time.Time) func(*corev1.Pod) {
+	return func(p *corev1.Pod) {
+		pulling(p)
+		p.Spec.NodeName = unstartedNode
+		since := metav1.NewTime(at)
+		p.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: since},
+			{Type: corev1.PodReadyToStartContainers, Status: corev1.ConditionFalse, LastTransitionTime: since},
+			{Type: corev1.PodInitialized, Status: corev1.ConditionFalse, Reason: "ContainersNotInitialized", LastTransitionTime: since},
+		}
+	}
 }
 
 // pendingPod waits, as long as a loaded machine needs, for the pod named name that the launch
@@ -131,6 +152,126 @@ func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 		}
 	case <-time.After(90 * time.Second):
 		t.Fatal("hang guard: the launch never ended for a pod that never provisioned")
+	}
+}
+
+// A pod has never started only while it is scheduled, still Pending, and its node has not made it
+// ready to start its containers for longer than the bound: counted from that condition's last
+// transition, or from PodScheduled's where the condition carries none. A pod whose node reports no
+// such condition is the launcher wait's, as an image pull is; a pod not scheduled is the
+// scheduler's; a pod ready to start whose init container still waits is starting; and a pod that
+// has left Pending has started, whatever its node reports of it since.
+func TestAPodHasNeverStartedOnlyOnceItsNodeLeavesItUnreadyToStartPastTheBound(t *testing.T) {
+	now := time.Date(2026, 11, 17, 15, 8, 0, 0, time.UTC)
+	bound := 10 * time.Minute
+	condition := func(kind corev1.PodConditionType, status corev1.ConditionStatus, age time.Duration) corev1.PodCondition {
+		var at metav1.Time
+		if age > 0 {
+			at = metav1.NewTime(now.Add(-age))
+		}
+		return corev1.PodCondition{Type: kind, Status: status, LastTransitionTime: at}
+	}
+	scheduled := condition(corev1.PodScheduled, corev1.ConditionTrue, time.Hour)
+	unready := func(age time.Duration) corev1.PodCondition {
+		return condition(corev1.PodReadyToStartContainers, corev1.ConditionFalse, age)
+	}
+	for _, tc := range []struct {
+		name       string
+		phase      corev1.PodPhase
+		conditions []corev1.PodCondition
+		// unstarted is how long the pod has not started, as neverStarted counts it: 0 for a pod
+		// it does not judge.
+		unstarted time.Duration
+		never     bool
+	}{
+		{name: "a pod with no conditions"},
+		{name: "a pod not scheduled", conditions: []corev1.PodCondition{condition(corev1.PodScheduled, corev1.ConditionFalse, time.Hour), unready(time.Hour)}},
+		{name: "a pod scheduled whose node reports no readiness to start", conditions: []corev1.PodCondition{scheduled}},
+		{name: "a pod ready to start whose init container waits", conditions: []corev1.PodCondition{scheduled, condition(corev1.PodReadyToStartContainers, corev1.ConditionTrue, time.Hour)}},
+		{name: "a pod not ready to start for less than the bound", conditions: []corev1.PodCondition{scheduled, unready(bound - time.Second)}, unstarted: bound - time.Second},
+		{name: "a pod not ready to start for exactly the bound", conditions: []corev1.PodCondition{scheduled, unready(bound)}, unstarted: bound},
+		{name: "a pod not ready to start for longer than the bound", conditions: []corev1.PodCondition{scheduled, unready(bound + time.Second)}, unstarted: bound + time.Second, never: true},
+		{name: "a pod not ready to start since no moment, scheduled longer than the bound ago", conditions: []corev1.PodCondition{scheduled, unready(0)}, unstarted: time.Hour, never: true},
+		{name: "a pod Running whose node has since stopped making it ready", phase: corev1.PodRunning, conditions: []corev1.PodCondition{scheduled, unready(time.Hour)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{}
+			pulling(pod)
+			if tc.phase != "" {
+				pod.Status.Phase = tc.phase
+			}
+			pod.Status.Conditions = tc.conditions
+			if unstarted, never := neverStarted(pod, now, bound); unstarted != tc.unstarted || never != tc.never {
+				t.Fatalf("neverStarted = %s, %t; want %s, %t", unstarted, never, tc.unstarted, tc.never)
+			}
+		})
+	}
+}
+
+// A node that cannot surface a pod's new disk leaves the pod scheduled and never ready to start its
+// containers, so its launcher never connects and the launch gives up at the boot timeout, with the
+// error the supervisor charges as a launch failure. The next try finds the pod not started past
+// the boot timeout and replaces it — a new pod, so a new disk — and says so, naming the pod, its
+// node and how long it has not started, rather than waiting on the same pod again at every try
+// until the claim's launch budget runs out. The replaced pod ran no role, so nothing is named
+// displaced from it. A pod not ready to start for less than the boot timeout is kept, as a try
+// keeps every pod of its own still coming up.
+func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing.T) {
+	const said = "sandbox runtime: replacing a pod whose node has not made it ready to start its containers for longer than the boot timeout"
+	for _, tc := range []struct {
+		name     string
+		aged     time.Duration
+		replaces bool
+	}{
+		{name: "not started for longer than the boot timeout", aged: testOptions().BootTimeout + time.Second, replaces: true},
+		{name: "not started for less than the boot timeout", aged: testOptions().BootTimeout - time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &lockedLog{}
+			g := newRig(t, nil, withOptions(func(o *Options) {
+				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			}))
+			g.autoStart.Store(false)
+			spec := workerSpec(t)
+			name := SandboxName(spec.Claim)
+			result := make(chan error, 1)
+			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+			g.pendingPod(name, unstartedSince(*g.now.Load()))
+			stuck := g.pod(name).UID
+			select {
+			case err := <-result:
+				want := "wait for its role launcher: timed out after " + g.opts.BootTimeout.String()
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
+				}
+			case <-time.After(90 * time.Second):
+				t.Fatal("hang guard: the launch never ended for a pod that never started")
+			}
+
+			g.advance(tc.aged)
+			g.autoStart.Store(true)
+			spec.Generation = 2
+			loc := g.spawn(spec)
+			if replaced := loc.Sandbox.PodUID != string(stuck); replaced != tc.replaces {
+				t.Fatalf("the next try launched in pod %s, the pod that never started being %s: replaced %t, want %t",
+					loc.Sandbox.PodUID, stuck, replaced, tc.replaces)
+			}
+			logged := logs.String()
+			if !tc.replaces {
+				if strings.Contains(logged, said) {
+					t.Fatalf("the try that kept the pod logged %q", logged)
+				}
+				return
+			}
+			for _, want := range []string{said, "pod=" + name, "uid=" + string(stuck), "node=" + unstartedNode, "notStartedFor=" + tc.aged.String()} {
+				if !strings.Contains(logged, want) {
+					t.Errorf("the try that replaced the pod logged %q, want it to say %q", logged, want)
+				}
+			}
+			if displaced := g.sandbox(name).Annotations[displacedAnnotation]; displaced == string(stuck) {
+				t.Errorf("the Sandbox names the pod that never started, %s, displaced", stuck)
+			}
+		})
 	}
 }
 

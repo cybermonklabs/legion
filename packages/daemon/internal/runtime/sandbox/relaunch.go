@@ -102,11 +102,14 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the old account grants, so an old account can be deleted only once every pod of it has gone.
 //
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
-// passed — ends the process of every role
+// passed, and not a pod its node has left unready to start its containers past the boot timeout
+// (neverStarted) — ends the process of every role
 // still running in it, wherever its turn stood, so the Suspended patch that replaces it names it
 // on the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
-// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing. Before each start
+// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing, and nor is a pod
+// that never started, where no role ran: the launch that waited the boot timeout on such a pod
+// was charged, and the next one replaces it rather than waiting on it again. Before each start
 // the Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
 // provisioned by its kind (podKind.provision), under nothing but the pod's own launch turn: an
 // issue pod has its workspace's provisioning token minted, the controller's pod needs nothing. A
@@ -125,9 +128,10 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // relaunch stops only the child it may itself have started: a Start the launcher received but did
 // not answer in time (stopIssuedChild). A launch installs its plugin pair (launcherCommand) only
 // when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any other
-// reason — a suspended Sandbox, a lost launcher binding, a failed init, a moved address — comes up
-// on the configured image, which the boot gate holds to the daemon's contract, so its copies are
-// already right; carrying the install onto a fresh pod would be installing over a pair already
+// reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never started,
+// a moved address — comes up on the configured image, which the boot gate holds to the daemon's
+// contract, so its copies are already right; carrying the install onto a fresh pod would be
+// installing over a pair already
 // current. l.spec.Plugins is cleared in that case before launcherCommand builds its argv. A pod
 // whose issue Sandbox is still of the release before the pod-owned disk — owning the `issue`
 // volume claim template that pod mounts — is replaced too, and its Sandbox with it: that field is
@@ -160,6 +164,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	pod := r.storedPod(s.Name)
 	_, initExit := failedInit(pod)
 	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+	// A pod its node has not made ready to start its containers for longer than the boot timeout
+	// is not live either (neverStarted): no launcher connects from it, so a launch that kept it
+	// would wait out the boot timeout on it, be charged a launch failure, and leave it for the next
+	// try to find again. It is replaced as a pod whose init failed is, and names nothing displaced,
+	// since no role ever ran in it.
+	if unstarted, stuck := neverStarted(pod, r.now(), r.bootTimeout); live && stuck {
+		r.log.Warn("sandbox runtime: replacing a pod whose node has not made it ready to start its containers for longer than the boot timeout",
+			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", unstarted.Round(time.Second),
+			"bootTimeout", r.bootTimeout, "claim", spec.Claim)
+		live = false
+	}
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	installing := l.spec.Plugins != nil
 	migrate := supersededDisk(s, l)
