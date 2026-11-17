@@ -9,12 +9,13 @@ import (
 // A server of this rig answers a request through each service export of its system account that a
 // client of the global account reaches through an import, at its start and after a reload and a
 // restart, and each of those exports waits for a response longer than any test lives, so its
-// response-threshold timer never fires while a test runs (responseThreshold says why). nats-server
-// gives every account four such imports: the JetStream API ("$JS.API.>"), the user's own
-// information ("$SYS.REQ.USER.*.INFO"), and the account's connections and statistics
-// ("$SYS.REQ.ACCOUNT.*.CONNZ" and "$SYS.REQ.ACCOUNT.*.STATZ", events.go registerSystemImports in
-// v2.15.1). A start, a reload (Grant) and a restart are each read, since a restart is a new
-// nats-server and a reload is what the timer races.
+// response-threshold timer never fires while a test runs (responseThreshold says why). A client of
+// the global account reaches four such exports, through the imports nats-server gives it: the
+// JetStream API ("$JS.API.>", jetstream.go enableAllJetStreamServiceImportsAndMappings, for an
+// account with JetStream) and, from events.go registerSystemImports in v2.15.1, the user's own
+// information ("$SYS.REQ.USER.*.INFO") and the account's connections and statistics
+// ("$SYS.REQ.ACCOUNT.*.CONNZ" and "$SYS.REQ.ACCOUNT.*.STATZ"). A start, a reload (Grant) and a
+// restart are each read, since a restart is a new nats-server and a reload is what the timer races.
 func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 	const never = time.Duration(math.MaxInt64)
 	allow := []string{"$JS.API.>", "$SYS.REQ.USER.INFO", "$SYS.REQ.ACCOUNT.PING.*", "_INBOX.>"}
