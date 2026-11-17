@@ -965,6 +965,7 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/daemon/internal/daemon/approved_version_news_live_test.go'
               - '!packages/daemon/internal/daemon/approved_version_news_prompt_file_test.go'
+              - '!packages/daemon/internal/daemon/approved_version_news_seed_live_test.go'
               - '!packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go'
               - '!packages/daemon/internal/daemon/behind_entry_fence_live_test.go'
               - '!packages/daemon/internal/daemon/burstable_live_test.go'
@@ -1062,6 +1063,7 @@ jobs:
               - '!packages/daemon/internal/credential/**/*_test.go'
               - '!packages/daemon/internal/daemon/approved_version_news_live_test.go'
               - '!packages/daemon/internal/daemon/approved_version_news_prompt_file_test.go'
+              - '!packages/daemon/internal/daemon/approved_version_news_seed_live_test.go'
               - '!packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go'
               - '!packages/daemon/internal/daemon/behind_entry_fence_live_test.go'
               - '!packages/daemon/internal/daemon/burstable_live_test.go'
