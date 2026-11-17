@@ -605,19 +605,17 @@ func logHandBack(log *slog.Logger, msg *natsgo.Msg, after time.Duration, repo st
 }
 
 // oweEnvelopesRead records that the pull request a `pull_request` envelope's raw payload names is
-// owed a read of GitHub (owePullRequestRead), on a context bounded by owedReadWriteTimeout under
-// handling: the message's own deadline may be the failure of this delivery, and a stop still
-// ends the write. It answers the repository and the number it read from the payload, which it
-// decodes as route decoded it (decodePullRequestNamed), so deliver's line names them whether or
-// not the record was written.
+// owed a read of GitHub (owePullRequestRead, which bounds it by owedReadWriteTimeout), on
+// handling and not on the message's context: the message's own deadline may be the failure of
+// this delivery, and a stop still ends the write. It answers the repository and the number it read
+// from the payload, which it decodes as route decoded it (decodePullRequestNamed), so deliver's
+// line names them whether or not the record was written.
 func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo string, number int, err error) {
 	repo, number, err = decodePullRequestNamed(raw)
 	if err != nil {
 		return repo, number, err
 	}
-	ctx, cancel := context.WithTimeout(handling, owedReadWriteTimeout)
-	defer cancel()
-	return repo, number, owePullRequestRead(ctx, in.pool, repo, number, owedFailure)
+	return repo, number, owePullRequestRead(handling, in.pool, repo, number, owedFailure)
 }
 
 // redeliverAfter hands msg back to the server for redelivery in after — at once where after is

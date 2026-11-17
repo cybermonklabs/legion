@@ -1433,6 +1433,7 @@ Postgres does not replay a notification sent while nothing listened, so the hub 
 
 **The GitHub intake** (`delivery.Intake`) binds its durable whether or not `delivery_settings` holds a row, since a `pull_request` envelope's first write is the pull request's head row, which every `before_merge` check result is compared with in every deployment:
 with no settings it writes that row and nothing else, and only a merge of the delivery population and a workflow run wait for the settings (`Intake.Run`, `route`).
+So a pull request whose branch, title and body name no issue, and which reaches its issue only through a link the issue holds, is compared with its head once the link is made and its next event is read, with no settings too (`TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliverySettings`); a deployment that stored no head row compared such a pull request's checks with nothing.
 The envelope says only which pull request changed.
 The intake reads that pull request from GitHub (`GET /repos/{owner}/{repo}/pulls/{number}`) and writes the head, the state, the branch and the body GitHub answers, attributed as the reconcile attributes a row (`recordPullRequestHead`).
 So a `labeled` or `edited` event of a closed pull request leaves it closed, and an envelope GitHub never sent, which any Envoy `/v1` bearer can publish on a `notifications.github.` subject, moves no head.

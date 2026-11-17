@@ -30,3 +30,18 @@ func TestAQueryGitHubFailsIsLoggedWithItsBodyToABound(t *testing.T) {
 		t.Errorf("the line's error is %d bytes and begins %.200q, want at most 1,024 that name status 502, keep the start of GitHub's body and name its 1048576 bytes", len(text), text)
 	}
 }
+
+// GitHub's errors of a GraphQL answer it gave 200 are shown to the same bound as a body
+// (githubapp.ShownBody): errorText is the one text of them that the refused page's error and the
+// unreadable node's error carry (graphql.go), and a pass logs each and stores it as the
+// repository's last error, so a message of 1 MiB in an errors entry was a line of 1 MiB (the deep
+// audit of cybermonklabs/legion#4209 at 3a21edb2c9, note 1). The start, where the type and
+// GitHub's message stand, is kept, and so is the size.
+func TestGitHubsGraphQLErrorsAreShownToABound(t *testing.T) {
+	const start = "Resource not accessible by integration "
+	text := errorText([]graphQLError{{Type: "FORBIDDEN", Message: start + strings.Repeat("y", 1<<20)}})
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.HasPrefix(text, "FORBIDDEN "+start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("errorText of a 1 MiB message is %d bytes and begins %.120q, want at most 1,024 that keep the type, the start of the message and its size", len(text), text)
+	}
+}

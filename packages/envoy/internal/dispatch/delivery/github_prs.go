@@ -585,7 +585,7 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 		return searchPage{}, fmt.Errorf("decode page after %q: %w", after, err)
 	}
 	if len(response.Errors) > 0 {
-		return searchPage{}, fmt.Errorf("page after %q: %s", after, response.Errors[0].Message)
+		return searchPage{}, fmt.Errorf("page after %q: %s", after, githubapp.ShownBody(response.Errors[0].Message))
 	}
 	items := make([]FetchedPullRequest, 0, len(response.Data.Search.Nodes))
 	for _, node := range response.Data.Search.Nodes {

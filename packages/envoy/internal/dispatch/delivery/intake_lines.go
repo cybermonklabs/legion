@@ -21,11 +21,17 @@ import (
 // read of the owed read's revision wrote a WARN line at each such delivery while
 // pull_request_reads_owed was locked, 22 WARN lines over 21 deliveries in 330 s (acceptance of
 // cybermonklabs/legion#4209 at def907052c, D9). A line written after the delivery's lines were
-// written goes straight to the default logger, so no line is lost.
+// written goes straight to the default logger under the same decision, at DEBUG where the
+// delivery's lines were: a fetch of GitHub that several callers share outlives its first caller
+// (githubapp.Client.RepositoryToken runs it on context.WithoutCancel), so its line can come once
+// that delivery has answered (the quality audit of cybermonklabs/legion#4209 at 3a21edb2c9). No
+// line is lost.
 type deliveryLines struct {
 	mu      sync.Mutex
 	held    []heldLine
 	written bool
+	// quiet is write's decision, which a line written after it keeps.
+	quiet bool
 }
 
 // heldLine is one record a delivery wrote, and the attributes and groups its logger added
@@ -41,26 +47,32 @@ func (l *deliveryLines) logger() *slog.Logger {
 }
 
 // write writes every held line to the default logger's handler, in the order they were written,
-// at DEBUG where quiet and at its own level otherwise, and sends every later line straight there.
+// at DEBUG where quiet and at its own level otherwise, and sends every later line straight there
+// under the same decision.
 func (l *deliveryLines) write(quiet bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.written = true
-	target := slog.Default().Handler()
+	l.written, l.quiet = true, quiet
 	for _, line := range l.held {
-		record := line.record
-		if quiet && record.Level > slog.LevelDebug {
-			record.Level = slog.LevelDebug
-		}
-		handler := target
-		if line.with != nil {
-			handler = line.with(target)
-		}
-		if handler.Enabled(context.Background(), record.Level) {
-			_ = handler.Handle(context.Background(), record)
-		}
+		_ = l.emit(context.Background(), line.with, line.record)
 	}
 	l.held = nil
+}
+
+// emit writes record through with to the default logger's handler, at DEBUG where the delivery is
+// quiet, and drops it where that handler takes no line of the level it is written at.
+func (l *deliveryLines) emit(ctx context.Context, with func(slog.Handler) slog.Handler, record slog.Record) error {
+	if l.quiet && record.Level > slog.LevelDebug {
+		record.Level = slog.LevelDebug
+	}
+	handler := slog.Default().Handler()
+	if with != nil {
+		handler = with(handler)
+	}
+	if !handler.Enabled(ctx, record.Level) {
+		return nil
+	}
+	return handler.Handle(ctx, record)
 }
 
 // heldHandler is the slog.Handler of a delivery's logger (deliveryLines). It is enabled where the
@@ -79,11 +91,7 @@ func (h heldHandler) Handle(ctx context.Context, record slog.Record) error {
 	h.lines.mu.Lock()
 	defer h.lines.mu.Unlock()
 	if h.lines.written {
-		handler := slog.Default().Handler()
-		if h.with != nil {
-			handler = h.with(handler)
-		}
-		return handler.Handle(ctx, record)
+		return h.lines.emit(ctx, h.with, record)
 	}
 	h.lines.held = append(h.lines.held, heldLine{with: h.with, record: record.Clone()})
 	return nil

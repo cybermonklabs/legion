@@ -111,9 +111,13 @@ const (
 // and is read at most once a pass, the fewest reads first.
 const RefusedReadsPerPass = 50
 
-// owedReadWriteTimeout bounds the write of an owed read the intake makes at each delivery whose
-// head write failed (Intake.oweEnvelopesRead), which runs on a context of its own: the message's
-// own deadline may be the very failure of that delivery.
+// owedReadWriteTimeout bounds each owe of a read (owePullRequestRead sets it, so every caller has
+// it): the intake's at each delivery whose head write failed (Intake.oweEnvelopesRead), which runs
+// on a context of its own, since the message's own deadline may be the very failure of that
+// delivery, and the intake's owe of a read GitHub refused (Intake.oweRefusedRead), which runs on
+// the message's context and so waited out a lock of pull_request_reads_owed up to that minute,
+// holding one of the intakeMaxAckPending slots its repository shares (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9).
 const owedReadWriteTimeout = 5 * time.Second
 
 // owedRevisionReadTimeout bounds the intake's read of the revision of a pull request's owed read
@@ -169,8 +173,10 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // (RefreshPullRequestHead), so the read stays owed while the target stands and is read once it is
 // corrected. The reason is one of this package's two constants. So no value this writes is one
 // the table refuses, and a failure of a statement is the database's alone, which the intake hands
-// back (recordRefused).
+// back (recordRefused). Its statements run within owedReadWriteTimeout of the call.
 func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
+	ctx, cancel := context.WithTimeout(ctx, owedReadWriteTimeout)
+	defer cancel()
 	if err := checkPullRequestKey(given, number); err != nil {
 		return fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)
 	}

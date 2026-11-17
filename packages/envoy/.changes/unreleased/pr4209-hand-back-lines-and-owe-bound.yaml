@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A log line of a shared GitHub fetch that ends after its delivery answered keeps that delivery's
+    cadence, so a handed-back delivery off the cadence writes it at DEBUG. The owe of a read GitHub
+    refused waits at most 5 s on the database, as the statements beside it do, where it could hold
+    a delivery for its whole minute. GitHub's GraphQL error messages in the CI reconcile's and the
+    pull request search's errors are shown to the 512 characters and the size other GitHub bodies
+    are shown to.
+time: 2026-11-17T12:16:12.000000000Z
+custom:
+    Issue: pr4209

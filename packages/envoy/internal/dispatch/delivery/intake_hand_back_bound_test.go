@@ -393,6 +393,65 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 	}
 }
 
+// The owe of a read GitHub refused waits on a lock no longer than the statements beside it do
+// (owedReadWriteTimeout, which owePullRequestRead itself sets), so a lock of
+// pull_request_reads_owed holds a delivery, and one of the intakeMaxAckPending slots its repository
+// shares, for seconds and not for the message's whole deadline; the delivery then hands the
+// envelope back, and the hand-back line names GitHub's refusal and the record's failure. Another
+// session holds the table in ACCESS EXCLUSIVE mode, the intake runs on its own pool with no
+// lock_timeout, and the message's deadline is ten minutes, so a delivery whose owe waits on that
+// deadline writes no hand-back line in the minute the test waits. At 3a21edb2c9 the owe of the
+// refused read ran on the message's context and waited out a 60 s lock, where the other
+// statements fail after 5 s (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, its last note).
+func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *testing.T) {
+	fastPageRetries(t)
+	logs := captureLogs(t)
+	pool, ctx := deliveryTestPool(t)
+	messageTimeout := intakeMessageTimeout
+	intakeMessageTimeout = 10 * time.Minute
+	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+	const number = 4217
+	fake := newFakeGitHub(t)
+	serveGitHubPulls(t, fake, "acme/widgets")
+	release := lockOwedReads(t, ctx, pool)
+	natsClient := intakeTestClient(t)
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	awaitBoundDurable(t, natsClient)
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	published := time.Now()
+	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
+		prEnvelope("acme/widgets", number, "opened", poisonHead, "feature/x", "", at))
+	var line map[string]any
+	waitFor(t, time.Minute, func() bool {
+		for _, record := range logs() {
+			if message, _ := record["msg"].(string); record["level"] == "WARN" && strings.Contains(message, "handing the envelope back") {
+				line = record
+				return true
+			}
+		}
+		return false
+	}, func() string {
+		return fmt.Sprintf("no hand-back line in the minute after the event of #%d, while pull_request_reads_owed is locked: the owe of GitHub's refusal waits on the message's deadline (%s)", number, intakeMessageTimeout)
+	})
+	took := time.Since(published)
+	release()
+	awaitAcknowledged(t, natsClient)
+	var reason string
+	if err := pool.QueryRow(ctx, `select reason from pull_request_reads_owed where repo = 'acme/widgets' and number = $1`, number).Scan(&reason); err != nil {
+		t.Fatalf("read the read #%d is owed once the lock ended: %v", number, err)
+	}
+	cause, _ := line["error"].(string)
+	record, _ := line["record_error"].(string)
+	t.Logf("hand_back_after=%s owed=%q error=%q record_error=%q", took.Round(time.Millisecond), reason, cause, record)
+	if !strings.Contains(cause, "status 404") || !strings.Contains(cause, "is owed") || !strings.Contains(record, "is owed") {
+		t.Errorf("the hand-back line's error %q and record_error %q, want GitHub's refusal (status 404) and the record's failure", cause, record)
+	}
+	if reason != string(owedRefusal) {
+		t.Errorf("#%d is owed %q once the lock ended, want %q", number, reason, owedRefusal)
+	}
+}
+
 // No failure of the owed record ends an envelope once the envelope's name is checked
 // (pullRequestNamed): R4 of dispatch://INFRA-3992, "While Dispatch's database cannot take that
 // record, the bus keeps the event, for as long as the bus keeps events." The values of the record

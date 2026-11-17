@@ -741,3 +741,24 @@ func searchAllInstallations(ctx context.Context, client *githubapp.Client, autho
 	}
 	return found, nil
 }
+
+// GitHub's error of a search page it answered 200 is shown to the bound a body is shown to
+// (githubapp.ShownBody): the reconcile's search logs the page's error, and a message of 1 MiB in
+// GitHub's errors array was a line of 1 MiB (the deep audit of cybermonklabs/legion#4209 at
+// 3a21edb2c9, note 1). The start of the message, and its size, are kept.
+func TestASearchPageGitHubAnswersWithAnErrorShowsItToABound(t *testing.T) {
+	fake := newFakeGitHub(t)
+	const start = "The search could not be completed "
+	fake.handle("POST /graphql", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"data": nil, "errors": []any{map[string]any{"message": start + strings.Repeat("y", 1<<20-200)}}})
+	})
+	_, err := fetchSearchPage(t.Context(), fake.newTestClient(), "ghs_test", "repo:acme/widgets is:pr is:merged", "")
+	if err == nil {
+		t.Fatal("a search page GitHub answered with an error answered no error")
+	}
+	text := err.Error()
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.Contains(text, start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("the search page's error is %d bytes and begins %.120q, want at most 1,024 that keep the start of GitHub's message and its size", len(text), text)
+	}
+}
