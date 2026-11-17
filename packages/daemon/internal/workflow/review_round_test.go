@@ -228,9 +228,10 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 // The stored task of an entry (enter) is the text the reviewer was sent, word for word, and the
 // delivery of that entry owed again (SendOwedEntry) sends it as stored, though the reviewer's row
 // holds another commit since: each sentence of the round once, and the commit the task named when
-// it was stored, or none where it named none. The queue (queuedRow, namingTheReviewRound) finds
-// the sentence of the entry that stands at the task's end and adds nothing. Each case moves the
-// row's commit by hand, to a commit the stored task does not name.
+// it was stored, or none where it named none. The send says the task is the stored one
+// (record.SuperviseRequest.RoundNamed), and the queue (queuedRow, namingTheReviewRound) adds
+// nothing to it. Each case moves the row's commit by hand, to a commit the stored task does not
+// name.
 func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -274,6 +275,44 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 			})
 			if delivered := deliveredTask(t, pool, tc.name); delivered != stored {
 				t.Fatalf("the owed entry is delivered as %q, want the stored task %q word for word: the row's commit moved to %s since", delivered, stored, tc.moved)
+			}
+		})
+	}
+}
+
+// A task whose own text holds the words of a round's sentence is still given the round's sentences
+// by the daemon, after its text: whether a task already holds them is the fact a start carries
+// (record.SuperviseRequest.RoundNamed), never read from the task's text. The text here is a held
+// reviewing phase's retry whose reason, as an architect writes it, quotes the entry the
+// reviewer's row stands at, so the task ends with the words ` Review entry: <n>.`, or quotes
+// another commit than the row's. Round 2's row holds headOne, the commit round 1's review read.
+func TestATaskWhoseTextQuotesTheRoundsSentencesIsStillGivenThem(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// reason is the retry's reason, given the entry the reviewer's row stands at.
+		reason func(entry int64) string
+	}{
+		{name: "a reason that ends quoting the row's entry", reason: func(entry int64) string {
+			return fmt.Sprintf("Retry %s: %d", ReviewEntryLabel, entry)
+		}},
+		{name: "a reason that quotes another commit", reason: func(int64) string {
+			return "the reviewer read " + ReviewedCommitLabel + ": " + headTwo + ". Read it again"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := reviewRoundTwo(t)
+			entry := reviewerRow(t, pool).Entry
+			held := issueRecord(t, pool, "LEGION-208")
+			held.Phase, held.Hold = phase.Held, &record.Hold{From: phase.Reviewing}
+			seedIssue(t, pool, *held)
+			outboxRan(t, pool)
+			reason := tc.reason(entry)
+			apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: reason})
+			before := "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42. Reason: " + reason + "."
+			want := before + reviewedPartOf(headOne) + reviewEntryPartOf(entry)
+			if delivered := deliveredTask(t, pool, tc.name); delivered != want {
+				t.Fatalf("the retry is delivered as %q, want %q: the task's text, then the daemon's sentence naming %s, then its sentence naming entry %d",
+					delivered, want, headOne, entry)
 			}
 		})
 	}

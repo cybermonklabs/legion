@@ -839,6 +839,14 @@ type SuperviseRequest struct {
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
+	// RoundNamed marks Task as the stored task of the entry this start carries
+	// (record.PhaseRow.EntryTask), sent as it was stored: it holds the sentences of the reviewer's
+	// review round already, the commit it was stored with and its entry, so the queue adds none
+	// (workflow's queuedRow, namingTheReviewRound). The start that raises the entry and the send of
+	// an owed entry set it (workflow's startMarks.stored); every other task of the reviewer is given
+	// the sentences whatever its text holds. It rides on no outbox row: the queue reads it before it
+	// writes the row, so no release that decodes the row ever sees it.
+	RoundNamed bool `json:"-"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
 	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as

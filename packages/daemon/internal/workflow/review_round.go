@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -71,27 +70,20 @@ func (n reviewEntry) part() string {
 // head, and writes the number of the newest entry a task of its session named into the footer of
 // its review, and only a review that names the entry that stands moves the commit it read.
 //
-// Each sentence is in a task once. The only task that holds them before it reaches here is the
-// stored task of an entry (enter), which the send of that entry owed again hands the queue as it
-// was stored (sendOwedEntry), and it ends with the sentence of the entry the row stands at, which
-// no other task ends with: so a task that ends with that sentence is returned as it is. It is the
-// entry's sentence the guard reads and not both, since the entry's number is all a stored task and
-// its row agree on for certain: the commit the row holds can have moved since the entry was
-// raised, and the task is then sent as stored, naming the commit it was stored with, or none, so
-// the record holds exactly what the worker is sent. A row that holds no entry's task stores no
-// task, so no task the queue is handed for it holds the commit's sentence, and the commit is added
-// with no guard.
+// It appends the sentences to task whatever task's text holds: a task's text can hold the words of
+// either sentence, as a retry's reason that quotes them does, and the daemon's own sentences still
+// follow it. Each sentence is in a task once because of a fact the start carries, never a reading
+// of its text: the stored task of an entry (enter), which already holds them, is sent marked so
+// (record.SuperviseRequest.RoundNamed), and the queue hands it none. It is then sent as stored,
+// naming the commit it was stored with, or none, though the row's commit has moved since, so the
+// record holds exactly what the worker is sent.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer || at != phase.Reviewing {
 		return task
 	}
-	commit := reviewedCommit(row.ReviewedHead).part()
+	task += reviewedCommit(row.ReviewedHead).part()
 	if row.EntryTask == "" {
-		return task + commit
-	}
-	entry := reviewEntry(row.Entry).part()
-	if strings.HasSuffix(task, entry) {
 		return task
 	}
-	return task + commit + entry
+	return task + reviewEntry(row.Entry).part()
 }
