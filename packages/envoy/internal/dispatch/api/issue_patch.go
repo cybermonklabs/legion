@@ -158,11 +158,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := r.PathValue("key")
-	// Whether the write closes the issue (closing) waits for the issue's row; whether it asks to is
-	// known now.
+	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
+	// asks to is known now.
 	closes := input.Status != nil && status == "done"
 	if closes {
-		// Before the transaction, which settlement's own would queue behind on the issue's row.
+		// Before the transaction, which settlement's own would queue behind on the issue's owner
+		// lock.
 		s.settleIssueBeforeClose(outlivingTheClient(r), key)
 	}
 	tx, err := s.begin(r.Context())

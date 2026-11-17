@@ -45,12 +45,12 @@ import (
 // live. Such ends include a suspension, a stop or a failure whose claim write the database
 // refused, and a stop whose retirement of its round's ask failed.
 //
-// Each write replaces the issue's whole set under a lock of the issue row that a second write of
-// the same issue waits for, so the stored set is always one whole set, and each write answers the
-// set that it stored. Two writes of one issue at once store the set of the one that finishes
-// last. The daemon sends one write of an issue at a time: its outbox holds one role_holders_publish
-// row per issue, and a lane runs its issue's rows one at a time (packages/daemon's
-// internal/daemon/outbox_lanes.go, the lanes' comment).
+// Each write replaces the issue's whole set under the issue's owner lock (store.LockOwner), which
+// a second write of the same issue waits for, so the stored set is always one whole set, and each
+// write answers the set that it stored. Two writes of one issue at once store the set of the one
+// that finishes last. The daemon sends one write of an issue at a time: its outbox holds one
+// role_holders_publish row per issue, and a lane runs its issue's rows one at a time
+// (packages/daemon's internal/daemon/outbox_lanes.go, the lanes' comment).
 //
 // The write appends no issue event and publishes nothing, whether the set changed or not, for the
 // reasons a design-gate publication gives (issue_design_gates.go): the record is the daemon's own
@@ -240,8 +240,10 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// second write of the same issue waits for (store.LockOwner, the advisory lock every writer of
 	// the issue takes), so the two replaces run one after the other: the second reads the rows that
 	// the first committed, and each answers the set that it stored. The lock and the read are one
-	// batch, and the read is a plain select, so the transaction takes no row lock of an owner table
-	// and holds no transaction id until its first write (INFRA-636); it does not stop a reader.
+	// batch, and the read is a plain select, so while no earlier build is in the fleet the
+	// transaction takes no row lock of an owner table and holds no transaction id until its first
+	// write (INFRA-636; beside an earlier build LockOwnerAndRead also takes the issue's row, as that
+	// build's writers do); it does not stop a reader.
 	var issue string
 	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(key), `
 		select key from issues where key = $1

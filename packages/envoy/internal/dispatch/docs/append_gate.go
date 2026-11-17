@@ -50,7 +50,7 @@ const (
 	// (settleRoomWithin), a live write's fork (applyLive through the transaction's liveWrite),
 	// the block-id backfill's stamp - and keeps the strict rule: the room must hold the head. It
 	// is not refused for a closed issue: a live write has already checked its issue under the
-	// issue's row lock (lockArtifactOwner), the backfill stamps a closed issue's document on
+	// issue's owner lock (lockArtifactOwner), the backfill stamps a closed issue's document on
 	// purpose, and a settlement, which settles a closed issue's document as an open one's,
 	// repairs a tree whose updates it has stored first (Ledger.flushThrough) and saves nothing of
 	// a room whose update the gate refused (endOnRefusedUpdate).

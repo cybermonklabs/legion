@@ -37,7 +37,8 @@ func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 }
 
 // errSettleJoined refuses SettleIssueDocuments inside a transaction: each settlement opens a
-// transaction of its own and takes the issue's row, which a caller's open transaction can hold.
+// transaction of its own and takes the issue's owner lock, which a caller's open transaction can
+// hold.
 var errSettleJoined = errors.New("docs: an issue's documents settle outside every transaction")
 
 // issueDocumentIDs lists the documents of the issue $1, in id order: the order WriteIssueAskStates
@@ -721,8 +722,8 @@ const (
 // pending-settlement row keeps the debt, for the room's next load or the resumption
 // (RunSettlementResumption).
 //
-// It opens a transaction of its own for each settlement, which takes the issue's row, so it is
-// refused inside a transaction: a joined context's, or, for a context the pool tracks, any
+// It opens a transaction of its own for each settlement, which takes the issue's owner lock, so it
+// is refused inside a transaction: a joined context's, or, for a context the pool tracks, any
 // (store.ErrNestedAcquire).
 func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) error {
 	if ledgerFrom(ctx).inTransaction() {

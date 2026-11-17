@@ -158,7 +158,7 @@ func skipUnreadableSettlement(room string, err error) bool {
 // A removed document owes no settlement: its removal (api.removeArtifact) deletes its versions,
 // its stored updates and its pending-settlement row with its artifacts row, and closes its room on
 // every process once it has committed. A settlement already past its generation check when that
-// commit lands - one that queued behind the removal for the document's owner row, or that started
+// commit lands - one that queued behind the removal for the document's owner lock, or that started
 // before this process's eviction or another process's announcement reached its room - stops short
 // on the row that has gone: the latest version, the owner row, or the room's load reads nothing.
 // It ends there, saying nothing and retrying nothing, so no retry warms a room over the row

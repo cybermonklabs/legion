@@ -28,7 +28,7 @@ func (st *settlement) documentRemoved(ctx context.Context) bool {
 	return removed
 }
 
-// readLocked is what the settlement reads once its transaction holds the document's owner row: the
+// readLocked is what the settlement reads once its transaction holds the document's owner lock: the
 // latest version, the document's cursor lock, the catch-up that brings the room's instance to the
 // document's durable head, the tree it reconciles and the rendering of that tree, and whom its
 // version credits.

@@ -78,11 +78,11 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 //
 // An issue with no event naming the closer or the reopener is logged and left as it is: no actor
 // is invented. Every record is dated when the pass writes it. Each issue is repaired in a
-// transaction of its own that holds the issue's row and reads its state and asks again under it,
-// so two passes running at once serialise on the row and the second finds nothing left; a pass
-// that finds nothing writes nothing and appends no event. One issue's failure is logged and the
-// pass goes on to the next; the returned error names how many failed. It reads deps.Store,
-// deps.Docs and deps.Events.
+// transaction of its own that holds the issue's owner lock and reads its state and asks again
+// under it, so two passes running at once serialise on that lock and the second finds nothing
+// left; a pass that finds nothing writes nothing and appends no event. One issue's failure is
+// logged and the pass goes on to the next; the returned error names how many failed. It reads
+// deps.Store, deps.Docs and deps.Events.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
 	s := &server{deps: deps}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
