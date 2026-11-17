@@ -1072,10 +1072,14 @@ echo
 echo "Case: release.yaml's worker_image_release names the image on the release from a checkout"
 # That job's last step runs release-push.sh out of the checkout, and the job made none until this
 # change, so the step exited 127 on every legion release and the release body never got its
-# "## Worker image" section. The step's `run:` is read out of the workflow by name and run twice
-# against the stub gh above: in a directory holding no checkout, as the job was, and in one
-# holding the script where the step names it, as the job's checkout leaves it. That the job has
-# the checkout is check-release-credentials.sh's rule 6, not a text match here.
+# "## Worker image" section. The step names the script by the checkout's own path,
+# "$GITHUB_WORKSPACE/.github/scripts/release-push.sh", the one form check-release-credentials.sh
+# classes as no dependency code in a credentialed job. The step's `run:` is read out of the
+# workflow by name and run twice against the stub gh above, each time with GITHUB_WORKSPACE set to
+# the directory it runs in, as Actions sets it to the job's workspace: in a directory holding no
+# checkout, as the job was, and in one holding the script where the step names it, as the job's
+# checkout leaves it. That the job has the checkout is check-release-credentials.sh's rule 6, not
+# a text match here.
 workflow="$script_dir/../workflows/release.yaml"
 # workflow_step_run <job> <step name>: the body of that step's `run:` block in the workflow,
 # dedented, so the case runs the workflow's own code.
@@ -1091,20 +1095,21 @@ workflow_step_run() {
   ' "$workflow"
 }
 name_step=$(workflow_step_run worker_image_release "Name the worker image on the legion release")
-check "that job's last step runs release-section over the worker image reference" \
-  "$(contains "$name_step" 'release-push\.sh release-section "\$RELEASE_TAG" .## Worker image. -')"
+check "that job's last step runs the checkout's release-push.sh release-section over the worker image reference" \
+  "$(contains "$name_step" '"\$GITHUB_WORKSPACE/\.github/scripts/release-push\.sh" release-section "\$RELEASE_TAG" .## Worker image. -')"
 ref='ghcr.io/example/repo/worker@sha256:1111111111111111111111111111111111111111111111111111111111111111'
 printf 'Generated notes\n' > "$work/body.md"
 # run_name_step <dir>: that step's body in <dir>, under the shell GitHub runs a `run:` with and
-# with the environment worker_image_release gives it; leaves rc, out (combined) and the stub's
-# call log in calls.
+# with the environment worker_image_release gives it, GITHUB_WORKSPACE being <dir> whatever the
+# environment this test runs in holds (a CI job sets its own); leaves rc, out (combined) and the
+# stub's call log in calls.
 run_name_step() {
   : > "$work/calls"
   rm -f "$work/edited.md"
   set +e
-  out=$(cd "$1" && env GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE=published \
-    GH_TEST_FAIL='' GH_TOKEN=token REF="$ref" RELEASE_TAG=legion-v1.2.3 PATH="$work/bin:$PATH" \
-    bash -e -o pipefail -c "$name_step" 2>&1)
+  out=$(cd "$1" && env GITHUB_WORKSPACE="$1" GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" \
+    GH_TEST_RELEASE=published GH_TEST_FAIL='' GH_TOKEN=token REF="$ref" RELEASE_TAG=legion-v1.2.3 \
+    PATH="$work/bin:$PATH" bash -e -o pipefail -c "$name_step" 2>&1)
   rc=$?
   set -e
   calls=$(<"$work/calls")
