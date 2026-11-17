@@ -33,7 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -329,7 +329,7 @@ func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) 
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			cfg.Bind, cfg.AdvertiseHost, cfg.WorkerStreamPort = tc.bind, tc.advertiseHost, 47381
 
 			p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})
@@ -742,7 +742,7 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			tc.change(&cfg)
 			if _, err := prepare(cfg, quietLogger(), overrides{environ: []string{}}); err == nil || err.Error() != tc.want {
 				t.Fatalf("prepare = %v, want %q", err, tc.want)
@@ -825,7 +825,7 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 // NATS_NKEY_SEED — it is a launch secret the runtime reads from the providers mount, and with none
 // it is neither.
 func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) {
-	seedFile := testnats.SeedFile(t, testnats.UserSeed(t))
+	seedFile := testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 	for _, tc := range []struct {
 		name string
 		key  string

@@ -7,9 +7,9 @@ import {
   type AgentStreamControlMessage,
   agentStreamControlSubject,
   agentStreamFramesSubject,
-  agentSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  legacyAgentSubject,
   type OpenAsk,
   type OpenAsksResponse,
   ROLE_TOPIC_PREFIX,
@@ -2317,7 +2317,11 @@ export default function envoyExtension(pi: PiApi): void {
   // the role claim's to open again, which a restored process without the role never does.
   const followedSubjects = (): string[] => {
     if (sessionID === "") return [];
-    return replayFollowedSubjects(agentSubject(sessionID), followed, registrationState.isRoleBound);
+    return replayFollowedSubjects(
+      legacyAgentSubject(sessionID),
+      followed,
+      registrationState.isRoleBound
+    );
   };
 
   // Acts on a `subscription.removed` naming this session, which the relay delivers like any
@@ -3159,7 +3163,7 @@ export default function envoyExtension(pi: PiApi): void {
     const role = registrationState.heldRole();
     return registerWithRelay({
       relay: asking?.delivery,
-      ownAgentSubject: agentSubject(registeringFor),
+      ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
       outage: inboundOutage,
@@ -3434,7 +3438,7 @@ export default function envoyExtension(pi: PiApi): void {
       activeSessionContext?.sessionManager.getEntries() ?? []
     ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
     for (const topic of new Set([...registered, ...remembered])) {
-      if (topic === agentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
+      if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
       if (retired.includes(topic)) continue;
       await handle.subscribe(topic);
     }
@@ -3629,7 +3633,7 @@ export default function envoyExtension(pi: PiApi): void {
       if (host !== lastHeard) lastHeard = "";
     }
     for (const other of handle.forgetOtherAgentSessions(host)) {
-      unfollow(agentSubject(other));
+      unfollow(legacyAgentSubject(other));
       leftSessions.add(other);
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
@@ -3650,7 +3654,7 @@ export default function envoyExtension(pi: PiApi): void {
       try {
         handle.markAgentSessionOpen(host);
         await handle.connect();
-        await handle.subscribe(agentSubject(host));
+        await handle.subscribe(legacyAgentSubject(host));
         // The relay subject opens before any registration asks for consumer delivery, so the
         // listener's first relayed frame has a subscriber.
         await openRelay(context, host, handle.connect);
@@ -4785,7 +4789,7 @@ export default function envoyExtension(pi: PiApi): void {
           // so it is told by name, in the listener's own words, rather than left following a
           // subject nothing is ever delivered on. A private stream subject is left out of the
           // registration without a word, as it always was (`refuseUncapturedTopics`).
-          refuseUncapturedTopics(sessionID, agentSubject(sessionID), requested);
+          refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
           const added: string[] = [];
           const already: string[] = [];
           for (const topic of requested) {
@@ -4820,7 +4824,7 @@ export default function envoyExtension(pi: PiApi): void {
           // The session's own inbox is not a subscription the tool manages.
           // A role topic is followed through the independently-held role claim: drop the local
           // follow without unregistering that interest.
-          const inbox = agentSubject(sessionID);
+          const inbox = legacyAgentSubject(sessionID);
           // Concrete subjects, a named `X.>` already expanded to `X.>` and `X`.
           const candidates = topicsFor(parameters, [...followed]).filter(
             (subject) => subject !== inbox

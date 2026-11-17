@@ -93,9 +93,9 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register %s through the other listener: %v", target, err)
 	}
-	received, err := cold.client.Conn.SubscribeSync(contracts.AgentSubject(target))
+	received, err := cold.client.Conn.SubscribeSync(contracts.LegacyAgentSubject(target))
 	if err != nil {
-		t.Fatalf("subscribe to %s: %v", contracts.AgentSubject(target), err)
+		t.Fatalf("subscribe to %s: %v", contracts.LegacyAgentSubject(target), err)
 	}
 	t.Cleanup(func() { _ = received.Unsubscribe() })
 	if err := cold.client.Conn.Flush(); err != nil {
@@ -125,13 +125,13 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 
 	message, err := received.NextMsg(5 * time.Second)
 	if err != nil {
-		t.Fatalf("nothing reached %s: %v", contracts.AgentSubject(target), err)
+		t.Fatalf("nothing reached %s: %v", contracts.LegacyAgentSubject(target), err)
 	}
 	var delivered contracts.Envelope
 	if err := json.Unmarshal(message.Data, &delivered); err != nil {
 		t.Fatalf("decode the delivered envelope: %v", err)
 	}
-	if delivered.EventID != answered.EventID || delivered.Topic != contracts.AgentSubject(target) {
+	if delivered.EventID != answered.EventID || delivered.Topic != contracts.LegacyAgentSubject(target) {
 		t.Fatalf("delivered %+v, want the answered envelope %+v on the target's subject", delivered, answered)
 	}
 }
@@ -367,7 +367,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 	for _, sender := range []string{cached, noSession} {
 		if _, err := registry.Upsert(store.Interest{
 			SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
-		}, []string{contracts.AgentSubject(sender)}); err != nil {
+		}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
 			t.Fatalf("write %s's interest record: %v", sender, err)
 		}
 		if _, held := registry.Cached(sender); !held {

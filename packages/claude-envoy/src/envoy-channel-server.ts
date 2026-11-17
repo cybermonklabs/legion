@@ -1,9 +1,9 @@
 import { type Stats, unwatchFile, watchFile } from "node:fs"
 import { rm } from "node:fs/promises"
 import {
-  agentSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  legacyAgentSubject,
   ROLE_TOPIC_PREFIX,
   zodSchemaApi,
 } from "@legion/contracts"
@@ -624,7 +624,7 @@ export function createChannelDelivery(input: {
  */
 export async function startChannelSession(options: ChannelSessionOptions): Promise<ChannelSession> {
   const { identity } = options
-  let directSubject = agentSubject(identity.id)
+  let directSubject = legacyAgentSubject(identity.id)
   /**
    * What this session does with a person's direct messages, for the id now bound: the record is
    * kept per session id (`./user-turn-state`), so a `/clear` builds another one. Undefined until
@@ -1359,7 +1359,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (next === undefined || next === identity.id) return
     const previous = identity.id
     const previousSubject = directSubject
-    const nextSubject = agentSubject(next)
+    const nextSubject = legacyAgentSubject(next)
     followedTopics.follow(nextSubject)
     try {
       // Bounded: this runs inside the registry chain, and a flush on a stalled NATS
