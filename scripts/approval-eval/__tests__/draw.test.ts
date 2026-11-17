@@ -363,6 +363,14 @@ describe("drawSlices under a read of the reserve", () => {
       heldOutsideReport: { total: 0, cases: [] },
       parentChanges: [],
       nearDuplicates: { threshold: 0.9, joins: [] },
+      trees: held
+        .filter((one) => one.row.caseId.endsWith("-0"))
+        .map((one) => ({
+          group: `tree:${one.row.issueKey}`,
+          slice: "report",
+          cases: [0, 1, 2].map((at) => one.row.caseId.replace(/-0$/, `-${at}`)),
+        }))
+        .sort((one, other) => (one.group < other.group ? -1 : 1)),
     });
     expect(draw.counts.fit.approval).toBeGreaterThan(TARGETS.approval.fit - 3);
   });
@@ -415,6 +423,36 @@ describe("drawSlices under a read of the reserve", () => {
     expect(draw.counts.report.approval).toBe(249);
     expect(draw.finalTest?.groups).toBe(90);
     expect(draw.finalTest?.heldOutsideReport.total).toBe(21);
+    // The tree record says where each of the 90 went, so the claim's measure can leave the
+    // seven that report had no room for out of the trees it reads.
+    const trees = draw.finalTest?.trees ?? [];
+    expect(trees).toHaveLength(90);
+    const outside = trees.filter((tree) => tree.slice !== "report");
+    expect(outside).toHaveLength(7);
+    expect(outside.every((tree) => tree.slice !== null)).toBe(true);
+    expect(outside.flatMap((tree) => tree.cases).sort()).toEqual(
+      [...(draw.finalTest?.heldOutsideReport.cases ?? [])].sort()
+    );
+  });
+
+  test("an eligible tree whose every case the never-decide rule held is recorded in no slice", () => {
+    const held: NeverDecideAnswer = {
+      ...DECIDED,
+      held: true,
+      kind: "destructive-act",
+      reason: "The change list asks for the spool directory to be removed.",
+      answer: "destructive-act\nThe change list asks for the spool directory to be removed.",
+    };
+    const cases = [...corpus(), ...reserved(3)].map((one) =>
+      one.row.issueKey === "RES-1" ? drawCase(one.row, held) : one
+    );
+    const draw = drawSlices(cases, 7, source(cases));
+    expect(draw.finalTest?.groups).toBe(2);
+    expect(draw.finalTest?.trees).toEqual([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1", "r-0-2"] },
+      { group: "tree:RES-1", slice: null, cases: ["r-1-0", "r-1-1", "r-1-2"] },
+      { group: "tree:RES-2", slice: "report", cases: ["r-2-0", "r-2-1", "r-2-2"] },
+    ]);
   });
 
   test("with no eligible tree, report stays empty", () => {

@@ -24,6 +24,7 @@ import {
   type DrawRecord,
   drawPath,
   type FinalTestDraw,
+  type FinalTestTree,
   rootFactsOf,
   rootReadingOf,
   SLICES,
@@ -412,8 +413,9 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * its cases are named in `finalTest.beforeCut`. Only an `eligible` group tries report, and it
  * tries report first; every other group skips it. The reserved cases that went to another slice
  * are named in `finalTest.heldOutsideReport`, each group's parent changes after its first ask
- * opened in `finalTest.parentChanges`, and each near-duplicate join in
- * `finalTest.nearDuplicates`.
+ * opened in `finalTest.parentChanges`, each near-duplicate join in `finalTest.nearDuplicates`,
+ * and every eligible tree, with each of its cases and the slice it went to, in
+ * `finalTest.trees`.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
  * read wrongly rather than a case to leave out.
@@ -512,6 +514,7 @@ export function drawSlices(
   const ordered = [...groups.values()].sort((one, other) => (one.key < other.key ? -1 : 1));
   let finalTestGroups = 0;
   const heldOutsideReport: string[] = [];
+  const sliceOfTree = new Map<string, SliceName>();
   for (const group of shuffled(ordered, seed)) {
     draw.groupCount += 1;
     for (const kind of KINDS) if (group.counts[kind] > 0) draw.groups[kind] += 1;
@@ -531,6 +534,7 @@ export function drawSlices(
       }
     }
     for (const kind of KINDS) draw.counts[taken][kind] += group.counts[kind];
+    if (eligible) sliceOfTree.set(group.key, taken);
     if (finalTest !== null && taken !== "report") {
       for (const drawCase of group.cases) {
         if (finalTest.holds(drawCase.row)) heldOutsideReport.push(drawCase.row.caseId);
@@ -556,13 +560,30 @@ export function drawSlices(
     >;
     const parentChanges: FinalTestDraw["parentChanges"] = [];
     const rows = [...cases.map((drawCase) => drawCase.row), ...finalTest.beforeCut];
-    const keys = [...new Set(rows.map((row) => groupKeyOf(row, finalTest)))].sort();
+    const casesOfKey = new Map<string, string[]>();
+    for (const row of rows) {
+      const key = groupKeyOf(row, finalTest);
+      const held = casesOfKey.get(key);
+      if (held === undefined) casesOfKey.set(key, [row.caseId]);
+      else held.push(row.caseId);
+    }
+    const keys = [...casesOfKey.keys()].sort();
+    const trees: FinalTestTree[] = [];
     for (const key of keys) {
       const outcome = outcomeOf(key);
       outcomes[outcome] += 1;
       const tree = finalTest.grouping.groups.get(key);
       const changes = tree === undefined ? [] : changesAfterAskOf(tree);
       if (changes.length > 0) parentChanges.push({ group: key, outcome, changes });
+      // Every case of the tree, the held and left-out ones too: a tree whose every case the
+      // never-decide rule held went to no slice, and the claim's measure still counts it.
+      if (outcome === "eligible") {
+        trees.push({
+          group: key,
+          slice: sliceOfTree.get(key) ?? null,
+          cases: [...(casesOfKey.get(key) ?? [])].sort(),
+        });
+      }
     }
     draw.finalTest = {
       reference: finalTest.reference,
@@ -572,6 +593,7 @@ export function drawSlices(
       heldOutsideReport: { total: heldOutsideReport.length, cases: heldOutsideReport },
       parentChanges,
       nearDuplicates: { threshold: NEAR_DUPLICATE_JACCARD, joins: finalTest.grouping.joins },
+      trees,
     };
   }
   return draw;
@@ -988,6 +1010,13 @@ async function draw(flags: Flags): Promise<number> {
       `  near-duplicate joins of two groups  ${drawn.finalTest.nearDuplicates.joins.length} ` +
         `(Jaccard of word 5-grams of the evidence at or above ` +
         `${drawn.finalTest.nearDuplicates.threshold})`
+    );
+    const trees = drawn.finalTest.trees;
+    const inReport = trees.filter((tree) => tree.slice === "report").length;
+    const inNoSlice = trees.filter((tree) => tree.slice === null).length;
+    console.log(
+      `  eligible trees in report  ${inReport}; in no slice  ${inNoSlice}; in another slice ` +
+        `${trees.length - inReport - inNoSlice}`
     );
   }
   console.log("");
