@@ -2305,17 +2305,22 @@ func (f *PendingForward) Wait() error {
 	for {
 		response, err := f.replies.NextMsgWithContext(f.ctx)
 		if err != nil {
-			if lost := f.finish(err); errors.Is(lost, ErrConnectionLost) {
+			// finish ends f.ctx (bindRequest), so whether the forward's own window had ended is
+			// read before it: read after, it is always true, and the no-responders answer and every
+			// other error would end the wait as a window that ran out.
+			ended := f.ctx.Err() != nil
+			lost := f.finish(err)
+			if errors.Is(lost, ErrConnectionLost) {
 				return fmt.Errorf("%w: %w", ErrForwardNotStored, lost)
 			}
-			if f.ctx.Err() != nil {
+			if ended {
 				break
 			}
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
-			if errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
+			if errors.Is(lost, nats.ErrNoResponders) {
+				return fmt.Errorf("%w: %w", ErrForwardNotStored, lost)
 			}
-			return err
+			return lost
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
