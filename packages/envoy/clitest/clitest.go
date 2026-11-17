@@ -48,6 +48,12 @@
 // unknown-flag: for each command of Case.Commands, `bin <command> --clitest-unknown-flag` exits 2
 // and makes no request to Case.Server.
 //
+// usage-error: `bin completion clitest-unknown-shell` and `bin help clitest-unknown-topic` each
+// exit 2 and make no request to Case.Server. cobra's own commands answer both with help and exit
+// 0: completion has no Run, so Command.execute returns flag.ErrHelp, and help prints the root's
+// help when Find resolves no topic, which a root with an Args of its own makes it do without an
+// error.
+//
 // typo: each command of either list, with one letter of its last word changed, exits 2 and makes
 // no request to Case.Server. For a command of Case.Commands, a line of the output is also that
 // last word alone or the command's words alone, white space around it aside: cobra's suggestion
@@ -97,8 +103,11 @@
 // word and adding cmd.SuggestionsFor's names in cobra's format, and a Run that prints their help.
 // They also set SuggestionsMinimumDistance to 2: cobra's default of 2 is applied only by its own
 // unexported findSuggestions, so SuggestionsFor on a command that leaves the field 0 suggests only
-// the names that begin with the typed word. A command only a program runs sets Hidden. fakeRoot
-// in this package's tests is such a root.
+// the names that begin with the typed word. A command only a program runs sets Hidden. After
+// root.InitDefaultCompletionCmd(), cobra's completion command takes the same Args and Run as a
+// group, so a shell it does not know is a usage error; and help takes an Args that refuses a topic
+// Find does not resolve to a command (the help command root.InitDefaultHelpCmd() makes, or one
+// root.SetHelpCommand sets). fakeRoot in this package's tests is such a root.
 package clitest
 
 import (
@@ -144,6 +153,10 @@ const (
 	positional = "clitest-positional"
 	// unknownFlag is the flag unknown-flag gives each command.
 	unknownFlag = "--clitest-unknown-flag"
+	// unknownShell is the shell usage-error asks completion for.
+	unknownShell = "clitest-unknown-shell"
+	// unknownTopic is the topic usage-error asks help for.
+	unknownTopic = "clitest-unknown-topic"
 )
 
 // syntaxCheck is the flag each shell reads a script with without running it.
@@ -177,6 +190,7 @@ func Conformance(t *testing.T, bin string, c Case) {
 	t.Run("help", h.help)
 	t.Run("flag-after-positional", h.flagAfterPositional)
 	t.Run("unknown-flag", h.unknownFlag)
+	t.Run("usage-error", h.builtinUsageErrors)
 	t.Run("typo", h.typo)
 	t.Run("completion", h.completion)
 	t.Run("complete", h.complete)
@@ -273,6 +287,12 @@ func (h *harness) unknownFlag(t *testing.T) {
 	for _, command := range h.commands {
 		h.wantUsageError(t, with(command, unknownFlag)...)
 	}
+}
+
+// builtinUsageErrors asks cobra's own completion and help commands for a word neither knows.
+func (h *harness) builtinUsageErrors(t *testing.T) {
+	h.wantUsageError(t, "completion", unknownShell)
+	h.wantUsageError(t, "help", unknownTopic)
 }
 
 func (h *harness) typo(t *testing.T) {

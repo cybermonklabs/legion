@@ -40,7 +40,8 @@ const (
 // on it fails for that fault alone.
 const (
 	noDefect = "cobra"
-	// typoExits1: an unknown command is an error that exits 1, not a usage error.
+	// typoExits1: an unknown command is an error that exits 1, not a usage error, a shell
+	// completion does not know among them, since completion is a group of the fake.
 	typoExits1 = "typo-exits-1"
 	// flagErrorExits1: no SetFlagErrorFunc, so an unknown flag exits 1.
 	flagErrorExits1 = "flag-error-exits-1"
@@ -62,6 +63,12 @@ const (
 	// helpIgnoresItsCommand: `help <command>` prints the root's help, which names every command,
 	// whatever word follows help.
 	helpIgnoresItsCommand = "help-ignores-its-command"
+	// completionUnknownShellExits0: completion is cobra's own, which has no Run, so a shell it
+	// does not know prints its help and exits 0.
+	completionUnknownShellExits0 = "completion-unknown-shell-exits-0"
+	// helpUnknownTopicExits0: help is cobra's own, which prints the root's help for a topic Find
+	// does not resolve and exits 0.
+	helpUnknownTopicExits0 = "help-unknown-topic-exits-0"
 	// flagsBeforeArgumentsOnly: every command stops reading flags at its first positional, as Go's
 	// flag package does, and alpha takes any words, so it runs with --help as one of them.
 	flagsBeforeArgumentsOnly = "flags-before-arguments-only"
@@ -122,13 +129,15 @@ func TestRecorderCountsTheBinarysRequests(t *testing.T) {
 	}
 }
 
-// An unknown command that exits 1 fails the typo check, visible and hidden commands alike.
+// An unknown command that exits 1 fails the typo check, visible and hidden commands alike, and
+// the usage-error check on the shell completion does not know.
 func TestConformanceFailsOnAnExit1Typo(t *testing.T) {
 	t.Parallel()
-	requireFails(t, typoExits1, "", []string{"typo"},
+	requireFails(t, typoExits1, "", []string{"typo", "usage-error"},
 		"alphx: exit 1, want 2",
 		"group chilx: exit 1, want 2",
 		"internax: exit 1, want 2",
+		"completion clitest-unknown-shell: exit 1, want 2",
 	)
 }
 
@@ -191,6 +200,24 @@ func TestConformanceFailsWhenHelpOfACommandIsTheRootsHelp(t *testing.T) {
 	requireFails(t, helpIgnoresItsCommand, "", []string{"help"},
 		"help alpha: printed what clitest.test help prints, the root's help",
 		"help pass: printed what clitest.test help prints, the root's help",
+	)
+}
+
+// A shell completion does not know that prints completion's help and exits 0, as cobra's own
+// completion command does, fails the usage-error check.
+func TestConformanceFailsWhenAnUnknownShellExits0(t *testing.T) {
+	t.Parallel()
+	requireFails(t, completionUnknownShellExits0, "", []string{"usage-error"},
+		"completion clitest-unknown-shell: exit 0, want 2",
+	)
+}
+
+// A help topic that names no command and prints the root's help and exits 0, as cobra's own help
+// command does, fails the usage-error check.
+func TestConformanceFailsWhenAnUnknownHelpTopicExits0(t *testing.T) {
+	t.Parallel()
+	requireFails(t, helpUnknownTopicExits0, "", []string{"usage-error"},
+		"help clitest-unknown-topic: exit 0, want 2",
 	)
 }
 
@@ -633,6 +660,18 @@ func fakeRoot(defect string) *cobra.Command {
 			return nil
 		}
 	}
+	// cobra's own completion and help commands answer a word they do not know with help and exit
+	// 0: completion takes a group's Args and Run, and help an Args that refuses a topic.
+	if !root.CompletionOptions.DisableDefaultCmd && defect != completionUnknownShellExits0 {
+		root.InitDefaultCompletionCmd()
+		completion := subcommand(root, "completion")
+		completion.SuggestionsMinimumDistance = 2
+		completion.Args, completion.RunE = unknownCommand(defect), showHelp
+	}
+	if defect != helpUnknownTopicExits0 {
+		root.InitDefaultHelpCmd()
+		subcommand(root, "help").Args = knownTopic
+	}
 	return root
 }
 
@@ -652,6 +691,25 @@ func unknownCommand(defect string) cobra.PositionalArgs {
 		}
 		return usageError{err}
 	}
+}
+
+// knownTopic refuses, with a usage error, a help topic Find does not resolve to a command, for
+// which cobra's own help prints the root's help and exits 0.
+func knownTopic(cmd *cobra.Command, args []string) error {
+	if _, rest, err := cmd.Root().Find(args); err != nil || len(rest) > 0 {
+		return usageError{fmt.Errorf("unknown help topic %q for %q", strings.Join(args, " "), cmd.Root().CommandPath())}
+	}
+	return nil
+}
+
+// subcommand is root's command named name, which the fake has.
+func subcommand(root *cobra.Command, name string) *cobra.Command {
+	for _, c := range root.Commands() {
+		if c.Name() == name {
+			return c
+		}
+	}
+	panic("the fake has no command " + name)
 }
 
 // completionCommand is the fake's own completion command, whose bash script defect breaks.

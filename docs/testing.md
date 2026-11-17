@@ -32,7 +32,8 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
-  `Conformance` runs the built binary, of any framework, and checks help on every command, a typo and an unknown flag that exit 2 and make no request to its `Recorder`, a flag read after a positional, the completion script of each shell, and `__complete`; the package documentation is the whole list and the rule each check holds.
+  `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag, an unknown shell for `completion` and an unknown topic for `help` that each exit 2 and make no request to its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
+  The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
 
 
