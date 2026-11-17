@@ -60,6 +60,8 @@ const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  // The Bun release the rig takes, which it reads from its checkout's root.
+  copyFileSync(path.join(root, ".bun-version"), path.join(co, ".bun-version"));
   for (const lib of [
     "rig.sh",
     "loopback-dsn.sh",
@@ -435,6 +437,38 @@ test.skipIf(withoutPython)(
     expect(stderr).toContain("could not be checked: bun failed with the error above");
     expect(stderr).not.toContain("do not set extensionHandlers.toolCallTimeoutMs");
     expect(existsSync(path.join(work, "runs", "askgate-facts-broken-1"))).toBe(false);
+  }
+);
+
+// The rig runs on the caller's first bun on PATH, and a run on another release than the pinned
+// one is no run of this checkout: the rig refuses it by name before it starts anything. The
+// stand-in answers `--version` with another release, and fails any other call, so a rig that ran
+// it further would show here.
+const otherBun = path.join(scratch, "other-bun");
+put(
+  path.join(otherBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    'printf \'%s\\n\' "$*" >>"$STUB_DIR/other-bun.log"',
+    'if [ "$*" = --version ]; then echo 1.0.0; exit 0; fi',
+    'echo "the stand-in bun ran: $*" >&2',
+    "exit 97",
+    "",
+  ].join("\n"),
+  0o755
+);
+test.skipIf(withoutPython)(
+  "a run on a bun other than the pinned release is refused, naming both releases and the bun",
+  async () => {
+    const pinned = readFileSync(path.join(root, ".bun-version"), "utf8").trim();
+    const { code, stderr } = await runRig(["run", "askgate", "on", "7", "6", start], {
+      PATH: `${otherBun}:${env.PATH}`,
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain(`refusing to run under Bun 1.0.0: ${co}/.bun-version pins ${pinned}`);
+    expect(stderr).toContain(`(${otherBun}/bun is the one found)`);
+    expect(lines(path.join(stub, "other-bun.log"))).toEqual(["--version"]);
+    expect(existsSync(path.join(work, "runs", "askgate-facts-on-7"))).toBe(false);
   }
 );
 

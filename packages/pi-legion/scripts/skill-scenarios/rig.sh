@@ -121,6 +121,14 @@
 # until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
 # reports, and the kernel assigns each run's daemon stand-in its port.
 #
+# What the rig pins, and what it takes from the caller: Oh My Pi is the release .omp-pin names, run
+# by its path (pinned_omp), and the Postgres, NATS and judge images are named by digest. Bun is the
+# caller's first `bun` on PATH, which this script, seed.ts, score.ts and every stand-in it writes run
+# on, and the rig refuses one whose `bun --version` is not the release .bun-version pins, before any
+# command starts anything. Every other tool is the caller's own, found on PATH, and nothing checks its
+# version: jq, jj, git, go (under the caller's GOTOOLCHAIN), python3 (scripts/e2e/lib/rig.sh's
+# held-port.py), docker, tmux, curl, and mise, which runs the pinned Oh My Pi.
+#
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach
 #                                 Anthropic; on the gateway route a judge's key command runs on the
@@ -248,6 +256,15 @@ case "$work/" in "$root"/*) fail "SKILL_SCENARIOS_WORK $work is inside the check
 if found=$(omp_ancestor "$work"); then
   fail "SKILL_SCENARIOS_WORK $work is under $found: Oh My Pi reads that .omp as the configuration of every run's cwd, so a run would load its plugins and not its label's; give a work directory with no .omp in it or above it"
 fi
+
+# The Bun every command runs on, held to the release the repository pins, as
+# scripts/e2e/claude-backend-tmux.sh holds its own: a run on another release is no run of this
+# checkout, and a caller's version manager can name any release at all.
+[ -f "$root/.bun-version" ] || fail "$root holds no .bun-version, the Bun release the rig runs on"
+bun_pin=$(tr -d '[:space:]' <"$root/.bun-version")
+bun_running=$(bun --version 2>/dev/null | tr -d '[:space:]') || bun_running=
+[ "$bun_running" = "$bun_pin" ] ||
+  fail "refusing to run under Bun ${bun_running:-<no version>}: $root/.bun-version pins $bun_pin, and every command of the rig runs on the bun first on PATH. Put the pinned Bun first on PATH ($(command -v bun || echo 'no bun') is the one found)"
 
 # The judge's model and thinking level, the same for every judge session (cmd_judge_omp), recorded
 # in each session's judge-model.txt. The model is the one every model route enables for a profile
