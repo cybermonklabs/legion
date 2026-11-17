@@ -776,7 +776,9 @@ Each item below names a task and where its code is, then notes on it.
   Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
   a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
   A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
-  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
+  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split.
+  That page says each Go cache family is keyed on the Go version alone and never on go.sum; `go-envoy-infra` is the exception, keyed on the hash of its module files too, with `ci-caches.yaml`'s `envoy-infra-superseded` job deleting the entry each fill replaces, for the reason `ci-caches.yaml`'s `envoy-infra` job gives;
+  the page keeps its text, because no role writes under `docs/solutions/`.
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
 
