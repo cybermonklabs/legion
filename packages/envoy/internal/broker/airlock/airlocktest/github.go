@@ -38,6 +38,11 @@ type GitHubOptions struct {
 	// the zero value is the ordinary mint. GitHubStand.Answers replaces it while the stand runs,
 	// which is how one stack drives the answers one after another.
 	Answer GitHubAnswer
+	// DistinctTokens has every token request minted a token of its own, as GitHub mints one, by
+	// adding the request's number to the string token would answer. The default answers one
+	// string for each scope, so that two runs of a check read one value; a test that counts the
+	// tokens left live, one for each request GitHub served, sets it.
+	DistinctTokens bool
 }
 
 // GitHubAnswer is what a GitHubStand answers each token request with: the mode, and the one
@@ -145,6 +150,8 @@ type GitHubStand struct {
 	mu     sync.Mutex
 	answer GitHubAnswer
 	scopes map[string]githubScope
+	// minted counts the token requests minted, for DistinctTokens.
+	minted int
 }
 
 // githubScope is what one minted token reaches: the account it was minted for, and the
@@ -207,16 +214,22 @@ func (g *GitHubStand) owners() []string {
 // answered one string for every scope could not tell a narrowed caller from a wide one at its
 // repository route. Two requests naming the same repositories are answered the same token, so
 // two runs of a check read one value, and what that token reaches is what the last mint of that
-// scope recorded (remember).
+// scope recorded (remember) - unless DistinctTokens is set, which numbers each request's token.
 func (g *GitHubStand) token(owner string, repositories []string) string {
 	token := g.options.Token
 	if token == "" {
 		token = "ghs_standin_" + owner
 	}
-	if len(repositories) == 0 {
-		return token
+	if len(repositories) > 0 {
+		token += "_" + strings.Join(repositories, "_")
 	}
-	return token + "_" + strings.Join(repositories, "_")
+	if g.options.DistinctTokens {
+		g.mu.Lock()
+		g.minted++
+		token += "_" + strconv.Itoa(g.minted)
+		g.mu.Unlock()
+	}
+	return token
 }
 
 // remember records what the token this stand-in has just minted reaches, which is what the

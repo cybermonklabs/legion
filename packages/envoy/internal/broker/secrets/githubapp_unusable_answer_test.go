@@ -17,10 +17,13 @@ import (
 )
 
 // tokenAnswerFault is how the answer to a token request breaks on its way back from a GitHub that
-// has minted the token: GitHub holds a live token, and the minter gets no answer it can use.
+// has minted the token: GitHub holds a live token, and the minter gets no answer it can use. The
+// empty fault is the whole answer, as GitHub sends it.
 type tokenAnswerFault string
 
 const (
+	// answerWhole is the stand-in's own answer, unbroken.
+	answerWhole tokenAnswerFault = ""
 	// answerLost closes the connection before any of the answer arrives.
 	answerLost tokenAnswerFault = "lost"
 	// answerCut sends the 201 and the answer up to just past the token, and closes the connection.
@@ -41,22 +44,28 @@ const (
 // 1 MiB and 64 KiB for each of 100 repositories, 7.25 MiB in all).
 const pastTheCap = 8 << 20
 
-// breakingGitHub is the GitHub stand-in of gitHubCheckStand with each token request's answer
-// broken as fault says: the stand-in mints the token, so it holds it as live as GitHub would, and
-// what reaches the minter is the broken answer. Every other route is the stand-in's own. minted
-// is every token the stand-in minted, in order.
+// breakingGitHub is the airlock GitHub stand-in, installed on acme-org (1) and ada (2) and minting
+// a token of its own for every token request (GitHubOptions.DistinctTokens), as GitHub does, with
+// the answer to its nth token request broken as faults[n] says and every answer past the list
+// whole. The stand-in mints each token before its answer breaks, so it holds every one as live as
+// GitHub would, and its revoke route forgets the one it is given. Every other route is the
+// stand-in's own. minted is every token it minted, in order.
 type breakingGitHub struct {
 	service *airlocktest.Service
-	stand   *airlocktest.GitHubStand
 
 	mu     sync.Mutex
 	minted []string
 }
 
-func newBreakingGitHub(t *testing.T, fault tokenAnswerFault) *breakingGitHub {
+func newBreakingGitHub(t *testing.T, faults ...tokenAnswerFault) *breakingGitHub {
 	t.Helper()
-	service, stand := gitHubCheckStand(t)
-	g := &breakingGitHub{service: service, stand: stand}
+	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 1, "ada": 2}, DistinctTokens: true})
+	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatalf("start the GitHub stand-in: %v", err)
+	}
+	t.Cleanup(service.Close)
+	g := &breakingGitHub{service: service}
 	service.AnswerWith(func(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
 		if seen.Method != http.MethodPost || !strings.HasSuffix(seen.Path, "/access_tokens") {
 			return stand.Answer(w, r, seen)
@@ -72,18 +81,25 @@ func newBreakingGitHub(t *testing.T, fault tokenAnswerFault) *breakingGitHub {
 		_ = json.Unmarshal(members["token"], &token)
 		g.mu.Lock()
 		g.minted = append(g.minted, token)
+		fault := answerWhole
+		if n := len(g.minted) - 1; n < len(faults) {
+			fault = faults[n]
+		}
 		g.mu.Unlock()
-		g.breakAnswer(w, fault, members)
+		breakAnswer(w, fault, members)
 		return true
 	})
 	return g
 }
 
 // breakAnswer writes the stand-in's minted answer, members, broken as fault says.
-func (g *breakingGitHub) breakAnswer(w http.ResponseWriter, fault tokenAnswerFault, members map[string]json.RawMessage) {
+func breakAnswer(w http.ResponseWriter, fault tokenAnswerFault, members map[string]json.RawMessage) {
 	whole := orderedAnswer(members, "token", "expires_at", "permissions", "repository_selection", "repositories")
 	padding := []byte(`"padding":"` + strings.Repeat("x", pastTheCap) + `"`)
 	switch fault {
+	case answerWhole:
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(whole)
 	case answerLost:
 		connection, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
@@ -136,38 +152,41 @@ func orderedAnswer(members map[string]json.RawMessage, order ...string) []byte {
 	return answer.Bytes()
 }
 
-// tokenRequests is how many token requests the stand-in was sent, each of which minted a token.
-func (g *breakingGitHub) tokenRequests() int {
-	made := 0
-	for _, request := range g.service.Requests() {
-		if request.Method == http.MethodPost && strings.HasSuffix(request.Path, "/access_tokens") {
-			made++
-		}
-	}
-	return made
-}
-
-// lastMinted is the last token the stand-in minted, and "" where it minted none.
-func (g *breakingGitHub) lastMinted() string {
+// tokens is every token the stand-in minted, one for each token request it served.
+func (g *breakingGitHub) tokens() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.minted) == 0 {
-		return ""
+	return append([]string(nil), g.minted...)
+}
+
+// live is the tokens the stand-in still holds as live: a read made with each is answered as by a
+// credential it minted (200 for a repository the token reaches, 404 for one it does not), where a
+// token it forgot at its revoke is answered 401, as one it never minted is.
+func (g *breakingGitHub) live(t *testing.T, tokens []string) []string {
+	t.Helper()
+	var live []string
+	for _, token := range tokens {
+		if reachesWith(t, g.service, token) != http.StatusUnauthorized {
+			live = append(live, token)
+		}
 	}
-	return g.minted[len(g.minted)-1]
+	return live
 }
 
 // TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack: GitHub mints a token when it answers a token
 // request 201, before the answer reaches the minter, so an answer that is lost, cut off, past the
 // minter's cap, undecodable or without an expiry leaves a live token at GitHub that nobody was
-// handed. A check (MintRequest.Check) mints it before anybody approved anything, so it gives that
-// token back whenever the part of the answer that arrived names it, and it sends a token request
-// whose answer was lost once, so a lost answer leaves at most one token it cannot revoke rather
-// than one for each attempt. A release whose answer is unusable gives its token back the same
-// way, and it still sends a lost answer's request again, since its caller waits for the token
-// itself. Each answer is the upstream's trouble rather than a refusal, so the broker's narrowing
-// check lets the request through to its approver, and no error or log line holds the token. An
-// answer whose arrived part does not name the token is logged as a token nothing can revoke.
+// handed. The stand-in mints a token of its own for every request, so every token is read on its
+// own: each token whose answer names it is revoked before the request is sent again or the mint
+// answers, so a release that rides out a cut-off answer hands over the second token and leaves
+// the first one dead, and a release that fails at its second installation revokes the token of
+// its first, which it would have handed over. A check (MintRequest.Check) mints before anybody
+// approved anything, and it sends a token request whose answer was lost once, so a lost answer
+// leaves it one token it cannot revoke rather than one for each attempt; a release still sends
+// such a request again, and each lost answer leaves its token live, which nothing can name. Every
+// unusable answer is the upstream's trouble rather than a refusal, so the broker's narrowing check
+// lets the request through to its approver, and no error or log line holds a token. An answer
+// whose arrived part does not name the token is logged as a token nothing can revoke.
 func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -177,67 +196,96 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 	lean := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"lean"}, ReadOnly: true}
 
 	for _, tc := range []struct {
-		fault tokenAnswerFault
-		// checkRequests and releaseRequests are the token requests each run sends: one for a check
-		// whatever the answer, and a release's three attempts for an answer that was lost.
-		checkRequests, releaseRequests int
-		// live is whether the minted token still reads at GitHub after the run: only where no
-		// part of the answer that arrived names it.
-		live bool
+		name  string
+		check bool
+		// narrowing is the run's narrowing, and nil for an owner-wide release of both accounts.
+		narrowing *secrets.GitHubNarrowing
+		faults    []tokenAnswerFault
+		// requests is the token requests the run sends, each of which mints a token.
+		requests int
+		// live is how many of those tokens are still live after the run: a lost answer's, which
+		// nothing can name, an answer's whose arrived part does not hold its token, and the one
+		// token a release hands over.
+		live int
+		// released is whether the run hands over a value, which only a release that rode out a
+		// cut-off answer does here.
+		released bool
 		// unrevokable is whether the run logs that GitHub holds a token nothing can revoke: a 201
-		// that arrived whose part does not name the token. A connection lost before any answer
-		// carries no 201, so nothing says a token was minted.
+		// whose arrived part does not name the token. A connection lost before any answer carries
+		// no 201, so nothing says a token was minted.
 		unrevokable bool
 	}{
-		{fault: answerLost, checkRequests: 1, releaseRequests: 3, live: true},
-		{fault: answerCut, checkRequests: 1, releaseRequests: 3},
-		{fault: answerPastCap, checkRequests: 1, releaseRequests: 1},
-		{fault: answerPastCapTokenLast, checkRequests: 1, releaseRequests: 1, live: true, unrevokable: true},
-		{fault: answerUndecodable, checkRequests: 1, releaseRequests: 1},
-		{fault: answerNoExpiry, checkRequests: 1, releaseRequests: 1},
+		{name: "an answer lost, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
+		{name: "an answer lost, to a release", narrowing: lean, faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 3, live: 3},
+		{name: "an answer cut off, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 1},
+		{name: "an answer cut off, to a release", narrowing: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 3},
+		{name: "an answer cut off and then a whole one, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerCut}, requests: 1},
+		{name: "an answer cut off and then a whole one, to a release", narrowing: lean, faults: []tokenAnswerFault{answerCut}, requests: 2, live: 1, released: true},
+		{name: "an answer past the cap, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
+		{name: "an answer past the cap, to a release", narrowing: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
+		{name: "an answer past the cap with its token after it, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
+		{name: "an answer past the cap with its token after it, to a release", narrowing: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
+		{name: "an undecodable answer, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, requests: 1},
+		{name: "an undecodable answer, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, requests: 1},
+		{name: "an answer with no expiry, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerNoExpiry}, requests: 1},
+		{name: "an answer with no expiry, to a release", narrowing: lean, faults: []tokenAnswerFault{answerNoExpiry}, requests: 1},
+		{name: "a release of two accounts whose second answer is undecodable", faults: []tokenAnswerFault{answerWhole, answerUndecodable}, requests: 2},
 	} {
-		for _, run := range []struct {
-			name     string
-			check    bool
-			requests int
-		}{
-			{name: "check", check: true, requests: tc.checkRequests},
-			{name: "release", requests: tc.releaseRequests},
-		} {
-			t.Run(fmt.Sprintf("an answer %s, to a %s", tc.fault, run.name), func(t *testing.T) {
-				var logged bytes.Buffer
-				logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-				github := newBreakingGitHub(t, tc.fault)
-				retry, _, _ := testRetry(atTheBottom)
-				app := secrets.GitHubApp{Base: github.service.URL(), HTTP: http.DefaultClient, Retry: retry}
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+			github := newBreakingGitHub(t, tc.faults...)
+			retry, _, _ := testRetry(atTheBottom)
+			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: http.DefaultClient, Retry: retry}
 
-				minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"ada"}, GitHubNarrowing: lean, Check: run.check})
-				if minted.Value != "" || secrets.MintErrorClass(err) != "upstream" {
-					t.Fatalf("the %s answered %q, %v (class %s); want nothing handed over and the upstream's trouble, which lets the request through to its approver",
-						run.name, minted.Value, err, secrets.MintErrorClass(err))
+			owners := []string{"ada"}
+			if tc.narrowing == nil {
+				owners = []string{"acme-org", "ada"}
+			}
+			minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing, Check: tc.check})
+			if tc.released {
+				if err != nil || minted.Value == "" {
+					t.Fatalf("the release answered %v, handing over %d bytes; want a value", err, len(minted.Value))
 				}
-				if made := github.tokenRequests(); made != run.requests {
-					t.Fatalf("the %s sent %d token requests, want %d: each one GitHub answers mints a token", run.name, made, run.requests)
+			} else if minted.Value != "" || secrets.MintErrorClass(err) != "upstream" {
+				t.Fatalf("the run answered %q, %v (class %s); want nothing handed over and the upstream's trouble, which lets the request through to its approver",
+					minted.Value, err, secrets.MintErrorClass(err))
+			}
+			tokens := github.tokens()
+			if len(tokens) != tc.requests {
+				t.Fatalf("the run sent %d token requests, want %d: GitHub mints a token for each one it answers", len(tokens), tc.requests)
+			}
+			for _, token := range tokens {
+				if (err != nil && strings.Contains(err.Error(), token)) || strings.Contains(logged.String(), token) {
+					t.Fatalf("the error %v or the log %q holds a token", err, logged.String())
 				}
-				token := github.lastMinted()
-				if token == "" {
-					t.Fatal("the stand-in minted no token, so the row reads nothing")
+			}
+			live := github.live(t, tokens)
+			if len(live) != tc.live {
+				t.Fatalf("%d of the %d tokens GitHub minted are still live after the run (%q), want %d", len(live), len(tokens), live, tc.live)
+			}
+			if tc.released {
+				var handed mintedGitHubApp
+				if err := json.Unmarshal([]byte(minted.Value), &handed); err != nil {
+					t.Fatalf("the release's value: %v", err)
 				}
-				if strings.Contains(err.Error(), token) || strings.Contains(logged.String(), token) {
-					t.Fatalf("the error %q or the log %q holds the token", err, logged.String())
+				if got := handed.Installations["ada"].Token; len(live) != 1 || got != live[0] || got != tokens[len(tokens)-1] {
+					t.Fatalf("the release handed over the token of request %d of %d; want the last one, the only one left live", indexOf(tokens, got)+1, len(tokens))
 				}
-				want := http.StatusUnauthorized
-				if tc.live {
-					want = http.StatusOK
-				}
-				if status := reachesWith(t, github.service, token); status != want {
-					t.Fatalf("a read made with the token GitHub minted answered %d after the %s, want %d (200 is a token live at GitHub, 401 one given back)",
-						status, run.name, want)
-				}
-				if said := strings.Contains(logged.String(), "so it cannot be revoked"); said != tc.unrevokable {
-					t.Fatalf("log = %q; a line saying the token cannot be revoked: %t, want %t", logged.String(), said, tc.unrevokable)
-				}
-			})
+			}
+			if said := strings.Contains(logged.String(), "so it cannot be revoked"); said != tc.unrevokable {
+				t.Fatalf("log = %q; a line saying the token cannot be revoked: %t, want %t", logged.String(), said, tc.unrevokable)
+			}
+		})
+	}
+}
+
+// indexOf is where token stands in tokens, and -1 where it is none of them.
+func indexOf(tokens []string, token string) int {
+	for i, minted := range tokens {
+		if minted == token {
+			return i
 		}
 	}
+	return -1
 }

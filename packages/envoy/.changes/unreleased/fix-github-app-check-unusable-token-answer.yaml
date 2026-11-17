@@ -1,9 +1,12 @@
 kind: Fixed
 body: |-
-  The broker's check of a GitHub App narrowing before the approval request no longer leaves a token
-  live at GitHub that nobody holds. GitHub mints the token when it answers a token request `201`, so
-  an answer cut off part of the way, past the minter's cap, undecodable or without an expiry now has
-  the token the part that arrived names revoked at GitHub, for a check and a failed release alike,
-  and an answer whose part does not name the token is logged as a token nothing can revoke. A check
-  sends a token request whose answer was lost once rather than again, so a lost answer leaves at
-  most that one token, which lapses within its hour; a release still sends it again.
+  The broker now sends GitHub the revoke of a GitHub App token it minted and hands to nobody.
+  GitHub mints the token when it answers a token request `201`, so for an answer cut off part of
+  the way, past the minter's cap, undecodable or without an expiry, the broker revokes the token
+  the part that arrived names, before it sends the request again or answers; and a release that
+  fails at one installation revokes the tokens it minted for the installations before it. This
+  holds for the check of a narrowing before the approval request and for a release alike. A check
+  sends a token request whose answer was lost once rather than again, so a lost answer leaves one
+  token live, which nothing can name; a release still sends it again. An answer whose arrived part
+  does not name its token, and a revoke GitHub does not confirm, are logged at WARN, and the token
+  stays live until it lapses, within the hour GitHub gives it.

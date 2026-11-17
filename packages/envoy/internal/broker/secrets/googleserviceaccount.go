@@ -205,7 +205,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
-	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit, true)
+	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit, true, nil)
 	if err != nil {
 		return Minted{}, err
 	}

@@ -146,10 +146,14 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 // body can echo the credential the request carried, so a failed call is named by its class alone
 // (transportFailure). A status other than want is a *mintStatusError, returned with the body, so a
 // caller can read the upstream's own reason from it; an answer whose body was read in part, or
-// past limit, is returned with as much of it as was read, so a caller can find what the upstream
-// made in it; every other failure wraps ErrMintUpstream. The error of a failed call is its last
-// attempt's, and carries the number of attempts made (MintAttempts).
-func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64, resendLost bool) ([]byte, error) {
+// past limit, is returned with as much of it as was read; every other failure wraps
+// ErrMintUpstream. answered, where it is not nil, is called with each attempt's answer that came
+// with want but could not be read whole, cut off part of the way or past limit, and that
+// attempt's error, before the call is sent again or answers: the upstream did what was asked, and
+// a call that makes something, as a token request does, gives back what that answer made, which
+// the next attempt's answer would otherwise leave behind (GitHubApp.giveBackHook). The error of a
+// failed call is its last attempt's, and carries the number of attempts made (MintAttempts).
+func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64, resendLost bool, answered func([]byte, error)) ([]byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -161,6 +165,9 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 		mint.count(outcome, attempt)
 		if err == nil {
 			return body, nil
+		}
+		if answered != nil && answeredStatus(err) == want {
+			answered(body, err)
 		}
 		var transport *mintTransportError
 		lost := errors.As(err, &transport)
