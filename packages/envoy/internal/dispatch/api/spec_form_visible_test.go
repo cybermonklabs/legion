@@ -114,10 +114,11 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 }
 
 // The red team's inputs of a form inside a longer word, through the approval request route: a
-// colour, the scope of a package, an SSH address and a person's name joined to a digit open, and
-// the number of a pull request, a handle, an email address and a person's name alone are still
-// refused, also with a letter of another script in them. A bare id names a record, and the
-// refusal says so.
+// colour, the scope of a package, an SSH address in each of its forms, in words and in code font,
+// a path whose first part starts with a stop or a dash, and a person's name joined to a digit
+// open, and the number of a pull request, a handle, an email address and a person's name alone
+// are still refused, also with a letter of another script in them. A bare id names a record, and
+// the refusal says so.
 func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -127,6 +128,24 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 			reads: specform.KindStatement},
 		{name: "the SSH address of a repository", spec: formRequirement("ssh", "Legion clones `git@github.com:owner/repo.git` for each run."),
 			reads: specform.KindStatement},
+		{name: "the SSH address of a repository in words", spec: formRequirement("ssh-words", "Legion clones git@github.com:owner/repo.git for each run."),
+			reads: specform.KindStatement},
+		{name: "the URL form of an SSH address", spec: formRequirement("ssh-url", "Legion clones `ssh://git@github.com/acme/widgets.git` for each run."),
+			reads: specform.KindStatement},
+		{name: "the URL form of an SSH address in words", spec: formRequirement("ssh-url-words", "Legion clones ssh://git@github.com/acme/widgets.git for each run."),
+			reads: specform.KindStatement},
+		{name: "the URL form of an SSH address of a package", spec: formRequirement("git-ssh", "Legion installs `git+ssh://git@github.com/acme/widgets.git` for each run."),
+			reads: specform.KindStatement},
+		{name: "a path whose first part starts with a stop", spec: formRequirement("dot-path", "Dispatch reads `.github/workflows#12` for each run."),
+			reads: specform.KindStatement},
+		{name: "a path whose first part starts with a dash", spec: formRequirement("dash-path", "Dispatch reads -acme/widgets#12 for each run."),
+			reads: specform.KindStatement},
+		{name: "the control: a pull request by its repository", spec: formRequirement("repo", "Dispatch reads acme/widgets#12 for each run."),
+			want: []string{"statement repo pull-request"}},
+		{name: "the control: an email address in brackets, then a colon", spec: formRequirement("mail-brackets", "Dispatch mails the owner (ada@example.com:) each day."),
+			want: []string{"statement mail-brackets person"}},
+		{name: "the control: an email address after mailto:", spec: formRequirement("mailto", "Dispatch mails mailto:ada@example.com each day."),
+			want: []string{"statement mailto person"}},
 		{name: "the control: the number of a pull request", spec: formRequirement("number", "Legion merges each change, as `#12` says."),
 			want: []string{"statement number pull-request"}},
 		{name: "the control: a handle", spec: formRequirement("handle", "Dispatch asks `@legion` about each change."),

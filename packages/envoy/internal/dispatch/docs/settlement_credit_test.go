@@ -1330,12 +1330,12 @@ func closeTestIssue(t *testing.T, service *Service) {
 // after the reopen has to reconcile (MarkReopenOwedAskDocuments): one that holds an ask block no
 // settlement has indexed, the block document of an open ask, or one holding the block of an ask
 // a settlement retracted. It then follows the versions a settlement wrote while the issue was
-// closed (FollowClosedIssueVersions): it moves an open approval request to its document's latest
-// version, carries a standing approval to that version, and forgets the editor a closed issue's
-// settlement kept for each document that owes no settlement. It restores no ask: a test that
-// wants an ask the close withdrew open again writes its row itself. Once that commits, the events
-// the follow appended are published and the reopen is recorded on this service's rooms, as room
-// sync records it on the reopen's notification.
+// closed (ClosedIssueVersions, FollowClosedIssueVersions): it moves an open approval request to its
+// document's latest version, carries a standing approval to that version, and forgets the editor a
+// closed issue's settlement kept for each document that owes no settlement. It restores no ask: a
+// test that wants an ask the close withdrew open again writes its row itself. Once that commits,
+// the events the follow appended are published and the reopen is recorded on this service's
+// rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	var followed []model.Event
@@ -1347,8 +1347,11 @@ func reopenTestIssue(t *testing.T, service *Service) {
 		if err := service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
 			return err
 		}
-		var err error
-		followed, err = service.FollowClosedIssueVersions(ctx, "DOC-1")
+		versions, err := service.ClosedIssueVersions(ctx, "DOC-1")
+		if err != nil {
+			return err
+		}
+		followed, err = service.FollowClosedIssueVersions(ctx, "DOC-1", versions)
 		return err
 	}); err != nil {
 		t.Fatalf("reopen the issue, mark owed its documents whose ask blocks wait for the reopen and follow its closed versions: %v", err)

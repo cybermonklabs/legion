@@ -278,8 +278,8 @@ var DispatchTools = []DispatchTool{
 		Arguments: []ToolField{
 			{Name: "issue", Kind: ToolFieldString, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
 			{Name: "project", Kind: ToolFieldString, Description: "Project key owning the document."},
-			{Name: "artifact", Kind: ToolFieldString, Description: "Optional document artifact id, slug, or filename. Without it, the command reads the spec and the Verification document of the issue."},
-			{Name: "version", Kind: ToolFieldNumber, Description: "Optional version number. Without it, the command reads the latest settled version, which an approval request would name."},
+			{Name: "artifact", Kind: ToolFieldString, Description: "Optional document artifact id, slug, or filename. Without it, the command reads the latest settled version of the spec and of the Verification document of the issue."},
+			{Name: "version", Kind: ToolFieldNumber, Description: "Optional version number of the document that artifact or ref names: a version belongs to one document, so a version with an issue and no artifact is refused. Without it, the command reads the latest settled version, which an approval request would name."},
 			{Name: "root", Kind: ToolFieldString, Description: "An issue key. The command lists each issue under that root, with the form of the spec and the Verification document of each issue. Name no other argument with it."},
 			{Name: "ref", Kind: ToolFieldString, Description: "Optional dispatch:// document reference."},
 		},

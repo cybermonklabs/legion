@@ -464,7 +464,9 @@ func (e *extraction) read(nodes []*pmdoc.Node) reading {
 // without its address, an image's alternative text, a hard break as a space (a soft one is a
 // space in the tree), and code in code font, as ste-lint reads code. Its shown words are the same
 // with code as its characters alone, as the page shows them. A footnote reference is no word: the
-// footnote is part of the text (note). It holds the address and the title of each link and image.
+// footnote is part of the text (note). It holds the address and the title of each link and image
+// (linkHeld). These are the three readings of a text that the reference rules judge (breaks):
+// the shown words, each title as words, and each address as an address.
 func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 	var out reading
 	var words, shown strings.Builder
@@ -478,30 +480,22 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 			var code strings.Builder
 			for ; index < len(nodes) && nodes[index].Type == "text" && hasMark(nodes[index], "inlineCode"); index++ {
 				code.WriteString(nodes[index].Text)
-				out.held = linkHeld(out.held, nodes[index])
+				out.held = linkHeld(out.held, nodes, index)
 			}
 			words.WriteString(codeSpan(code.String()))
 			shown.WriteString(code.String())
 			continue
 		}
-		out.held = linkHeld(out.held, node)
+		out.held = linkHeld(out.held, nodes, index)
+		write(shownWords(node))
 		switch node.Type {
-		case "text":
-			write(node.Text)
-		case "hardbreak":
-			write(" ")
 		case "image":
-			alt, _ := node.Attrs["alt"].(string)
 			src, _ := node.Attrs["src"].(string)
 			title, _ := node.Attrs["title"].(string)
-			write(alt)
 			out.held = out.held.withAddress(src).withTitle(title)
 		case "footnote_reference":
 			label, _ := node.Attrs["label"].(string)
 			out.notes = append(out.notes, pmdoc.FootnoteLabelKey(label))
-		case "html":
-			value, _ := node.Attrs["value"].(string)
-			write(value)
 		}
 		index++
 	}
@@ -509,16 +503,62 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 	return out
 }
 
-// linkHeld is held with the address and the title of the link that node carries, if any.
-func linkHeld(held Held, node *pmdoc.Node) Held {
-	for _, mark := range node.Marks {
-		if mark.Type == "link" {
-			href, _ := mark.Attrs["href"].(string)
-			title, _ := mark.Attrs["title"].(string)
-			return held.withAddress(href).withTitle(title)
+// linkHeld is held with the address and the title of the link that starts at nodes[index]: the
+// link of that node, which the node before it does not carry. A link is the nodes in a row that
+// carry it. A link whose address is its own shown words, with or without "mailto:", is an
+// autolink, the form in which Dispatch stores an address or an email address that the words hold:
+// its address is judged one time, in the shown words, where its neighbours are, so it holds its
+// title alone.
+func linkHeld(held Held, nodes []*pmdoc.Node, index int) Held {
+	href, title, ok := link(nodes[index])
+	if !ok {
+		return held
+	}
+	if index > 0 {
+		if before, beforeTitle, carried := link(nodes[index-1]); carried && before == href && beforeTitle == title {
+			return held
 		}
 	}
-	return held
+	var words strings.Builder
+	for _, node := range nodes[index:] {
+		if next, nextTitle, carried := link(node); !carried || next != href || nextTitle != title {
+			break
+		}
+		words.WriteString(shownWords(node))
+	}
+	if shown := words.String(); href != shown && href != "mailto:"+shown {
+		held = held.withAddress(href)
+	}
+	return held.withTitle(title)
+}
+
+// link is the address and the title of the link that node carries, and whether it carries one.
+func link(node *pmdoc.Node) (href, title string, ok bool) {
+	for _, mark := range node.Marks {
+		if mark.Type == "link" {
+			href, _ = mark.Attrs["href"].(string)
+			title, _ = mark.Attrs["title"].(string)
+			return href, title, true
+		}
+	}
+	return "", "", false
+}
+
+// shownWords is the words that the page shows for one inline node (inline): a run's characters,
+// code among them, a space for a hard break, an image's alternative text and inline HTML.
+func shownWords(node *pmdoc.Node) string {
+	var value string
+	switch node.Type {
+	case "text":
+		return node.Text
+	case "hardbreak":
+		return " "
+	case "image":
+		value, _ = node.Attrs["alt"].(string)
+	case "html":
+		value, _ = node.Attrs["value"].(string)
+	}
+	return value
 }
 
 // codeSpan is code in code font: between runs of backticks longer than any run in it, with a space

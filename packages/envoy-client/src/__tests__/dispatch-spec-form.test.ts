@@ -514,6 +514,42 @@ describe("dispatch spec-form", () => {
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form?version=2"]);
   });
 
+  test("--version with an issue and no --artifact is refused before any request, since a version belongs to one document", async () => {
+    forms["ACME-5-spec"] = formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 1 });
+    forms["ACME-5-verification"] = formRead("ACME-5-verification", "verification.md", 3, "covered", {
+      claim: 1,
+    });
+
+    for (const argv of [
+      ["spec-form", "ACME-5", "--version", "1"],
+      ["spec-form", "--issue", "ACME-5", "--version", "1"],
+    ]) {
+      requests.length = 0;
+      const { code, stdout } = await run(argv);
+
+      expect(code, argv.join(" ")).toBe(2);
+      expect(stdout, argv.join(" ")).toContain(
+        "A version number belongs to one document, and an issue has several: with version, name the document with artifact (--artifact)."
+      );
+      expect(requests, argv.join(" ")).toEqual([]);
+    }
+    requests.length = 0;
+    const error: unknown = await executeDispatchTool({
+      tool: "dispatch_spec_form",
+      args: { issue: "ACME-5", version: 1 },
+      cwd: stateDir,
+      host: "omp",
+      sessionId: "ses-1",
+      config: {
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential("test-token"),
+      },
+      env: {},
+    }).catch((thrown: unknown) => thrown);
+    expect(String(error)).toContain("with version, name the document with artifact (--artifact)");
+    expect(requests).toEqual([]);
+  });
+
   test("with no --artifact, it prints the spec and the Verification document of the issue and leaves notes.md out", async () => {
     forms["ACME-5-spec"] = formRead("ACME-5-spec", "spec.md", 3, "covered", {
       statement: 2,

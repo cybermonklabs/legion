@@ -1,10 +1,13 @@
 package ste
 
 import (
+	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"unicode"
+	"unicode/utf8"
 )
 
 // sameFindings reports whether got and want hold the same findings in the same order, a nil
@@ -169,5 +172,73 @@ func TestSpaceIsPythonsWhitespace(t *testing.T) {
 	}
 	if isSpace('\u200b') {
 		t.Errorf("U+200B is no Python whitespace, and isSpace says it is")
+	}
+}
+
+// walksOfALine is how many times Lint may count each character of a line that is no table row and
+// no list item: each walk counts a character at most once (columns), and Lint walks such a line at
+// most five times, for the semicolons, for each of the three patterns and for the first places of
+// the members of the synonym groups. A walk that counts each finding's column from the start of
+// its line again counts about n*n/2 characters for n findings, which no constant times the line
+// meets.
+const walksOfALine = 5
+
+// TestEachRuleThatWalksMatchesCountsEachCharacterOfALineOnce holds Lint to a bounded count of the
+// characters it counts on a line, for each hard rule that walks its matches: each semicolon, each
+// phrasal verb, marketing adjective and nominalization, and the first place of each member of a
+// synonym group, which stand after words of "é" here. An agent's document can hold such a line,
+// and the approval request holds its transaction while Lint reads it. The test counts the
+// characters, which no load of the machine changes: every count of Lint goes through runes, the
+// one call of utf8.RuneCountInString in ste.go, so the test reads that file too.
+func TestEachRuleThatWalksMatchesCountsEachCharacterOfALineOnce(t *testing.T) {
+	source, err := os.ReadFile("ste.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := strings.Count(string(source), "utf8.RuneCountInString"); calls != 1 {
+		t.Fatalf("ste.go names utf8.RuneCountInString %d times, want once, in runes, which this test counts through", calls)
+	}
+	var data ruleData
+	if err := json.Unmarshal(rulesJSON, &data); err != nil {
+		t.Fatal(err)
+	}
+	var members []string
+	rotations := 0
+	for _, group := range data.SynonymGroups {
+		members = append(members, group...)
+		rotations += len(group) - 1
+	}
+	words := strings.Repeat("éé ", 4_000)
+	for _, test := range []struct {
+		rule, line string
+		findings   int
+	}{
+		{"semicolon", "Dispatch " + strings.Repeat(";", 10_000) + " stores each comment.", 10_000},
+		{"phrasal-verb", words + strings.Repeat("spin up ", 2_000), 2_000},
+		{"marketing-adjective", words + strings.Repeat("robust ", 2_000), 2_000},
+		{"nominalization", words + strings.Repeat("perform a xtion ", 2_000), 2_000},
+		{"synonym-rotation", words + strings.Join(members, " "), rotations},
+	} {
+		t.Run(test.rule, func(t *testing.T) {
+			counted := 0
+			runes = func(s string) int {
+				counted += len(s)
+				return utf8.RuneCountInString(s)
+			}
+			t.Cleanup(func() { runes = utf8.RuneCountInString })
+			count := 0
+			for _, finding := range Lint(test.line) {
+				if finding.Rule == test.rule {
+					count++
+				}
+			}
+			t.Logf("%d bytes, %d findings of %s, %d bytes counted", len(test.line), count, test.rule, counted)
+			if count != test.findings {
+				t.Fatalf("Lint gave %d findings of %s, want %d", count, test.rule, test.findings)
+			}
+			if counted > walksOfALine*len(test.line) {
+				t.Fatalf("Lint counted %d bytes of a line of %d bytes, want at most %d walks of it", counted, len(test.line), walksOfALine)
+			}
+		})
 	}
 }

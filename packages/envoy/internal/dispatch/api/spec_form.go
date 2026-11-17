@@ -26,10 +26,10 @@ import (
 // review route and her answer to an approval request (writeApprovalReviews), and the carry of an
 // approval to a new version (carryBreaksForm, docs.FormGate), which carries nothing over a break.
 // Two calls read findings and refuse nothing: the read route (getArtifactSpecForm) and the
-// restore of a reopen and of the repair pass (restoreIssueAsksTx), which leaves a broken approval
-// request resolved rather than open it again. Every route that opens an approval request or
-// answers one reaches one of these calls; TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds
-// the code to that census.
+// restore of a reopen and of the repair pass (restoreIssueAsksTx), which judges a request at the
+// versions it names once the reopen ends and leaves a broken approval request resolved rather
+// than open it again. Every route that opens an approval request or answers one reaches one of
+// these calls; TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
 //
 // One way past the gate stays open, and it is known: an approval given before the setting named
 // the root, or while the issue stood outside it, never passed the gate, and a reparent out of a

@@ -127,6 +127,42 @@ func TestTheRulesJudgeTheWordsAndTheReferenceRulesTheAddresses(t *testing.T) {
 	})
 }
 
+// A link whose address is its own shown words, with or without "mailto:", is an autolink: the
+// form in which Dispatch stores an address or an email address that the words hold. It is judged
+// one time, in the words of the page, where its neighbours are. So the SSH address of a
+// repository opens in each of its forms, in words as in code font, and each form of an email
+// address of a person is refused. A link whose words and address differ is judged in both.
+func TestAnAutolinkIsJudgedOnceInTheWordsOfThePage(t *testing.T) {
+	requireJudged(t, []judgedRow{
+		{"an SSH address in words", requirement("scp", "Legion clones git@github.com:owner/repo.git for each run."),
+			nil, "", "", ""},
+		{"an SSH address in words, at the end", requirement("scp-end", "Legion clones each repository from git@github.com:owner/repo.git"),
+			nil, "", "", ""},
+		{"the URL form of an SSH address in words", requirement("ssh", "Legion clones ssh://git@github.com/acme/widgets.git for each run."),
+			nil, "", "", ""},
+		{"the URL form of an SSH address of a package in words", requirement("git-ssh", "Legion installs git+ssh://git@github.com/acme/widgets.git for each run."),
+			nil, "", "", ""},
+		{"the URL form of an SSH address in code font", requirement("ssh-code", "Legion clones `ssh://git@github.com/acme/widgets.git` for each run."),
+			nil, "", "", ""},
+		{"an email address in words", requirement("mail", "Dispatch mails ada@example.com each day."),
+			[]string{"statement mail person"}, "", "", ""},
+		{"an email address after mailto: in words", requirement("mailto", "Dispatch mails mailto:ada@example.com each day."),
+			[]string{"statement mailto person"}, "", "", ""},
+		{"an email address in angle brackets", requirement("angle", "Dispatch mails <ada@example.com> each day."),
+			[]string{"statement angle person"}, "", "", ""},
+		{"a link whose words are its address", requirement("same", "Dispatch mails [ada@example.com](mailto:ada@example.com) each day."),
+			[]string{"statement same person"}, "", "", ""},
+		{"an email address in brackets, then a colon", requirement("colon", "Dispatch mails the owner (ada@example.com:) each day."),
+			[]string{"statement colon person"}, "", "", ""},
+		{"a link whose words and address differ, read in its address", requirement("address", "Legion clones [git@github.com:owner/repo.git](mailto:git@github.com) for each run."),
+			[]string{"statement address person"}, "", "", ""},
+		{"a link whose words and address differ, read in its words", requirement("words", "Dispatch mails [ada@example.com](https://example.com/contact) each day."),
+			[]string{"statement words person"}, "", "", ""},
+		{"the control: the address of a pull request in words", requirement("pr", "Legion lands https://github.com/acme/legion/pull/12 today."),
+			[]string{"statement pr pull-request"}, "", "", ""},
+	})
+}
+
 // The red team's two inputs of a part of Terms and a container, with their controls: a heading in
 // a block quote does not close the part of Terms around the quote, and a part of Terms in a block
 // quote or a callout ends with the quote or the callout.

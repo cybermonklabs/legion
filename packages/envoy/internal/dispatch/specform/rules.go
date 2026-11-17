@@ -96,21 +96,23 @@ var (
 	// incident, pullRequestName and pullRequestRepo name a record only by a form that only a name
 	// has: "#" and digits, the word "number" and digits, an incident's key or date, and a pull
 	// request's <owner>/<repo>#<digits>, which no "/", "." or "-" comes before, since that is a
-	// longer path. A bare number after the words is a count, such as "each pull request 10 minutes
-	// after", and names nothing. pullRequestAddress is the address of a pull request, the one form
-	// of a name that an address holds: its host is github.com or www.github.com in any case, as a
-	// host has no case, which no "." or "-" comes before, so github.com at the end of another host
-	// names nothing.
+	// longer path, and whose owner starts with a letter or a digit, as GitHub's owner does. A bare
+	// number after the words is a count, such as "each pull request 10 minutes after", and names
+	// nothing. pullRequestAddress is the address of a pull request, the one form of a name that an
+	// address holds: its host is github.com or www.github.com in any case, as a host has no case,
+	// which no "." or "-" comes before, so github.com at the end of another host names nothing.
 	incident = newWordForm(`(?i:incident\s*#[0-9]+|incident\s+(?:number\s+#?[0-9]+|[0-9]{4}-[0-9]{2}-[0-9]{2}|\p{L}[`+
 		wordClass+`]*-[0-9]+))|INC-[0-9]+`, "", "")
 	pullRequestName    = newWordForm(`(?i:(?:pr|pull request)(?:\s*#[0-9]+|\s+number\s+#?[0-9]+))|#[0-9]+`, "", "")
-	pullRequestRepo    = newWordForm(`[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#[0-9]+`, `./\-`, "")
+	pullRequestRepo    = newWordForm(`[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+#[0-9]+`, `./\-`, "")
 	pullRequestAddress = newWordForm(`(?i:(?:www\.)?github\.com)/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/pull/[0-9]+`, `.\-`, "")
 	// email is an e-mail address: its domain's last label is letters, so a version after an at
 	// sign, as in "checker@v1.2.3", is no address. Its local part and its domain take the letters
-	// beside them, so a letter there makes a longer address. A ":" that no white space follows
-	// continues it, as the host and the path of an SSH address, "git@github.com:owner/repo.git".
-	email = newWordForm(`[`+wordClass+`.+\-]+@(?:[`+wordClass+`\-]+\.)+\p{L}[\p{L}\p{M}]+`, "", `:[^\s\p{Z}]`)
+	// beside them, so a letter there makes a longer address. An email address is a whole word, and
+	// no email address where it is part of a longer address: a "/" before it, as the user of a URL
+	// ("ssh://git@github.com/owner/repo.git"), or a ":" and a character of a path after it, as the
+	// host of an SSH address ("git@github.com:owner/repo.git").
+	email = newWordForm(`[`+wordClass+`.+\-]+@(?:[`+wordClass+`\-]+\.)+\p{L}[\p{L}\p{M}]+`, "/", `:[`+wordClass+`/~.\-]`)
 	// handle is an @handle, which no "@" comes before and no "/" or "@" comes after, so the scope
 	// of a package such as "@types/node" is no handle.
 	handle = newWordForm(`@\p{L}[`+wordClass+`\-]*`, "@", `[/@]`)

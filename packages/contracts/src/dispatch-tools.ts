@@ -178,28 +178,44 @@ const artifactOwner = documentOwnerValidation(false);
 const SPEC_FORM_ROOT_RULE =
   "root walks every issue under that root: name no issue, project, artifact, version or ref with it.";
 
+/**
+ * What dispatch_spec_form says of a version that no argument names the document of: a version
+ * number belongs to one document, and an issue has several, the spec and the Verification
+ * document among them, each with versions of its own.
+ */
+const SPEC_FORM_VERSION_RULE =
+  "A version number belongs to one document, and an issue has several: with version, name the document with artifact (--artifact).";
+
 /** The arguments that name one document, which a walk of a root takes none of. */
 const SPEC_FORM_DOCUMENT_ARGUMENTS = ["issue", "project", "artifact", "version", "ref"] as const;
 
 const specFormDocumentOwner = documentOwnerValidation(true);
 
 /**
- * dispatch_spec_form reads one document, or the spec and the Verification document of one issue,
- * under the document-owner rule. With root, it walks the issues under that root, which names them
- * all, so no argument that names a document goes beside it. The schema hands each callback the
- * parsed arguments object.
+ * The refusal of the part of dispatch_spec_form's rule that `value` breaks, or undefined when it
+ * keeps the rule. It reads one document, or the spec and the Verification document of one issue,
+ * under the document-owner rule, and a version only of a document that artifact or ref names.
+ * With root, it walks the issues under that root, which names them all, so no argument that names
+ * a document goes beside it. The schema hands each callback the parsed arguments object.
  */
+function specFormRefusal(value: unknown): string | undefined {
+  const input = value as Readonly<Record<string, unknown>>;
+  if (input["root"] !== undefined) {
+    return SPEC_FORM_DOCUMENT_ARGUMENTS.every((name) => input[name] === undefined) ? undefined : SPEC_FORM_ROOT_RULE;
+  }
+  return brokenParts([
+    [specFormDocumentOwner.check(value), specFormDocumentOwner.message],
+    [
+      input["version"] === undefined || typeof input["artifact"] === "string" || typeof input["ref"] === "string",
+      SPEC_FORM_VERSION_RULE,
+    ],
+  ]);
+}
+
 const specFormValidation: NonNullable<DispatchToolSpec["validation"]> = {
-  check: (value) => {
-    const input = value as Readonly<Record<string, unknown>>;
-    if (input["root"] === undefined) return specFormDocumentOwner.check(value);
-    return SPEC_FORM_DOCUMENT_ARGUMENTS.every((name) => input[name] === undefined);
-  },
-  message: `${specFormDocumentOwner.message} ${SPEC_FORM_ROOT_RULE}`,
-  refusal: (value) => {
-    const input = value as Readonly<Record<string, unknown>>;
-    return input["root"] === undefined ? specFormDocumentOwner.message : SPEC_FORM_ROOT_RULE;
-  },
+  check: (value) => specFormRefusal(value) === undefined,
+  message: `${specFormDocumentOwner.message} ${SPEC_FORM_VERSION_RULE} ${SPEC_FORM_ROOT_RULE}`,
+  refusal: specFormRefusal,
 };
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
@@ -1530,13 +1546,13 @@ export const dispatchToolSpecs = [
       artifact: z
         .string()
         .describe(
-          "Optional document artifact id, slug, or filename. Without it, the command reads the spec and the Verification document of the issue."
+          "Optional document artifact id, slug, or filename. Without it, the command reads the latest settled version of the spec and of the Verification document of the issue."
         )
         .optional(),
       version: z
         .number({ int: true, min: 1 })
         .describe(
-          "Optional version number. Without it, the command reads the latest settled version, which an approval request would name."
+          "Optional version number of the document that artifact or ref names: a version belongs to one document, so a version with an issue and no artifact is refused. Without it, the command reads the latest settled version, which an approval request would name."
         )
         .optional(),
       root: z
