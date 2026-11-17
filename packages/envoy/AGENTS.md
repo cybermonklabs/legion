@@ -356,6 +356,19 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
+- **Step records of an issue**: `internal/dispatch/api/steps.go`, `internal/dispatch/workflowstore/`, `store/migrations/20261116235202_workflow_nodes.up.sql`
+
+  The Legion daemon writes each run of each step of an issue twice, at its start and at its end, under one id it derives for the run, with `PUT /api/v1/issues/{key}/steps/{id}`;
+  only the session `legion-daemon:<PROJECT>` of the issue's project writes (`403 STEP_WRITER`), as the daemon's `DaemonSession` names it from the key.
+  A write sets each field the record does not hold yet and leaves every field it holds, so a start and an end land in either order, a write sent again changes nothing and no write is refused for its order;
+  the first write of a run names its task, step, kind, role and generation (`400 STEP_INPUT`, as every value outside its form, the message naming the field).
+  An id whose record is a run of another issue is `409 STEP_OTHER_ISSUE`, and an issue Dispatch does not hold `404 ISSUE_NOT_FOUND`, which the daemon tells from the router's `NOT_FOUND` of a Dispatch older than the route.
+  The write reads the issue `for key share` with no open check, so the merge that closes an issue still records its step, and it appends no issue event.
+  `GET /api/v1/issues/{key}/steps` answers every run task by task, in the order of each task's first run, each with its attempt, which the read computes and no write stores;
+  a key no issue carries reads as an issue with no task, as its handoffs read, and a read-only token may call it (`readScopeRoutes`).
+  `workflowstore` is the one writer of the two tables, a node per run and a tuple per fact.
+  Shapes: `StepRecord`, `StepTask`, `IssueSteps` in `internal/dispatch/model/model.go`, generated into `packages/contracts/src/dispatch-api.generated.ts`
+
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;

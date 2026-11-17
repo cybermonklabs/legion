@@ -1,5 +1,5 @@
 {
-  "commands": 35,
+  "commands": 36,
   "refusals": 29,
   "runs": [
     {
@@ -1781,6 +1781,30 @@
       "outcome": "result",
       "text": [
         "Sent message 01234567-0000-4000-8000-000000000001 to session 01234567-0000-4000-8000-000000000001; it reached that session as aside. dispatch read --message 01234567-0000-4000-8000-000000000001 reads the conversation back."
+      ]
+    },
+    {
+      "tool": "dispatch_steps",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/steps",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1: 2 steps in 1 tasks",
+        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed",
+        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running"
       ]
     },
     {

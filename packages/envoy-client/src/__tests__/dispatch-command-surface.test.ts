@@ -382,6 +382,55 @@ function handoffBody() {
   };
 }
 
+/** `GET /api/v1/issues/{key}/steps`: one ended run and one still running, so the record holds a
+ *  line of each and the `-` of a field with no value. */
+function stepsBody() {
+  const run = {
+    issue: ISSUE,
+    task: "default",
+    kind: "step",
+    session: SESSION,
+    generation: 1,
+    attempt: 1,
+    returned_to: null,
+    report: null,
+  };
+  return {
+    issue: ISSUE,
+    tasks: [
+      {
+        task: "default",
+        steps: [
+          {
+            ...run,
+            id: UUID,
+            step: 2,
+            role: "implementer",
+            type: "implementation",
+            agent: "legion-dsp-dsp-1-implementer",
+            model: "anthropic/claude-opus-5",
+            started_at: AT,
+            ended_at: AT,
+            result: "passed",
+          },
+          {
+            ...run,
+            id: OTHER_UUID,
+            step: 3,
+            role: "tester",
+            type: "testing",
+            agent: "legion-dsp-dsp-1-tester",
+            model: "",
+            started_at: AT,
+            ended_at: null,
+            result: "",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function architectureSource() {
   return {
     project: "CORE",
@@ -574,6 +623,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "handoffs") return response([]);
     if (segments[4] === "handoffs" && method === "POST") return response(handoffBody(), 201);
     if (segments[4] === "handoffs") return response(handoffBody());
+    if (rest === "steps") return response(stepsBody());
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
     if (rest === "" && method === "GET") return response(artifactBody("spec.md"));

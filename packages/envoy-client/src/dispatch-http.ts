@@ -51,6 +51,7 @@ import type {
   IssueRead,
   IssueReferences,
   IssueRouteStatus,
+  IssueSteps,
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
@@ -1806,6 +1807,13 @@ export class DispatchClient {
   /** `GET /api/v1/handoffs/{id}`: one handoff by id, with its body. */
   async handoff(id: string): Promise<Handoff> {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
+  }
+
+  /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the
+   *  order each task first ran, each with the attempt the read computes. An issue Dispatch does
+   *  not hold answers with no task, as its handoffs read. */
+  async listSteps(issue: string): Promise<IssueSteps> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

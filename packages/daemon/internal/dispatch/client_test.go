@@ -370,6 +370,45 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 	}
 }
 
+// A step record is a PUT on the record's own id under its issue, as the daemon's session of the
+// issue's project, the one session Dispatch's route takes a record from. Dispatch writes each field
+// once and keeps what a write leaves out, so the body names every identity field, an empty type
+// and a place of 0 among them, and leaves out each field the daemon does not know yet.
+func TestPutStepWritesTheRecordUnderTheDaemonSession(t *testing.T) {
+	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
+	started := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	var body map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/steps/"+id {
+			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/steps/%s", r.Method, r.URL.EscapedPath(), id)
+		}
+		assertBearer(t, r)
+		decodeJSON(t, r, &body)
+		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
+	}))
+	defer server.Close()
+
+	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-leg-leg-1-implementer", Generation: 2, StartedAt: &started}
+	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
+		t.Fatalf("write the step record: %v", err)
+	}
+	for name, want := range map[string]string{
+		"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`, "type": `""`,
+		"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "started_at": `"2026-11-16T23:00:00Z"`,
+		"actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
+	} {
+		if got := string(body[name]); got != want {
+			t.Errorf("the body writes %s as %q, want %s", name, got, want)
+		}
+	}
+	for _, name := range []string{"id", "session", "model", "ended_at", "result", "returned_to", "report"} {
+		if raw, ok := body[name]; ok {
+			t.Errorf("the body writes %s as %s, want it left out", name, raw)
+		}
+	}
+}
+
 func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/messages" {

@@ -4,7 +4,7 @@ import type { IssueTab } from "../refs/routes";
 /** The issue tablist's tabs, in the order a reader meets them, and nothing that renders them.
  *  The loading skeleton in `app.tsx` stands in for the tablist and so needs these labels, but it
  *  is in the shell every page loads: were this list in `IssueTabs.tsx`, the `Tabs` component and
- *  the `Pill` it draws counts with would load with the shell to supply nine strings. Everything
+ *  the `Pill` it draws counts with would load with the shell to supply ten strings. Everything
  *  here is data and types, so the shell takes the list alone and the tablist itself stays in the
  *  issue page's own chunk. */
 export function issueTabs(artifactCount: number): readonly TabDefinition<IssueTab>[] {
@@ -12,6 +12,7 @@ export function issueTabs(artifactCount: number): readonly TabDefinition<IssueTa
     { id: "spec", label: "Spec" },
     { id: "verification", label: "Verification" },
     { id: "plan", label: "Plan" },
+    { id: "steps", label: "Steps" },
     { id: "conversation", label: "Conversation" },
     { id: "children", label: "Children" },
     artifactCount === 0

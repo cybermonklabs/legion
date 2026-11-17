@@ -48,6 +48,9 @@ type Client interface {
 	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
 	// gates record none.
 	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
+	// steps. Dispatch writes each field once and keeps every field the write leaves out.
+	PutStep(ctx context.Context, key, id string, write StepWrite) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -69,6 +72,28 @@ type RepoProject struct {
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
+}
+
+// StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:
+// every identity field of the step, written whatever its value, and each field the write may not
+// know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
+// leaves out, so an empty value written where nil was meant would stand for good. It mirrors the
+// record's own StepRecord, because this package imports no record of the daemon's.
+type StepWrite struct {
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -344,6 +369,16 @@ const (
 // one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
 // change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
+
+// StepInput, StepWriter and StepOtherIssue are Dispatch's own spellings of three refusals of a step
+// record's write, each final: a value outside what the route takes (400), a writer that is not the
+// session of the issue's project's daemon (403), and an id that is a record of another issue (409).
+// No mechanism shares a value between this module and Dispatch's, so the spellings change together.
+const (
+	StepInput      = "STEP_INPUT"
+	StepWriter     = "STEP_WRITER"
+	StepOtherIssue = "STEP_OTHER_ISSUE"
+)
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal

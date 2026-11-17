@@ -476,6 +476,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.status(ctx, tx, issue, status); err != nil {
 		return nil, err
 	}
+	// The merge ends the merge step the linger left open (beginLinger), passed: no transition runs
+	// in a lingering tree, so this write is the step's end.
+	if err := e.endStep(ctx, tx, issue, StepEnd{Result: "passed"}); err != nil {
+		return nil, err
+	}
 	issue.Phase, issue.Hold = row.To, nil
 	if status != "" {
 		issue.Status = status

@@ -385,6 +385,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.StepRecord:
+		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
+		// never take, a writer its route refuses or an id of another issue, and the work the
+		// record is of went on without it. The line is what says the record is not in Dispatch,
+		// since nothing else would. The refusal is read as Dispatch's own error, not through
+		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER.
+		var refusal *dispatch.Error
+		if !errors.As(cause, &refusal) {
+			refusal = &dispatch.Error{}
+		}
+		told = func() {
+			r.log.Warn("outbox step record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+				"step", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -593,7 +607,8 @@ func retryBackoff(attempts int) time.Duration {
 // this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
 // purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
 // refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
-// stay permanent and end the row.
+// stay permanent and end the row. A step record ends on exactly the refusals its route makes for
+// good (stepRecordRefused), so the old router's NOT_FOUND and a credential answer retry.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
@@ -609,6 +624,8 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
 		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
+	case record.OutboxKindStepRecord:
+		return stepRecordRefused(err)
 	default:
 		return false
 	}
@@ -675,6 +692,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.publishGatedSteps(ctx, value)
 	case record.DesignGatesPublish:
 		return r.publishDesignGates(ctx, value)
+	case record.StepRecord:
+		return r.publishStepRecord(ctx, row, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.CheckWakeDue:
@@ -1140,6 +1159,55 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
 	}
 	return nil
+}
+
+// publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
+// row's issue and the record's own id. Dispatch writes each field once and keeps what the write
+// leaves out, so the start and the end land in either order, and a write that runs again after a
+// lost answer changes nothing.
+//
+// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
+// and nothing here treats that as final (permanentRefusal): the lane's backoff holds the row
+// until the server has the route, which is what lets the daemon and Dispatch deploy in either
+// order.
+func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
+	if r.dispatch == nil {
+		return errors.New("step record executor has no Dispatch client")
+	}
+	write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
+		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
+		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
+		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
+	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {
+		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// stepRecordRefused is whether Dispatch refused a step record in a way no retry changes: an issue
+// it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400 the shared rule
+// calls final, which leaves out an older Dispatch's refusal of a field this daemon added), a
+// writer its route refuses (403 STEP_WRITER: the daemon names its own session on every write, so
+// the route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE).
+// Everything else retries: the old router's NOT_FOUND, an outage, "come back later", a codeless
+// answer and a credential an operator restores.
+func stepRecordRefused(err error) bool {
+	var refusal *dispatch.Error
+	if !errors.As(err, &refusal) {
+		return false
+	}
+	switch refusal.Status {
+	case http.StatusNotFound:
+		return refusal.Code == dispatch.IssueNotFound
+	case http.StatusBadRequest:
+		_, permanent := dispatch.PermanentRefusal(err)
+		return permanent
+	case http.StatusForbidden:
+		return refusal.Code == dispatch.StepWriter
+	case http.StatusConflict:
+		return refusal.Code == dispatch.StepOtherIssue
+	}
+	return false
 }
 
 // consumeHandover applies the hand-over to the record once Dispatch shows it: the row's hand-over

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
@@ -52,9 +54,12 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
+	// record of that step (StepRecord).
+	OutboxKindStepRecord OutboxKind = "step_record"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -80,6 +85,10 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
+// The record lane runs the writes of the issue's step records (step_record) on a lane of its own,
+// so a Dispatch that is slow to take a record, or one that backs a record off until it has the
+// route, delays no status write, notice or start of that issue: a record is history, and the work
+// it records never waits for it.
 type OutboxLane string
 
 const (
@@ -87,6 +96,7 @@ const (
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
+	LaneRecord      OutboxLane = "record"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -96,6 +106,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
+	LaneRecord:      {OutboxKindStepRecord},
 }
 
 // LaneOf is the lane that runs kind.
@@ -1044,6 +1055,38 @@ type DesignGateDocument struct {
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
 
+// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
+// /api/v1/issues/{key}/steps/{id}): the start of the step, or its end. ID is the record's id, a
+// uuid the start and the end of one run of the step both compute, and the row's issue column is the
+// issue. Each other field is a field of the route's body under the same name.
+//
+// Dispatch writes each field once and keeps every field a write leaves out, so the start and the
+// end merge in either order and a write that runs again changes nothing. That makes a field left
+// out and a field written empty two different writes: a start that wrote the model as "" would
+// keep the end's model off the record for good. So every write carries the identity of the step
+// (task, step, kind, role, type, agent and generation), the empty type of a retro or a merge and
+// the place 0 of either included, and each field a write may not know yet is a pointer, nil for
+// one the write leaves to the other.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+}
+
+func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
+
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
@@ -1470,6 +1513,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindStepRecord:
+		value := StepRecord{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindClaimRelease:
 		value := ClaimRelease{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1726,6 +1775,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case MergeQueueRead:
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
+		}
+	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
+	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
+	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
+	// the row retries for ever, and a write without the step's identity is refused only when it is
+	// the record's first, so the same defect would make a record on one run and none on another.
+	case StepRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
+		}
+		if value.Task == "" || value.Kind == "" || value.Role == "" {
+			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
 		}
 	case MergeQueueRemoval:
 		if value.Number < 1 || value.Head == "" {

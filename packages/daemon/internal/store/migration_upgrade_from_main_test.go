@@ -68,6 +68,11 @@ import (
 // as one of main's own. It creates experiment_assignments and fills it from the issues' memory
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
+// The kind list with the step record (20261117000528) is named here too: it stands above every
+// other version of the list, so an upgrade applies it last, and it restates
+// 20261114031356's kinds with step_record, so it is the last word of outbox_kind_check. The count
+// of starts of each step (20261117004117) creates a table of its own and touches no
+// outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -75,7 +80,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900,
+	20261114061900, 20261117000528, 20261117004117,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

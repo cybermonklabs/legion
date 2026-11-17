@@ -122,6 +122,16 @@ type LateRefusal struct {
 	ConnSequence uint64
 }
 
+// Answered is OMP's message_end of an assistant message: the model that answered, under
+// message.provider and message.model, which is the model that really served the turn, also after a
+// fallback moved it off the one the session started with. A message no model wrote names none (an
+// empty model, or Claude Code's `<synthetic>` through the bridge) and is no Answered. It carries
+// nothing of the message's text.
+type Answered struct {
+	Claim           claim.Token
+	Provider, Model string
+}
+
 // Closed is a registered connection gone, whichever side ended it. It is emitted exactly once
 // per Hello, after every other event of that connection and before the Hello of any connection
 // that replaces it.
@@ -135,6 +145,7 @@ func (TurnEnd) isEvent()      {}
 func (ToolStep) isEvent()     {}
 func (PromptResult) isEvent() {}
 func (LateRefusal) isEvent()  {}
+func (Answered) isEvent()     {}
 func (Closed) isEvent()       {}
 
 // eventQueue is the ordered, unbounded hand-off between every connection's reader and the one

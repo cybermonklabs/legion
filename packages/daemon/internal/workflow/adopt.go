@@ -255,6 +255,10 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if member.Generation == ^uint64(0) {
 		return fmt.Errorf("adopt %s into %s: generation overflows", member.Key, root.Tree)
 	}
+	// The next generation ends the step of the run the member leaves.
+	if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
+		return err
+	}
 	fact := RecordedFact(member)
 	if child.Issue == member.Key {
 		member.Parent = record.ParentOf(child.Parent)

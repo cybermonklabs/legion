@@ -78,6 +78,13 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			}
 			return e.leaveUnderOperator(ctx, tx, issue, status)
 		}
+		// The departure stops the root's step, a held one's included (record.StandsAt), where the
+		// root's close writes it done: not for a root that already lingers, which left once, nor
+		// for a root the operator's tree holds, whose phases the workflow never ran. A root a
+		// transition took to done stands in no step any more, and writes nothing here.
+		if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
+			return err
+		}
 		if err := e.beginLinger(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -88,6 +95,10 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return nil
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
+	}
+	// A child's departure stops its step the same way, before its phase is written done.
+	if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
+		return err
 	}
 	if issue.Phase != phase.Done {
 		issue.Phase, issue.Hold = phase.Done, nil
@@ -306,6 +317,15 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 		return err
 	}
 	for _, member := range members {
+		// The linger stops every member's step, the root's being leave's. A member that awaits its
+		// merge keeps its merge step open: the merge that lands ends it passed (closeMerged), the
+		// hand-over at the linger's close or the promotion of the tree again stops it (admit's
+		// readmit, startMidPhaseMembers), so Dispatch never holds a stopped merge that landed.
+		if member.Key != root.Key && !awaitsMerge(member) {
+			if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
+				return err
+			}
+		}
 		if err := e.everyClaim(ctx, tx, member, "suspend", fmt.Sprintf("the tree of %s lingers", root.Key), ""); err != nil {
 			return err
 		}

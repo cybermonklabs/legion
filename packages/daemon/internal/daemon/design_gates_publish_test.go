@@ -49,6 +49,10 @@ type gatePublishDispatch struct {
 	answers []error
 }
 
+func (d *gatePublishDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+
 func (d *gatePublishDispatch) PutDesignGates(_ context.Context, key string, gates []dispatch.DesignGateDocument) error {
 	d.puts = append(d.puts, gatePublished{Issue: key, Gates: append(make([]dispatch.DesignGateDocument, 0, len(gates)), gates...)})
 	if len(d.answers) == 0 {

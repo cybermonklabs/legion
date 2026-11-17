@@ -359,6 +359,30 @@ func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.
 	}
 }
 
+// Oh My Pi's message_end names the model that answered under message.provider and
+// message.model, also after a fallback moved the turn to another model: that frame becomes one
+// Answered event. A user's message and a message no model wrote (`<synthetic>`) name no model
+// that answered, and push nothing.
+func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"user","content":"implement the plan"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"anthropic","model":"<synthetic>"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"anthropic","model":""}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
+	p.conn.Close()
+	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model"}
+	if got := h.next(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v, want %#v: the user's and the synthetic message name no model that answered", got, want)
+	}
+	if got := h.next(); got != (Closed{Claim: testClaim}) {
+		t.Fatalf("event after the answer = %#v, want the close", got)
+	}
+	if rest := h.stop(); len(rest) != 0 {
+		t.Fatalf("further events = %#v, want none", rest)
+	}
+}
+
 // An extension of the worker's Oh My Pi failing — the Legion plugin's session_start without the
 // daemon it needs, say — leaves the agent running without what that extension gives it, and Oh My
 // Pi says so only on its RPC stream: the daemon logs it, naming the claim, and emits no event.
