@@ -24,7 +24,8 @@ import (
 // sweep's report, and its resend is that report's delivery. So a panic in it adds to the sweep
 // row (faultRow), and a held report whose resend panics at every interval switches the trimmer
 // off at its third panic, as a report whose send panics every time does; the work it was tried
-// in goes on as that work's once it returns.
+// in goes on as that work's once it returns. The switched-off trimmer resends nothing here:
+// switchOff takes a held report into its own last report first, so deliver's flush finds none.
 func (t *trimmer) flush() {
 	if t.held == nil {
 		return
@@ -58,7 +59,8 @@ func (t *trimmer) flush() {
 // nothing else would carry them. A report that was sent or is held carries them already and gives
 // nothing back: once the send has answered nil, or the report or its replacement is held, a panic
 // in the line that says so or in saidLeftOut leaves them where they are. The switched-off
-// trimmer's report goes through here under the same rule (switchOff).
+// trimmer's report goes through here under the same rule, with nothing held by then: switchOff
+// has taken a held report into it (replace), so the flush below tries no report before it.
 //
 // For each report it is given it writes at most one line of what the bound left out, of the
 // report as it is sent or held (saidLeftOut): a report that replaces a held one is bounded
@@ -90,9 +92,10 @@ func (t *trimmer) deliver(report shimwire.LauncherVolumeReport) {
 	t.saidLeftOut(kept)
 }
 
-// replace is the report that takes held's place (deliver): report with what held carries put into
-// it, bounded again (carryHeld, bound). If making it panics, held stays held and deliver gives what
-// report carried back to the trimmer (takeBack), since report is then neither sent nor held.
+// replace is the report that takes held's place (deliver, switchOff): report with what held
+// carries put into it, bounded again (carryHeld, bound). If making it panics, held stays held: in
+// deliver, which gives what report carried back to the trimmer (takeBack), since report is then
+// neither sent nor held, and in switchOff, whose panic ends the trimmer (run).
 func (t *trimmer) replace(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 	return boundReport(t, carryHeld(held, report))
 }
@@ -110,10 +113,11 @@ func (t *trimmer) takeBack(report shimwire.LauncherVolumeReport) {
 }
 
 // carryHeld is report with the faults and the refused /proc reads of held put into it, before
-// report replaces held (deliver): held's faults before report's own, since they are older and
-// the bound keeps the newest, and held's refused reads before report's own, a refusal already
-// carried word for word not carried twice, as carryRefused carries them. The Omitted counts add
-// up, and the bound that follows cuts the lists to their caps and counts what it leaves out.
+// report replaces held (deliver, switchOff): held's faults before report's own, since they are
+// older and the bound keeps the newest, and held's refused reads before report's own, a refusal
+// already carried word for word not carried twice, as carryRefused carries them. The Omitted
+// counts add up, and the bound that follows cuts the lists to their caps and counts what it leaves
+// out.
 func carryHeld(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 	report.Faults = append(slices.Clone(held.Faults), report.Faults...)
 	report.FaultsOmitted += held.FaultsOmitted
@@ -141,12 +145,24 @@ func carryHeld(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolu
 // carried back to the trimmer under deliver's rule, as any report's panic does, and nothing
 // carries it further: the trimmer makes no report after this one.
 //
+// A report the trimmer still holds goes into this one before deliver is given it, as a newer
+// report that cannot be sent takes a held one's place (replace), and is held no more. So the
+// switched-off trimmer sends no report before this one and tries no other after it: deliver's
+// flush finds nothing to resend, which leaves no resend to panic before this report is tried —
+// a held report whose resend panics at every interval is what switches the trimmer off in the
+// sweep row — and what deliverLast tries is this report or nothing. The held report's sizes,
+// readings and stop reason are not sent, as they are not where a newer report replaces it
+// (deliver).
+//
 // It carries the faults no report has carried yet, the newest shimwire.VolumeReportFaults of them
 // (keepNewestFaults), and the refused /proc reads no report has carried yet, as a sweep's report
 // does, and takes them from the trimmer at the same moment (report): it is the last report there
-// is to carry them. The faults end with the one that switched the trimmer off, and they can hold
-// a fault of the other row among those of the row that did, since a panic of one kind neither
-// ends the other's row nor adds to it (fault).
+// is to carry them. A held report's faults and refused reads go into it before its own, each kept
+// or counted under the bound (carryHeld, bound). The faults end with the one that switched the
+// trimmer off, and either of the two before it can be of the other row, since a panic of one
+// kind neither ends the other's row nor adds to it (fault): two sweep panics, two reading
+// panics, and then a reading run to its end whose sweep panics switch the trimmer off in the
+// sweep row with the two reading panics among the newest three.
 func (t *trimmer) switchOff() {
 	row, _ := t.switchedOffBy()
 	t.logf(volumeTrimLog+"%d panics in a row of %s: the trimmer is off for the life of this launcher process", t.inARow[row], row)
@@ -173,6 +189,10 @@ func (t *trimmer) switchOff() {
 	report = boundReport(t, report)
 	t.faults, t.faultsDropped = nil, 0
 	t.refusedReads, t.refusedDropped = nil, 0
+	if t.held != nil {
+		report = t.replace(*t.held, report)
+		t.held = nil
+	}
 	t.deliver(report)
 }
 
@@ -218,12 +238,14 @@ func (t *trimmer) deliverLast(ctx context.Context) {
 // after it, in the rest of the sweep, in its interval or in the making of its report, can lose it,
 // and those of a report that was neither sent nor held (takeBack). A sweep's refusal reaches it
 // once, from where the sweep met it, and nothing after the sweep hands it on again, so a refusal
-// past the bound below is counted once. R3 has a refused read carried into the next report,
-// because a process the trimmer cannot read may be using anything. A refusal already carried, word
-// for word, is not carried twice, and past the most a report names
+// past the bound below is counted once for each sweep that meets it: a refusal counted is not
+// kept, so a later sweep that meets it again counts it again. R3 has a refused read carried into
+// the next report, because a process the trimmer cannot read may be using anything. A refusal
+// already carried, word for word, is not carried twice, and past the most a report names
 // (shimwire.VolumeReportRefusedReads) a refusal is counted rather than kept, so a pod whose sweeps
-// keep meeting one unreadable process the same way holds one line for it, and a pod that never
-// reports holds no more than the bound for the life of the launcher process.
+// keep meeting one unreadable process the same way holds one line for it, or, where the refusal
+// is past the bound, one more in the count for each such sweep, and a pod that never reports holds
+// no more than the bound for the life of the launcher process.
 func (t *trimmer) carryRefused(refused []string) {
 	for _, one := range refused {
 		switch {
@@ -328,9 +350,9 @@ const (
 // runtime.PodEnd cuts — the strings the pod chose, and the two this package mints beside them
 // (volumeReportTrimmerRunes). It bounds both reports — a sweep's (report) and the switched-off
 // trimmer's (switchOff) — and again a report that replaced a held one and took on its faults and
-// refused reads (deliver, carryHeld); it copies rather than cutting in place, because the sizes
-// belong to the walk the trimmer keeps for the hour. A walk keeps no more sizes than the cap
-// already (walkResult.keep), and a list of sizes past it is cut by that same rule, the largest
+// refused reads (deliver, switchOff, carryHeld); it copies rather than cutting in place, because
+// the sizes belong to the walk the trimmer keeps for the hour. A walk keeps no more sizes than the
+// cap already (walkResult.keep), and a list of sizes past it is cut by that same rule, the largest
 // kept in the order they came.
 func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 	sizes := report.Sizes
@@ -380,8 +402,9 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	if over := len(faults) - shimwire.VolumeReportFaults; over > 0 {
 		// The newest, where the two lists above keep their first: the walk's unmeasured
 		// paths are in the order a reader acts on (volumewalk.go's targets) and the
-		// refused reads in the order they were met, while of the faults it is the run that
-		// stopped the trimmer that says why it stopped.
+		// refused reads in the order they were met, while of the faults it is the newest
+		// that say why the trimmer stopped: the newest three of both rows, which end with
+		// the panic that switched it off (switchOff).
 		faults, report.FaultsOmitted = faults[over:], report.FaultsOmitted+over
 	}
 	report.Faults = cutEach(faults, volumeReportFaultRunes)

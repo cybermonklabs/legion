@@ -17,14 +17,16 @@ body: |-
 
   A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
   trimmer that switches itself off after three panics in a row of one kind of its work — its
-  readings of the volume, or its sweeps and their reports, each kind's row ended by a reading or
-  a sweep of that kind that runs to its end — reach the issue's architect as a new
+  readings of the volume, a row that also counts its wait for settings and its interval clock
+  with the line that starts it, or its sweeps and their reports, each kind's row ended by a
+  reading or a sweep of that kind that runs to its end — reach the issue's architect as a new
   `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
   A report skips the hour, and not the three, where a rise raised its episode: at the start of a
   reported sweep (one that ended above the low mark and that the settings did not stop, its start
-  read before its report is made, so one whose report then panicked, which sends none, counts
-  too), the lower of that start and the one before it five points or more above the episode's
-  anchor, never a reading inside a pause or below the high mark. The anchor is the
+  read after it returns and before the interval's lines about it and its report, so one whose
+  line or report then panicked, which sends none, counts too), the lower of that start and the
+  one before it five points or more above the episode's anchor, never a reading inside a pause
+  or below the high mark. The anchor is the
   lowest start of the episode's reported sweeps where no rise raised it, and the floor that
   raised it, which never moves, where one did, so a volume that keeps filling raises a new
   episode at each five points its sweep starts climb, read one reported sweep after the first

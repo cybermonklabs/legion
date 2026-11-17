@@ -2119,8 +2119,9 @@ package api
 // Listener.hello. The launcher sends the daemon at most one
 // `launcher_volume_report` frame per sweep that ends with the volume still above its low mark,
 // none for a sweep the settings stopped, and one that no sweep makes when the trimmer has
-// switched itself off after three panics in a row (`switchedOff`, carrying the faults that
-// stopped it and its last reading of the volume, if it made one). `ServeLauncher` reads each
+// switched itself off after three panics in a row in one of the two rows it counts its faults in
+// (`switchedOff`, carrying the newest three faults of both rows, which end with the panic that
+// switched it off, and its last reading of the volume, if it made one). `ServeLauncher` reads each
 // into at most one `volume-near-full` notice to the issue's architect, since the daemon's own
 // bounds decide which sweep reports are told, and the switched-off report passes every one of
 // them. That frame carries, beside the sweep's own numbers, how many

@@ -348,12 +348,12 @@ func TestARefusedProcReadReachesTheNextReportThoughItsSweepPanicsAfterIt(t *test
 	})
 }
 
-// A reported sweep has been read for a rise before any line of it is written (riseAt, tick), so
-// one whose first line after the sweep panics anchors or pairs as one that wrote its lines does:
-// the texts that define a reported sweep, a sweep that ended above the low mark and that the
-// settings did not stop, name no exception for the logger. The sweeps start at 86%, 91% and 92%,
-// and the line of the second ("the sweep ended") panics, so it sends no report: the 86% anchors
-// episode 1, the 91% pairs with the 92%, and the third sweep's report carries the rise. At
+// A reported sweep has been read for a rise before tick writes its lines about the sweep (riseAt,
+// tick), so one whose first line after the sweep panics anchors or pairs as one that wrote its
+// lines does: the texts that define a reported sweep, a sweep that ended above the low mark and
+// that the settings did not stop, name no exception for the logger. The sweeps start at 86%, 91%
+// and 92%, and the line of the second ("the sweep ended") panics, so it sends no report: the 86%
+// anchors episode 1, the 91% pairs with the 92%, and the third sweep's report carries the rise. At
 // b1b8e361 riseAt ran after that line, so the 91% was never read, the 92% paired with the 86%, and
 // the third report carried episode 1.
 func TestAReportedSweepWhoseFirstLineAfterItPanicsHasBeenReadForARise(t *testing.T) {

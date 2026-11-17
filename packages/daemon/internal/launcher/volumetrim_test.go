@@ -3984,6 +3984,104 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 	})
 }
 
+// R1 has the switched-off trimmer "send one last report saying so", and that report is the last
+// the daemon hears of it (switchOff). So a report the trimmer still holds as it switches off goes
+// into the last report, its faults and refused /proc reads kept or counted under the bound
+// (replace), and is held no more: the last report is the one report the switched-off trimmer
+// sends, and the one its later attempts try (deliverLast). Each subtest holds the first sweep's
+// report, which carries a fault and a refused read, refuses its resend before each next reading,
+// and makes three readings in a row panic; the connection then takes the last report, and takes
+// the held one too in the first subtest and refuses it in the second. At 9588bff0 switchOff
+// handed its report to deliver, whose flush tried the held report first: in the first subtest the
+// daemon was sent two reports, the held one first, and in the second the held report stayed held
+// once the last report was sent, and deliverLast tried it as the last report every
+// volumeSettingsWait, so the trimmer never ended.
+func TestAReportHeldAtTheSwitchOffGoesIntoTheLastReportAndIsSentNoOtherWay(t *testing.T) {
+	const (
+		refused = "process 7: /proc/7/fd: permission denied"
+		fell    = "the volume reader fell over"
+	)
+	// switchOffHolding switches a trimmer off while it holds the first sweep's report. Every send
+	// is refused until the third reading panic, and from then on each goes to connection.
+	switchOffHolding := func(t *testing.T, connection func(f *trimFixture, report shimwire.LauncherVolumeReport) error) {
+		t.Helper()
+		f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
+		f.useVolume(f.modelled(90))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		var up atomic.Bool
+		tr.send = func(report shimwire.LauncherVolumeReport) error {
+			if !up.Load() {
+				return errors.New("no daemon connection is up to carry it")
+			}
+			return connection(f, report)
+		}
+		// What the first sweep's report carries: a fault and a refused read, as the readings before
+		// it and its own sweep hand them to the trimmer (fault, carryRefused).
+		tr.fault("a panic before the first sweep", []byte("goroutine 1 [running]:\nthe stack"))
+		tr.carryRefused([]string{refused})
+		_, done := f.start(tr)
+		f.tick("the sweep ended")
+		testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+			return f.logged("holding it for the next attempt") == 1
+		})
+
+		var panics atomic.Int32
+		f.setOnRead(func(int) {
+			if panics.Add(1) == volumeFaultLimit {
+				up.Store(true)
+			}
+			panic(fell)
+		})
+		for range volumeFaultLimit {
+			f.tick("recovered a panic")
+		}
+		awaitClosed(t, done, "the trimmer's loop to return once its last report is sent, holding nothing")
+
+		reports := f.reports()
+		if len(reports) != 1 || !reports[0].SwitchedOff {
+			var sent []string
+			for _, report := range reports {
+				sent = append(sent, fmt.Sprintf("%q (switched off: %t)", report.StopReason, report.SwitchedOff))
+			}
+			t.Fatalf("the switched-off trimmer sent %d reports, %s, want its one last report with the held one in it", len(reports), strings.Join(sent, ", "))
+		}
+		last := reports[0]
+		if !slices.Equal(last.RefusedReads, []string{refused}) || last.RefusedReadsOmitted != 0 {
+			t.Errorf("the last report names the refused reads %q and %d left out, want the held report's %q", last.RefusedReads, last.RefusedReadsOmitted, refused)
+		}
+		if len(last.Faults) != volumeFaultLimit || last.FaultsOmitted != 1 {
+			t.Errorf("the last report carries the faults %q and counts %d more, want the %d reading panics and the held report's fault counted as left out", last.Faults, last.FaultsOmitted, volumeFaultLimit)
+		}
+		for at, fault := range last.Faults {
+			if !strings.HasPrefix(fault, fell) {
+				t.Errorf("fault %d of the last report is %q, want a reading panic: the bound keeps the newest", at+1, fault)
+			}
+		}
+		if err := last.Validate(); err != nil {
+			t.Errorf("the daemon would refuse the last report: %v", err)
+		}
+		if _, waiting := f.ticks.live(volumeSettingsWait); waiting {
+			t.Error("the trimmer still waits on a clock to try a report after its last report was sent")
+		}
+	}
+
+	t.Run("the connection would take the held report too", func(t *testing.T) {
+		switchOffHolding(t, func(f *trimFixture, report shimwire.LauncherVolumeReport) error {
+			return f.send(report)
+		})
+	})
+
+	t.Run("the connection refuses the held report", func(t *testing.T) {
+		switchOffHolding(t, func(f *trimFixture, report shimwire.LauncherVolumeReport) error {
+			if !report.SwitchedOff {
+				return errors.New("the connection refuses the held report")
+			}
+			return f.send(report)
+		})
+	})
+}
+
 // R1 has the trimmer contain its own faults, and the trimmer's goroutine runs in the launcher
 // process that is PID 1 of the roles container: a panic that escapes it ends the container and
 // every role in it. tick recovers its own interval; these are the paths the goroutine runs outside
@@ -6318,13 +6416,13 @@ func TestASweepWhoseWalkPanicsLeavesItsRefusedReadsForTheNextReport(t *testing.T
 	}
 }
 
-// "Three in a row" keeps one row for each kind of the trimmer's work (R1, as the architect read it
-// in round 36 of INFRA-2009, comment ccc812fc): a report's panic adds to the sweep row, which only
-// a sweep run to its end ends, and a tick that only reads the volume, in a pause or below the
-// high mark, ends the reading row alone. So a trimmer whose every report panics, with the
-// ten-interval pause after each sweep, switches itself off at its third panic and tries its
-// switched-off report. The case's sweeps free nothing, so each one pauses, and the send of each
-// sweep's report panics, where the send of the switched-off report goes through. At c3874f11
+// "Three in a row" keeps one row for each kind of the trimmer's work (R1, as the architect's
+// comment ccc812fc on INFRA-2009 reads it, round 36's rule): a report's panic adds to the sweep
+// row, which only a sweep run to its end ends, and a tick that only reads the volume, in a pause
+// or below the high mark, ends the reading row alone. So a trimmer whose every report panics,
+// with the ten-interval pause after each sweep, switches itself off at its third panic and tries
+// its switched-off report. The case's sweeps free nothing, so each one pauses, and the send of
+// each sweep's report panics, where the send of the switched-off report goes through. At c3874f11
 // every interval of a pause ended the row, so each fault was the first in a row and the trimmer
 // faulted after every sweep for the life of the pod, with nothing beyond its log to show for it.
 func TestATrimmerWhoseEveryReportPanicsSwitchesItselfOffAcrossItsPauses(t *testing.T) {

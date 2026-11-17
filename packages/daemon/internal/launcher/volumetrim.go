@@ -368,11 +368,13 @@ const (
 //
 // The work then starts again from its wait for settings, the readings' work, unless that fault is
 // the third in a row of its kind, which switches the trimmer off as tick's third does. A panic of
-// the last report ends the trimmer, written with its stack, and that report is not tried again,
-// so it is counted in no row: nothing is left to carry a fault to the daemon or to count it
-// toward, and a report that panicked once can panic again. Each step runs inside contain and none
-// inside a deferred handler, so a panic raised while another is being handled, in tick's handler
-// or in the counting here, meets a recovery too and never escapes.
+// the line run itself writes of a fault is counted in no row: run drops it, since the logger that
+// raised it is the one place there is to write it, and the fault that line was about is counted
+// already (fault). A panic of the last report ends the trimmer, written with its stack, and that
+// report is not tried again, so it is counted in no row: nothing is left to carry a fault to the
+// daemon or to count it toward, and a report that panicked once can panic again. Each step runs
+// inside contain and none inside a deferred handler, so a panic raised while another is being
+// handled, in tick's handler or in the counting here, meets a recovery too and never escapes.
 func (t *trimmer) run(ctx context.Context) {
 	ending := trimGoesOn
 	for ending == trimGoesOn {
@@ -666,10 +668,13 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		return false, trimWaits
 	}
 	if out.report {
-		// Read here, before any line of the sweep is written and before its report is made, so a
-		// reported sweep whose line or report then panics has been read all the same, as riseAt
-		// says of every reported sweep. The sweep's refused /proc reads need no hand-over here or
-		// below: the sweep gave each to the trimmer the moment it met it (sweep, carryRefused).
+		// Read here, once the sweep has returned and before this tick writes its lines about the
+		// sweep or makes its report, so a reported sweep whose line here or whose report then
+		// panics has been read all the same, as riseAt says of every reported sweep. The lines
+		// the sweep writes itself come before this, and a panic of one of them is the sweep's own:
+		// that sweep never returns, so it is not read. The sweep's refused /proc reads need no
+		// hand-over here or below: the sweep gave each to the trimmer the moment it met it (sweep,
+		// carryRefused).
 		t.riseAt(reading.Percent())
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
@@ -798,12 +803,14 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 // riseAt reads a rise at start, the reading a reported sweep started from. A reported sweep, here
 // and wherever this trimmer's comments and shimwire's VolumeEpisodeRise name one, is a sweep that
 // ended above the low mark and that the settings did not stop: tick reads its start here once the
-// sweep has returned and the settings are known not to have stopped it, before it writes any line
-// of the sweep and before its report is made, so the report carries the episode its start raised,
-// and so a sweep whose line or report then panics, which tick recovers and counts as a fault, is a
-// reported sweep too, read although it sends no report. The other two sweeps are not read, their
-// start neither anchoring nor entering the two a rise reads: one that ended at or below the low
-// mark, since the trimmer brought that volume down, and one the settings stopped (tick).
+// sweep has returned and the settings are known not to have stopped it, before tick writes its
+// own lines about the sweep and before its report is made, so the report carries the episode its
+// start raised, and so a sweep whose line in tick or whose report then panics, which tick recovers
+// and counts as a fault, is a reported sweep too, read although it sends no report. A sweep that
+// panics before it returns, in one of its own lines included, is never read. The other two sweeps
+// are not read, their start neither anchoring nor entering the two a rise reads: one that ended at
+// or below the low mark, since the trimmer brought that volume down, and one the settings stopped
+// (tick).
 //
 // A rise is read where the lower of the last two reported sweep starts, this one and the one
 // before it, stands five points or more above the episode's anchor. An episode that no rise
@@ -860,9 +867,10 @@ func (t *trimmer) riseAt(start float64) {
 // faultRow is a kind of the trimmer's work, which counts its own row of recovered panics toward
 // volumeFaultLimit (fault): R1 has the trimmer switch itself off "after three in a row", and a
 // panic of one kind with work of the other kind run between is not in a row with it. One row
-// that only a sweep ended switched off a volume below the high mark, which never sweeps, at its
-// third reading panic however many readings ran between (INFRA-2009, round 35, comment
-// ccc812fc); one that any reading ended let a trimmer whose every report panics fault for the
+// that only a sweep ended, round 35's rule, switched off a volume below the high mark, which never
+// sweeps, at its third reading panic however many readings ran between (INFRA-2009: the
+// architect's comment ccc812fc, which reports that run and sets these two rows, round 36's rule);
+// one that any reading ended, round 34's, let a trimmer whose every report panics fault for the
 // life of the pod, since the readings of the pause after each sweep would end it.
 type faultRow int
 
@@ -893,15 +901,17 @@ func (row faultRow) String() string {
 // whether that row has now reached volumeFaultLimit, which keeps the trimmer off: tick then ends
 // the interval loop with trimOff, and run switches the trimmer off and makes its last report
 // (switchOff), outside any deferred handler. It counts the panic before it writes its line, so a
-// panic of the line leaves the fault counted, and that line's panic, which run contains, is
-// counted in the same row, since the work is passed over only once its fault is written (run).
-// What follows is the readings' work (doing).
+// panic of the line leaves the fault counted. Where tick's handler called it, that line's panic
+// goes on to run, which counts it in the same row, since the work is passed over only once its
+// fault is written (run); where run called it, run drops that line's panic, which is counted in
+// no row (run). What follows is the readings' work (doing), which run puts back where the line
+// panicked.
 //
 // Each row counts the recovered panics of its kind since the last work of that kind ran to its
-// end (ran, tick), a panic tick recovered and one run contained alike, and a panic of the other
-// kind neither ends it nor adds to it. So a trimmer whose every report panics, with the pause
-// after each sweep, switches itself off at its third panic instead of faulting for the life of
-// the pod with nothing beyond its log to show for it, since the readings of the pause end the
+// end (ran, tick), a panic tick recovered and one of the work run contained alike, and a panic of
+// the other kind neither ends it nor adds to it. So a trimmer whose every report panics, with the
+// pause after each sweep, switches itself off at its third panic instead of faulting for the life
+// of the pod with nothing beyond its log to show for it, since the readings of the pause end the
 // readings' row and not the sweeps'; and a volume whose reading panics now and then, with
 // readings run to their end between, is not switched off by those panics however many come,
 // where three readings in a row that panic switch it off.

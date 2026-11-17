@@ -415,8 +415,8 @@ type LauncherVolumeMissing struct {
 // its low mark or below and has filled again, and one whose last two reported sweeps started five
 // points or more above where the episode before it was anchored. A reported sweep, here and below,
 // is one that ended above the low mark and that the settings did not stop, whose start the trimmer
-// reads before it makes the sweep's report, so one whose report then panics and is never sent
-// counts too (the launcher's riseAt).
+// reads before it writes its lines about the sweep and makes the sweep's report, so one whose line
+// or report then panics, which sends no report, counts too (the launcher's riseAt).
 const (
 	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
 	VolumeEpisodeFirst = "first"
@@ -480,8 +480,9 @@ const (
 //
 // Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
 // report no sweep produces: the trimmer has stopped itself after three faults in a row of one kind
-// of its work, its readings of the volume or its sweeps and their reports, and this is the last
-// the daemon hears from it until the launcher restarts.
+// of its work, its readings of the volume, a row that also counts its wait for settings and its
+// interval clock with the line that starts it, or its sweeps and their reports, and this is the
+// last the daemon hears from it until the launcher restarts.
 //
 // Every list above is bounded, because a path two levels under /legion is a name a role of the
 // pod chose and a pod may hold thousands of them: the launcher that built the report cuts each to
@@ -535,10 +536,12 @@ const (
 	VolumeReportRefusedReads = 25
 	// VolumeReportFaults is how many recovered panics a report carries (Faults), the newest ones.
 	// The launcher's trimmer stops itself after three in a row (its volumeFaultLimit) of one kind
-	// of its work, counting its readings' panics and its sweeps' in two rows, where a panic of one
-	// kind neither ends the other's row nor adds to it. So the switched-off report's newest three
-	// end with the panic that stopped the trimmer and can hold one of the other kind among those of
-	// the row that did.
+	// of its work, counting its readings' panics, with those of its wait for settings and of its
+	// interval clock and the line that starts it, and its sweeps' in two rows, where a panic of
+	// one kind neither ends the other's row nor adds to it. So the switched-off report's newest
+	// three end with the panic that stopped the trimmer, and either of the two before it can be of
+	// the other kind: two sweep panics, two reading panics, and then a reading run to its end whose
+	// sweep panics stop the trimmer in the sweep row with both reading panics among the three.
 	VolumeReportFaults = 3
 )
 
