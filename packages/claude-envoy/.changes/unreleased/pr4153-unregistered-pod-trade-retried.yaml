@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  A Claude Code session in a pod whose trade reaches the secrets broker before the pod's
+  registration does is no longer refused for good. Its broker credential trades again in the
+  background, 15 s later, doubling to 5 minutes, until a trade lands, and logs the wait once,
+  naming the session, and again every 30 minutes. An Envoy call made through envoy-client's
+  transport that is still waiting at its own deadline fails naming the session and saying the
+  trade is being retried; the next call goes through once the registration lands. Every other
+  refusal fails the call as before.
+time: 2026-11-16T04:15:13Z
+custom:
+    Issue: INFRA-840

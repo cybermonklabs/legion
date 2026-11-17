@@ -78,37 +78,25 @@ func (e *crossProjectEmbedder) hold(delay time.Duration) {
 	e.held = delay
 }
 
-// crossProjectHold is the test seam of the cross-project leg (server.beforeCrossProjectRead). A
-// case installs it before it seeds and arms it for the one check it measures, so every seed
-// write's own check runs the leg as production runs it.
-type crossProjectHold struct {
-	mu    sync.Mutex
-	delay time.Duration
-	err   error
+// failingCrossProjectRead is a test seam of the cross-project leg (server.beforeCrossProjectRead)
+// that makes the leg's read fail. A case installs it before it seeds and arms it for the one
+// check it measures, so every seed write's own check runs the leg as production runs it.
+type failingCrossProjectRead struct {
+	mu  sync.Mutex
+	err error
 }
 
-// read is what the leg calls before it reads: it waits, or it fails, as the case armed it.
-func (h *crossProjectHold) read(ctx context.Context) error {
-	h.mu.Lock()
-	delay, err := h.delay, h.err
-	h.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	if delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
+// read is what the leg calls before it reads: it fails once the case armed it to.
+func (f *failingCrossProjectRead) read(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
 }
 
-func (h *crossProjectHold) arm(delay time.Duration, err error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.delay, h.err = delay, err
+func (f *failingCrossProjectRead) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
 }
 
 // crossProjectAsker seeds the project that asks: a target issue the check can only find by
@@ -681,14 +669,23 @@ func TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing(t *testing.T) {
 // The cross-project query alone overrunning costs the check nothing but its own items: the
 // answer holds the fused same-project items, says it searched by meaning and keywords, carries
 // no cross-project item, and the check is recorded as made.
+//
+// The grace, and nothing later, ends the check's wait for the leg. The case gives the server a
+// meaning allowance of an hour (server.meaningBound, with the check's own allowance raised to
+// match) and holds the write's leg until it releases it, so only the grace can end that wait
+// before the hour is up: a check whose grace does not bound it fails by name before the binary's
+// deadline. The write took at least the grace, since no timer fires early, and when it answered
+// the check had already ended the leg's context, with the meaning deadline an hour off.
 func TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer(t *testing.T) {
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
 	}
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder})
-	hold := &crossProjectHold{}
-	served.beforeCrossProjectRead = hold.read
+	held := newHeldCrossProjectRead(t)
+	served.beforeCrossProjectRead = held.read
+	const meaningBound = time.Hour
+	served.meaningBound, served.suggestionTimeout = meaningBound, meaningBound
 	target, _, host, _ := crossProjectAsker(t, handler, database, embedder, "XSLOW")
 	createSuggestionProject(t, handler, "XLATE")
 	owner := createSearchIssue(t, handler, "XLATE", "Backlog runbook", "What to do when the backlog grows.")
@@ -698,10 +695,20 @@ func TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer(t *testing.
 	refreshTermStats(t, database, "XSLOW")
 	processAllPending(t, database, embedder)
 
-	hold.arm(time.Minute, nil)
+	body, err := json.Marshal(map[string]any{"question": crossProjectQuestion})
+	if err != nil {
+		t.Fatalf("encode the ask: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+host+"/asks", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
+	request = request.WithContext(context.WithValue(request.Context(), heldReadKey{}, true))
 	started := time.Now()
-	response := dispatchRequest(t, handler, http.MethodPost,
-		"/api/v1/issues/"+host+"/asks", map[string]any{"question": crossProjectQuestion}, "alice")
+	response := answeredBeforeTheBinaryDeadline(t, "the ask create", func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	})
 	elapsed := time.Since(started)
 	created := crossAdvice(t, "the ask create", response)
 	if created.Outcome != relatedFound || created.Search != relatedMeaningAndKeywords || created.SearchNote != "" {
@@ -719,16 +726,21 @@ func TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer(t *testing.
 		t.Fatalf("related_checks = %+v, want one row made, searched by meaning and keywords, with no reason", rows)
 	}
 	if elapsed < crossProjectGrace {
-		t.Fatalf("the write answered in %s, under the %s grace: the stage did not wait for the leg at all", elapsed, crossProjectGrace)
+		t.Fatalf("the write answered in %s, under the %s grace: the check did not wait for the leg at all", elapsed, crossProjectGrace)
 	}
-	if elapsed >= relatedMeaningAllowance {
-		t.Fatalf("the write answered in %s, at or past the %s meaning allowance: the grace did not keep the stage ahead of it",
-			elapsed, relatedMeaningAllowance)
+	leg := held.next(t)
+	held.release()
+	if deadline, ok := leg.ctx.Deadline(); !ok || deadline.Before(started.Add(meaningBound)) || deadline.After(leg.at.Add(meaningBound)) {
+		t.Fatalf("the leg ran to %v (set: %t), want the meaning deadline, %s from the check's start, which lies between %v and %v",
+			deadline, ok, meaningBound, started.Add(meaningBound), leg.at.Add(meaningBound))
 	}
-	t.Logf("measured: the write answered in %s, %s inside the %s meaning allowance and past the %s grace, "+
-		"with the same-project items whole and no cross-project item",
-		elapsed.Round(time.Millisecond), (relatedMeaningAllowance - elapsed).Round(time.Millisecond),
-		relatedMeaningAllowance, crossProjectGrace)
+	if err := leg.ctx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("when the write answered, its leg's context read %v, want %v: the check did not end the leg when its grace ran out",
+			err, context.Canceled)
+	}
+	t.Logf("measured: with the leg held and the meaning deadline an hour off, the write answered in %s, past the %s grace, "+
+		"with the same-project items whole, no cross-project item and the leg's read ended",
+		elapsed.Round(time.Millisecond), crossProjectGrace)
 }
 
 // A cross-project query that fails leaves the same answer, and records no reason: the leg is
@@ -739,8 +751,8 @@ func TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer(t *testing.T) {
 		embedder.vectors[text] = queryVector()
 	}
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder})
-	hold := &crossProjectHold{}
-	served.beforeCrossProjectRead = hold.read
+	failing := &failingCrossProjectRead{}
+	served.beforeCrossProjectRead = failing.read
 	target, _, host, _ := crossProjectAsker(t, handler, database, embedder, "XFAIL")
 	createSuggestionProject(t, handler, "XBROKE")
 	owner := createSearchIssue(t, handler, "XBROKE", "Backlog runbook", "What to do when the backlog grows.")
@@ -750,7 +762,7 @@ func TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer(t *testing.T) {
 	refreshTermStats(t, database, "XFAIL")
 	processAllPending(t, database, embedder)
 
-	hold.arm(0, errors.New("the other projects' read failed"))
+	failing.fail(errors.New("the other projects' read failed"))
 	started := time.Now()
 	response := dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/issues/"+host+"/asks", map[string]any{"question": crossProjectQuestion}, "alice")
@@ -770,19 +782,82 @@ func TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer(t *testing.T) {
 		"with no cross-project item and no reason recorded", elapsed.Round(time.Millisecond))
 }
 
+// heldReadKey marks the context of the one check whose cross-project read heldCrossProjectRead
+// holds. Every other check on the same server, a seed write's own among them, reads as it reads
+// in production, however late its leg's goroutine reaches the read.
+type heldReadKey struct{}
+
+// heldRead is the read heldCrossProjectRead held: the context the leg read on and the moment the
+// leg came to read.
+type heldRead struct {
+	ctx context.Context
+	at  time.Time
+}
+
+// heldCrossProjectRead stands in for the cross-project leg's read (server.beforeCrossProjectRead)
+// of the check whose context carries heldReadKey: it hands the case that read, then holds the
+// leg until the case releases it, whatever its context does, as a read that has not come back
+// holds it. Nothing the leg does, then, ends the check's wait for it.
+type heldCrossProjectRead struct {
+	reads    chan heldRead
+	released chan struct{}
+	free     sync.Once
+}
+
+// newHeldCrossProjectRead returns a stand-in the case's cleanup releases, so a case that fails
+// before it releases the leg leaves no goroutine held.
+func newHeldCrossProjectRead(t *testing.T) *heldCrossProjectRead {
+	held := &heldCrossProjectRead{reads: make(chan heldRead, 1), released: make(chan struct{})}
+	t.Cleanup(held.release)
+	return held
+}
+
+func (h *heldCrossProjectRead) read(ctx context.Context) error {
+	if ctx.Value(heldReadKey{}) == nil {
+		return nil
+	}
+	select {
+	case h.reads <- heldRead{ctx: ctx, at: time.Now()}:
+	default:
+	}
+	<-h.released
+	return errors.New("the held cross-project read was released")
+}
+
+func (h *heldCrossProjectRead) release() { h.free.Do(func() { close(h.released) }) }
+
+// next waits for the marked check's leg to come to its read: the leg runs on a goroutine of its
+// own, which the check does not wait for.
+func (h *heldCrossProjectRead) next(t *testing.T) heldRead {
+	t.Helper()
+	select {
+	case read := <-h.reads:
+		return read
+	case <-binaryDeadlineGuard(t):
+		t.Fatalf("the check's cross-project leg had not come to its read %s before the test binary's deadline", binaryDeadlineMargin)
+		return heldRead{}
+	}
+}
+
 // The boundary: the same-project query answers inside the meaning allowance with less than the
-// grace left. The embedder is held until 300 ms before the meaning deadline, so the stage waits
-// the margin rather than the whole grace, and the answer is still meaning and keywords with the
-// same-project items whole.
+// grace left. The case gives the check a grace of an hour (server.crossProjectWait) and a leg
+// that never answers on its own, so less than the grace is left whatever the meaning query costs
+// and only the meaning deadline can end the check's wait for the leg: a check whose grace that
+// deadline does not cut fails by name before the binary's deadline. The check starts at a moment
+// the case reads, so the meaning deadline is a value the case knows rather than a moment it
+// races. The answer is still meaning and keywords with the same-project items whole, the leg ran
+// to that deadline exactly, and that deadline had passed when the check answered: the grace was
+// cut at it, not sooner.
 func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
 	}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
-	hold := &crossProjectHold{}
+	held := newHeldCrossProjectRead(t)
 	srv := directServer(deps)
-	srv.beforeCrossProjectRead = hold.read
+	srv.beforeCrossProjectRead = held.read
+	srv.crossProjectWait = time.Hour
 	target, _, _, _ := crossProjectAsker(t, handler, database, embedder, "XEDGE")
 	createSuggestionProject(t, handler, "XNEAR")
 	owner := createSearchIssue(t, handler, "XNEAR", "Backlog runbook", "What to do when the backlog grows.")
@@ -792,12 +867,15 @@ func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 	refreshTermStats(t, database, "XEDGE")
 	processAllPending(t, database, embedder)
 
-	// The embedding alone eats all but 300 ms of the meaning allowance, so whatever the
-	// same-project query then costs, under 300 ms is left of it.
-	hold.arm(time.Minute, nil)
-	embedder.hold(relatedMeaningAllowance - crossProjectGrace)
 	started := time.Now()
-	suggestions := crossProjectCheck(srv, "XEDGE")
+	meaningDeadline := started.Add(relatedMeaningAllowance)
+	marked := context.WithValue(context.Background(), heldReadKey{}, true)
+	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
+		answer, _ := srv.runRelatedCheck(marked, relatedInput{
+			project: "XEDGE", text: crossProjectQuestion, title: crossProjectQuestion, question: true,
+		}, started)
+		return answer
+	})
 	elapsed := time.Since(started)
 	if suggestions.Search != relatedMeaningAndKeywords || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want meaning and keywords: the stage answered inside its allowance", suggestions)
@@ -805,14 +883,22 @@ func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), target) || len(suggestions.OtherProjects) != 0 {
 		t.Fatalf("suggestions = %+v, want the same-project items whole, %s among them, and no cross-project item", suggestions, target)
 	}
-	if elapsed >= relatedMeaningAllowance {
-		t.Fatalf("the check took %s, at or past the %s meaning allowance: the grace was not cut by the margin",
-			elapsed, relatedMeaningAllowance)
+	// The stage answered, so its embedding is in hand and its leg was started. Its context ended
+	// before runRelatedCheck returned, which ends the meaning context the leg reads on.
+	read := held.next(t)
+	held.release()
+	leg := read.ctx
+	if deadline, ok := leg.Deadline(); !ok || !deadline.Equal(meaningDeadline) {
+		t.Fatalf("the leg ran to %v (set: %t), want the meaning deadline %v, %s from the check's start: the meaning search is not bounded by its allowance",
+			deadline, ok, meaningDeadline, relatedMeaningAllowance)
 	}
-	t.Logf("measured: the embedding was held %s of the %s allowance, so the same-project query answered with under %s left; "+
-		"the check answered in %s, %s inside the allowance, with the same-project items whole",
-		relatedMeaningAllowance-crossProjectGrace, relatedMeaningAllowance, crossProjectGrace,
-		elapsed.Round(time.Millisecond), (relatedMeaningAllowance - elapsed).Round(time.Millisecond))
+	if err := leg.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("when the check answered, its leg's context read %v, want %v: the grace ended before the meaning deadline did",
+			err, context.DeadlineExceeded)
+	}
+	t.Logf("measured: with an hour's grace and the leg held, the check waited until the meaning deadline (%s from its start) "+
+		"and answered in %s, by meaning and keywords, with the same-project items whole and no cross-project item",
+		relatedMeaningAllowance, elapsed.Round(time.Millisecond))
 }
 
 // The statement filters the asks it must not offer rather than paging past them: two asks that

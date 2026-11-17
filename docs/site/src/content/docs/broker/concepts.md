@@ -220,11 +220,12 @@ the machine cache by the first command that finds it.
 
 `GET /v1/settings` is public, and its Google audience chooses whom the identity token the
 machine mints is good for, so the machine source reads it only from an `https` broker, or an
-`http` one on loopback, and keeps the first Google audience it reads in
-`google-exchange-audience` beside its session. A broker that later names another audience is
-refused before any token is minted for it; if the broker's audience really did change, remove
-that file. A broker publishes its Google audience only where `BROKER_VM_SERVICES` lists a
-machine that may trade a token for it.
+`http` one on loopback. Once it has found an identity to mint a token for that audience, and
+before it mints one, it keeps the audience in `google-exchange-audience` in the machine cache;
+a machine with no identity of its own mints nothing and keeps nothing. A broker that later
+names another audience than the one kept is refused before any token is minted for it; if the
+broker's audience really did change, remove that file. A broker publishes its Google audience
+only where `BROKER_VM_SERVICES` lists a machine that may trade a token for it.
 
 Each registration of the machine's session makes a key of its own, the first one and each one
 after the broker says the session is no longer live, so a copy of `key.pem` (in a backup of the
@@ -239,9 +240,11 @@ takes nine keys — `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,
 `AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
 `AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT` —
-and any other key is a usage error (exit 2) naming the file and the line. So is a file its group
-or others can write: it names the broker the machine proves its identity to, so nothing in it is
-read until `chmod go-w` is run on it. A variable that is set and not empty wins over the file.
+and any other key is a usage error (exit 2) naming the file and the line. So is a path that is
+not a regular file, a file another user than this one or root owns, and a file its group or
+others can write: the file names the broker the machine proves its identity to, so nothing in it
+is read until it is the user's own and `chmod go-w` is run on it. A variable that is set and not
+empty wins over the file.
 Where the environment gives no `HOME`, as for a system unit that names no `User=`, the file, the
 sign-ins and the machine cache are under the home the password database gives the process's user
 (`/root` for root).
@@ -565,6 +568,12 @@ The broker evaluates every name
   `was denied: `, and the command exits 77. A request every name of which is granted at once
   reaches nobody, so it needs no reason, and a machine login, which is always signed with an
   empty reason, never passes this way.
+- On a broker that signs nobody in, `BROKER_SIGNIN=off`
+  ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), nobody could approve such a
+  name, so it is denied at once, with a reason or without one, and one such name denies the whole
+  request: the session reads `<NAME>: a person must approve it, and this broker signs nobody in
+  (BROKER_SIGNIN=off)` after `was denied: `, and the command exits 77. What the policy grants at
+  once is granted there as everywhere.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
 - A **kind secret** has `kind=github-app`, `kind=google-login` or `kind=google-service-account`,
@@ -880,10 +889,17 @@ The proxy reads the grant behind the password on every connection, and the entry
 request (`packages/envoy/internal/broker/airlockproxy`). A host no entry of that grant binds is
 tunnelled unread, to a public address alone. A bound host is read with a certificate of the
 proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. A
-refusal is an HTTP error from the proxy naming the rule that refused it, such as `host not bound`
-or `not allowed by rule`, and ending with its answer id. The broker logs one line for each call to
-a bound host, never with a value. A call it carried, or could not carry, writes
+header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
+else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+request, with its `:authority` as its `Host`, so one connection carries no request for another
+host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
+(`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
+How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
+decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
+refused it, such as `host not bound` or `not allowed by rule`, and ending with its answer id. The
+broker logs one line for each call to a bound host, never with a value. A call it carried, or
+could not carry, writes
 `airlock proxy: a call to a bound host` with the enrollment, the grant, the secret, the host, the
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
@@ -909,10 +925,11 @@ What the airlock does not stop is as much of the design as what it does:
 - The placeholder works as the proxy password for its grant's bound hosts until the grant ends,
   from wherever the proxy port is reachable.
 
-- Once the grant ends, every call through the proxy gets `407`, to any host, and a WebSocket the
-  proxy had joined to a bound host is closed with the grant rather than running to the idle
-  limit. A tunnel to a host no entry binds carries no value, so the idle limit is the whole of
-  what bounds one.
+- Once the grant ends, every call through the proxy gets `407`, to any host. A call still running
+  at that moment, such as a WebSocket the proxy joined to a bound host, a gRPC call whose answers
+  stream or a long poll, is ended with the grant within 15 seconds rather than running to the
+  idle limit. A call whose service has not answered yet gets the `407` itself. A tunnel to a host
+  no entry binds carries no value, so the idle limit is the whole of what bounds one.
 
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call
@@ -944,6 +961,13 @@ all N shown** decides every request printed. A decision is posted to the broker'
 is bound to that sign-in and to the requests the page printed, so a page on another origin,
 Dispatch's among them, cannot make one, and no route a service calls decides a secret request: the
 broker refuses it `DECIDE_ON_BROKER_PAGE`, naming the page.
+
+A broker that signs nobody in, `BROKER_SIGNIN=off`
+([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no
+request waits on it: every request that would reach a person is denied at once
+([Requests and grants](#requests-and-grants)), and one a broker with sign-in on left pending is
+ended by the broker's next sweep: expired, as a rule, if its deadline has passed, and otherwise
+denied.
 
 The broker checks the signed-in person against the record's approver: anyone else gets a page
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a

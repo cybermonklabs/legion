@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test"
-import { uncapturedTopicRefusal } from "@legion/contracts"
+import {
+  canonicalTopic,
+  legacyDispatchIssueSubject,
+  uncapturedTopicRefusal,
+} from "@legion/contracts"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -777,5 +781,62 @@ test("the shutdown deregistration spends a quarter second settling, not the whol
     expect(elapsed).toBeLessThan(2_000)
   } finally {
     wedged.resolve()
+  }
+})
+
+// The listener's record keeps each topic as its caller wrote it, the old form of an issue's name
+// included (packages/envoy/internal/store/legacy_topics.go), and the heartbeat's reconciliation
+// (`syncRegisteredInterests`) unsubscribes every topic of the record the session does not follow
+// by that exact name. So a session that follows an issue in the old form reads its record back as
+// its own and unsubscribes nothing. The second row is the control the first leans on: a record
+// rewritten to the new form reads to this very comparison as a lost registration, unsubscribed on
+// one heartbeat and written back by the next, so a store that rewrote it would show here.
+test("a followed topic the record keeps in its old form is never unsubscribed, where a rewritten one would be", async () => {
+  const followed = legacyDispatchIssueSubject("INFRA-12", ">")
+  const rewritten = canonicalTopic(followed).canonical
+  expect(rewritten).toBe("notifications.dispatch.issue.INFRA.INFRA-12.>")
+  for (const { name, store, unsubscribed } of [
+    { name: "as the caller wrote it", store: (topic: string) => topic, unsubscribed: false },
+    {
+      name: "rewritten to the new form",
+      store: (topic: string) => canonicalTopic(topic).canonical,
+      unsubscribed: true,
+    },
+  ]) {
+    const stateDirectory = scratchState()
+    const entry = new Set<string>()
+    const unsubscribes: string[] = []
+    let reads = 0
+    const client = recordingClient([], {
+      subscribe: async (input) => {
+        for (const topic of input.topics) entry.add(store(topic))
+        return noInterest()
+      },
+      unsubscribe: async (input) => {
+        unsubscribes.push(...input.topics)
+        for (const topic of input.topics) entry.delete(topic)
+      },
+      getInterest: async (sessionID) => {
+        reads++
+        return { ...noInterest(), session_id: sessionID, topics: [...entry] }
+      },
+    })
+    const session = await startChannelSession(
+      sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+        connection: new FakeNats(),
+        client,
+        heartbeatMs: 20,
+      }),
+    )
+    try {
+      await session.follow([followed])
+      const followedAt = reads
+      await waitFor(async () => reads >= followedAt + 3, `three heartbeats with the record ${name}`)
+      expect(unsubscribes.includes(rewritten), name).toBe(unsubscribed)
+      if (!unsubscribed) expect(unsubscribes, name).toEqual([])
+      expect(session.topics(), name).toContain(followed)
+    } finally {
+      await session.shutdown()
+    }
   }
 })

@@ -50,7 +50,7 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Every image the build or the test starts (testnats.Image and the smoke image's base
+      # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
       # nothing today; it stays because a FROM written as an ARG would otherwise be pulled as
@@ -70,7 +70,7 @@ jobs:
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
-          consts: packages/envoy/internal/testnats/nats.go Image
+          consts: packages/envoy/internal/testnats/nats.go HubImage
           images: ${{ steps.base-images.outputs.images }}
       # The image build is a step of its own: what TestSmoke asserts is the container's
       # behaviour, so a slow build must fail nothing. Inside the test it spent 256.60–289.47 s

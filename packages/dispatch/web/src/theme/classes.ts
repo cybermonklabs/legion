@@ -733,6 +733,390 @@ registerText(
   railFixed(RAIL_ACTIVE_BG_SWATCH)
 );
 
+// ---------------------------------------------------------------------------------------------
+// The issue page's palette (dispatch://INFRA-1196): the approved prototype's colours, as
+// `styles.css` declares them in `@theme` under names that say what each is on that page. A
+// token's utility (`text-page-ink`) carries both schemes itself, because `styles.css` swaps the
+// value behind the name in the dark scheme, so a composite here writes no `dark:` for it.
+// `PAGE_COLORS` says which swatch each name renders in each scheme: the contrast checks below are
+// registered against it, and `text-on-background.test.ts` reads a composite's token through it.
+// ---------------------------------------------------------------------------------------------
+
+export const PAGE_COLORS = {
+  "icon-rail": railFixed(P.ICON_RAIL),
+  "icon-rail-accent": railFixed(P.ICON_RAIL_ACCENT),
+  "icon-rail-active": railFixed(P.ICON_RAIL_ACTIVE),
+  "icon-rail-text": railFixed(P.ICON_RAIL_TEXT),
+  "page-bullet": pair(P.PAGE_BULLET, P.SLATE_500),
+  "page-agent": pair(P.PAGE_AGENT, P.SLATE_400),
+  "page-check": pair(P.PAGE_CHECK, P.INDIGO_400),
+  "page-check-tint": pair(P.PAGE_CHECK_TINT, P.INDIGO_950),
+  "page-child": pair(P.PAGE_CHILD, P.PINK_400),
+  "page-child-text": pair(P.PINK_700, P.PINK_400),
+  "page-child-tint": pair(P.PAGE_CHILD_TINT, P.PINK_950),
+  "page-decision": pair(P.PAGE_DECISION, P.VIOLET_400),
+  "page-decision-tint": pair(P.PAGE_DECISION_TINT, P.VIOLET_950),
+  "page-failed": pair(P.PAGE_FAILED, P.RED_400),
+  "page-guide": pair(P.PAGE_GUIDE, P.SLATE_800),
+  "page-hair": pair(P.PAGE_HAIR, P.SLATE_700),
+  "page-in-progress": pair(P.PAGE_IN_PROGRESS, P.BLUE_400),
+  "page-ink": pair(P.PAGE_INK, P.SLATE_100),
+  "page-issue": pair(P.PAGE_ISSUE, P.STONE_300),
+  "page-lens": pair(P.PAGE_LENS, P.FUCHSIA_400),
+  "page-lens-tint": pair(P.PAGE_LENS_TINT, P.FUCHSIA_950),
+  "page-line": pair(P.PAGE_LINE, P.SLATE_800),
+  "page-mark": pair(P.PAGE_MARK, P.SLATE_800),
+  "page-muted": pair(P.PAGE_MUTED, P.SLATE_300),
+  "page-not-run": pair(P.PAGE_NOT_RUN, P.GRAY_400),
+  "page-pane": pair(P.PAGE_PANE, P.SLATE_900),
+  "page-paper": pair(P.PAGE_PAPER, P.SLATE_950),
+  "page-passed": pair(P.PAGE_PASSED, P.GREEN_400),
+  "page-person": pair(P.PAGE_INK, P.SLATE_100),
+  "page-person-tint": pair(P.PAGE_PERSON_TINT, P.STONE_800),
+  "page-question": pair(P.PAGE_QUESTION, P.BLUE_400),
+  "page-question-tint": pair(P.PAGE_QUESTION_TINT, P.BLUE_950),
+  "page-quiet": pair(P.PAGE_QUIET, P.SLATE_400),
+  "page-statement": pair(P.PAGE_STATEMENT, P.TEAL_400),
+  "page-statement-tint": pair(P.PAGE_STATEMENT_TINT, P.TEAL_950),
+  "page-step": pair(P.PAGE_STEP, P.AMBER_400),
+  "page-step-tint": pair(P.PAGE_STEP_TINT, P.AMBER_950),
+  "page-waiting": pair(P.PAGE_WAITING, P.ORANGE_400),
+  "page-waiting-text": pair(P.PAGE_WAITING_TEXT, P.ORANGE_300),
+  "page-waiting-tint": pair(P.PAGE_WAITING_TINT, P.ORANGE_950),
+  "page-words": pair(P.PAGE_WORDS, P.SLATE_200),
+} as const satisfies Readonly<Record<string, ColorPair>>;
+
+/** The colour pair a page token renders, by its name in `PAGE_COLORS`. */
+function pageColor(name: keyof typeof PAGE_COLORS): ColorPair {
+  return PAGE_COLORS[name];
+}
+
+/** The page itself: its white paper, its ink and the two greys under it, and its rules. */
+export const pagePaperBg = "bg-page-paper";
+export const pageInkText = "text-page-ink";
+export const pageMutedText = "text-page-muted";
+export const pageQuietText = "text-page-quiet";
+export const pageLineBorder = "border-page-line";
+export const pageHairBorder = "border-page-hair";
+/** The Contents pane at the page's left, its marked row, and the guide a nested row hangs from. */
+export const pagePaneBg = "bg-page-pane";
+export const pageMarkBg = "bg-page-mark";
+export const pageGuideBg = "bg-page-guide";
+/** The ink as a fill: a switch's track while it is on, and the rule that marks the current row;
+ *  the hairline grey as the track while it is off. A switch's own words say its state
+ *  (`aria-pressed`), so its track is decoration. */
+export const pageInkBg = "bg-page-ink";
+export const pageInkBorder = "border-page-ink";
+export const pageHairBg = "bg-page-hair";
+/** The bullet of a node by its kind: an ask, a person's words, the issue itself; and the dot of
+ *  something that waits on the reader. A bullet sits beside its words, which say the kind. */
+export const pageQuestionBg = "bg-page-question";
+export const pagePersonBg = "bg-page-person";
+export const pageIssueBg = "bg-page-issue";
+export const pageWaitingBg = "bg-page-waiting";
+
+/** The header's small bordered control (the prototype's `.hbtn`): Details, the overflow menu and
+ *  the phone's `☰`. From `md` up its 20 px line, `md:py-px` and its border make it 24 px tall,
+ *  and below `md`, `min-h-6` lifts it to 24 px; but below 1280 px the 44 px floor that
+ *  `styles.css` gives every control outranks those classes, so the control is 24 px tall from
+ *  1280 px up and 44 px below, until the header's own rule lowers that floor. 24 px is the least
+ *  a touch target may be (WCAG 2.5.8), and ruling 3 gives the header's controls that size at
+ *  390 px because the header there is held to eight lines and 250 px, nine and 280 px while an
+ *  approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
+ *  R13, rulings 3 and 8 of its build-rulings-md). */
+export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
+/** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
+ *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */
+export const pageField =
+  "border-page-hair bg-page-paper text-page-ink placeholder:text-page-quiet focus:border-page-ink";
+/** The header's one filled control, Approve, filled with the page's ink as the composer's Send
+ *  is (the prototype's own palette: the issue page draws no application blue). */
+export const pageInkFill = "bg-page-ink text-page-paper";
+/** An issue's status as the header's pill draws it (the prototype's `.st-*`): in progress, under
+ *  test and in review in the in-progress blue, done in the passed green, and every other status
+ *  in the not-run grey. The pill's glyph and its word say the status; the colour repeats it. */
+export const pageStatusProgressText = "text-page-in-progress";
+export const pageStatusDoneText = "text-page-passed";
+export const pageStatusIdleText = "text-page-not-run";
+/** The count of what waits on the reader (the prototype's `.waitchip`): its words on the waiting
+ *  tint, inside a rule and beside a dot of the waiting colour. */
+export const pageWaitingChip = "border-page-waiting bg-page-waiting-tint text-page-waiting-text";
+/** A label as the header and Details draw it (the prototype's `.lchip`). */
+export const pageLabelChip = "border-page-hair bg-page-pane text-page-muted";
+/** A person's initial in a filled circle (the prototype's `.ava`). */
+export const pageAvatar = "bg-page-ink text-page-paper";
+/** The children's progress as a row of segments, one per child (the prototype's `.segs`): done
+ *  in the passed green, in progress in the in-progress blue, the rest in the hairline grey. The
+ *  two counts beside it say the same in words, so the bar is decoration. */
+export const pageSegmentDoneBg = "bg-page-passed";
+export const pageSegmentProgressBg = "bg-page-in-progress";
+export const pageSegmentBg = "bg-page-hair";
+/** A row of Details (the prototype's `.frow`): its rule, and the hover of a row that is a
+ *  control of its own (a file, a menu item). */
+export const pageRowBorder = "border-page-line";
+export const pageRowHoverBg = "hover:bg-page-mark";
+/** What the header says of a write Dispatch refused, in the failed red on the page's paper; and
+ *  the filter row's word for the checks that failed (the prototype's `.sig.bad`). */
+export const pageFailedText = "text-page-failed";
+/** The filter row's word for the decisions waiting for the reader's review (the prototype's
+ *  `.sig.dec`), in the decisions' violet. */
+export const pageDecisionText = "text-page-decision";
+
+/** A node's row of the outline (the prototype's `.card`): its words, one step off the ink; the
+ *  reader's own words in the ink itself (`.k-his .body`); the grey of what stands beside them
+ *  in the margin; the faint guide each level hangs from (`.tn > .kids`); and the focused row,
+ *  on the pane's grey inside a hairline, with the muted rule at its leading edge
+ *  (`.card.focused`). The prototype's `#F5F5F4` is the pane's `#FAFAF9` here, because its
+ *  quiet grey margin reads 4.40:1 on the darker one and 4.59:1 on this, AA's 4.5:1 for 12 px. */
+export const pageWordsText = "text-page-words";
+export const pageGuideLineBg = "bg-page-line";
+export const pageFocusedRow =
+  "bg-page-pane shadow-[0_0_0_1px_var(--color-page-hair),inset_3px_0_0_var(--color-page-muted)]";
+/** The ink rule at the leading edge of the reader's own words (`.k-his .nc`), which is their
+ *  second left edge: 2 px of ink and 10 px of padding (R34). */
+export const pageOwnWordsRule = "shadow-[inset_2px_0_0_var(--color-page-ink)] pl-2.5";
+/** A folded branch's bullet keeps a halo of the hairline grey around it (`.card.collapsed`). */
+export const pageFoldedHalo = "shadow-[0_0_0_4px_var(--color-page-hair)]";
+/** Each kind of node's colour (the prototype's `--k`): its bullet's fill, and the words of the
+ *  tag that names a typed kind at the right of its row (R34). An agent's words have the quiet
+ *  grey bullet and no tag; a person's the ink. The tag's word says the kind, and the author's
+ *  name and shape say whose words a turn is, so the colour repeats what is written (R6). A
+ *  child issue's tag is drawn in a deeper shade of its pink than its bullet, `pink-700`: the
+ *  prototype's `#DB2777` reads 4.40:1 on the focused row's ground and 3.93:1 on the Contents
+ *  pane's marked row, under the 4.5:1 WCAG 1.4.3 asks of text wherever it is drawn. */
+export const pageKindBullet = {
+  agent: "bg-page-bullet",
+  check: "bg-page-check",
+  child: "bg-page-child",
+  context: "bg-page-hair",
+  decision: "bg-page-decision",
+  issue: "bg-page-issue",
+  person: "bg-page-person",
+  question: "bg-page-question",
+  statement: "bg-page-statement",
+  step: "bg-page-step",
+} as const;
+export const pageKindTag = {
+  agent: "text-page-quiet",
+  check: "text-page-check",
+  child: "text-page-child-text",
+  context: "text-page-quiet",
+  decision: "text-page-decision",
+  issue: "text-page-issue",
+  person: "text-page-ink",
+  question: "text-page-question",
+  statement: "text-page-statement",
+  step: "text-page-step",
+} as const;
+/** A node's state and a check's result, each in its own colour. In the margin's second line
+ *  (`.ms`), what waits on the reader is in the waiting orange, a decision waiting for review in
+ *  the decisions' violet, and every other state quiet. In a check's result (`.res`), one that
+ *  passed is in the passed green, one that failed in the failed red, and one not run or out of
+ *  date in the not-run grey (`.res.not_run, .res.stale`). Each is a word and a shape as well
+ *  (R6, R17). */
+export const pageStateText = {
+  decision: "text-page-decision",
+  failed: "text-page-failed",
+  notRun: "text-page-not-run",
+  passed: "text-page-passed",
+  quiet: "text-page-quiet",
+  waiting: "text-page-waiting-text",
+} as const;
+
+/**
+ * The issue page's one place to write, at the foot of its outline (the prototype's `#composer`
+ * and `.cbox`): a box on the paper inside the hairline, its ink rule while the caret is in it,
+ * and while it answers a question the waiting colour around it and on the line naming the
+ * question (`.cbox.answering`, `.tgt.ans`). Its foot fades the outline into the paper above it.
+ * The line is one row of text that grows to 150 px; the kinds it writes are chips in their
+ * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
+ * caret is in the box. Every word in it says what it is, so the colours repeat what is written
+ * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md).
+ */
+export const pageComposer = {
+  answering:
+    "border-page-waiting shadow-[0_0_0_1px_var(--color-page-waiting),0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-waiting",
+  box: "group flex min-w-0 flex-col gap-[3px] rounded-[10px] border border-page-hair bg-page-paper py-[5px] pr-1.5 pl-3 shadow-[0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-ink",
+  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[761px]:hidden max-[761px]:group-focus-within:inline-flex",
+  chipOff: {
+    ask: "border-page-question bg-page-paper text-page-question",
+    comment: "border-page-ink bg-page-paper text-page-ink",
+  },
+  chipOn: {
+    ask: "border-page-question bg-page-question text-page-paper",
+    comment: "border-page-ink bg-page-ink text-page-paper",
+  },
+  controls: "flex flex-none flex-wrap items-center gap-[5px] pb-px",
+  // The placeholder is one line, cut by its box: the field grows with what is typed and reads
+  // its own scroll height for that (`MentionComposer`'s autosize), which a wrapped placeholder
+  // would count, so the empty box at rest would be as tall as its hint (162 px at 390 px).
+  // On a phone the field takes the line's whole width once the box holds the caret, and the
+  // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
+  field:
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[761px]:group-focus-within:basis-full",
+  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[761px]:pt-2.5",
+  line: "flex min-w-0 items-end gap-2 max-[761px]:group-focus-within:flex-wrap",
+  option:
+    "inline-flex items-center gap-1 rounded-full border border-page-waiting px-2 text-xs leading-5 font-semibold text-page-waiting-text aria-pressed:bg-page-waiting-tint aria-pressed:text-page-ink",
+  target:
+    "flex min-w-0 max-w-full items-center gap-1.5 self-start rounded-md bg-page-pane pl-2 text-xs leading-[22px] text-page-muted",
+  targetAnswering: "bg-page-waiting-tint text-page-waiting-text",
+  targetClear: "flex-none px-1.5 text-sm leading-5 text-page-quiet",
+} as const;
+/** Send as the composer draws it (`#csend`): the ink, the waiting colour's text shade while it
+ *  sends an answer, and the hairline grey while it refuses (`RefusableButton`'s `page-send`). */
+const pageSendBox = `ml-1 rounded-[7px] px-3 py-px text-xs leading-[22px] font-semibold text-page-paper refused:cursor-default refused:bg-page-hair refused:text-page-muted ${focusVisibleRing}`;
+export const pageSend = `${pageSendBox} bg-page-ink`;
+export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
+
+/** The quiet line of what the focused row's reader can do with it, under its words (the
+ *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,
+ *  and an open question's options as the choices of its answer, the picked one on the waiting
+ *  tint (`button.opt`). An option's words are in the waiting colour only while the question
+ *  waits on the reader, which the row adds (`NodeRow.tsx`'s `NodeOptions`); every other open
+ *  question's are the quiet grey. */
+export const pageRowActs =
+  "flex min-w-0 flex-wrap items-center gap-x-4 text-xs leading-6 font-medium text-page-muted";
+export const pageRowAct = "hover:text-page-ink hover:underline";
+export const pageRowOption =
+  "-ml-1.5 flex w-[calc(100%+6px)] items-baseline gap-2 rounded-[5px] px-1.5 text-left hover:bg-page-waiting-tint aria-pressed:bg-page-waiting-tint aria-pressed:font-semibold aria-pressed:text-page-ink";
+
+/** The one shape both menus of the filter row wear, the prototype's `#menu`: the presets' own at
+ *  1024 px and below, and the node menu's at every width. The caller says which edge it hangs
+ *  from (`left-0` or `right-0`). */
+export const pageMenu = `absolute top-full z-30 mt-1 flex min-w-[260px] flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`;
+/** One item of those menus, the prototype's `.mi`: 14 px in the ink, the mark grey under the
+ *  pointer. */
+export const pageMenuItem = `min-h-11 rounded-[7px] px-2 py-[7px] text-left text-sm font-medium md:min-h-0 ${pageInkText} ${pageRowHoverBg}`;
+
+for (const ground of ["page-paper", "page-pane"] as const) {
+  for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"] as const) {
+    registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
+  }
+}
+registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
+registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
+registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
+// Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.
+for (const kind of [
+  "page-agent",
+  "page-check",
+  "page-child",
+  "page-decision",
+  "page-failed",
+  "page-in-progress",
+  "page-issue",
+  "page-lens",
+  "page-not-run",
+  "page-passed",
+  "page-question",
+  "page-statement",
+  "page-step",
+] as const) {
+  registerText(`${kind} text on page-paper`, pageColor(kind), pageColor("page-paper"));
+}
+for (const [kind, tint] of [
+  ["page-check", "page-check-tint"],
+  ["page-decision", "page-decision-tint"],
+  ["page-lens", "page-lens-tint"],
+  ["page-person", "page-person-tint"],
+  ["page-question", "page-question-tint"],
+  ["page-statement", "page-statement-tint"],
+  ["page-step", "page-step-tint"],
+  ["page-waiting-text", "page-waiting-tint"],
+] as const) {
+  registerText(`${kind} text on ${tint}`, pageColor(kind), pageColor(tint));
+}
+registerText(
+  "page-paper text on page-waiting-text",
+  pageColor("page-paper"),
+  pageColor("page-waiting-text")
+);
+registerText(
+  "page-paper text on page-question",
+  pageColor("page-paper"),
+  pageColor("page-question")
+);
+registerText(
+  "page-ink text on page-waiting-tint",
+  pageColor("page-ink"),
+  pageColor("page-waiting-tint")
+);
+// The waiting colour's words on the paper: a state that waits on the reader in the margin
+// (`pageStateText.waiting`) and a waiting question's options in the composer
+// (`pageComposer.option`). The quiet grey on the waiting tint: the control that clears the
+// composer's target while it answers a question (`pageComposer.targetClear` inside
+// `targetAnswering`), and under the pointer an option of an open question that does not wait on
+// the reader (`pageRowOption`'s hover).
+registerText(
+  "page-waiting-text text on page-paper",
+  pageColor("page-waiting-text"),
+  pageColor("page-paper")
+);
+registerText(
+  "page-quiet text on page-waiting-tint",
+  pageColor("page-quiet"),
+  pageColor("page-waiting-tint")
+);
+// The words a row draws in its kind's colour - its tag, its state, a waiting question's
+// options - on the focused row's ground, and the marks of a Contents entry on the pane and on
+// its marked row: text, so 4.5:1 wherever it is drawn, the focused row included (WCAG 1.4.3).
+for (const kind of [
+  "page-check",
+  "page-child-text",
+  "page-decision",
+  "page-failed",
+  "page-issue",
+  "page-not-run",
+  "page-passed",
+  "page-question",
+  "page-statement",
+  "page-step",
+  "page-waiting-text",
+] as const) {
+  registerText(`${kind} text on page-pane`, pageColor(kind), pageColor("page-pane"));
+}
+registerText(
+  "page-child-text text on page-paper",
+  pageColor("page-child-text"),
+  pageColor("page-paper")
+);
+for (const kind of ["page-statement", "page-decision", "page-child-text", "page-failed"] as const) {
+  registerText(`${kind} text on page-mark`, pageColor(kind), pageColor("page-mark"));
+}
+// A bullet and a waiting dot are shapes beside the words that name them (WCAG 1.4.11).
+//
+// The agent's bullet, `page-bullet` (the prototype's `#A8A29E`), is not registered: it reads
+// 2.52:1 on the paper, under 1.4.11's 3:1, and is kept because it is never what says a thing.
+// Whose words a turn is is said by the author's name and its shape in the row's margin, and an
+// untyped turn's bullet says nothing else (R9, R34); whether a branch is folded is said by its
+// fold control's name, `aria-expanded`, and the count of what it holds beside its one line
+// (R1). The same holds for a context row's `page-hair` bullet, whose row is marked by its quiet
+// words. A kind whose bullet were the only thing telling it apart would have to be registered
+// here and pass.
+for (const ground of ["page-paper", "page-pane"] as const) {
+  for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"] as const) {
+    registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
+  }
+}
+
+/** The icon rail the issue page draws in place of the navigation column (R14): the prototype's
+ *  `#rail`, dark in both schemes, its current entry white on a lighter ground with an accent
+ *  rule at its leading edge. */
+export const iconRailBg = "bg-icon-rail";
+export const iconRailText = "text-icon-rail-text";
+export const iconRailHoverBg = "hover:bg-icon-rail-active";
+export const iconRailActive =
+  "bg-icon-rail-active text-white shadow-[inset_3px_0_0_var(--color-icon-rail-accent)]";
+export const iconRailAccentBg = "bg-icon-rail-accent";
+registerText("icon rail text", pageColor("icon-rail-text"), pageColor("icon-rail"));
+registerText("icon rail current entry", railFixed(P.WHITE), pageColor("icon-rail-active"));
+registerText("icon rail text on hover", pageColor("icon-rail-text"), pageColor("icon-rail-active"));
+registerText("icon rail accent", pageColor("icon-rail-accent"), pageColor("icon-rail"), 3);
+
 /** A modal/drawer/sheet backdrop: a fixed translucent black, unchanged between schemes (a
  * backdrop is never itself read as text or a surface color — no contrast check applies). */
 export const backdrop40 = "bg-slate-950/40";
