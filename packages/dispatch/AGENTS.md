@@ -2245,6 +2245,39 @@ No test file under `e2e/__tests__/` writes
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls.
 
+`e2e/zero-wait-probes.ts`, which `e2e/__tests__/zero-wait-probes.test.ts` runs
+over the suite, refuses a zero-wait probe whose answer decides a path, unless a
+reason stands directly above it.
+A probe is a read that answers for the page as it stands and waits for no state:
+`isVisible`, `count`, `getAttribute` and the like, or a call of a wrapper that
+returns one.
+Its answer decides a path when it is the condition of a branch (an `if`, a `?:`
+or a loop), the first argument of `test.skip`, `test.fixme`, `test.slow` or
+`test.fail`, or a `const` or `let` that a later condition of the same function
+reads.
+The reason is a comment of at least eight words that ends on the line directly
+above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
+instant's answer is safe there.
+A page that has not drawn its layout yet answers no to every probe, so a probe
+that stands in for a wait sends the row down the wrong path, and the row fails
+later, at a line that has nothing to do with the branch.
+A branch on what the page shows takes the shape of `settledState` of
+`e2e/settled.ts`: it reads the named states inside one `expect.poll` until one
+of them is visible, and answers the first that is.
+The guard skips a probe inside a function passed to `expect.poll`, the subject
+of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
+`route` and the others its header lists), because each of those is read again,
+or at a moment the row did not pick.
+`e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
+controls.
+A value read that is then checked by an `expect` that does not retry
+(`expect(await rows.count()).toBe(3)`) is the same defect: it reads one instant,
+and the check never reads again.
+No scan can tell such a read from one taken after a waiting assertion, so the
+guard does not refuse it.
+Assert the value web-first (`toHaveCount`, `toHaveText`), or read it only after
+a wait for the state it reads.
+
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
 read them from there rather than copying one: the Go reader's tests through
@@ -2566,10 +2599,11 @@ recipient order is not alphabetical, from five sessions of which one has no Disp
 one is twenty minutes stale — and `e2e/workspace.e2e.ts` asserts every surface the `person` scope opens that it fills
 (the Inbox's default list with its Later band and the document ask, which reaches its project's
 default assignee, `/agents` with both folds, the broadcast page, an issue's Conversation).
-`seedWorkspace()` expects an empty database and returns the ids it made and the Inbox rows it guarantees.
-It waits for the spec's decision block to be indexed, and that wait gives back the block id.
-`awaitSeededInbox` in `e2e/local-instance-support.ts` reads the Inbox again until those rows stand;
-both `bun run dispatch:local` and `e2e/workspace.e2e.ts` use it to assert those rows.
+`seedWorkspace({ boundMs })` expects an empty database and returns the ids it made, the Inbox rows it declares and the pass line of its wait for them.
+It waits for the spec's decision block (`awaitDecisionBlock`), which gives back the block id, and then for the unfiltered Inbox to list exactly the rows it declares (`awaitSeededInbox`), both at the bound its caller passes.
+A Playwright row passes `expectTimeout` of `e2e/expect-timeout.ts`, so the seed gives up at the bound the row's own assertions use, before the row's clock ends the row and hides the wait's message.
+`bun run dispatch:local` and the visual review's host seed (`e2e/visual-seed.ts`) run outside Playwright and pass bounds of their own.
+Each wait of `e2e/local-instance-support.ts` takes its bound from its caller and, when it gives up, names what it waited for and the last value it read.
 
 Every real-stack spec takes its `test` from `e2e/test.ts`: it is
 Playwright's own `test` with an automatic fixture that empties the database before each row

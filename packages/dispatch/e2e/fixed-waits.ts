@@ -60,10 +60,11 @@
  * checker is needed for that, so the scan parses files and builds no program; which files it
  * parses, and why a file it skips can hold no wait, is in `waitsOfFiles`.
  *
- * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/local-instance.ts` use
- * for a fixture's configured delay and a dev server's shutdown, neither of them a row's wait;
- * and a page clock jumped forward, which spends no time at all. A pass here is a claim about the
- * two spellings above and about nothing else.
+ * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/fake-github.ts` use
+ * for a fixture's configured delay, neither of them a row's wait; and a page clock jumped
+ * forward, which spends no time at all. The PostgreSQL wait of `e2e/local-instance.ts` is
+ * `awaitPostgres` of `e2e/local-instance-support.ts`, whose pause between reads is a `sleep` this
+ * rule reads. A pass here is a claim about the two spellings above and about nothing else.
  *
  * `suiteFiles` and `waitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
