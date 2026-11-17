@@ -7,9 +7,9 @@ body: |-
   codes as before. The message of the 409 `CHILD_RELEASE_STALLED` now names the architect told
   (`the architect of <issue> was notified`) for the call that queued the notice, and says the
   notice was queued for a later call, where it said `the tree architect was notified`. A
-  worker's addressing line, the CI-settled message, `child-release-stalled`
-  and `child-not-recorded` now reach a child's own architect while it holds its role, and
-  a sub-architect's addressing line names the architect above it. Each notice the outbox
-  publishes now writes one Info line, `outbox notice published`, that names its row, kind,
-  issue and the architect claim it reached, and for a `catch-up` its generation, its launch
-  and how many issues it lists.
+  worker's addressing line, the CI-settled message, `child-release-stalled` and
+  `child-not-recorded` now reach a child's own architect while it holds its role, and a
+  sub-architect's addressing line names the architect above it. Each notice the outbox publishes
+  now writes one Info line, `outbox notice published`, that names its row, kind, issue and the
+  architect claim it reached, and for a `catch-up` its generation, its launch and how many issues
+  it lists.

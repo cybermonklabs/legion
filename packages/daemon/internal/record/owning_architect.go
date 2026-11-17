@@ -20,13 +20,14 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 // A child's close or status change: it tells of the child's own run starting, leaving, coming back
 // or closing, which is not the child's own architect to judge (a leave suspends that architect and
 // a close as done retires it, in workflow's leave), and the architect above it decides what the
-// rest of the tree does. And a worker-died or a worker-stalled about the architect of an issue that
-// is not its tree's root (role is claim.RoleArchitect): the notice is about that architect, so the
-// architect above it must hear it. Either notice on an issue with no parent goes to the tree root,
-// never to the issue's own architect: a failed claim is passed over by the walk anyway, but a
-// stalled one still holds its role and would be told of its own stall, and the outbox can publish a
-// child's close or status change while the child's own architect still holds its role, before its
-// suspension or close lands.
+// rest of the tree does. And a worker-died or a worker-stalled about an issue's own architect
+// (role is claim.RoleArchitect): the notice is about that architect, so the architect above it
+// must hear it, and the tree root's own architect, which has none above it, hears its own (the
+// walk from the root ends at the root, OwningIssue). Either notice on a child with no parent goes
+// to the tree root, never to the child's own architect: a failed claim is passed over by the walk
+// anyway, but a stalled one still holds its role and would be told of its own stall, and the
+// outbox can publish a child's close or status change while the child's own architect still holds
+// its role, before its suspension or close lands.
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 	aboutItsArchitect := role == claim.RoleArchitect && (kind == "worker-died" || kind == "worker-stalled")
 	return aboutItsArchitect || kind == "child-closed" || kind == "child-status"
@@ -42,8 +43,8 @@ func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 // that starts at one ends at the tree root.
 //
 // fromParent starts the walk at the issue's parent instead, for a notice the architect above the
-// issue must hear (NoticeStartsAtParent). Such a walk never ends at the issue itself: one from the
-// tree root, or from an issue with no parent, ends at the tree root, and so does one whose
+// issue must hear (NoticeStartsAtParent). Such a walk ends at the issue itself only when the issue
+// is the tree root: one from an issue with no parent ends at the tree root, and so does one whose
 // record's parents loop back to the issue.
 //
 // The walk stays inside the issue's tree: admission records a Dispatch re-parent as it comes and
@@ -54,9 +55,9 @@ func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 // project is the claim project token (claim.ProjectToken), and tree is the tree's issues by key
 // (TreeByKey). runs is the reader's own view of whether an architect's claim holds its role: the
 // daemon's outbox reads the machine's live view, which also knows a stop in flight, and a reader
-// in a transaction reads the claims the store records (ReadOwnerWalk). An issue the walk would ask
-// runs about, but whose key, or project, makes no claim token, ends the walk there, since it has no
-// claim to ask about; OwningArchitect then fails on it.
+// in a transaction reads the claims the store records (ReadOwnerWalk). An issue the walk asks
+// runs about ends the walk there when project makes no claim project token, since it has no claim
+// to ask about; OwningArchitect then fails on it.
 func OwningIssue(project string, tree map[string]Issue, issue Issue, fromParent bool, runs func(claim.Token) bool) string {
 	if !claim.IsIssueKey(issue.Key) {
 		return issue.Tree
