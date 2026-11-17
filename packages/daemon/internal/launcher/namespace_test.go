@@ -48,7 +48,11 @@ func TestLauncherPIDOneHelper(t *testing.T) {
 	}
 }
 
-func namespaceRig(t *testing.T, grace time.Duration) *rig {
+// pidNamespace is the sudo argv prefix that runs a command as PID 1 of a PID namespace of its own,
+// with that namespace's own /proc, as this user: the shape of a pod's container, whose /proc lists
+// the container's few processes and whose first process adopts every orphan. A machine that
+// cannot make one skips the test, and CI, which can, fails it instead.
+func pidNamespace(t *testing.T) []string {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("PID namespace launcher proof requires Linux")
@@ -61,6 +65,12 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		}
 		t.Skipf("PID namespace prerequisite: %v: %s", err, output)
 	}
+	return prefix
+}
+
+func namespaceRig(t *testing.T, grace time.Duration) *rig {
+	t.Helper()
+	prefix := pidNamespace(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

@@ -12,10 +12,13 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -372,7 +375,7 @@ func TestTwoCallersOfOneCheckInstallInstallItOnce(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
 	frames := servedLeakCheck(t, leakCheckPin, runs)
-	c := newCheckInstall(leakCheckPin, dir)
+	c := newCheckInstall(leakCheckPin, dir, nil)
 	var mu sync.Mutex
 	var logged []string
 	logf := func(format string, args ...any) {
@@ -488,5 +491,148 @@ func TestARefusedLeakCheckLeavesTheDirectoryAsItWas(t *testing.T) {
 			requireInstalled(t, pushLeakCheck(t, g.roleConn, servedLeakCheck(t, leakCheckPin, runs)), g.stderr.String())
 			requireInstalledAt(t, dir, leakCheckPin)
 		})
+	}
+}
+
+// installsUnderReaper is how many installs TestLeakCheckInstallPIDOneHelper makes under PID 1's
+// reaper, and how many its control may try before one is reaped.
+const installsUnderReaper = 200
+
+// reapedInstallHelperEnv marks the test binary re-executed as PID 1 of a PID namespace of its own
+// for TestTheLeakCheckInstallSurvivesPID1sReaper: TestMain leaves such a child the environment its
+// test hands it (helperChildVariables).
+const reapedInstallHelperEnv = "LEGION_LAUNCHER_REAPED_INSTALL_HELPER"
+
+// The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
+// hold (reapOrphans), and the install's one run of the served check (`--help`, leakguard's
+// verifyServed) is the launcher's own child. It starts through the guard the reaper skips
+// (pidGuard.starter, which newManagers gives the pod's install): a run whose exit the reaper took
+// first fails its own wait with `waitid: no child processes`, and the role's launch is refused
+// with it. The race needs a pod's shape: PID 1 of a PID namespace whose /proc lists a handful of
+// processes, so a reaper's pass is short and comes at the exit's SIGCHLD. Under a host's /proc of
+// thousands, a pass took long enough that 200 unguarded installs met no reap at all, so the
+// installs run in the test binary as PID 1 of a PID namespace of its own
+// (TestLeakCheckInstallPIDOneHelper).
+func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
+	prefix := pidNamespace(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := append(slices.Clone(prefix), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", reapedInstallHelperEnv+"=1",
+		self, "-test.run=^TestLeakCheckInstallPIDOneHelper$", "-test.v", "-test.count=1")
+	output, err := exec.Command("sudo", args...).CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte("--- PASS: TestLeakCheckInstallPIDOneHelper")) {
+		t.Fatalf("the installs under PID 1's reaper: %v\n%s", err, output)
+	}
+	t.Logf("%s", output)
+}
+
+// TestLeakCheckInstallPIDOneHelper is TestTheLeakCheckInstallSurvivesPID1sReaper's body, run as
+// PID 1. The reaper is started as Run starts it, on every SIGCHLD, and is made aggressive besides:
+// a SIGCHLD is always waiting, so it starts a pass as soon as it ends one. The control comes
+// first: the same check installed with no starter, as an install outside a launcher runs it, must
+// be refused with no child processes within installsUnderReaper tries, or the reaper never met a
+// run's exit and the installs after it prove nothing. Then the check is installed
+// installsUnderReaper times, each by a container's managers as newManagers wires them, and every
+// install must succeed. It is one process's whole test: the reaper takes every exited child of the
+// process.
+func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
+	if os.Getenv(reapedInstallHelperEnv) != "1" {
+		return
+	}
+	if os.Getpid() != 1 {
+		t.Fatal("the reaped-install helper is not PID 1")
+	}
+	pinLeakCheck(t, leakCheckPin)
+	body := packedLeakCheck(t, leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")))
+	frames := slicedLeakCheck(t, leakCheckPin, body)
+	installs := t.TempDir()
+	rolesDir := shortTempDir(t)
+	tokenDir := filepath.Join(rolesDir, "tester", RoleLauncherDir)
+	if err := os.MkdirAll(tokenDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tokenDir, LauncherTokenFile), []byte("launcher-token\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	// The managers whose generations the reaper skips, which run none here. A failed pass of a
+	// namespaced manager's reaper is logged rather than thrown, and the log is read below: a
+	// reaper whose passes failed raced nothing.
+	reaperLog := &lockedBuffer{}
+	guard := &pidGuard{}
+	managers, err := newManagers(Config{RolesDir: rolesDir, Roles: []string{"tester"}, Stdout: reaperLog, Stderr: reaperLog}, guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A child the reaper must take, so the test proves the reaper ran while the installs did.
+	orphan := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	exits := make(chan os.Signal, 1)
+	signal.Notify(exits, syscall.SIGCHLD)
+	var reaping sync.WaitGroup
+	reaping.Go(func() { reapOrphans(ctx, exits, managers, guard) })
+	reaping.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case exits <- syscall.SIGCHLD:
+			}
+		}
+	})
+	stopReaper := sync.OnceFunc(func() { signal.Stop(exits); cancel(); reaping.Wait() })
+	t.Cleanup(stopReaper)
+
+	controlTries, controlCause := 0, ""
+	for controlTries < installsUnderReaper && controlCause == "" {
+		controlTries++
+		err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{
+			Dir: filepath.Join(installs, fmt.Sprintf("control-%d", controlTries)), Tag: leakCheckPin, Body: body,
+		})
+		switch {
+		case err == nil:
+		case errors.Is(err, syscall.ECHILD):
+			controlCause = err.Error()
+		default:
+			t.Fatalf("the control's install %d failed otherwise: %v", controlTries, err)
+		}
+	}
+	if controlCause == "" {
+		t.Fatalf("none of %d installs with no starter was reaped: the reaper never met a run's exit, so the installs below would prove nothing", controlTries)
+	}
+	t.Logf("control: install %d with no starter was refused: %s", controlTries, controlCause)
+
+	var refused []string
+	for index := range installsUnderReaper {
+		installers, err := newManagers(Config{
+			RolesDir: rolesDir, Roles: []string{"tester"}, LeakCheckDir: filepath.Join(installs, fmt.Sprintf("install-%d", index)),
+		}, guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var last shimwire.LauncherLeakCheckResult
+		for _, frame := range frames {
+			last = installers[0].check.receive(context.Background(), frame, func(string, ...any) {})
+		}
+		if !last.OK || !last.Installed {
+			refused = append(refused, fmt.Sprintf("install %d: %s", index, last.Error))
+		}
+	}
+	stopReaper()
+
+	if len(refused) != 0 {
+		t.Errorf("%d of %d installs under the reaper were refused, want none:\n%s", len(refused), installsUnderReaper, strings.Join(refused, "\n"))
+	} else {
+		t.Logf("%d of %d installs under the reaper succeeded", installsUnderReaper, installsUnderReaper)
+	}
+	if failed := reaperLog.String(); failed != "" {
+		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
+	}
+	if !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
+		t.Errorf("the reaper left the orphan %d unreaped, so it never ran while the installs did", orphan.Process.Pid)
 	}
 }

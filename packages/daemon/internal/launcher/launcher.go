@@ -181,12 +181,15 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
-	// every other role's connection finds it installed.
-	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir)
+	// every other role's connection finds it installed. Its one run of the check starts through
+	// the guard for the same reason as the restore's jj and git: a run the reaper took first fails
+	// the install with `the served check could not be run: waitid: no child processes`, and the
+	// role's launch with it.
+	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check,
+			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, guard: guard,
 		}}, nil
 	}
 	log := &roleLog{stdout: cfg.Stdout, stderr: cfg.Stderr}
@@ -207,7 +210,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check,
+			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, guard: guard,
 		})
 	}
 	return managers, nil
@@ -490,6 +493,10 @@ type manager struct {
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
+	// guard holds the launcher's own children, which are no generation's, out of every reap of
+	// PID 1's (pidGuard): the orphan reaper's passes, and the controller pod's drain of an exited
+	// generation (cleanExitedGeneration).
+	guard *pidGuard
 	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
 	// container shares: each connection's acknowledgement hands it the daemon's settings
 	// (serve). It is nil in the controller's pod and in a launcher that is not its container's

@@ -1008,6 +1008,40 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	}
 }
 
+// The controller pod's drain of an exited generation reaps through the guard (pidGuard.reap), as
+// the orphan reaper does: an exited child the launcher holds for a wait of its own (the leak-check
+// install's run, say) is left to that wait, which reads its own exit, and any other exited child
+// is reaped.
+func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
+	guard := &pidGuard{}
+	held := exec.Command("/bin/sh", "-c", "exit 5")
+	if _, err := guard.start(held); err != nil {
+		t.Fatal(err)
+	}
+	other := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []*exec.Cmd{held, other} {
+		deadline := time.Now().Add(5 * time.Second)
+		for !zombie(cmd.Process.Pid) {
+			if time.Now().After(deadline) {
+				t.Fatalf("process %d never exited", cmd.Process.Pid)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if _, err := guard.reap(); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(syscall.Kill(other.Process.Pid, 0), syscall.ESRCH) {
+		t.Errorf("the reap left the unheld child %d unreaped", other.Process.Pid)
+	}
+	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+		t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+	}
+}
+
 // testInstance is the Cloud SQL instance a test's session database sits in. This repository is
 // public, so it is a placeholder, as is every login and database name beside it.
 const testInstance = "example-project:us-central1:example-instance"

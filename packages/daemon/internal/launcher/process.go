@@ -74,16 +74,16 @@ func reapNamespace(skip ...int) (bool, error) {
 
 // reapOrphans is PID 1's reaper: on every SIGCHLD it reaps each exited process of the container's
 // PID namespace but the generations its managers run, whose exits their own waits read, and the
-// launcher's own children (the test database's script and the put-back's jj and git, pidGuard),
-// whose exits their own waits read too. Every manager's lock and the guard's are held across the
-// pass, and a manager records its generation's pid under its lock as it starts it, as the guard
-// records its child's, so the reaper never waits on a process it has not seen yet. In the
-// controller's pod a pass that fails leaves the role's namespace unobservable, so the launcher
-// fails its container loudly. In an issue pod's container the container's /proc still lists every
-// role's processes, since a role's PID namespace is nested in it, but none is the launcher's child
-// except each role's role-init, which the pass skips: the rest are their role-init's to reap, and
-// Wait4 on them answers ECHILD. So a failed pass costs no role anything, and it is logged and the
-// next pass tries again.
+// launcher's own children (the test database's script, the put-back's jj and git and the
+// leak-check install's run of the check, pidGuard), whose exits their own waits read too. Every
+// manager's lock and the guard's are held across the pass, and a manager records its generation's
+// pid under its lock as it starts it, as the guard records its child's, so the reaper never waits
+// on a process it has not seen yet. In the controller's pod a pass that fails leaves the role's
+// namespace unobservable, so the launcher fails its container loudly. In an issue pod's container
+// the container's /proc still lists every role's processes, since a role's PID namespace is nested
+// in it, but none is the launcher's child except each role's role-init, which the pass skips: the
+// rest are their role-init's to reap, and Wait4 on them answers ECHILD. So a failed pass costs no
+// role anything, and it is logged and the next pass tries again.
 func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*manager, guard *pidGuard) {
 	for {
 		select {
@@ -125,7 +125,8 @@ const namespaceReapPoll = 10 * time.Millisecond
 // Cleanup finishes before the exit is reported, credentials are removed or a new generation is
 // admitted. A namespace whose processes cannot be observed is not safe to reuse: fail the launcher
 // loudly so Kubernetes replaces this container rather than reporting a false completed stop. Only
-// the single-role form runs it; an issue pod's roles end with their own namespace's init.
+// the single-role form runs it; an issue pod's roles end with their own namespace's init. Its
+// passes leave the launcher's own children to their waits, as the orphan reaper's do (pidGuard).
 func (m *manager) cleanExitedGeneration() {
 	if os.Getpid() != 1 {
 		return
@@ -136,7 +137,7 @@ func (m *manager) cleanExitedGeneration() {
 	deadline := time.Now().Add(m.cfg.StopGrace)
 	killed := false
 	for {
-		remaining, err := reapNamespace(0)
+		remaining, err := m.guard.reap()
 		if err != nil {
 			panic(err)
 		}

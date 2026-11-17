@@ -2,7 +2,9 @@
 // child's own child (a helper it spawned, reparented once the direct child is gone) holding its
 // pipes open forever. The stop it gives every such command is SIGTERM to the whole group, a grace
 // in which a command that handles SIGTERM can clean up after itself, and SIGKILL to the group only
-// where something of it is still there when the grace is over.
+// where something of it is still there when the grace is over. It also runs a command through the
+// start its caller chose (Starter, Run), which is how a process that reaps children it does not
+// hold, a container's PID 1, keeps each exit of its own commands for the wait that reads it.
 package procgroup
 
 import (
@@ -173,4 +175,26 @@ func Err(err error) error {
 		return nil
 	}
 	return err
+}
+
+// Starter starts cmd and answers done, which the caller calls once cmd.Wait has read cmd's exit,
+// and only when the start succeeded. The pod's launcher is its container's PID 1 and reaps every
+// exited child it does not hold, so it passes one that holds the child out of that reaper until
+// its own wait has read the exit (internal/launcher's pidGuard): a child that reaper took first
+// fails its own wait with `waitid: no child processes`. nil starts cmd with cmd.Start.
+type Starter func(cmd *exec.Cmd) (done func(), err error)
+
+// Run is cmd.Run with the start the caller chose (Starter; nil is cmd.Start): a start that fails
+// is answered as it is, with cmd.Process left nil as Run's own leaves it, and otherwise cmd.Wait's
+// answer, with done called once the wait has read the exit.
+func Run(cmd *exec.Cmd, start Starter) error {
+	if start == nil {
+		return cmd.Run()
+	}
+	done, err := start(cmd)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return cmd.Wait()
 }

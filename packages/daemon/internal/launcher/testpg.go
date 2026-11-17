@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/workspace"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -199,8 +199,12 @@ func CheckTestPostgres(dir string) error {
 
 // pidGuard holds the pids of the launcher's own children that are no generation's, so PID 1's
 // reaper leaves each exit to the wait that started it (reapOrphans skips them as it skips a
-// manager's generation). A pid is recorded before its process exists, under the lock the reaper
-// holds for its whole pass, so no pass can read /proc between a child's start and its record.
+// manager's generation, and the controller pod's drain skips them too, reap). A pid is recorded
+// before its process exists, under the lock every reap holds for its whole pass, so no pass can
+// read /proc between a child's start and its record. Every child the launcher's process starts
+// and waits for itself, but a generation, starts here: the test database's script (runTestPG), the
+// put-back's jj and git (bundleRestore) and the leak-check install's run of the check
+// (checkInstall).
 type pidGuard struct {
 	mu   sync.Mutex
 	pids map[int]bool
@@ -228,10 +232,11 @@ func (g *pidGuard) done(pid int) {
 	delete(g.pids, pid)
 }
 
-// starter is start and done as a workspace.Starter, for the launcher's own jj and git children
-// that run through workspace.RunCommand: the put-back of a released workspace's bundle
-// (restoreWorkspace). Its start takes the guard's lock alone, as start does.
-func (g *pidGuard) starter() workspace.Starter {
+// starter is start and done as a procgroup.Starter, for the launcher's own children that run
+// through a package that takes one: the put-back's jj and git (workspace.RunCommand, from
+// restoreWorkspace) and the leak-check install's run of the check (leakguard.InstallServed). Its
+// start takes the guard's lock alone, as start does.
+func (g *pidGuard) starter() procgroup.Starter {
 	return func(cmd *exec.Cmd) (func(), error) {
 		pid, err := g.start(cmd)
 		if err != nil {
@@ -248,4 +253,12 @@ func (g *pidGuard) held() []int {
 		pids = append(pids, pid)
 	}
 	return pids
+}
+
+// reap is one pass of reapNamespace that leaves the guard's children to their own waits, under the
+// guard's lock for the whole pass, and answers whether any other process of the namespace is left.
+func (g *pidGuard) reap() (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return reapNamespace(g.held()...)
 }

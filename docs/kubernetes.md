@@ -3462,6 +3462,7 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
+   Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, which for the leak-check install refuses the role's launch.
    As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
    Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
    A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
@@ -4873,7 +4874,7 @@ Outside every role it protects:
 
 - the launcher itself, which serves every role;
 
-- each process the launcher runs for a step of its own (the test database's start script, and the jj and git of a workspace restore, which its `pidGuard` holds), with every process under it;
+- each process the launcher runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check, which its `pidGuard` holds), with every process under it;
 
 - the test database's server, the launcher's direct child whose executable is `postgres` and whose working directory is the test database's data directory, with every backend under it:
   ending one backend makes the server end and restart every backend, which stops every role's test database at once ([A test database in the pod](#a-test-database-in-the-pod)).
