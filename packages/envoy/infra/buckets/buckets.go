@@ -93,14 +93,18 @@ const InboxPrefix = "_INBOX_envoy_buckets"
 // - the account's JetStream info, then, for each bucket a listener copies, its stream's info,
 // create, update (raising its copies) and delete, and the notification stream's info, which
 // --first-deployment reads - and the one it subscribes to, its own reply inboxes (InboxPrefix).
-// The deployment's buckets user is granted exactly this until dispatch://INFRA-840's auth callout
-// replaces the static user at the cutover.
+// The same user runs the restore after `check` (`nats stream restore` with
+// --inbox-prefix=_INBOX_envoy_buckets), so the grant also holds each copied bucket's restore
+// request and the subject its chunks go to (nats-server 2.15.1, jetstream_api.go:91-94 and
+// 170-172). The deployment's buckets user is granted exactly this until dispatch://INFRA-840's
+// auth callout replaces the static user at the cutover.
 func Grant() (publish, subscribe []string) {
 	publish = []string{"$JS.API.INFO", "$JS.API.STREAM.INFO." + bus.Stream}
 	for _, bucket := range bus.CopiedBuckets() {
-		for _, verb := range []string{"INFO", "CREATE", "UPDATE", "DELETE"} {
+		for _, verb := range []string{"INFO", "CREATE", "UPDATE", "DELETE", "RESTORE"} {
 			publish = append(publish, "$JS.API.STREAM."+verb+".KV_"+bucket)
 		}
+		publish = append(publish, "$JS.SNAPSHOT.RESTORE.KV_"+bucket+".*")
 	}
 	return publish, []string{InboxPrefix + ".>"}
 }
