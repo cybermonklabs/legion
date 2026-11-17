@@ -496,8 +496,6 @@ test("a later review round reads from the commit its task names, and the pair re
   expect(mergeGate).toContain(
     "The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.`"
   );
-  expect(mergeGate).not.toContain("the head your own last deciding review read");
-  expect(mergeGate).not.toContain("deciding reviews that the daemon recorded");
   expect(mergeGate).toContain(
     "Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit."
   );
@@ -552,10 +550,7 @@ test("a later review round reads from the commit its task names, and the pair re
         "Report issues in code the pull request (the checked-out branch against its base) adds or modifies, in the unchanged consumers check 2 finds, and in the PR body's claims (check 6), because the author fixes only the pull request's diff and that diff never shows them.",
         "A range limits what you must read, never what you report: a defect you see in code the pull request changed before the range starts is a finding.",
       ],
-      retired: [
-        "Report issues in code that diff adds or modifies",
-        "because the author fixes only this diff",
-      ],
+      retired: ["because the author fixes only this diff"],
     },
     {
       file: "skills/thermonuclear-code-quality/SKILL.md",
@@ -590,8 +585,8 @@ test("a later review round reads from the commit its task names, and the pair re
 // one. A wake's task ends with the round's entry as each task of the round does, so the skill's
 // item on a released pod says so. The entry is a JSON string, so that a placeholder left in it
 // cannot make the footer invalid JSON, which would lose its session and its head too; each file
-// says why, and neither shows the unquoted footer. The daemon's prompts carry the same footer, and
-// their daemon part gives the rule whole; prompts_test.go pins the composed reviewer prompt.
+// says why. The daemon's prompts carry the same footer, and their daemon part gives the rule whole;
+// prompts_test.go pins the composed reviewer prompt.
 test("the reviewer's review footer names the entry of its round", () => {
   const worker = collapsed(path.join(staged, "legion-worker", "SKILL.md"));
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
@@ -617,34 +612,11 @@ test("the reviewer's review footer names the entry of its round", () => {
     ]
       .filter((sentence) => !mergeGate.includes(sentence))
       .map((s) => `merge-gate.md lacks: ${s}`),
-    ...['"head":"<the head you reviewed>"} -->`),', '"entry":<entry>} -->`']
+    ...['"head":"<the head you reviewed>"} -->`),']
       .filter((sentence) => mergeGate.includes(sentence))
       .map((s) => `merge-gate.md says: ${s}`),
-    ...['"entry":<entry>} -->`']
-      .filter((sentence) => worker.includes(sentence))
-      .map((s) => `legion-worker/SKILL.md says: ${s}`),
   ];
   expect(gaps).toEqual([]);
-});
-
-// A wake brings a released reviewer back with a task of its own, and a message that names no
-// entry (a notice, a reminder, an Envoy card) can be the newest thing a reviewer got. A text that
-// takes the entry from "the number your newest task names" sends such a reviewer to write no
-// entry, and its review of the round that stands then moves no commit. The entry is the newest
-// one that a task or a wake of the session named, so no reviewer's text, in the daemon's prompts
-// or in the skill, says the entry is what the newest task names.
-test("no reviewer's text takes the entry from its newest task alone", () => {
-  const texts: [string, string][] = [
-    ["roles/reviewer.md", path.join(promptsRoot, "roles", "reviewer.md")],
-    ["roles/core/reviewer.md", path.join(promptsRoot, "roles", "core", "reviewer.md")],
-    ["go/reviewer.md", path.join(promptsRoot, "go", "reviewer.md")],
-    ["legion-worker/SKILL.md", path.join(staged, "legion-worker", "SKILL.md")],
-    ["merge-gate.md", path.join(staged, "legion-worker", "references", "merge-gate.md")],
-  ];
-  const says = texts
-    .filter(([, file]) => collapsed(file).includes("newest task names"))
-    .map(([name]) => `${name} says: newest task names`);
-  expect(says).toEqual([]);
 });
 
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's

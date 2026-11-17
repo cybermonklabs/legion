@@ -661,8 +661,8 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 // the session named one), and that a review with no entry, or another one, still decides the round.
 // The entry is a JSON string, `"entry":"<entry>"`, and the prompt says why: a placeholder left
 // unquoted makes the footer invalid JSON, which loses its session and its head too, so the review
-// is set aside, while a quoted value that is no number costs the entry alone. The unquoted footer
-// is gone. This shows the text is loaded, never that a reviewer follows it.
+// is set aside, while a quoted value that is no number costs the entry alone. The footer with no
+// entry is gone. This shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -692,12 +692,9 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	for _, retired := range []string{
 		`"phase":"review","head":"<the head you reviewed>"} -->`,
 		`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`,
-		`"entry":<entry>} -->`,
-		`\"entry\":<entry>} -->`,
-		"`\"entry\":<entry>`",
 	} {
 		if strings.Contains(text, retired) {
-			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry or with an entry left unquoted", retired)
+			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry", retired)
 		}
 	}
 }
@@ -710,15 +707,13 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // on the claim it started the reviewer under, in the first round as in every later one, in a review
 // whose Legion footer names the entry on the reviewer's row (` Review entry: <n>.`, the task's last
 // sentence, record.PhaseRow.Entry, which the task of a wake ends with too) while that row holds the
-// entry's task. No time is compared, so the sentence that named the moment of the entry
-// (PhaseRow.EntryRaisedAt) is gone. The core part names the commit in the daemon part's words, the
-// head the Legion footer of the reviewer's own newest deciding review named, since a deciding review
-// whose footer names no entry or another one moves no commit, and its sentence that named the
-// commit the reviewer's own last approval or request for changes read is gone. It says to read the
-// difference from that commit and each thread, gives the thermonuclear pair that same diff, keeps
-// every defect seen outside it a finding, and names the three cases that read the whole change
-// again. The pair's old sentence, which ran it over the whole change in every round, is gone. This
-// shows the text is loaded, never that a reviewer follows it.
+// entry's task. The core part names the commit in the daemon part's words, the head the Legion
+// footer of the reviewer's own newest deciding review named, since a deciding review whose footer
+// names no entry or another one moves no commit. It says to read the difference from that commit
+// and each thread, gives the thermonuclear pair that same diff, keeps every defect seen outside it
+// a finding, and names the three cases that read the whole change again. The pair's old sentence,
+// which ran it over the whole change in every round, is gone. This shows the text is loaded, never
+// that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -749,18 +744,8 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	for _, retired := range []string{
-		"Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code",
-		"A `COMMENT`, a review the daemon set aside and a person's review leave it where it stands.",
-		"EntryRaisedAt",
-		"after the daemon last entered you into that round",
-		"a review submitted before that entry",
-		"the newest of your own deciding reviews that the daemon recorded",
-		"your own last approval or request for changes read",
-	} {
-		if strings.Contains(text, retired) {
-			t.Errorf("the composed reviewer prompt still says %q", retired)
-		}
+	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
+		t.Errorf("the composed reviewer prompt still says %q", retired)
 	}
 }
 

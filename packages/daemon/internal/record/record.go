@@ -623,9 +623,7 @@ type PhaseRow struct {
 	EntryVerbatim bool
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
-	// difference that has stood. Zero on a row no entry has been raised on. The write of
-	// ReviewedHead does not read it: the daemon's clock and GitHub's, which times a review, are not
-	// ordered, so the entry number, not this time, tells a review of the entry that stands.
+	// difference that has stood. Zero on a row no entry has been raised on.
 	EntryRaisedAt time.Time
 	// EntryMovedBack is whether the start that raised that entry was a move back to an earlier
 	// phase, written beside the three fields above in the same transaction from the move the
