@@ -139,8 +139,6 @@ export interface FakeDispatchServerOptions<Frame> extends FakeDispatchOptions {
    * reconnect's.
    */
   readonly live?: (socket: ServerWebSocket<undefined>, frame: Frame, nth: number) => void;
-  /** Runs after every recorded frame, whatever `live` did: what wakes a test waiting on one. */
-  readonly onFrame?: () => void;
 }
 
 /** A fake Dispatch listening on a loopback port, and what its client asked of it. */
@@ -191,7 +189,8 @@ export function startFakeDispatch<Frame = unknown>(
   };
 
   const server = Bun.serve({
-    // Not async: `server.upgrade` must run before this handler awaits anything.
+    // Not async, by choice: the handler upgrades at once. Bun 1.4.4 upgrades a request after an
+    // `await` in `fetch` as well, so nothing here depends on the handler being synchronous.
     fetch(request, srv) {
       const url = new URL(request.url);
       if (url.pathname !== LIVE_PATH) return read(request, url);
@@ -222,7 +221,6 @@ export function startFakeDispatch<Frame = unknown>(
         const nth = (counts.get(type) ?? 0) + 1;
         counts.set(type, nth);
         options.live?.(socket, frame, nth);
-        options.onFrame?.();
       },
     },
   });
