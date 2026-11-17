@@ -105,25 +105,25 @@ func refusedKnownReads(grant *testnats.NkeyGrant, cid uint64) int {
 }
 
 // On a hub whose users were rendered before the known-session bucket's grant, a start that another
-// missing bucket holds at its gates reads the known-session bucket once: the first read fails, and
-// the wait leaves the bucket to its store from then on (awaitCopiedBuckets). Each read the server
-// refuses is a permissions violation and the connection's `envoy nats async error` ERROR, so a
-// wait that read it on every turn logged one each turn (a refused read waits out its second, then
+// missing bucket holds at its gates reads the known-session bucket once: the server refuses that
+// read, the listener's client records the refusal (bus.RefusedRequest), and the wait leaves the
+// bucket to its store from then on (awaitCopiedBuckets). Each read the server refuses is a
+// permissions violation and the connection's `envoy nats async error` ERROR, so a wait that read
+// it on every turn logged one each turn (a refused read waits out its second, then
 // bucketWaitInterval) for as long as the start was held: at 91c75f9e8d this test's wait made 3
 // refused reads in its 9 s. The wait is still the start's: it holds while the other buckets are
-// missing, and returns once they exist.
+// missing, and returns once they exist. The connection is a bus client's, as the listener's is,
+// since only a client records the refusals its connection is sent.
 func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
-	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := bus.Connect([]string{grant.URL}, bus.WithName("held-start"))
 	if err != nil {
 		t.Fatalf("connect the listener's user: %v", err)
 	}
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatalf("jetstream: %v", err)
-	}
+	t.Cleanup(client.Close)
+	conn, js := client.Connection(), client.JS()
 	cid, err := conn.GetClientID()
 	if err != nil {
 		t.Fatalf("read the connection's id: %v", err)
@@ -137,7 +137,7 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- awaitCopiedBuckets(ctx, logger, js, copied, missing) }()
+	go func() { done <- awaitCopiedBuckets(ctx, logger, conn, js, copied, missing) }()
 
 	// Four turns of the wait, with every bucket but the known-session one missing.
 	held := 4*bucketWaitInterval + time.Second
@@ -175,5 +175,90 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	}
 	if n := refusedKnownReads(grant, cid); n != 1 {
 		t.Fatalf("over the whole wait the server refused %d reads of KV_%s, want 1", n, bus.KnownSessionBucket)
+	}
+}
+
+// A known-session bucket the start's wait could not read because the hub answered nothing is read
+// again, and a missing one then holds the start: the wait leaves the bucket to its store only
+// after the server refused a read of it (TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce),
+// and a hub that does not answer refuses nothing. Here the hub holds every copied bucket but the
+// known-session one, and answers nothing for the wait's whole first turn, so every read of that
+// turn fails; then it answers, finds the known-session bucket missing, and the start is held until
+// the operator creates it. At 3dc1ad81d8 the first failed read dropped the bucket whatever its
+// cause, and the second turn, finding the others present, let the start go with the bucket
+// missing. The connection is a bus client's, as the listener's is, so the wait reads the client's
+// record of refusals and finds none.
+func TestAStartTheHubDidNotAnswerAtFirstIsHeldForAMissingKnownSessionBucket(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	client, err := bus.Connect([]string{uri}, bus.WithName("unanswered-start"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn, js := client.Connection(), client.JS()
+	copied := listenerCopiedBuckets(false)
+	for _, bucket := range copied {
+		if bucket == bus.KnownSessionBucket {
+			continue
+		}
+		if _, err := bus.CreateCopiedBucket(conn, js, bucket, 1); err != nil {
+			t.Fatalf("create %s: %v", bucket, err)
+		}
+	}
+	missing := &missingBuckets{}
+	logger := logging.NewWithWriter("test-machine", &cmdtest.LockedBuffer{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	thaw := srv.Freeze(t)
+	thawed := false
+	defer func() {
+		if !thawed {
+			thaw()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- awaitCopiedBuckets(ctx, logger, conn, js, copied, missing) }()
+	// The first turn's reads wait out bucketCheckTimeout; the hub answers none of them.
+	select {
+	case err := <-done:
+		t.Fatalf("the wait returned %v while the hub answered nothing", err)
+	case <-time.After(bucketCheckTimeout + 2*time.Second):
+	}
+	if names := missing.list(); len(names) != 0 {
+		t.Fatalf("missing = %v after a turn the hub answered nothing of, want none: the first turn must learn nothing", names)
+	}
+	thaw()
+	thawed = true
+
+	// The hub answers again: the next turn finds the known-session bucket missing and holds.
+	deadline := time.Now().Add(3 * (knownBucketCheckTimeout + bucketWaitInterval))
+	for !slices.Contains(missing.list(), bus.KnownSessionBucket) {
+		select {
+		case err := <-done:
+			t.Fatalf("the wait returned %v once the hub answered, with %s missing, want it held", err, bus.KnownSessionBucket)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the wait did not find %s missing within %s of the hub answering; missing = %v", bus.KnownSessionBucket, 3*(knownBucketCheckTimeout+bucketWaitInterval), missing.list())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the wait returned %v with %s missing, want it held", err, bus.KnownSessionBucket)
+	case <-time.After(2 * (knownBucketCheckTimeout + bucketWaitInterval)):
+	}
+
+	if _, err := bus.CreateCopiedBucket(conn, js, bus.KnownSessionBucket, 1); err != nil {
+		t.Fatalf("create %s: %v", bus.KnownSessionBucket, err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the wait returned %v once the bucket existed, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the wait did not return within 30 s of the bucket's creation; missing = %v", missing.list())
 	}
 }

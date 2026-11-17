@@ -54,6 +54,11 @@ const (
 	knownBucketCheckTimeout = time.Second
 )
 
+// knownBucketReadSubject is the request a read of the known-session bucket's stream sends
+// (js.StreamInfo), and so the subject the server names when it refuses that read to a user whose
+// grant does not carry the bucket (bus.RefusedRequest).
+const knownBucketReadSubject = "$JS.API.STREAM.INFO.KV_" + bus.KnownSessionBucket
+
 // missingBuckets is the copied buckets this listener holds missing: the start's wait and the
 // self-health monitor apply each read they make to it (observe), and /healthz and the
 // envoy_kv_buckets_missing gauge read it. A bucket stays in it from a read that found it missing
@@ -270,24 +275,28 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 // missingBucketLine every missingBucketLogInterval. It creates nothing: only the operator's
 // `envoy-infra buckets` does.
 //
-// The known-session bucket alone does not hold the start when its read fails rather than finding
-// it missing: a hub whose users were rendered before that bucket's grant (#2643), and not applied
-// since, lets the listener read no part of it, and its store then opens it once the grant arrives
-// (session.OpenKnownSessions). A known-session bucket the server says it does not hold holds the
-// start as every other does.
+// The known-session bucket holds the start only once a read finds it missing. A turn whose read of
+// it fails waits for the others alone, and the next turn reads it again: a hub whose users were
+// rendered before that bucket's grant (#2643), and not applied since, lets the listener read no
+// part of it, and its store then opens it once the grant arrives (session.OpenKnownSessions); and
+// a read that waits out knownBucketCheckTimeout says nothing of the bucket either. So a
+// known-session bucket the server says it does not hold holds the start as every other does,
+// while one whose only reads failed does not.
 //
-// Once a read of the wait fails for the known-session bucket, the wait reads it no more: on such a
-// hub the server refuses and drops every read of it, each one a permissions violation and the
-// connection's `envoy nats async error` ERROR, every bucketWaitInterval for as long as another
-// bucket holds the start, and none of them can tell the wait anything. The store's own attempts
-// cover the bucket from its open on (session.KnownSessions), and the self-health monitor's reads
-// once the store can read it (monitoredBuckets). A known-session bucket that is missing on a hub
-// whose first read of it here failed for another cause (a read slower than
-// knownBucketCheckTimeout) then does not hold the start: its store finds it missing, refuses the
-// registrations that need it (bus.ErrBucketMissing), and the monitor names it.
-func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
+// Once the server refuses a read of the wait to the known-session bucket - the refusal conn's
+// client recorded for that read (bus.RefusedRequest), which only a user whose grant does not carry
+// the bucket earns - the wait reads it no more: on such a hub the server refuses every read of it,
+// each one a permissions violation and the connection's `envoy nats async error` ERROR, every
+// three seconds for as long as another bucket holds the start, and none of them can tell the wait
+// anything. The store's own attempts cover the bucket from its open on (session.KnownSessions),
+// and the self-health monitor's reads once the store can read it (monitoredBuckets). A read that
+// failed for any other cause, a hub that did not answer in time, is made again on the next turn,
+// so a bucket the hub then answers missing still holds the start. A connection no client owns
+// records no refusal, and its wait reads the bucket on every turn.
+func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, conn *nats.Conn, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
+		sent := time.Now()
 		reads := readBuckets(ctx, js, buckets)
 		if err := ctx.Err(); err != nil {
 			return err
@@ -295,7 +304,9 @@ func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.Jet
 		missing.observe(reads)
 		if _, unread := reads.unread[bus.KnownSessionBucket]; unread {
 			delete(reads.unread, bus.KnownSessionBucket)
-			buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
+			if bus.RefusedRequest(conn, knownBucketReadSubject, sent) != nil {
+				buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
+			}
 		}
 		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil

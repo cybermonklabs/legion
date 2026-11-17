@@ -205,6 +205,22 @@ func clientOwning(conn *nats.Conn) *Client {
 	return nil
 }
 
+// RefusedRequest is the server's refusal of a request to subject that its caller sent on conn at
+// or after sentAt, named as ErrPublishDenied (deniedPublish), and nil when the client owning conn
+// recorded no such refusal, as for a connection no client owns, which records nothing. The server
+// reports a refused request on the connection and never in its answer (publishRefusal), so the
+// request times out exactly as one the server is still working on, and this record is what tells
+// the two apart. It is refusedSend's read, for a caller that sends the request itself, through a
+// JetStream context of conn: the listener's start reads it to tell a read of the known-session
+// bucket the server refused from one the server did not answer in time.
+func RefusedRequest(conn *nats.Conn, subject string, sentAt time.Time) error {
+	owner := clientOwning(conn)
+	if owner == nil {
+		return nil
+	}
+	return owner.deniedPublish(subject, sentAt)
+}
+
 // refusedSend is send's answer, with an answer the server never gave (unanswered) replaced by its
 // refusal of one of subjects, the subjects send publishes to, when the client owning conn
 // recorded one of them at or after the moment this send began. The server reports such a refusal
