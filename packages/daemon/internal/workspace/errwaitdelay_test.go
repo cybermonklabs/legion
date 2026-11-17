@@ -74,8 +74,9 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 }
 
 // A command its caller's context ended was not cut off by its own Timeout: TimedOut is the
-// Timeout's kill alone. A Run that read a timeout from the kill alone would call a clone its
-// caller stopped a timeout, which transientCloneFailure never retries.
+// Timeout's kill alone, and the run's error is the signal the stop sent (procgroup.Err), since the
+// command has no exit of its own. A Run that read a timeout from the kill alone would call a clone
+// its caller stopped a timeout, which transientCloneFailure never retries.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -91,8 +92,8 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 
 	result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute})
 
-	if err != nil {
-		t.Fatalf("Run = %v, want the killed command's own exit", err)
+	if err == nil || err.Error() != "signal: terminated" {
+		t.Fatalf("Run = %v, want the signal that ended the killed command (signal: terminated): it has no exit of its own", err)
 	}
 	if result.TimedOut {
 		t.Errorf("Run = exit %d, TimedOut true; want not timed out: the caller's context ended the command inside its minute", result.ExitCode)
@@ -161,8 +162,8 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 
 // A command RunCommand's caller stopped was not cut off by the budget: the restore runs under the
 // launcher's own context (internal/launcher), so a launcher stopped mid-restore must read the
-// command's own exit, never a timeout naming a budget that had not run out. The cancel lands once
-// the command runs, never on one not yet started.
+// signal its stop sent the command (procgroup.Err), never a timeout naming a budget that had not
+// run out. The cancel lands once the command runs, never on one not yet started.
 func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "started")
@@ -172,8 +173,8 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 
 	_, err := RunCommand(ctx, procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
 
-	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "Command failed (exit -1)") {
-		t.Errorf("RunCommand = %v, want \"Command failed (exit -1)\": the caller's context ended the command inside its minute", err)
+	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.HasSuffix(err.Error(), ": signal: terminated") {
+		t.Errorf("RunCommand = %v, want \"run …: signal: terminated\": the caller's context ended the command inside its minute", err)
 	}
 }
 

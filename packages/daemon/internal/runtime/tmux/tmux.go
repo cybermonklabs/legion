@@ -435,11 +435,11 @@ type result struct {
 }
 
 // runTmux runs one argv against the private server under the pane environment, bounded by the
-// command timeout. A client that ran and failed is a result; one that could not run at all, or
-// whose caller's context ended, is an error. The client timed out only when the timeout killed it
-// (procgroup.KilledByContext): once the client has exited on its own, pipeDrainDelay can hold Run
-// open past the timeout for a server still holding the client's pipes, and the client's exit is
-// then its answer.
+// command timeout. A client that ran and failed is a result; one that could not run at all, that
+// a signal ended, or whose caller's context ended, is an error. The client timed out only when
+// the timeout killed it (procgroup.KilledByContext): once the client has exited on its own,
+// pipeDrainDelay can hold Run open past the timeout for a server still holding the client's
+// pipes, and the client's exit is then its answer.
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	bounded, cancel := context.WithTimeout(ctx, r.commandTimeout)
 	defer cancel()

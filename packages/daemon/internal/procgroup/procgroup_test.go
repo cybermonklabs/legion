@@ -128,7 +128,9 @@ func TestKilledCountsACancelWhoseSignalFailed(t *testing.T) {
 // cmd.ProcessState.ExitCode() for both. Had Err instead let exec.ErrWaitDelay through unchanged, a
 // caller would propagate it as a real error, reporting a command that actually exited 0 as
 // "run git: exec: WaitDelay expired before I/O complete" rather than reading its own exit code.
-// Anything else — the command never started, or Run failed some other way — is unchanged.
+// A command a signal ended is the exception: it has no exit of its own, so its *exec.ExitError is
+// returned unchanged, naming the signal. Anything else — the command never started, or Run failed
+// some other way — is unchanged.
 func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) {
 	exited := exec.Command("false").Run()
 	if exited == nil {
@@ -149,6 +151,17 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 	other := errors.New("workspace command is not a tool the daemon resolved at boot")
 	if err := Err(other); err != other {
 		t.Errorf("Err(%v) = %v, want it unchanged", other, err)
+	}
+	killed := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	var signalled *exec.ExitError
+	if !errors.As(killed, &signalled) || signalled.ProcessState.Exited() {
+		t.Fatalf("a shell that sent itself SIGTERM ran to %v, want an *exec.ExitError for a signal to test against", killed)
+	}
+	if err := Err(killed); err != killed || err.Error() != "signal: terminated" {
+		t.Errorf("Err(%v) = %v, want it unchanged (signal: terminated): a killed command has no exit to read", killed, err)
+	}
+	if err := Err(fmt.Errorf("run widget: %w", killed)); !errors.Is(err, killed) {
+		t.Errorf("Err on a wrapped signal death = %v, want it unchanged", err)
 	}
 }
 

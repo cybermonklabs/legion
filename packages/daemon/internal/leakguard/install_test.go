@@ -10,11 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -421,6 +423,36 @@ func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
 		if seen[name] != value {
 			t.Errorf("the --help run saw %s=%q, want %q", name, seen[name], value)
 		}
+	}
+}
+
+// A --help run that something else kills while it runs (another drain's signal, the kernel's
+// out-of-memory kill) has printed nothing, but the install's refusal names the kill rather than a
+// check that answered nothing, so the person reading the claim's cause looks for what killed it,
+// not at the check. The stand-in writes its pid and waits; the test sends that pid SIGTERM.
+func TestAKilledHelpRunIsRefusedNamingTheKill(t *testing.T) {
+	parent := t.TempDir()
+	pidFile := filepath.Join(parent, "help-pid")
+	waitsToBeKilled := "#!/bin/sh\necho $$ >'" + pidFile + "'\nexec sleep 30\n"
+	dir := filepath.Join(parent, "leak-check")
+	done := make(chan error, 1)
+	go func() { _, err := install(t, dir, theTag, served(t, wholeCheck(t, waitsToBeKilled))); done <- err }()
+	var pid int
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the --help run to write its pid", func() bool {
+		body, err := os.ReadFile(pidFile)
+		n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+		pid = n
+		return err == nil && convErr == nil && pid > 0
+	})
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		t.Fatalf("kill the --help run %d: %v", pid, err)
+	}
+	err := <-done
+	if want := "the served check could not be run: signal: terminated"; err == nil || err.Error() != want {
+		t.Fatalf("install with its --help run killed = %v, want %q", err, want)
+	}
+	if _, statErr := os.Lstat(dir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the refused install left %s (%v), want nothing there", dir, statErr)
 	}
 }
 

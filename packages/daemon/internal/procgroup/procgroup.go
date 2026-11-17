@@ -163,15 +163,24 @@ func KilledByContext(cmd *exec.Cmd) (killed func() bool) {
 // Err turns cmd.Run's error into what a caller should propagate: nil whenever cmd has its own
 // real exit to report through cmd.ProcessState.ExitCode() instead — whether that is an ordinary
 // *exec.ExitError or exec.ErrWaitDelay (a clean exit whose I/O draining outlived WaitDelay; Go
-// returns this only once the process itself already exited, Cmd.Run's doc). Any other error (the
-// command never started, or Run failed some other way) is returned unchanged, for the caller to
+// returns this only once the process itself already exited, Cmd.Run's doc). A command a signal
+// ended has no exit of its own (ExitCode answers -1), so its *exec.ExitError (`signal: killed`)
+// is returned unchanged: the kill is what happened, and a caller that read the exit code instead
+// would report a killed command as one that ran and printed nothing. Any other error (the command
+// never started, or Run failed some other way) is returned unchanged too, for the caller to
 // propagate as its own.
 func Err(err error) error {
 	if err == nil {
 		return nil
 	}
 	var exited *exec.ExitError
-	if errors.As(err, &exited) || errors.Is(err, exec.ErrWaitDelay) {
+	if errors.As(err, &exited) {
+		if exited.ProcessState != nil && !exited.ProcessState.Exited() {
+			return err
+		}
+		return nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
 		return nil
 	}
 	return err

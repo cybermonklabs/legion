@@ -906,7 +906,8 @@ func (r ran) killed(launch string, budget time.Duration) string {
 // boot-probes.ts). That group is a background one, except at the operator's terminal, where it is
 // the terminal's foreground job (terminalJob). It errs when the command could not be run at all,
 // when ctx ended, whose attempt is then not judged, and when the terminal's Ctrl-C ended the
-// attempt.
+// attempt. A probe some other signal ended (Oh My Pi crashing, the kernel's out-of-memory kill)
+// is no error: it is judged as a run that exited -1, which each probe reads as its doc says.
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
 	attempt, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
@@ -935,7 +936,10 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	// grace is the budget killing it, judged below like any other budget kill, not a probe that
 	// could not be run.
 	timedOut := killed()
-	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
+	// procgroup.Err keeps a signal's death as an error, the *exec.ExitError that names the signal;
+	// here it is a run to judge, since Oh My Pi dying after it answered is transient (probeLoad).
+	var died *exec.ExitError
+	if runErr := procgroup.Err(err); runErr != nil && !timedOut && !errors.As(runErr, &died) {
 		return ran{}, runErr
 	}
 	tail := strings.TrimSpace(stderr.String())

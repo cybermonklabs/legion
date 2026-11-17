@@ -559,8 +559,9 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	}
 }
 
-// A command its caller's context ended was not cut off by its budget: the run is no timeout, and
-// the check reports the caller's stop (TestCheckImageStopsWithItsContext) rather than a hanging
+// A command its caller's context ended was not cut off by its budget: the run is no timeout but
+// the signal the stop sent (procgroup.Err), since the command has no exit of its own, and the
+// check reports the caller's stop (TestCheckImageStopsWithItsContext) rather than a hanging
 // command. The cancel lands once the command runs, never on one not yet started.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "started")
@@ -579,8 +580,8 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 
 	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"; exec sleep 30`, "sh", started)
 
-	if r.err != nil || r.exit != -1 {
-		t.Errorf("run = exit %d, error %v; want exit -1 and no error: the caller's context ended the command inside its minute", r.exit, r.err)
+	if r.err == nil || r.err.Error() != "signal: terminated" {
+		t.Errorf("run = exit %d, error %v; want the error \"signal: terminated\": the caller's context ended the command inside its minute, which is no timeout and leaves no exit", r.exit, r.err)
 	}
 }
 

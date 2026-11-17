@@ -174,8 +174,8 @@ func program(base []string, name string) string {
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
 // together unless c.stderr takes err. The error is a child that could not be run at all: one that
-// did not start, or one the end of ctx stopped, which is a *stoppedError. A status is an answer,
-// and no status is not.
+// did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
+// which has no status. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.

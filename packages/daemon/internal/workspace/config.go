@@ -96,7 +96,8 @@ type Command struct {
 }
 
 // Result is the process result. A non-zero ExitCode, or TimedOut, is a process failure; a
-// non-nil Run error means the process could not be started or observed.
+// non-nil Run error means the process could not be started or observed, or a signal other than
+// its timeout's ended it, which leaves it no exit code of its own.
 type Result struct {
 	Stdout   string
 	Stderr   string

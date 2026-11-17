@@ -477,7 +477,7 @@ func envMap(env []string) map[string]string {
 }
 
 // ran is one command's run: its exit code, what it printed, and the error when it could not run
-// to an exit of its own — it never started, or its budget killed it.
+// to an exit of its own — it never started, its budget killed it, or a signal ended it.
 type ran struct {
 	exit           int
 	stdout, stderr string
