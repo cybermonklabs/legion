@@ -633,24 +633,32 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "role lane subscription inactive"})
 			return
 		}
-		// A copied bucket found missing, below every 503 above and above the cache checks, whose
-		// pings the missing bucket fails: no listener creates one (missing_buckets.go).
-		if names := missing.list(); len(names) > 0 {
-			writeMissingBuckets(w, names)
-			return
+		// A copied bucket held missing (missing_buckets.go) skips only the checks of the caches
+		// that read it, whose pings it fails; every other check below runs, and answers 503 when it
+		// fails. Only once they all pass does a missing bucket answer 200 "degraded": no listener
+		// creates one, so a restart or a rotation out of the balancer would repair nothing.
+		held := missing.list()
+		reads := func(c listenerCache) bool {
+			return slices.ContainsFunc(c.buckets, func(b string) bool { return slices.Contains(held, b) })
 		}
 		for _, c := range d.caches {
+			if reads(c) {
+				continue
+			}
 			if err := c.cache.WatchErr(); err != nil {
 				writeDependencyHealth(w, c.name+" KV watcher", err, true)
 				return
 			}
 		}
 		for _, c := range d.caches {
+			if reads(c) {
+				continue
+			}
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
 				if answered && errors.Is(err, nats.ErrStreamNotFound) && len(c.buckets) > 0 {
 					// Deleted since the monitor last looked: named now, not at its next check.
-					writeMissingBuckets(w, c.buckets)
-					return
+					held = append(held, slices.DeleteFunc(slices.Clone(c.buckets), func(b string) bool { return slices.Contains(held, b) })...)
+					continue
 				}
 				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
 				return
@@ -667,6 +675,11 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 		// answers 503 until the next one.
 		if durableUnbound(consumerInfo, d.client) {
 			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true)
+			return
+		}
+		if len(held) > 0 {
+			slices.Sort(held)
+			writeMissingBuckets(w, held)
 			return
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
