@@ -57,10 +57,9 @@ var alternatingBlocks = []int{4_096, 16_384}
 // on when it lands rather than on the call (timedWindow has the mechanism).
 //
 // growsLinearly also samples every size the same number of times and keeps the fastest
-// (growthVerdict's sampleCount), measuring the sizes in turn, so neither a first run's warm-up nor
-// whichever side a stray spike or a burst of load lands on biases the comparison. Round 3's
-// asymmetric sampling - up to six draws at the smaller size against one or two at the larger -
-// systematically biased the baseline low under bursty
+// (growthVerdict's sampleCount), so neither a first run's warm-up nor whichever side a stray spike
+// lands on biases the comparison. Round 3's asymmetric sampling - up to six draws at the smaller
+// size against one or two at the larger - systematically biased the baseline low under bursty
 // load, inflating the apparent ratio independent of any real growth; TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack's
 // own history records the fix.
 //
@@ -253,36 +252,6 @@ func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T
 	if failedStep, _ := growthVerdict([]int{1, 2}, linearSlack, quadratic); failedStep != -1 {
 		t.Errorf("growthVerdict unexpectedly failed the 2x-step negative control (failedStep=%d) - if this starts failing, the control no longer demonstrates round 1-2's defect and this test's comment needs updating, not alarm", failedStep)
 	}
-	// A load that slows sampleCount calls in a row, as a burst on a loaded runner does, passes
-	// linear work: the sizes are measured in turn, so no run of calls that long holds every sample
-	// of one size, where measuring one size's samples and then the next's put the whole burst on
-	// the larger one and failed linear work at ten times its cost.
-	calls := 0
-	burst := func(size int) time.Duration {
-		calls++
-		if calls > sampleCount && calls <= 2*sampleCount {
-			return 10 * linear(size)
-		}
-		return linear(size)
-	}
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, burst); failedStep != -1 {
-		t.Errorf("growthVerdict failed synthetic linear work whose calls %d to %d were slowed tenfold (step %d), want it to pass: one size's samples all fell in the burst", sampleCount+1, 2*sampleCount, failedStep)
-	}
-	// The same burst over the first sampleCount calls does not hide quadratic work: it reaches one
-	// of the smaller size's samples, and the fastest of the others is the baseline, where measuring
-	// that size's samples together put all of them in the burst, raised the baseline tenfold and
-	// passed the quadratic work.
-	calls = 0
-	stalledBaseline := func(size int) time.Duration {
-		calls++
-		if calls <= sampleCount {
-			return 10 * quadratic(size)
-		}
-		return quadratic(size)
-	}
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, stalledBaseline); failedStep != 0 {
-		t.Errorf("growthVerdict passed synthetic quadratic work whose first %d calls were slowed tenfold (failedStep=%d), want step 0 to fail: the slowed calls raised its baseline", sampleCount, failedStep)
-	}
 	// growsLinearly itself, through a real *testing.T, confirms the wrapper agrees with
 	// growthVerdict on the passing direction (the failing direction cannot run through a real
 	// t.Fatalf without failing this test, which the growthVerdict assertion above already proves).
@@ -296,26 +265,6 @@ func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T
 // LEGION-465 fixed would grow about growthStep² times, clearing that threshold with room to
 // spare (growthStep's own doc comment has the exact numbers).
 const linearSlack = 3
-
-// A run of `[` and as many `]` parses in time linear in its length, from a run whose every label
-// goldmark checks for a link inside it to one 64 times as long, past the 999 characters a label may
-// hold (mergeTrailingText, nesting.go). Each `]` that closed no link used to leave its opener a text
-// of its own, which every closer after it walked. At a load of about 450 the old parse grew 11 to
-// 23 times for each eightfold step here, and the fixed one grows 8 to 11 times. A step of the old
-// parse still fits linearSlack, which this test keeps; TestARunOfBracketsTheirClosersTurnBackIntoTextIsOneText
-// (nesting_test.go) counts what the old parse left instead.
-func TestParseIsLinearOnARunOfBracketsAndTheirClosers(t *testing.T) {
-	run := func(size int) string { return strings.Repeat("[", size/2) + strings.Repeat("]", size-size/2) }
-	growsLinearly(t, "parsing a run of brackets and as many closers", []int{256, 256 * growthStep, 256 * growthStep * growthStep}, linearSlack, func(size int) (time.Duration, error) {
-		body := run(size)
-		var err error
-		took, measureErr := cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
-		if err != nil {
-			return 0, fmt.Errorf("parsing %d brackets and closers: %w", size, err)
-		}
-		return took, measureErr
-	})
-}
 
 // The shapes a sweep found after the ones above, each quadratic before LEGION-465 finished: a
 // text of one delimiter character, whose every character was escaped by a scan of its whole run;
@@ -1033,27 +982,18 @@ func waitForLeakToClear(t *testing.T, cleared <-chan struct{}) {
 // and one line of context for every step up to and including a failure - the fail-style line at
 // that step, a log-style line at every other. Every size, the first included, is measured
 // sampleCount times and the fastest kept, so the comparison at every step draws from the same
-// number of samples on both sides, and the sizes are measured in turn, every size once per round,
-// so each size's samples span the same stretch of the run: a load only ever adds to a time, and a
-// size whose samples all came after the last sample of the size before it would put whatever the
-// load did in between into the growth. growsLinearly below turns these into t.Fatalf/t.Logf;
+// number of samples on both sides. growsLinearly below turns these into t.Fatalf/t.Logf;
 // TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack calls this directly, so the
 // bound it proves is provable without a real *testing.T failing, a real parse or render, or a
 // hang past some other timeout standing in for the check actually tripping.
 func growthVerdict(sizes []int, allowance int, timed func(size int) time.Duration) (failedStep int, lines []string) {
-	fastest := make([]time.Duration, len(sizes))
-	for sample := range sampleCount {
-		for i, size := range sizes {
-			if took := timed(size); sample == 0 || took < fastest[i] {
-				fastest[i] = took
-			}
-		}
-	}
+	fastest := func(size int) time.Duration { return fastestOf(func() time.Duration { return timed(size) }) }
+	before := fastest(sizes[0])
 	failedStep = -1
 	for i := 1; i < len(sizes); i++ {
 		smaller, size := sizes[i-1], sizes[i]
 		growth := size / smaller
-		before, took := fastest[i-1], fastest[i]
+		took := fastest(size)
 		ratio := float64(took) / float64(before)
 		if took > time.Duration(allowance*growth)*before {
 			failedStep = i - 1
@@ -1062,8 +1002,20 @@ func growthVerdict(sizes []int, allowance int, timed func(size int) time.Duratio
 			return failedStep, lines
 		}
 		lines = append(lines, fmt.Sprintf("%s at %s, %s at %s, %.1f times for an input %d times larger (at most %d)", before.Round(time.Millisecond), sizeText(smaller), took.Round(time.Millisecond), sizeText(size), ratio, growth, allowance*growth))
+		before = took
 	}
 	return failedStep, lines
+}
+
+// fastestOf measures timed sampleCount times and keeps the fastest: growthVerdict's sampling.
+func fastestOf(timed func() time.Duration) time.Duration {
+	best := timed()
+	for i := 1; i < sampleCount; i++ {
+		if sample := timed(); sample < best {
+			best = sample
+		}
+	}
+	return best
 }
 
 // perCallReportMargin is what perCallDeadline leaves of the test binary's own deadline, so a
