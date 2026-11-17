@@ -28,7 +28,7 @@ export interface NodeEditing {
 /** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
  *  (`IssueTree.tsx`), and the caret's in the row being edited below: a key, a press, a wheel and
  *  a touch. */
-const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
 
 /** A controller the reader's first act (`READER_ACTS`, read on the window in the capture phase)
  *  aborts, calling `then` after it. Aborted any other way, it calls nothing. */

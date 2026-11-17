@@ -15,8 +15,8 @@ import { useToolbarSink } from "./useDocumentToolbars";
  * which never changes: the toolbars it fills are no part of the body, so each one an editor
  * publishes while a row is edited draws the body no more.
  *
- * It is exported for the Plan view's chart, which is to edit a step as a row of the outline is
- * edited.
+ * The outline's body imports it (`slots/body.tsx`), and it is exported for the Plan view's chart
+ * too, which is to edit a step as a row of the outline is edited.
  */
 export function useOutlineEditing(issue: IssueDetails): {
   readonly onEditing: (artifactId: string | undefined) => void;

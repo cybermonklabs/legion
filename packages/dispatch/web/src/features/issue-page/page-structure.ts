@@ -151,7 +151,6 @@ export const KEY_REPORTS = freeze({
   no_decision: "No decision is recorded behind this row.",
   /** The edit key, on a node whose text no document of this issue holds. */
   no_text: "This row has no text to put the caret in.",
-  /** The key that steps into a row, on the row the tree is zoomed to where it holds nothing. */
   nothing_under: "Nothing is under this row.",
   /** The key that zooms back out, with the whole issue already drawn. */
   whole_tree: "The tree is already showing the whole issue.",
