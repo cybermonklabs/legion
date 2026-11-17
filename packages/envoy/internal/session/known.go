@@ -257,9 +257,12 @@ func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
 	return record, true, nil
 }
 
-// OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
-// (KnownSessionRetention) on file storage, and starts the watcher that keeps its records in
-// memory and the sweep that gives back the memory of the records that aged out.
+// OpenKnownSessions opens the envoy_known_sessions bucket if it exists, and starts the watcher
+// that keeps its records in memory and the sweep that gives back the memory of the records that
+// aged out. It creates no bucket: the operator's `envoy-infra buckets` creates it, with a 30-day
+// TTL (KnownSessionRetention) on file storage (bus.CopiedBucketConfig), and so does a test fixture
+// on a server of its own (internal/bus/bustest). A bucket the server says it does not hold is
+// owed: the store's writes answer bus.ErrBucketMissing until an attempt opens it.
 //
 // A bucket that does not open - a listener whose NATS user may not open it, on a hub whose grant
 // does not carry the bucket - is no error and stops no start: the store is returned, logs the one

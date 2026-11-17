@@ -155,10 +155,12 @@ func WithSessionReplicas(n int) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.replicas = n }
 }
 
-// BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with, and
-// so the age a registration record lives for in a deployment that sets no ENVOY_SESSION_MAX_AGE
-// (WithSessionMaxAge). A record the bucket expires reads gone, whatever its own age says, so a
-// reader that acts on a gone session - the role claim reaper's period, say
+// BucketMaxAge is the maximum age the envoy_sessions bucket is created with
+// (bus.CopiedBucketConfig): by the operator's `envoy-infra buckets`, or by a test fixture on a
+// server of its own, since OpenSessionRegistry opens the bucket only if it exists and creates none.
+// So it is the age a registration record lives for in a deployment that sets no
+// ENVOY_SESSION_MAX_AGE (WithSessionMaxAge). A record the bucket expires reads gone, whatever its
+// own age says, so a reader that acts on a gone session - the role claim reaper's period, say
 // (cmd/listener's defaultRoleClaimReapInterval) - reads this rather than a copy of it.
 const BucketMaxAge = bus.SessionBucketMaxAge
 
