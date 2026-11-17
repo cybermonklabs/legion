@@ -1374,17 +1374,28 @@ ARCHITECTURE_CHECK_STEP = "Test the architecture-note rules and their command"
 ARCHITECTURE_CHECK_PKGS = [f"./{p}/" for p in ARCHITECTURE_CHECK_PACKAGES]
 ARCHITECTURE_CHECK_TEXT = "go test -count=1 " + " ".join(ARCHITECTURE_CHECK_PKGS)
 
-# The unit step runs the module less four things: the lane's packages, which the three race jobs
+# listenerwire's tests, which envoy-go-checks runs in a step of their own, their one run.
+# clients_test.go type-checks the daemon's listener clients (its RULES entry), so run in
+# envoy-go's unit step a change to one of those daemon packages would start that whole job, its
+# database and its 20-minute unit step, for one type check. They need no database. As with the
+# architecture-note packages, that step's package list and the unit step's exclusion are built
+# from this one list.
+LISTENERWIRE_PACKAGES = ["listenerwire"]
+LISTENERWIRE_STEP = "Test the listener's wire package and its clients"
+LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
+LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
+
+# The unit step runs the module less five things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, and the architecture-note packages, which envoy-go-checks
-# runs. Its `grep -Ev` is `/integration`, then the text checks, then the architecture-note
-# packages, each the package alone, then, in the lane's own order, each package in the form go
-# list's import paths need - a tree matching the package and everything under it, any other the
-# package alone.
+# checks, which the text-check job runs, and the architecture-note packages and listenerwire,
+# which envoy-go-checks runs. Its `grep -Ev` is `/integration`, then the text checks, then the
+# architecture-note packages and listenerwire, each the package alone, then, in the lane's own
+# order, each package in the form go list's import paths need - a tree matching the package and
+# everything under it, any other the package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
-    + [f"/{p}$" for p in ARCHITECTURE_CHECK_PACKAGES]
+    + [f"/{p}$" for p in ARCHITECTURE_CHECK_PACKAGES + LISTENERWIRE_PACKAGES]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
 
 
@@ -2605,14 +2616,15 @@ GATES = [
         ]),
         # The module but the race lane's packages, internal/integration, which the integration
         # step tests, the text checks, which the text-check job runs, and the architecture-note
-        # packages, which envoy-go-checks runs. The Run names the packages the step's own
-        # `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it is read from the pattern
-        # the step runs rather than claimed beside it. A Run saying more would credit this job
-        # with tests other jobs run: the race lane's are envoy-go-race's, envoy-go-race-api's and
-        # envoy-go-race-docs', the text checks are the text-check job's, the architecture-note
-        # packages are envoy-go-checks', and the closure of ./... would put their test files and
-        # the files only those tests read on this job's filter, so a change to one of them would
-        # start a job that does not run the test it touches.
+        # packages and listenerwire, which envoy-go-checks runs. The Run names the packages the
+        # step's own `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it is read from
+        # the pattern the step runs rather than claimed beside it. A Run saying more would credit
+        # this job with tests other jobs run: the race lane's are envoy-go-race's,
+        # envoy-go-race-api's and envoy-go-race-docs', the text checks are the text-check job's,
+        # the architecture-note packages and listenerwire are envoy-go-checks', and the closure of
+        # ./... would put their test files and the files only those tests read on this job's
+        # filter, so a change to one of them would start a job that does not run the test it
+        # touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
         # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
         # so a second run here asks nothing and can only pass, and
@@ -2649,6 +2661,9 @@ GATES = [
         # The architecture-note rules and their command: the closure of the two packages, tests,
         # testdata and all, built from the list the unit step's `grep -Ev` leaves them out by.
         step_run("envoy-go-checks", ARCHITECTURE_CHECK_STEP, ARCHITECTURE_CHECK_TEXT, ENVOY, ARCHITECTURE_CHECK_PKGS),
+        # listenerwire's tests, its clients test's type check of the daemon's listener clients
+        # among them, built from the list the unit step's `grep -Ev` leaves them out by.
+        step_run("envoy-go-checks", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
