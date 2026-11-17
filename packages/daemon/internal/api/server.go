@@ -216,8 +216,9 @@ type Options struct {
 	// architect at once when the recovery will not record it (enterTodoChild). Nil leaves none out.
 	RepositoryUnread func(resolved string) bool
 	// AwaitRecovery leaves a child release_children left unrecorded on an unread repository to that
-	// repository's recovery (the daemon's awaitRecovery), which tells the tree's architect of each
-	// such child it did not record, and answers whether it did. False means the daemon no longer
+	// repository's recovery (the daemon's awaitRecovery), which tells the architect of each such
+	// child it did not record — the one that owns the child's parent when the record holds that
+	// parent in tree, else the tree's — and answers whether it did. False means the daemon no longer
 	// holds that repository unread — its recovery stopped waiting on GitHub for it between the
 	// route's RepositoryUnread read and this call — so no recovery will come for the child and none
 	// will tell its architect: the route must then schedule the child-release retry

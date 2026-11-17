@@ -1776,7 +1776,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "max_recursion_depth", line: "max_recursion_depth: 8", class: tossed,
-			want: "unknown key max_recursion_depth: an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+			want: "unknown key max_recursion_depth: no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 		},
 
 		{key: "dispatch_mcp_url", line: "dispatch_mcp_url: https://dispatch.example/mcp", class: migration, want: wantDispatchMcpURLMessage},

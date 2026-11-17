@@ -34,7 +34,7 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"found in no session store", "only what you pushed and committed survives", "tell your architect"} {
+	for _, want := range []string{"found in no session store", "only what you pushed and committed survives", "tell the architect named above what you found"} {
 		if !strings.Contains(lost, want) {
 			t.Errorf("the fresh agent is told %q, want it to say %q", lost, want)
 		}

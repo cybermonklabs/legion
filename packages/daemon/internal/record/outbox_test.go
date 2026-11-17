@@ -27,8 +27,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	payloads := []OutboxPayload{
 		OrdinaryStatusWrite("testing", "in_progress", ""),
 		OrdinaryStatusWrite("done", "in_progress", "Closed by its architect: no change is needed."),
-		// The workflow's own move that no worker's act explains, a head that conflicts with its base,
-		// carries its reason to post on the issue before the status (workflow's moveReason).
+		// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its
+		// base, carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),

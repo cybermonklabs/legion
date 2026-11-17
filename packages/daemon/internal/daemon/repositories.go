@@ -1729,9 +1729,10 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // issue then ends where its event would have ended had the repository been served: a labelled
 // root admitted or queued, a child of a live tree recorded under it (parents first), and a
 // person's issue left as it is. A listing the consumer may still be behind is held as the boot's
-// is (admission's pending), and released by pollHoldRelease. Then each tree's architect is told,
-// once, of every child its release_children left unrecorded on one of them that is still
-// unrecorded (tellReleaseWaits). While the listing stays held, that telling waits, but for
+// is (admission's pending), and released by pollHoldRelease. Then the architects are told, once,
+// of every child a release_children left unrecorded on one of them that is still unrecorded: each
+// child's architect is the one that owns its parent when the record holds that parent in the tree,
+// else the tree's (tellReleaseWaits). While the listing stays held, that telling waits, but for
 // recoveryHoldBound at most: a hold that outlasts it (the consumer stuck below the stream's last
 // position, an event that fails at every delivery, say) is told the waits still unrecorded then,
 // once, and the full recovery still runs when the hold releases. The clock starts when a run first
@@ -2231,11 +2232,11 @@ func (w *workflowRuntime) unreadReasons() []string {
 }
 
 // awaitRecovery is api.Options.AwaitRecovery: child, released in tree under parent, is left
-// unrecorded while repo is unread, and the recovery of repo tells tree's architect if it is still
-// unrecorded then. It answers whether it held the wait, which is whether repo is unread now:
-// mapped and left out for a read GitHub did not answer (lookup), or no mapping names it and
-// GitHub's reads for it went unanswered (the marker). A repository a pass has stopped waiting on
-// since release_children read it unread (settleRecovery) is no longer either, and a wait held on
+// unrecorded while repo is unread, and the recovery of repo tells an architect if it is still
+// unrecorded then (tellReleaseWaits). It answers whether it held the wait, which is whether repo is
+// unread now: mapped and left out for a read GitHub did not answer (lookup), or no mapping names it
+// and GitHub's reads for it went unanswered (the marker). A repository a pass has stopped waiting
+// on since release_children read it unread (settleRecovery) is no longer either, and a wait held on
 // it would be read by no recovery and told to no architect, so it is refused and the route falls
 // back to the child-release retry.
 //
@@ -2278,12 +2279,16 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) bool {
 	return true
 }
 
-// tellReleaseWaits tells each tree's architect, in one child-release-stalled notice, which of waits
-// the recovery of repos left unrecorded, each with whether its parent is recorded now: what to
-// release again.
+// tellReleaseWaits tells the architects of the children of waits the recovery of repos left
+// unrecorded what to release again, each child with whether its parent is recorded now: one
+// child-release-stalled notice for each issue a child's notice is queued on, which is its parent
+// when the record holds that parent in the child's tree, and else the tree root. The owner walk
+// takes a notice on the parent to the architect that owns the parent, which is the architect that
+// releases the parent's children; a parent the record does not hold, or holds in another tree, has
+// no architect of this tree, so the child is the tree's architect's to release.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
 	return w.tellWaitingArchitects(ctx, []waitTelling{{waits: waits, why: fmt.Sprintf(
-		"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children your release_children released while it was unread are still not recorded",
+		"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded",
 		strings.Join(repos, ", "))}},
 		func(child string, wait releaseWait, parentRecorded bool) string {
 			if !parentRecorded {
@@ -2293,7 +2298,7 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 		})
 }
 
-// tellLetGoWaits tells each tree's architect, in the same one notice per tree, which children its
+// tellLetGoWaits tells the architects, in the same notices tellReleaseWaits writes, which children a
 // release_children left to the recovery of the repositories a pass has just let go
 // (settleRecovery), so that no recovery will ever record them. The notice opens with why the
 // repository was let go, since that is what decides what is true of it (letGoWhy): no todo issue
@@ -2317,7 +2322,7 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 //
 // It is the pair of tellReleaseWaits and not a second telling of its kind: the two share one
 // body, which decides which children are still unrecorded, reads each one's parent and writes one
-// notice per tree, and differ in the reason's opening and in the line each child is named on
+// notice per issue a child's notice is queued on, and differ in the reason's opening and in the line each child is named on
 // alone. The architect hears child-release-stalled either way, so no reader of the notices learns
 // a new kind.
 func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, listing []dispatch.IssueSummary) error {
@@ -2347,8 +2352,8 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 		listed[summary.Key] = summary.Status
 	}
 	openings := map[letGoWhy]string{
-		letGoNoTodo:            "the daemon no longer waits for GitHub to answer for %s, because no todo issue labelled for Legion or under a parent names it now; these children your release_children released while it was unread were never recorded",
-		letGoAnsweredElsewhere: "the daemon no longer waits for GitHub to answer for %s, because Dispatch's repository mapping, or a read GitHub answered for it at another issue's preparation, answers for it now; these children your release_children released while it was unread were never recorded",
+		letGoNoTodo:            "the daemon no longer waits for GitHub to answer for %s, because no todo issue labelled for Legion or under a parent names it now; these children a release_children released while it was unread were never recorded",
+		letGoAnsweredElsewhere: "the daemon no longer waits for GitHub to answer for %s, because Dispatch's repository mapping, or a read GitHub answered for it at another issue's preparation, answers for it now; these children a release_children released while it was unread were never recorded",
 	}
 	var tellings []waitTelling
 	for _, why := range []letGoWhy{letGoNoTodo, letGoAnsweredElsewhere} {
@@ -2383,25 +2388,28 @@ func releaseParentFirst(child string, wait releaseWait) string {
 	return fmt.Sprintf("its parent %s is not recorded: release %s first, then %s", wait.parent, wait.parent, child)
 }
 
-// waitTelling is one notice per tree of the children of waits, opening with why.
+// waitTelling is the children of waits, told in notices that open with why.
 type waitTelling struct {
 	why   string
 	waits map[string]releaseWait
 }
 
 // tellWaitingArchitects is the body both tellings share: for each of tellings, one
-// child-release-stalled notice per tree, naming every child of its waits the workflow still does
-// not record, as its why opens the notice and line names each child, with whether the workflow
-// records that child's parent, read here once for both callers. A child recorded since is told
-// nothing; its record's own notices carry it. Every notice is written in one transaction, so a
+// child-release-stalled notice for each issue a child's notice is queued on, naming every child of
+// its waits the workflow still does not record, as its why opens the notice and line names each
+// child, with whether the workflow records that child's parent, read here once for both callers.
+// A child's notice is queued on its parent when the record holds that parent in the child's tree,
+// and else on the tree root, so the owner walk takes it to the architect that releases the
+// parent's children, or to the tree's architect where no architect of the tree owns the parent
+// (tellReleaseWaits). A child recorded since is told nothing; its record's own notices carry it. Every notice is written in one transaction, so a
 // failure tells no architect anything and the caller's put-back leaves nothing half told, and
 // nothing is written where every child is recorded.
 func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []waitTelling,
 	line func(child string, wait releaseWait, parentRecorded bool) string) error {
-	type notice struct{ tree, reason string }
+	type notice struct{ issue, reason string }
 	var notices []notice
 	for _, telling := range tellings {
-		byTree := map[string][]string{}
+		byIssue := map[string][]string{}
 		for _, child := range slices.Sorted(maps.Keys(telling.waits)) {
 			wait := telling.waits[child]
 			recorded, err := w.recordOf(ctx, child)
@@ -2415,10 +2423,14 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 			if err != nil {
 				return err
 			}
-			byTree[wait.tree] = append(byTree[wait.tree], line(child, wait, parent != nil))
+			on := wait.tree
+			if parent != nil && parent.Tree == wait.tree {
+				on = parent.Key
+			}
+			byIssue[on] = append(byIssue[on], line(child, wait, parent != nil))
 		}
-		for _, tree := range slices.Sorted(maps.Keys(byTree)) {
-			notices = append(notices, notice{tree: tree, reason: telling.why + ": " + strings.Join(byTree[tree], "; ")})
+		for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
+			notices = append(notices, notice{issue: issue, reason: telling.why + ": " + strings.Join(byIssue[issue], "; ")})
 		}
 	}
 	if len(notices) == 0 {
@@ -2428,7 +2440,7 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, told := range notices {
-			row, err := record.NewOutboxRow(told.tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
+			row, err := record.NewOutboxRow(told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
 			if err != nil {
 				return err
 			}
