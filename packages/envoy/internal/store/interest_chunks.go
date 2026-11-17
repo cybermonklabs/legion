@@ -99,8 +99,10 @@ func (r *Registry) malformedRecord(sessionID string, revision uint64, err error)
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
 // same compare-and-swap, and the chunks replaced named are deleted once it lands (kvchunk.Write,
-// which says what else a write deletes and what it leaves to the reaper's collection). A session
-// id under the chunk keys' prefix is refused (kvchunk.ReservedKey): no record stands there.
+// which says what else a write deletes and what it leaves to the reaper's collection). A manifest
+// copied under another key joins into a record naming the session it was copied from, so no write
+// of this session's row lands over it and none deletes the chunks it names. A session id under the
+// chunk keys' prefix is refused (kvchunk.ReservedKey): no record stands there.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, record []byte, revision uint64, replaced kvchunk.Layout) (kvchunk.Written, uint64, error) {
 	kv, epoch := r.watcher.Handle()
 	written, err := kvchunk.Write(ctx, kv, sessionID, record, replaced, func(head []byte) (uint64, error) {

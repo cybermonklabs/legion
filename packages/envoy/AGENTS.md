@@ -3797,8 +3797,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A manifest whose chunks are not all there at the same revision, or do not join, is such a record (`store.ErrMalformedInterest` for the interest record), which the session's next registration replaces.
 
 - A write of a chunked record deletes the chunks of the record it replaced once its manifest lands, and its own once the bucket refused the manifest (a compare-and-swap another write beat, or any other refusal) or the write took more than a minute of wall time before sending it (`kvchunk.WriteBound`), so a write that stops at any step leaves the old record served.
-  A compare-and-swap another write beat is `nats.ErrKeyExists` on every bucket: a replicated bucket's refusal of two swaps in flight at once, code 10164, is named so too (`bus.KeyValue`'s `lostSwap`), so the store reads the record again rather than answering `503`.
-  A delete deletes the chunks of the record it deleted; a deregistration, which deletes at the revision it reads, deletes only the chunks the bucket holds, in order (`kvchunk.DeleteStored`).
+  A delete deletes the chunks of the record it deleted only when this listener's cache holds that record joined and no other session's row names the same chunks (`store.Registry.ownLayout`): a manifest copied or borrowed under another key - which any writer of the bucket can store - names chunks that are not that record's alone, and leaving them is what the collection is for.
+  The same holds for a known-session write, which is a put and so lands over a copy (`session.KnownSessions.ownLayout`).
   What a crash or a call that did not answer leaves, no record names, and it is collected once the cache took it more than 10 minutes ago (`kvchunk.Grace`) and while the cache follows its bucket: by every interest reaper pass, whether or not its reap failed (`store.Registry.StartReaper`, which logs `chunks_collected`), and by the known-session store's hourly sweep.
 
 - Each chunk a rewrite replaces leaves one delete marker under a key no write uses again.
@@ -3807,6 +3807,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A record's own key is never purged, since its marker says the session's record was deleted.
   Measured on a 1 MiB server over a day of heartbeats of a 1.2 MB record: 2 chunk subjects with the pass, 290 without it.
   The pass needs publish on `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`; a user without it keeps the markers, logs `the known-session store could not purge the markers of its replaced chunks` once until a pass purges, and serves on.
+  Each marker a listener's watcher is delivered also leaves one entry, the chunk's key and a revision, in its chunk copy's revision fence (`kvwatch.Copy`), which only a completed read of the bucket (a reconnect's) removes: 288 entries a day of a running listener for each session whose record is two chunks and is refreshed every 10 minutes.
 
 - A listener of an earlier build reads a chunked record's manifest as a record it cannot decode and logs each chunk as a value it cannot decode; it could store no such record either, since the bus refused the write.
   In a fleet that mixes builds, an earlier build's write over a chunked interest record (a role claim through it, say) stores only that write's topics, and the session's next registration through a listener of this build stores its whole list again.

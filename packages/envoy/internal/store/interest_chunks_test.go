@@ -899,3 +899,108 @@ func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
 	}
 	requireTopics(t, "the owner's record", row, sortedTopics(topics))
 }
+
+// A manifest copied or borrowed under another session's key names the owner's chunks, so neither
+// the write that replaces it nor the deregistration that deletes it deletes them: an exact copy,
+// which the cache joins and holds as a row of its own, and one with a forged SHA-256, which no read
+// joins. Each time the owner's record still reads whole and its chunks stay in the bucket. An exact
+// copy joins into the owner's own record, naming the owner's session, so a write of the copy's
+// session targets the owner's key at a revision that is not its and is refused; only its
+// deregistration is a step here. The control is the owner's own deregistration, which deletes them.
+func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	kv := rawInterests(t, conn)
+	topics := kvchunktest.Topics("owner", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_owner", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the owner's record: %v", err)
+	}
+	head, err := kv.Get("ses_owner")
+	if err != nil {
+		t.Fatalf("read the owner's manifest: %v", err)
+	}
+	chunks := kvchunktest.LiveChunkKeys(t, kv)
+	borrowed, err := kvchunk.ReadLayout(head.Value())
+	if err != nil {
+		t.Fatalf("read the owner's layout: %v", err)
+	}
+	borrowed.SHA256 = strings.Repeat("0", 64)
+	forged, err := json.Marshal(borrowed)
+	if err != nil {
+		t.Fatalf("encode the borrowed manifest: %v", err)
+	}
+	manifests := map[string][]byte{"an exact copy": head.Value(), "a forged SHA-256": append([]byte("chunked "), forged...)}
+	requireOwnerWhole := func(after string) {
+		t.Helper()
+		row, _, err := reg.RefreshAt(t.Context(), "ses_owner")
+		if err != nil {
+			t.Fatalf("after %s the owner's record reads %v, want it whole", after, err)
+		}
+		requireTopics(t, "the owner's record after "+after, row, sortedTopics(topics))
+		if live := kvchunktest.LiveChunkKeys(t, kv); !slices.Equal(live, chunks) {
+			t.Fatalf("after %s the bucket holds chunks %v, want the owner's %v", after, live, chunks)
+		}
+	}
+	for what, manifest := range manifests {
+		for _, step := range []struct {
+			name string
+			do   func() error
+		}{
+			{"the write over " + what, func() error {
+				_, err := reg.Upsert(Interest{SessionID: "ses_copy", MachineID: "m1"}, []string{"notifications.team.copy"})
+				return err
+			}},
+			{"the deregistration of " + what, func() error {
+				_, err := reg.Remove(t.Context(), "ses_copy", nil, RoleReleaseAuthority{})
+				return err
+			}},
+		} {
+			if what == "an exact copy" && strings.HasPrefix(step.name, "the write") {
+				continue
+			}
+			if _, err := kv.Put("ses_copy", manifest); err != nil {
+				t.Fatalf("store %s: %v", what, err)
+			}
+			if what == "an exact copy" {
+				waitFor(t, 10*time.Second, func() bool { _, ok := reg.Cached("ses_copy"); return ok })
+			}
+			if err := step.do(); err != nil {
+				t.Fatalf("%s: %v", step.name, err)
+			}
+			requireOwnerWhole(step.name)
+		}
+	}
+	if _, err := reg.Remove(t.Context(), "ses_owner", nil, RoleReleaseAuthority{}); err != nil {
+		t.Fatalf("the owner's deregistration: %v", err)
+	}
+	if live := kvchunktest.LiveChunkKeys(t, kv); len(live) != 0 {
+		t.Fatalf("after the owner's own deregistration the bucket still holds chunks %v", live)
+	}
+}
+
+// A delete that reads nothing - a copy of the stream behind the leader answering its direct get -
+// deletes nothing, so the row the cache holds stays, even when the watcher has not yet delivered
+// that row's chunks: a write-through stored it, and the read-back finds its own revision. Evicting it
+// would fence the row out of the cache and leave its chunks to a collection that takes chunks no row
+// names. The watcher is stopped here, so no chunk of the record reaches the chunk copy.
+func TestADeleteThatReadNothingKeepsARowWhoseChunksHaveNotArrived(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	useKV(t, reg, missingGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: "ses_early"})
+	reg.watcher.Stop()
+	topics := kvchunktest.Topics("early", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_early", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	if _, ok := reg.Cached("ses_early"); !ok {
+		t.Fatal("the write-through stored no row, so the case has nothing to keep")
+	}
+	if err := reg.deleteInterest(t.Context(), "ses_early"); err != nil {
+		t.Fatalf("the delete whose read found nothing: %v", err)
+	}
+	cached, ok := reg.Cached("ses_early")
+	if !ok {
+		t.Fatal("after a delete that deleted nothing the cache holds no row for the record that still stands")
+	}
+	requireTopics(t, "the row the cache kept", cached, sortedTopics(topics))
+}

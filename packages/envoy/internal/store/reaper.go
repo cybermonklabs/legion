@@ -324,17 +324,16 @@ func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) 
 	return everyInterval(ctx, interval, func() {
 		started := time.Now()
 		count, reapErr := r.Reap(live, graceWindow)
-		if reapErr != nil {
-			r.logger().Error("reaper cycle failed", slog.String("error", reapErr.Error()))
-		}
 		collected, err := r.collectInterestChunks(ctx)
 		if err != nil {
 			r.logger().Error("reaper could not collect the chunks no interest record names",
 				slog.Int("chunks_collected", collected), slog.String("error", err.Error()))
 		}
-		if reapErr == nil {
-			r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int("chunks_collected", collected), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		if reapErr != nil {
+			r.logger().Error("reaper cycle failed", slog.String("error", reapErr.Error()), slog.Int("chunks_collected", collected))
+			return
 		}
+		r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int("chunks_collected", collected), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 	})
 }
 

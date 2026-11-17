@@ -16,13 +16,15 @@ import (
 )
 
 // deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
-// each bucket call waiting no longer than ctx (bus.Bounded), and then the chunks the manifest it
-// deleted names that the bucket holds (kvchunk.DeleteStored, since no read joined that manifest).
-// A delete ctx abandoned may still land after this answer,
-// and that is safe: it deletes only the revision it read, so a write that landed since is kept,
-// and its chunks are left to the reaper's collection. A record the read found absent is left
-// alone, delete and all, so a registration that stored the session's row between that read and
-// this delete keeps it; the cache is brought in line with the bucket either way
+// each bucket call waiting no longer than ctx (bus.Bounded), and then the chunks of the record it
+// deleted when that record is the one the cache holds, joined, for the session, and no other
+// session's row names them (ownLayout). A manifest the delete read but no read of this listener
+// joined names chunks never proved to be this record's, so they are left to the reaper's
+// collection, which takes only chunks no row names. A delete ctx abandoned may still land after
+// this answer, and that is safe: it deletes only the revision it read, so a write that landed
+// since is kept, and its chunks are left to the reaper's collection. A record the read found
+// absent is left alone, delete and all, so a registration that stored the session's row between
+// that read and this delete keeps it; the cache is brought in line with the bucket either way
 // (reconcileDeleted).
 func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
@@ -30,6 +32,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
+	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
 	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(sessionID) })
 	if !answered {
@@ -40,19 +43,39 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	}
 	if deleted != nil {
 		revision = max(revision, deleted.Revision())
-		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil && layout.Chunked() {
-			kvchunk.DeleteStored(ctx, kv, layout, r.logger(), interestRecord, sessionID)
+		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil && layout.Chunked() && layout.Generation == held.layout.Generation {
+			r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, held.layout))
 		}
 	}
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
 	return nil
 }
 
+// ownLayout is layout when no row the cache holds for another session names its generation, and
+// the zero layout otherwise. A generation is new for each write, so only a manifest copied under
+// another key - which any writer of the bucket can store - shares one, and the chunks it names are
+// then not this record's alone: a write or a delete of this record leaves them to the reaper's
+// collection, which takes only chunks no row names. It reads every row only for a chunked layout.
+func (r *Registry) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.Layout {
+	if !layout.Chunked() {
+		return layout
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for key, row := range r.cache.All() {
+		if key != sessionID && row.layout.Generation == layout.Generation {
+			return kvchunk.Layout{}
+		}
+	}
+	return layout
+}
+
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
 // stored since, which is no error here (JetStream's wrong last sequence, 10071, which nats.go
 // names nats.ErrKeyExists), and that row stands. layout is the layout of the record read at
-// revision, whose chunks a delete the bucket took deletes after it (deleteChunks). Each bucket
+// revision, whose chunks a delete the bucket took deletes after it, unless another session's row
+// names them too (ownLayout, deleteChunks). Each bucket
 // call waits no longer than ctx (bus.Bounded). A delete ctx abandoned may still land after this
 // answer, and that is safe: it deletes the one revision it names, so a write that landed since is
 // kept, and the chunks of the record it deleted are left to the reaper's collection.
@@ -79,7 +102,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	if err != nil {
 		return false, err
 	}
-	r.deleteChunks(ctx, kv, sessionID, layout)
+	r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, layout))
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
 	return true, nil
 }
@@ -87,10 +110,10 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 // reconcileDeleted brings sessionID's cache entry in line with the bucket after a delete through
 // kv, a handle of epoch, that succeeded past revision: it applies the key's latest history entry,
 // which is the delete marker unless a write has landed since, or, when the history cannot be read
-// within ctx, evicts the entry behind a fence just past revision. A manifest as that latest entry
-// is applied only when the chunk copy holds every chunk it names (kvchunk.Chunks.Join): the one
-// the cache already holds, which a delete that read nothing and so deleted nothing leaves
-// standing, is kept with its row, so its chunks stay named and no collection takes them. A manifest
+// within ctx, evicts the entry behind a fence just past revision. A latest entry at a revision the
+// cache's fence already holds is no news - a delete that read nothing and so deleted nothing - and
+// the cache is left as it is, its row and that row's chunks named. A manifest as that latest entry
+// is applied only when the chunk copy holds every chunk it names (kvchunk.Chunks.Join). A manifest
 // another listener stored since, whose chunks the watcher has not delivered yet, is evicted behind
 // that fence instead of being judged a record this build cannot decode: the watcher delivers it
 // after its chunks, past the fence.
@@ -105,6 +128,10 @@ func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch 
 	var latest kvwatch.Entry
 	if err == nil && len(entries) > 0 {
 		latest = kvwatch.JetStreamEntry(entries[len(entries)-1])
+		if latest.Op == kvwatch.OpPut && latest.Revision <= r.cache.FenceFor(epoch, sessionID) {
+			r.mu.Unlock()
+			return
+		}
 	}
 	unjoined := latest.Op == kvwatch.OpPut && kvchunk.IsManifest(latest.Value)
 	if unjoined {

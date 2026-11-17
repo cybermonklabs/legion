@@ -640,3 +640,45 @@ func TestAForgedKnownSessionManifestIsNoRecordAndTheNextWriteReplacesIt(t *testi
 		return ok && slices.Equal(record.Topics, topics)
 	})
 }
+
+// A manifest copied under another session's key names the owner's chunks, and a known-session
+// write is a put, not a compare-and-swap, so the copy's session's next write lands over it: that
+// write leaves the owner's chunks alone, and the owner's record still reads whole in a store that
+// reads the bucket afresh. The control is the owner's own rewrite, which deletes its old chunks.
+func TestAKnownSessionWriteOverACopiedManifestLeavesTheOwnersChunks(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	known := openKnownOn(t, conn, time.Now)
+	kv := rawKnown(t, conn)
+	topics := kvchunktest.Topics("owner", 400)
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_owner", Topics: topics}); err != nil {
+		t.Fatalf("record the owner: %v", err)
+	}
+	head, err := kv.Get("ses_known_owner")
+	if err != nil {
+		t.Fatalf("read the owner's manifest: %v", err)
+	}
+	chunks := kvchunktest.LiveChunkKeys(t, kv)
+	if _, err := kv.Put("ses_known_copy", head.Value()); err != nil {
+		t.Fatalf("store the copy: %v", err)
+	}
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the store to hold the copy as a row", func() bool {
+		_, ok := known.cached("ses_known_copy")
+		return ok
+	})
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_copy", Topics: []string{"notifications.team.copy"}}); err != nil {
+		t.Fatalf("the write over the copy: %v", err)
+	}
+	if live := kvchunktest.LiveChunkKeys(t, kv); !slices.Equal(live, chunks) {
+		t.Fatalf("after the write over the copy the bucket holds chunks %v, want the owner's %v", live, chunks)
+	}
+	requireKnownTopics(t, "a store that read the bucket afresh", openKnownOn(t, conn, time.Now), "ses_known_owner", topics)
+
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_owner", Topics: kvchunktest.Topics("again", 400)}); err != nil {
+		t.Fatalf("the owner's rewrite: %v", err)
+	}
+	for _, key := range kvchunktest.LiveChunkKeys(t, kv) {
+		if slices.Contains(chunks, key) {
+			t.Fatalf("after the owner's own rewrite the bucket still holds %s, a chunk of the record it replaced", key)
+		}
+	}
+}

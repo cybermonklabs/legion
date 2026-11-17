@@ -111,7 +111,7 @@ func (l Layout) Chunked() bool { return l.Generation != "" }
 // Keys is the key of each of the layout's chunks, none for a record stored whole. It is called
 // only for a layout this build laid out (Write) or one whose chunks a read joined (Read,
 // Chunks.Join), whose count is the chunks that exist: a manifest's own claim of its count is never
-// trusted to size anything (join, DeleteStored).
+// trusted to size anything (join).
 func (l Layout) Keys() []string {
 	keys := make([]string, l.Chunks)
 	for i := range keys {
@@ -147,20 +147,20 @@ func (ReservedKey) Is(target error) bool { return target == bus.ErrRefused }
 
 // layOut lays record out for a bucket whose messages take at most maxPayload bytes: the value for
 // the record's key and the chunks it names. A record that fits one message with room for its
-// headers is that value itself. A larger one is chunks under a new generation, and a manifest
-// naming them; a chunk is three quarters of that room less HeaderBytes, so the answer of the
-// leader's read of it (Read), which carries the chunk in base64 inside a JSON object, fits under
-// the max payload too, and a server that holds an answer to it - a leafnode connection does - takes
-// it.
+// headers is that value itself, on a server of any max payload. A larger one is chunks under a new
+// generation, and a manifest naming them; a chunk is three quarters of that room less HeaderBytes,
+// so the answer of the leader's read of it (Read), which carries the chunk in base64 inside a JSON
+// object, fits under the max payload too, and a server that holds an answer to it - a leafnode
+// connection does - takes it. A max payload that leaves a chunk no room refuses the larger record.
 func layOut(record []byte, maxPayload int) ([]byte, Layout, [][]byte, error) {
 	whole := maxPayload - HeaderBytes
-	limit := whole*3/4 - HeaderBytes
-	if limit <= 0 {
-		return nil, Layout{}, nil, fmt.Errorf("%w: the server's max payload of %d bytes leaves no room for a value beside %d bytes of headers",
-			bus.ErrTooLarge, maxPayload, HeaderBytes)
-	}
 	if len(record) <= whole {
 		return record, Layout{}, nil, nil
+	}
+	limit := whole*3/4 - HeaderBytes
+	if limit <= 0 {
+		return nil, Layout{}, nil, fmt.Errorf("%w: the server's max payload of %d bytes leaves no room for a chunk beside %d bytes of headers",
+			bus.ErrTooLarge, maxPayload, HeaderBytes)
 	}
 	sum := sha256.Sum256(record)
 	layout := Layout{Generation: rand.Text(), Bytes: len(record), SHA256: hex.EncodeToString(sum[:])}
@@ -261,6 +261,12 @@ func (l Layout) join(chunk func(key string) ([]byte, error)) ([]byte, error) {
 // record's layout is not returned: the chunks it names were never proved to be its, so the write
 // that replaces it deletes none of them, and the store's collection removes the ones the bucket
 // holds. Any other error is a read that did not answer. Each read waits no longer than ctx.
+//
+// The read again of the record's key is a leader read too, so a rewrite that made the record a
+// whole value of more than three quarters of the max payload answers it base64-encoded past that
+// bound: a client connection and a route take that answer, and a leafnode hop, which enforces the
+// max payload on what it forwards, would not. The hubs envoy-infra renders configure no leafnode
+// (infra/gcp's clustered hub turns its leafnode port off).
 func Read(ctx context.Context, kv bus.KeyValue, key string, entry nats.KeyValueEntry) ([]byte, Layout, uint64, error) {
 	for attempt := 1; ; attempt++ {
 		revision := entry.Revision()
@@ -383,27 +389,6 @@ func Delete(ctx context.Context, kv bus.KeyValue, chunks []string, log *slog.Log
 		if !answered || err != nil {
 			log.Warn("chunks of a record are left to the store's collection",
 				slog.String("record", what), slog.String("key", key), slog.String("chunk", chunk), slog.String("error", fmt.Sprint(err)))
-			return
-		}
-	}
-}
-
-// DeleteStored deletes the chunks of layout the bucket holds, for a layout read from a manifest no
-// read joined (the value a delete of the record answered): it deletes them in order, each at the
-// revision it reads (bus.KeyValue.DeleteAtRead), and stops at the first the bucket does not hold,
-// so a manifest's own claim of its chunk count - any writer of the bucket can store one - never
-// makes it send more deletes than there are chunks. A chunk it could not delete is logged at WARN
-// and left to the store's collection, as Delete's is.
-func DeleteStored(ctx context.Context, kv bus.KeyValue, layout Layout, log *slog.Logger, what, key string) {
-	for index := range layout.Chunks {
-		chunk := layout.key(index)
-		deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(chunk) })
-		if !answered || err != nil {
-			log.Warn("chunks of a record are left to the store's collection",
-				slog.String("record", what), slog.String("key", key), slog.String("chunk", chunk), slog.String("error", fmt.Sprint(err)))
-			return
-		}
-		if deleted == nil {
 			return
 		}
 	}

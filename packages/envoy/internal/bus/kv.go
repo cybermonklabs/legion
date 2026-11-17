@@ -791,20 +791,7 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 		return 0, err
 	}
 	revision, err := kv.legacy.Update(key, value, last)
-	return revision, kv.tooLarge(key, len(value), invalidKey(key, lostSwap(err)))
-}
-
-// lostSwap names a compare-and-swap another write beat as the nats.ErrKeyExists every caller in
-// this module reads it as. nats.go names it so for a bucket of one copy (code 10071) and for
-// Create on any bucket, but a replicated bucket refuses two swaps in flight at once with code
-// 10164, which nats.go's Update and conditional Delete name nats.ErrKeyRevisionMismatch alone;
-// left so, a store on such a bucket would answer a lost swap as a bus that did not answer rather
-// than read the record again. Any other error is returned as it is.
-func lostSwap(err error) error {
-	if errors.Is(err, nats.ErrKeyRevisionMismatch) && !errors.Is(err, nats.ErrKeyExists) {
-		return fmt.Errorf("%w: %w", err, nats.ErrKeyExists)
-	}
-	return err
+	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
 }
 
 // IsCASConflict reports whether err is a compare-and-swap revision conflict
@@ -819,7 +806,7 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	return invalidKey(key, lostSwap(kv.legacy.Delete(key, opts...)))
+	return invalidKey(key, kv.legacy.Delete(key, opts...))
 }
 
 // DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
@@ -855,7 +842,7 @@ func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	return invalidKey(key, lostSwap(kv.legacy.Purge(key, opts...)))
+	return invalidKey(key, kv.legacy.Purge(key, opts...))
 }
 
 // Status reads the bucket's status through the legacy handle, which waits out that handle's

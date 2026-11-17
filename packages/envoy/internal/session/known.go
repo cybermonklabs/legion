@@ -717,6 +717,26 @@ func (s *KnownSessions) cached(sessionID string) (knownRow, bool) {
 	return row, true
 }
 
+// ownLayout is layout when no record the copy holds for another session names its generation,
+// and the zero layout otherwise. A generation is new for each write, so only a manifest copied under
+// another key - which any writer of the bucket can store - shares one, and the chunks it names are
+// then not this record's alone: the write that replaces this record leaves them to the sweep's
+// collection, which takes only chunks no record names. It reads every record only for a chunked
+// layout. Callers hold no lock.
+func (s *KnownSessions) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.Layout {
+	if !layout.Chunked() {
+		return layout
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for key, row := range s.records.All() {
+		if key != sessionID && row.layout.Generation == layout.Generation {
+			return kvchunk.Layout{}
+		}
+	}
+	return layout
+}
+
 // MatchEach calls visit with each record whose topics match topic (routing.Match's rules), once
 // per record and in no order, looked up in the store's subject index, while the store answers at
 // all (Opened). A record past the retention is left out, as Get leaves it out. visit runs under
@@ -802,7 +822,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 	}
 	kv, epoch := watcher.Handle()
-	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, held.layout, func(head []byte) (uint64, error) {
+	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, s.ownLayout(record.SessionID, held.layout), func(head []byte) (uint64, error) {
 		return kv.Put(record.SessionID, head)
 	}, s.now, s.logger(), knownRecord)
 	if err != nil {
