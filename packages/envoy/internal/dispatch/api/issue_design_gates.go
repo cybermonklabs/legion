@@ -118,8 +118,12 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read in the write's own transaction, under the key-share lock the rows'
-	// foreign key takes anyway, so the refusal and the write decide on the same row. The code is
+	// The issue is read in the write's own transaction, under a lock that a second publish of the
+	// same issue waits for (`for no key update`, the lock an issue's own writes take), so two
+	// publishes replace the set one after the other and the stored set is always one whole set, the
+	// set of the one that finishes last; with the key-share lock the rows' foreign key takes, both
+	// deletes read the old rows and the two upserts leave a mix. The refusal and the write decide
+	// on the same row. The code is
 	// written here rather than taken from loadIssue, which answers the package's plain
 	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
 	// does not serve this route at all, and that one answers the router's own
@@ -129,7 +133,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// dropped as a refusal no retry repairs.
 	var issue string
 	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for key share
+		select key from issues where key = $1 for no key update
 	`, r.PathValue("key")).Scan(&issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
