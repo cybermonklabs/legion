@@ -245,14 +245,18 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
 		}},
 		"root-microvm": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		// root-exchange-identity is root-enrolled with agent_secrets.exchange_audience set: the
+		// one case whose pod carries an identity the broker's exchange trades
+		// (TestAnEnrolledPodCarriesAnIdentityItCanTrade).
+		"root-exchange-identity": {spec: rootSpec(t), agentSecrets: exchangeEnrolled()},
 	}
 }
 
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the
-// runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled alone, and
-// sandbox, the sandbox block, for root-microvm alone. The tests that build every case's manifest
-// on one shared runtime apply each case to it first (apply), so every other case runs unenrolled
-// and in gVisor.
+// runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled and
+// root-exchange-identity alone, and sandbox, the sandbox block, for root-microvm alone. The tests
+// that build every case's manifest on one shared runtime apply each case to it first (apply), so
+// every other case runs unenrolled and in gVisor.
 type manifestCase struct {
 	spec         runtime.SpawnSpec
 	agentSecrets *AgentSecrets
@@ -1452,37 +1456,46 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 	}
 }
 
-// runtimeOwned and the composed names together are exactly what the worker container is told by
-// the runtime itself, a tree agent's, a Claude Code worker's and the controller's together: every
-// name mainEnvironment sets with Env empty and no secret of the spec's, every optional value
-// configured — the tree agent works a repository the project names, so it is told the issue key
-// it stamps its commits with. A name added to the environment and in neither set is one a spec
-// could override; a name left in one of them that the environment no longer sets is one a spec is
-// refused for nothing. The two sets are kept apart by what an operator may do with a name, not by
-// who writes the value the container carries: a composed name reaches the container with the
-// operator's own value inside it (roleOperatorEnv), and every launch has a role, so the spend
-// attributes are in every one of these environments.
+// runtimeOwned and the composed names together, with the exchange identity's two where the
+// deployment names an exchange audience (Runtime.specOwned), are exactly what the worker container
+// is told by the runtime itself, a tree agent's, a Claude Code worker's and the controller's
+// together: every name mainEnvironment sets with Env empty and no secret of the spec's, every
+// optional value configured — the tree agent works a repository the project names, so it is told
+// the issue key it stamps its commits with — under an enrollment that names an exchange audience
+// and under one that names none, which tells no role either exchange variable. A name added to
+// the environment and in no set is one a spec could override; a name left in one of them that
+// the environment no longer sets is one a spec is refused for nothing. The sets are kept apart by
+// what an operator may do with a name, not by who writes the value the container carries: a
+// composed name reaches the container with the operator's own value inside it (roleOperatorEnv),
+// and every launch has a role, so the spend attributes are in every one of these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
-	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	opts.TestPostgres = true
-	r, err := configure(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stamping := workerSpec(t)
-	stamping.IssueTrailer = stamping.Issue
-	told := map[string]bool{}
-	for _, spec := range []runtime.SpawnSpec{stamping, claudeWorkerSpec(t), controllerSpec(t)} {
-		spec.Env, spec.Secrets = nil, nil
-		for name := range envOf(workerOf(t, r, spec)) {
-			told[name] = true
-		}
-	}
-	if !maps.Equal(told, runtimeOwnedOrComposed) {
-		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned with composed is %v",
-			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwnedOrComposed)))
+	for name, agentSecrets := range map[string]*AgentSecrets{
+		"the exchange identity on":  exchangeEnrolled(),
+		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := testOptions()
+			opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+			opts.AgentSecrets = agentSecrets
+			opts.TestPostgres = true
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stamping := workerSpec(t)
+			stamping.IssueTrailer = stamping.Issue
+			told := map[string]bool{}
+			for _, spec := range []runtime.SpawnSpec{stamping, claudeWorkerSpec(t), controllerSpec(t)} {
+				spec.Env, spec.Secrets = nil, nil
+				for name := range envOf(workerOf(t, r, spec)) {
+					told[name] = true
+				}
+			}
+			if owned := r.specOwned(); !maps.Equal(told, owned) {
+				t.Errorf("the worker container is told %v by the runtime, and the names a spec may not set are %v",
+					slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(owned)))
+			}
+		})
 	}
 }
 
@@ -1797,8 +1810,9 @@ func TestATreeRolesShimIsToldToWarmTheWorkspacesCodegraphIndex(t *testing.T) {
 }
 
 // New refuses an agent-secrets configuration no pod could run: no broker URL, no token audience,
-// an expiry outside the API server's floor (10m) and the cluster's admission cap (1h), or the image's
-// agent-secrets binary missing.
+// an expiry outside the API server's floor (10m) and the cluster's admission cap (1h), an exchange
+// audience that is the enrollment's own (the cluster projects one volume per audience), or the
+// image's agent-secrets binary missing.
 func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 	for name, tc := range map[string]struct {
 		edit func(*Options)
@@ -1809,6 +1823,9 @@ func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 		"expiry too long": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: 2 * time.Hour}
 		}, "agent secrets: token expiry 2h0m0s is not between 10m0s and 1h0m0s"},
+		"the exchange audience is the enrollment's": {func(o *Options) {
+			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour, ExchangeAudience: "a"}
+		}, `agent secrets: the exchange audience is the enrollment's own, "a"`},
 		"no binary": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour}
 			o.Tools.AgentSecrets = ""
@@ -2054,11 +2071,14 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 }
 
 // legionVolumeNames, legionMountPaths, and runtimeOwned with the composed names — what CheckPod
-// knows of as Legion's in the operator's pod — are exactly what Legion's own pods carry: every
+// knows of as Legion's in the operator's pod, the exchange identity's names among them where the
+// deployment names an exchange audience — are exactly what Legion's own pods carry: every
 // volume of every pod a launch or
 // the image probe runs, and every mount and variable of the containers the operator's pieces join
 // (the agent's and the probe's), with every optional piece the runtime adds configured and nothing
-// of a spec's or the operator's. Among the goldens' cases is a Claude Code worker, which alone is
+// of a spec's or the operator's, under an enrollment that names an exchange audience and under one
+// that names none, whose pods carry none of the exchange identity. Among the goldens' cases is a
+// Claude Code worker, which alone is
 // told three of the variables; none of them works a repository the project names, so the worker
 // below, which does, is built here for the one variable such a pod alone carries. A piece added
 // to a pod and not to its list is one an operator could collide with unrefused; one left in a
@@ -2067,70 +2087,79 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts := goldenOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	// With every optional piece configured: the pod's own test database is one (testPGVolume), the
 	// skills marketplace is another (skillsVolume, skillsTempVolume and SkillsDir), and a microVM
 	// project's metadata endpoint a third (workloadIdentityTokenVolume, under RolesDir).
 	opts.TestPostgres = true
 	opts.SkillsRepository = testSkillsRepository(t)
 	opts.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}
-	r, err := configure(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	volumes, mounts, env := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	carry := func(pod corev1.PodSpec, agent corev1.Container) {
-		for _, volume := range pod.Volumes {
-			volumes[volume.Name] = true
-		}
-		for _, mount := range agent.VolumeMounts {
-			// Every role's own mounts lie under RolesDir, which is reserved whole; an issue
-			// pod's roles container holds what belongs under the home under HomeMountsDir, which
-			// is reserved whole too, at the path each is bound back at.
-			switch path := mount.MountPath; {
-			case path == RolesDir || strings.HasPrefix(path, RolesDir+"/"):
-				mounts[RolesDir] = true
-			case strings.HasPrefix(path, HomeMountsDir+"/"):
-				mounts[HomeMountsDir] = true
-				mounts[podHome+strings.TrimPrefix(path, HomeMountsDir)] = true
-			default:
-				mounts[path] = true
-			}
-		}
-		for _, variable := range agent.Env {
-			env[variable.Name] = true
-		}
-	}
-	for _, tc := range manifestCases(t) {
-		spec := tc.spec
-		spec.Env, spec.Secrets = nil, nil
-		pod := podOf(t, r, spec)
-		carry(pod, workerOf(t, r, spec))
-	}
-	// A pane whose repository the project names is told the issue key it stamps its commits with
-	// (LEGION_ISSUE_TRAILER), and no golden case works such a repository.
-	stamping := workerSpec(t)
-	stamping.Env, stamping.Secrets = nil, nil
-	stamping.IssueTrailer = stamping.Issue
-	carry(podOf(t, r, stamping), workerOf(t, r, stamping))
-	probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
-	carry(probe, containerNamed(t, probe, probeContainer))
-	for _, list := range []struct {
-		name    string
-		got     []string
-		carried map[string]bool
-	}{
-		{"legionVolumeNames", legionVolumeNames(), volumes},
-		{"legionMountPaths", legionMountPaths(), mounts},
-		{"runtimeOwned with composed", slices.Collect(maps.Keys(runtimeOwnedOrComposed)), env},
+	for name, agentSecrets := range map[string]*AgentSecrets{
+		"the exchange identity on":  exchangeEnrolled(),
+		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
 	} {
-		listed := map[string]bool{}
-		for _, entry := range list.got {
-			listed[entry] = true
-		}
-		if !maps.Equal(listed, list.carried) {
-			t.Errorf("%s is %v, and Legion's pods carry %v", list.name, slices.Sorted(maps.Keys(listed)), slices.Sorted(maps.Keys(list.carried)))
-		}
+		t.Run(name, func(t *testing.T) {
+			opts := opts
+			opts.AgentSecrets = agentSecrets
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			volumes, mounts, env := map[string]bool{}, map[string]bool{}, map[string]bool{}
+			carry := func(pod corev1.PodSpec, agent corev1.Container) {
+				for _, volume := range pod.Volumes {
+					volumes[volume.Name] = true
+				}
+				for _, mount := range agent.VolumeMounts {
+					// Every role's own mounts lie under RolesDir, which is reserved whole; an issue
+					// pod's roles container holds what belongs under the home under HomeMountsDir,
+					// which is reserved whole too, at the path each is bound back at.
+					switch path := mount.MountPath; {
+					case path == RolesDir || strings.HasPrefix(path, RolesDir+"/"):
+						mounts[RolesDir] = true
+					case strings.HasPrefix(path, HomeMountsDir+"/"):
+						mounts[HomeMountsDir] = true
+						mounts[podHome+strings.TrimPrefix(path, HomeMountsDir)] = true
+					default:
+						mounts[path] = true
+					}
+				}
+				for _, variable := range agent.Env {
+					env[variable.Name] = true
+				}
+			}
+			for _, tc := range manifestCases(t) {
+				spec := tc.spec
+				spec.Env, spec.Secrets = nil, nil
+				pod := podOf(t, r, spec)
+				carry(pod, workerOf(t, r, spec))
+			}
+			// A pane whose repository the project names is told the issue key it stamps its
+			// commits with (LEGION_ISSUE_TRAILER), and no golden case works such a repository.
+			stamping := workerSpec(t)
+			stamping.Env, stamping.Secrets = nil, nil
+			stamping.IssueTrailer = stamping.Issue
+			carry(podOf(t, r, stamping), workerOf(t, r, stamping))
+			probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
+			carry(probe, containerNamed(t, probe, probeContainer))
+			exchange := agentSecrets.ExchangeAudience != ""
+			for _, list := range []struct {
+				name    string
+				got     []string
+				carried map[string]bool
+			}{
+				{"legionVolumeNames", legionVolumeNames(exchange), volumes},
+				{"legionMountPaths", legionMountPaths(exchange), mounts},
+				{"the names a spec may not set", slices.Collect(maps.Keys(r.specOwned())), env},
+			} {
+				listed := map[string]bool{}
+				for _, entry := range list.got {
+					listed[entry] = true
+				}
+				if !maps.Equal(listed, list.carried) {
+					t.Errorf("%s is %v, and Legion's pods carry %v", list.name, slices.Sorted(maps.Keys(listed)), slices.Sorted(maps.Keys(list.carried)))
+				}
+			}
+		})
 	}
 }
 

@@ -207,7 +207,7 @@ var cannedStatus = map[string]string{"req-approved": approvedStatusJSON, "req-de
 func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	t.Helper()
 	counters := &brokerCounters{}
-	var audience string
+	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.createRequest, 1)
@@ -224,7 +224,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			counters.lastSessionID = *body.SessionID
 			counters.mu.Unlock()
 		}
-		obj, err := record.VerifyRequestObject(body.Request, audience, time.Minute, time.Now())
+		obj, err := record.VerifyRequestObject(body.Request, srv.URL, time.Minute, time.Now())
 		if err != nil || len(obj.Details) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -237,7 +237,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
 		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
-			writeJSON(w, pendingAnswer(name, audience, true))
+			writeJSON(w, pendingAnswer(name, srv.URL, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-approved", "state": "granted",
@@ -313,7 +313,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				return
 			}
 		}
-		writeJSON(w, pendingAnswer(name, audience, false))
+		writeJSON(w, pendingAnswer(name, srv.URL, false))
 	})
 	mux.HandleFunc("POST /v1/grants/grant-granted/values", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -368,11 +368,13 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The handlers read srv.URL, so srv is assigned before the server serves: Start, which sets
+	// the URL, runs after the assignment and before the goroutine that serves.
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.calls, 1)
 		mux.ServeHTTP(w, r)
 	}))
-	audience = srv.URL
+	srv.Start()
 	return srv, counters
 }
 
