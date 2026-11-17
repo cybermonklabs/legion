@@ -62,12 +62,11 @@ func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 	return "", nil
 }
 
-// provisioning is whether pod is still coming up through its two init containers, workspace-fetch,
-// the one container of the pod that holds the provisioning token, and then workspace-init: one of
-// them running, or a workspace-fetch between the restarts the grace covers,
-// which is the same pod failedInit leaves alive. It is the rule the liveness mapping reads such a
-// pod alive by (evaluate), and the rule by which a launch's wait for the pod's launcher keeps
-// giving it longer (awaitRoleLauncher).
+// provisioning is whether pod is still coming up through its init containers (an issue pod's
+// workspace-fetch and then workspace-init; the controller's pod has none): one of them running, or
+// a workspace-fetch between the restarts the grace covers, which is the same pod failedInit leaves
+// alive. It is the rule the liveness mapping reads such a pod alive by (evaluate), and the rule by
+// which a launch's wait for the pod's launcher keeps giving it longer (awaitRoleLauncher).
 func provisioning(pod *corev1.Pod) bool {
 	if pod == nil || phaseOf(pod) != corev1.PodPending {
 		return false

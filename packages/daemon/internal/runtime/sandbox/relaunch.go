@@ -424,20 +424,18 @@ func launcherBackstop(boot, bound time.Duration) time.Duration {
 
 // awaitRoleLauncher waits until loc's role launcher has connected, reporting false, or loc's pod
 // has ended, reporting true, and returns the deadline the wait stood at when it stopped. The
-// launcher starts only once both of the pod's init containers have finished, and the three steps
-// whose duration follows the repository's size —
-// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends
-// while it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their
-// retries, and the restarts the grace covers (fetchRestartGrace) — then workspace-init's
-// shared clone of the feed
-// and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own start,
-// a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
-// manifest.go). So until the wait
-// first sees the pod provisioning (an init container running, or a fetch between those restarts:
-// provisioning) it gives the pod the
-// boot timeout, the image pull's; from then on, the boot timeout from the last moment it saw the
-// pod provisioning, never past the boot timeout plus ProvisionBound from the first
-// (launcherDeadline). A pod that never provisions past the boot timeout waits it alone.
+// launcher starts only once every init container of the pod has finished (an issue pod's two; the
+// controller's pod has none), and the three steps whose duration follows the repository's size —
+// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends while
+// it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their retries, and
+// the restarts the grace covers (fetchRestartGrace) — then workspace-init's shared clone of the
+// feed and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own
+// start, a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
+// manifest.go). So until the wait first sees the pod provisioning (an init container running, or a
+// fetch between those restarts: provisioning) it gives the pod the boot timeout, the image pull's;
+// from then on, the boot timeout from the last moment it saw the pod provisioning, never past the
+// boot timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions
+// past the boot timeout waits it alone.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
 	start := time.Now()

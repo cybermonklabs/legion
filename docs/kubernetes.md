@@ -3078,8 +3078,8 @@ runtime:
 
 - `acme-skills` is the `name` the repository's marketplace file gives, and `agent-skills` is a plugin that file names.
 
-- It removes the marketplace first, because `omp plugin marketplace add` refuses a name already added.
-  It removes it again at the end, which deletes the clone and keeps the installed plugin, so the command can run again in the same pod.
+- It removes the marketplace first, because `omp plugin marketplace add` refuses a name already added, and a start that ended before its last step leaves the name added.
+  It removes it again at the end, which deletes the clone from the role's home and keeps the installed plugin: a clone is the marketplace repository's whole tree (49 MB for one measured marketplace), and each role of a pod has a home of its own.
 
 - It installs only after the `add` succeeded, because an install of `<plugin>@<name>` whose `<name>` is no registered marketplace goes to npm.
 
