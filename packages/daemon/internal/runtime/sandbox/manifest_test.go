@@ -1870,6 +1870,13 @@ func TestNewAcceptsABrokerAudienceEqualToThePoolOfABlockNoPodUses(t *testing.T) 
 	}
 }
 
+// New accepts a microvm block no issue pod uses that names no compute class, as the loader does
+// (it requires compute_class only while an issue pod runs in a microVM), so a revert that empties
+// canary_issues can leave such a block in place.
+func TestNewAcceptsAMicroVMBlockNoPodUsesWithNoComputeClass(t *testing.T) {
+	sandboxRuntime(t, SandboxConfig{Type: SandboxGVisor, MicroVM: &MicroVM{StorageClass: testMicroVMStorageClass}})
+}
+
 // operatorPod is an operator's runtime.kubernetes.pod: a variable, a Secret volume at mode 0440
 // (default_mode), a ConfigMap volume mounted by sub_path into the profile's agent directory, a
 // projected ServiceAccount token alone in its volume, an existing share by its
