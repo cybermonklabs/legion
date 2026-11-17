@@ -2670,14 +2670,17 @@ envoy-dispatch when `envoy_ci_state` is among the buckets.
 **The check is best effort.** Every run but a break-glass create prints so first, on standard
 error. A writer gets past it four ways: a host or dev box you do not name, a binary renamed to a
 name the check does not know, a writer that starts between the final scan and the create, and a
-restore after `check` that nothing holds. So before every run, stop every listener of the
-deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has
-ended; the check confirms what you did, and does not replace it. The coming server-side hold
-will exclude writers at the server instead: while it holds, the auth callout refuses every
-connection but the operator's, every other connection is kicked, every server's connz shows the
-operator alone, and a server it cannot reach stops the hold. Four tests (`TestBestEffort...`)
-assert today's outcome of each way, and must be inverted when the hold leaves no writer a
-connection.
+restore after `check` that nothing holds. So before every run of the normal `create`, `recreate`
+or `check`, stop every listener of the deployment (and every envoy-dispatch, for
+`envoy_ci_state`) and confirm on each host that it has ended; the check confirms what you did,
+and does not replace it. The break-glass create
+([Until the cutover](#until-the-cutover-create---break-glass)) is the one run that needs no
+listener stopped: it creates only a bucket the server reports missing, which loses nothing to a
+create. The coming server-side hold will exclude writers at the server instead: while it holds,
+the auth callout refuses every connection but the operator's, every other connection is kicked,
+every server's connz shows the operator alone, and a server it cannot reach stops the hold. Four
+tests (`TestBestEffort...`) assert today's outcome of each way, and must be inverted when the
+hold leaves no writer a connection.
 
 ```sh
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 \

@@ -255,7 +255,7 @@ func CreateCopiedBucketsOn(conn *nats.Conn) {
 
 // ErrBucketMissing is a bucket a listener copies that an open found missing (EnsureKeyValue). It
 // wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
-var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it, once every writer of it has ended: %w", nats.ErrBucketNotFound)
+var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it: `create --break-glass` while its writers run, or the normal create once every writer of it has ended: %w", nats.ErrBucketNotFound)
 
 // ErrBucketExists is a bucket a create-only open found there (CreateMissingCopiedBucket): at its
 // lookup, or in the answer "stream name already in use" to its create, when another client made

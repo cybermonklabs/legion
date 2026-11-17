@@ -97,8 +97,10 @@ func ListenerBuckets() []string {
 // store (internal/session), and the CI state bucket (internal/cistore). No program of a
 // deployment creates one (EnsureKeyValue, CreateCopiedBucketsOn): a write one of them acknowledged
 // is lost when it is deleted and created again, and its writer was told it landed, so the operator
-// alone creates them, with `envoy-infra buckets` (CreateCopiedBucket), only once every writer has
-// ended. Each call returns a fresh slice.
+// alone creates them, with `envoy-infra buckets`: its create, recreate and check only once every
+// writer has ended (CreateCopiedBucket), and its break-glass create while writers run, since that
+// creates only a bucket the server reports missing (CreateMissingCopiedBucket), which loses nothing
+// to a create. Each call returns a fresh slice.
 func CopiedBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, CIStateBucket}
 }
