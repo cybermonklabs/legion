@@ -193,6 +193,12 @@ type Config struct {
 	// Defaults, an issue pod's. The controller pod's launcher starts its guard at
 	// ControllerDefaults.
 	Start Settings
+	// Observe, when set, is called with each reading the guard takes, on its loop and before it
+	// acts on the reading: the time its Clock read as it took the reading, AnonPages and the
+	// limit, in bytes. It is a measurement seam for the live tests, which time the guard's
+	// decisions and the gaps between its readings by the guard's own readings; production leaves
+	// it nil. It must not block, since the guard's next reading waits for it.
+	Observe func(now time.Time, reading, limit uint64)
 }
 
 // phase is where a guard is in a rise.
@@ -308,9 +314,8 @@ type Guard struct {
 	signal   Signaler
 	id       string
 	self     int
-	// observe, when set, is called with each reading the guard takes, on its loop and before it
-	// acts on the reading. The live test (live_test.go) sets it to time the guard's decisions
-	// and falls from the guard's own readings; production leaves it nil.
+	// observe is Config.Observe. The issue pod's live test (live_test.go) sets it on the guard
+	// itself, the controller pod's (the launcher's) through Config.
 	observe func(now time.Time, reading, limit uint64)
 	// smapsRead, when set, is called with the pid of each smaps the guard's loop reads (size),
 	// before it reads it. The tests set it to count which processes the guard reads at which
@@ -379,6 +384,7 @@ func New(cfg Config) *Guard {
 		logf:         cfg.Logf,
 		clock:        cfg.Clock,
 		signal:       cfg.Signal,
+		observe:      cfg.Observe,
 		id:           hex.EncodeToString(id[:]),
 		self:         os.Getpid(),
 		settings:     cmp.Or(cfg.Start, Defaults()),
