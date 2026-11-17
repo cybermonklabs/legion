@@ -103,6 +103,14 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 			writeSessionRecord(t, w, senderTestSessions, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			_, _ = w.Write([]byte(`{"role":"reviewer","holder":"s1","title":"planner","capabilities":["steer"]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unheld":
+			// The listener's own refusal for a role no session claims.
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no session holds role unheld"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/broken":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/garbled":
+			_, _ = w.Write([]byte(`{"role":`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			_, _ = w.Write([]byte(senderTestSessions))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":

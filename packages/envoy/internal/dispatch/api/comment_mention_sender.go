@@ -332,8 +332,12 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 	if held := heldLane(lane, item.owner()); held != lane {
 		if _, waits := m.lanes[held]; waits {
 			// The owner's sends to this recipient wait behind one of them that waits for an
-			// earlier event (park): this one goes behind them, so the owner's order holds.
+			// earlier event (park): this one goes behind them, so the owner's order holds, and
+			// waits from now (heldSamples).
 			lane = held
+			if item.heldSince.IsZero() {
+				item.heldSince = time.Now()
+			}
 		}
 	}
 	waiting, scheduled := m.lanes[lane]
@@ -427,21 +431,38 @@ func heldLane(lane, owner string) string {
 // of one owner holds no event of another (planChains keeps order per owner). The held lane is
 // deleted once it is empty and served (next), after which the owner's sends join lane again. Its
 // attempt stays held, so a keyed repeat of the comment queues it no second time. A park once the
-// sender stopped still records the claim, which the drain gives back with the rest (wait).
+// sender stopped still records the claim, which the drain gives back with the rest (wait). A park
+// that finds the queue full - its send left it when it started, and others took the place - is
+// refused as a send past the bound is (enqueue): the claim is given back, and the delivery sweep
+// sends the attempt, asking the rule again (resumeOwedDelivery), so the queue never holds more than
+// its capacity.
 //
-// The wait has no bound, so it shows instead: the held gauges read every held lane's head send
-// (heldSamples), and a send held heldWarnAfter since it first waited is logged once at WARN,
-// naming its owner, the earlier event it waits behind and that event's last publish error - beside
-// the ERROR the outbox writes for that event's own failed publish, which is the cause.
+// The wait has no bound, so it shows instead: the held gauges count every send on a held lane
+// (heldSamples), each from when it started waiting there, and a send held heldWarnAfter since it
+// first waited is logged once at WARN, naming its owner, the earlier event it waits behind and that
+// event's last publish error - beside the ERROR the outbox writes for that event's own failed
+// publish, which is the cause.
 func (m *mentionSender) park(lane string, item mentionSend) {
 	item.parks++
+	now := time.Now()
 	if item.heldSince.IsZero() {
-		item.heldSince = time.Now()
+		item.heldSince = now
 	}
 	delay := mentionOrderRetry(item.parks)
 	owner := item.owner()
 	held := heldLane(lane, owner)
 	m.mu.Lock()
+	if !m.stoppedLocked() && len(m.claims) >= m.capacity {
+		delete(m.held, item.key())
+		m.mu.Unlock()
+		slog.Warn("dispatch: comment mention queue full; the delivery sweep sends the pending attempt that waits for an earlier event",
+			"comment", item.comment.ID, "target", item.mention.Target, "event_id", item.heldBy.EventID)
+		if err := m.release(context.WithoutCancel(m.ctx), []mentionClaim{item.claim()}); err != nil {
+			slog.Error("dispatch: give back the claim of a comment mention this sender refused",
+				"comment", item.comment.ID, "target", item.mention.Target, "error", err)
+		}
+		return
+	}
 	warn := !item.warned && time.Since(item.heldSince) >= m.heldWarnAfter
 	item.warned = item.warned || warn
 	m.claims[item.key()] = item.claimed
@@ -452,6 +473,9 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 		kept := make([]mentionSend, 0, len(m.lanes[lane]))
 		for _, queued := range m.lanes[lane] {
 			if queued.owner() == owner {
+				if queued.heldSince.IsZero() {
+					queued.heldSince = now
+				}
 				moved = append(moved, queued)
 			} else {
 				kept = append(kept, queued)
@@ -471,23 +495,24 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 	time.AfterFunc(delay, func() { m.unpark(held) })
 }
 
-// heldSamples is, by owner, how many sends wait at the head of a parked lane behind an earlier
-// event and how long the oldest has, in whole seconds, as of now: what the held gauges read
-// (registerHeldGauges). The sends queued behind such a send wait on their lane, as behind any
-// send that takes time, and are not counted.
+// heldSamples is, by owner, how many sends wait on a held lane behind an earlier event of their
+// owner - the one that waited and every send of its owner and recipient queued behind it - and how
+// long the oldest has, in whole seconds, as of now: what the held gauges read (registerHeldGauges).
+// A held lane's head is out of the count for the moment a try of it is in flight.
 func (m *mentionSender) heldSamples(now time.Time) (count, oldest []metrics.GaugeSample) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	counts := map[string]int64{}
 	ages := map[string]time.Duration{}
-	for lane := range m.parked {
-		if len(m.lanes[lane]) == 0 {
+	for lane, sends := range m.lanes {
+		if !strings.Contains(lane, "\x00") {
 			continue
 		}
-		head := m.lanes[lane][0]
-		owner := head.owner()
-		counts[owner]++
-		ages[owner] = max(ages[owner], now.Sub(head.heldSince))
+		for _, send := range sends {
+			owner := send.owner()
+			counts[owner]++
+			ages[owner] = max(ages[owner], now.Sub(send.heldSince))
+		}
 	}
 	for owner, held := range counts {
 		labels := [][2]string{{"owner", owner}}
@@ -643,7 +668,7 @@ func (m *mentionSender) wait() {
 func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (mentionSend, bool) {
 	ctx = store.WithTransactionTracking(ctx)
 	if item.heldFor != "" {
-		if by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor, item.mention.Delivery); err == nil && by != nil {
+		if by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor); err == nil && by != nil {
 			item.heldBy = *by
 			return item, true
 		}

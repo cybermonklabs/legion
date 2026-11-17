@@ -844,19 +844,19 @@ func (s *server) mentionCopyHolder(ctx context.Context, created model.Event, tar
 	if target.SessionID == nil || target.ResolveError != "" {
 		return nil, nil
 	}
-	return s.mentionCopyHolderFor(ctx, created, *target.SessionID, target.Delivery)
+	return s.mentionCopyHolderFor(ctx, created, *target.SessionID)
 }
 
-// mentionCopyHolderFor is mentionCopyHolder for a send to sessionID in mode delivery, the rule a
-// send held before reads again before it tries once more (sendCommentMention). The first statement
-// answers for every earlier event but those that still owe a role route; when it finds none, the
-// second reads those routes (the usual answer is none), and each role's holder is resolved as a
-// mention of that role is (resolveMentionTarget, within mentionLookupTimeout): the route holds the
-// send when the holder is sessionID, as planChains keys the route on whoever holds the role at its
-// next batch, and when the lookup went unanswered, since sessionID may be the holder - the lane
-// tries again a moment later (mentionOrderRetry).
+// mentionCopyHolderFor is mentionCopyHolder for a send to sessionID, the rule a send held before
+// reads again before it tries once more (sendCommentMention). The first statement answers for
+// every earlier event but those that still owe a role route; when it finds none, the second reads
+// those routes (the usual answer is none), and each role's holder is read from the listener
+// (roleHolderMayBe, within mentionLookupTimeout): the route holds the send when the holder is
+// sessionID, as planChains keys the route on whoever holds the role at its next batch, and when
+// the read fails in any way but the listener saying the role has no holder, since sessionID may be
+// the holder - the lane tries again a moment later (mentionOrderRetry).
 func (s *server) mentionCopyHolderFor(
-	ctx context.Context, created model.Event, sessionID, delivery string,
+	ctx context.Context, created model.Event, sessionID string,
 ) (*model.MentionCopyHolder, error) {
 	if !s.deps.OutboxPublishes {
 		return nil, nil
@@ -884,13 +884,33 @@ func (s *server) mentionCopyHolderFor(
 		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", created.ID, err)
 	}
 	for _, route := range routes {
-		role := strings.TrimPrefix(route.Topic, contracts.RoleTopicPrefix)
-		holder := s.resolveMentionTarget(ctx, "role:"+role, delivery, mentionLookupTimeout)
-		if holder.unanswered || (holder.SessionID != nil && *holder.SessionID == sessionID) {
+		if s.roleHolderMayBe(ctx, strings.TrimPrefix(route.Topic, contracts.RoleTopicPrefix), sessionID) {
 			return &route.MentionCopyHolder, nil
 		}
 	}
 	return nil, nil
+}
+
+// roleHolderMayBe is whether sessionID holds role now, or may: the listener names it the holder, or
+// the read failed - unreachable, timed out within mentionLookupTimeout, a status the listener did
+// not explain, an answer that does not decode (dispatchenvoy.ErrUnavailable, which every such
+// failure carries) - which says nothing about who holds the role. The listener's own refusal - no
+// session claims the role, its holder is gone - and a holder that is another session are a no. A
+// deployment with no listener reaches no session, so it answers no.
+func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bool {
+	if s.deps.Envoy == nil {
+		return false
+	}
+	lookup, cancel := context.WithTimeout(ctx, mentionLookupTimeout)
+	defer cancel()
+	holder, err := s.deps.Envoy.Role(lookup, role)
+	switch {
+	case errors.Is(err, dispatchenvoy.ErrUnavailable) || (err != nil && lookup.Err() != nil):
+		return true
+	case err != nil:
+		return false
+	}
+	return holder.SessionID == sessionID
 }
 
 // supersedeOvertakenAttempts settles superseded every earlier attempt of sent's mention that this

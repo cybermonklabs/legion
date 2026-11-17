@@ -16,7 +16,9 @@ import (
 // role's holder now: the outbox records the route as its role topic (owedKeys), and the stand-in
 // listener resolves role:reviewer to s1, so a mention's send to s1 waits behind that event,
 // whichever session held the role when the event was recorded. A route the event owes to a role
-// nobody holds holds nothing (the listener knows no role:other).
+// the listener says nobody holds (role:unheld) holds nothing. A lookup that fails says nothing
+// about the holder, so it holds the send: a 503 (role:broken), an answer that does not decode
+// (role:garbled), and a status the listener does not explain (role:other's bare 404).
 //
 // The control row is the record as it would read keyed on the holder at the time,
 // notifications.agent.ses_stale_holder: the send to s1 then waits for nothing, which is the copy
@@ -43,7 +45,10 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 		holds bool
 	}{
 		{name: "the role topic of a role s1 holds now", owed: []string{contracts.RoleTopicPrefix + "reviewer"}, holds: true},
-		{name: "the role topic of a role nobody holds", owed: []string{contracts.RoleTopicPrefix + "other"}},
+		{name: "the role topic of a role the listener says nobody holds", owed: []string{contracts.RoleTopicPrefix + "unheld"}},
+		{name: "a lookup the listener answers 503", owed: []string{contracts.RoleTopicPrefix + "broken"}, holds: true},
+		{name: "a lookup whose answer does not decode", owed: []string{contracts.RoleTopicPrefix + "garbled"}, holds: true},
+		{name: "a lookup answered by a bare 404", owed: []string{contracts.RoleTopicPrefix + "other"}, holds: true},
 		{name: "control: keyed on the holder at the time of the record", owed: []string{contracts.LegacyAgentSubject("ses_stale_holder")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -54,7 +59,7 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 			`, issue.Key, earlierID, row.owed); err != nil {
 				t.Fatalf("set the earlier event owing %v: %v", row.owed, err)
 			}
-			by, err := served.mentionCopyHolderFor(ctx, model.Event{ID: laterID}, "s1", "steer")
+			by, err := served.mentionCopyHolderFor(ctx, model.Event{ID: laterID}, "s1")
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}
