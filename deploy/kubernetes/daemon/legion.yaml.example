@@ -399,14 +399,14 @@ runtime:
     #   issue_pods:                    # memory reaches act_percent (50 to 95) of the container's memory limit
     #     enabled: true                # and the processes it may end hold at least floor_percent (1 to 50) of
     #     act_percent: 85              # it, it ends with SIGKILL the process that grew the most over its last
-    #     floor_percent: 10            # few reads, else the largest one that just started, else the one that
-    #     wait_seconds: 5              # grew the most since the previous kill, else the largest, and tells the
-    #     interval_milliseconds: 100   # role whose process it was. Legion's own processes and each role's agent
-    #   controller_pod:                # are never ended. After a kill it waits for that process to exit, at most
-    #     enabled: true                # wait_seconds (1 to 60), and it reads every interval_milliseconds (50 to
-    #     act_percent: 85              # 5000). controller_pod is the same guard in the controller's pod
-    #     floor_percent: 10            # (controller: daemon), which waits at most 1 second after a kill.
-    #     wait_seconds: 1
+    #     floor_percent: 10            # few reads, else the largest one it has read at most once in its last
+    #     wait_seconds: 5              # two readings near the limit, else the one that grew the most since the
+    #     interval_milliseconds: 100   # previous kill, else the largest, and tells the role whose process it
+    #   controller_pod:                # was. Legion's own processes and each role's agent are never ended.
+    #     enabled: true                # After a kill it waits for that process to exit, at most wait_seconds
+    #     act_percent: 85              # (1 to 60), and it reads every interval_milliseconds (50 to 5000).
+    #     floor_percent: 10            # controller_pod is the same guard in the controller's pod
+    #     wait_seconds: 1              # (controller: daemon), which waits at most 1 second after a kill.
     #     interval_milliseconds: 100
     #                                  # These are the defaults, for each kind. enabled: false sends that kind's
     #                                  # launchers no settings, so each of their guards, which runs at these
