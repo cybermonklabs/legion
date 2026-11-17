@@ -1744,10 +1744,10 @@ ends by waiting for a zero-delay timer and, on a held clock, fires that timer at
 `jest.advanceTimersByTime(0)`, so an answer already given when the press lands updates the page
 after that wait, outside `act`.
 Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
-`quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output and still
-records each act message, so the rule still fails the row; any other replacement of
-`console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the
-message before the rule reads it.
+`quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output, restores itself
+when the row ends and still records each act message, so the rule still fails the row; any other
+replacement of `console.error`, or a spy on it with a `mockImplementation`, is not allowed, because
+it drops the message before the rule reads it.
 Setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment` is not a fix either, and
 neither is a `user-event` call inside `act`: React then prints "The current testing environment
 is not configured to support act(...)" and the row fails on that.

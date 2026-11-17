@@ -1,7 +1,7 @@
 // The DOM this file's imports read is registered by `register-dom.ts`, the preload before this
 // one: Bun's preload list is the one order that holds, and an import written first inside a file
 // is not (`register-dom.ts` and package.json's `test:web` script say why).
-import { afterAll, afterEach, expect, jest } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, jest } from "bun:test";
 import { configure } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
@@ -14,7 +14,11 @@ import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
-import { failOnActMessages, installActMessageRecorder } from "./act-warnings";
+import {
+  failOnActMessages,
+  installActMessageRecorder,
+  restoreQuietConsoleError,
+} from "./act-warnings";
 import { reportableJestDomMatchers } from "./jest-dom-matchers";
 import { forgetTestAnswers, requestsThatReachedNetwork } from "./network";
 import { resetRouteAnswers } from "./send-answers";
@@ -209,7 +213,12 @@ afterEach(() => {
 // once per file under `--parallel`, which `test:web` passes; a plain `bun test` over several files
 // runs it once, at the end of the run. Keep this block the last of the file, so its throws skip
 // no other hook and its checks run after every other: a hook added later goes above it.
+//
+// The `beforeEach` restores a spy of `quietConsoleError` that the row before left in place: the
+// spy restores itself through `onTestFinished`, which Bun skips when one of that row's
+// `afterEach` hooks throws, as it skips the hooks after that one.
 installActMessageRecorder();
+beforeEach(restoreQuietConsoleError);
 afterEach(() => failOnActMessages("in or before this row"));
 afterAll(() => {
   const failures: Error[] = [];
