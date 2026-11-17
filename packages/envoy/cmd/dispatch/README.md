@@ -4625,10 +4625,8 @@ Each item below names a path with its method and identity, then its purpose.
       Such a word is a whole word too, so the approved name `Dispatch_Admin` does not hide the name `Dispatch Admin`.
       The way out is to write the name of the system as the person approved it.
       To know those words, a judgment under a root reads the latest approved version of each other covered document under that root.
-      That is two reads of the database and one parse for each such document.
-      So the work of a judgment grows in proportion to those documents.
-      With 1,000 approved documents under a root, one judgment sent 2,007 statements to the database.
-      It took about a third of a second on a loaded machine.
+      It reads them in one statement to the database, and its parse of them grows with their statements.
+      Under 1,000 approved documents of 100 statements each, one judgment took 0.8 s of CPU time on a loaded machine.
       A letter such as `é` can be one character, or a letter and a combining mark.
       Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
       The reviewer of R25 reads such a text.

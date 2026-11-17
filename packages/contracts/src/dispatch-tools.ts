@@ -209,7 +209,10 @@ function specFormRefusal(value: unknown): string | undefined {
   }
   return brokenParts([
     [specFormDocumentOwner.check(value), specFormDocumentOwner.message],
-    [input["version"] === undefined || typeof input["artifact"] === "string", SPEC_FORM_VERSION_RULE],
+    [
+      input["version"] === undefined || typeof input["artifact"] === "string",
+      SPEC_FORM_VERSION_RULE,
+    ],
   ]);
 }
 

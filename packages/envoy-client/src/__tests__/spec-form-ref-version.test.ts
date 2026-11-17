@@ -17,7 +17,14 @@ const makeDirectory = temporaryDirectories("spec-form-ref-version");
 const requests: string[] = [];
 
 const ARTIFACTS = [
-  { id: "ACME-5-spec", slug: "spec", name: "spec.md", kind: "doc", primary: true, issue_key: "ACME-5" },
+  {
+    id: "ACME-5-spec",
+    slug: "spec",
+    name: "spec.md",
+    kind: "doc",
+    primary: true,
+    issue_key: "ACME-5",
+  },
   {
     id: "ACME-5-verification",
     slug: "verification-md",
@@ -49,16 +56,27 @@ const server = Bun.serve({
     const url = new URL(request.url);
     requests.push(`${request.method} ${url.pathname}${url.search}`);
     if (url.pathname === "/api/v1/issues/ACME-5") {
-      return Response.json({ key: "ACME-5", title: "Two versions", status: "todo", artifacts: ARTIFACTS });
+      return Response.json({
+        key: "ACME-5",
+        title: "Two versions",
+        status: "todo",
+        artifacts: ARTIFACTS,
+      });
     }
     if (url.pathname === "/api/v1/issues/ACME-5/artifacts") return Response.json(ARTIFACTS);
     const form = url.pathname.match(/^\/api\/v1\/artifacts\/([^/]+)\/spec-form$/);
     if (form?.[1] !== undefined) {
       const artifact = ARTIFACTS.find((each) => each.id === form[1]);
-      if (artifact === undefined) return Response.json({ code: "NOT_FOUND", error: "no" }, { status: 404 });
-      return Response.json(formRead(artifact.id, artifact.name, Number(url.searchParams.get("version") ?? 3)));
+      if (artifact === undefined)
+        return Response.json({ code: "NOT_FOUND", error: "no" }, { status: 404 });
+      return Response.json(
+        formRead(artifact.id, artifact.name, Number(url.searchParams.get("version") ?? 3))
+      );
     }
-    return Response.json({ code: "NOT_FOUND", error: `no stub for ${url.pathname}` }, { status: 404 });
+    return Response.json(
+      { code: "NOT_FOUND", error: `no stub for ${url.pathname}` },
+      { status: 404 }
+    );
   },
 });
 afterAll(() => server.stop(true));
