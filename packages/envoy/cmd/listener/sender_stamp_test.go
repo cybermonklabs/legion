@@ -167,3 +167,52 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 		requireStamp(t, frozen, stamp, current, "the session entry's, the current registration")
 	})
 }
+
+// The stamp reads the sender's interest record before its session entry, because the two reads
+// share one window (senderStampReadTimeout) and the record decides the machine and directory
+// wherever its read answers: a session-entry read that went to the bucket first could spend that
+// window and leave an interest read that would have answered nothing to start with (senderStamp).
+// Neither cache holds the sender here. Its interest record is in the bucket, so that read answers;
+// every read of the session bucket stalls, as a session bucket whose direct get has stopped
+// answering does. The stamp must name the record's machine and directory, and it returns only once
+// the stalled entry read has spent the window, which shows the entry read went to the bucket.
+func TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry(t *testing.T) {
+	const (
+		sender  = "ses_stamp_read_order_sender"
+		machine = "interest-machine"
+		dir     = "/work/interest"
+	)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	registry.EndWatch(endCtx)
+	sessions.EndWatch(endCtx)
+	cancel()
+	writer, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the writing listener's registry: %v", err)
+	}
+	if _, err := writer.Upsert(store.Interest{SessionID: sender, MachineID: machine, Dir: dir}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
+		t.Fatalf("write %s's interest record: %v", sender, err)
+	}
+	if _, held := registry.Cached(sender); held {
+		t.Fatalf("the listener's interest cache holds %s: its interest read would not go to the bucket", sender)
+	}
+	if _, err := sessions.Get(sender); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("the listener's session cache answers %s with %v: its entry read would not go to the bucket", sender, err)
+	}
+	stallSessionReads(t, sessions)
+
+	started := time.Now()
+	stamp := senderStamp(context.Background(), registry, sessions, sender)
+	elapsed := time.Since(started)
+	if stamp == nil {
+		t.Fatalf("stamp of %s is nil, want the sender itself", sender)
+	}
+	t.Logf("stamp of %s after %s: session %q machine %q cwd %q", sender, elapsed.Round(time.Millisecond), stamp.SessionID, stamp.Machine, stamp.Cwd)
+	if elapsed < senderStampReadTimeout {
+		t.Fatalf("the stamp of %s returned after %s, inside its read window (%s): no entry read stalled on the bucket, so the order of the reads is not under test", sender, elapsed, senderStampReadTimeout)
+	}
+	if stamp.SessionID != sender || stamp.Machine != machine || stamp.Cwd != dir {
+		t.Errorf("stamp names session %q machine %q cwd %q, want %s on %s in %s: the interest record, read before the stalled entry read", stamp.SessionID, stamp.Machine, stamp.Cwd, sender, machine, dir)
+	}
+}

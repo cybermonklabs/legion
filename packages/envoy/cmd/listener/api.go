@@ -767,12 +767,12 @@ func deliveryModeVerdictFor(sessionID, title string, capabilities []string, adve
 }
 
 // sendRequestBudget is the bus work a /v1 route does under the request's own context: the send
-// route's read of the target session, its read of the sender's interest record (senderStamp), its
-// connection probe of the target (connectionProbeTimeout) and its publish share it, and GET
-// /v1/roles/<role> resolves its holder within it too. The publish route spends it on the publish
-// of a topic the stream captures, and a role send's first resolution of the role's holder
-// (sendToRole, every attempt of that resolution) is answered within it too; a role send then runs
-// on within publishDeliveryWindow (confirmed.go). GET
+// route's read of the target session, its reads of the sender's interest record and session entry
+// (senderStamp), its connection probe of the target (connectionProbeTimeout) and its publish share
+// it, and GET /v1/roles/<role> resolves its holder within it too. The publish route spends it on
+// the publish of a topic the stream captures, and a role send's first resolution of the role's
+// holder (sendToRole, every attempt of that resolution) is answered within it too; a role send
+// then runs on within publishDeliveryWindow (confirmed.go). GET
 // /v1/sessions, GET /v1/registry/<session_id> and GET /v1/interests/<session_id> read within it as
 // well, and every route that writes does its store work within it: subscribe, unsubscribe, POST
 // /v1/roles/set, and DELETE of /v1/interests/<session_id> and /v1/sessions/<session_id>. The HTTP

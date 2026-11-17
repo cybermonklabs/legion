@@ -17,9 +17,9 @@ import (
 // mode at epoch, running in dir and following topics, sends to the listener it registers through.
 // It names no port, as every shipped plugin's registration does. The directory and the handling
 // listener's own machine id are what the interest row records, and the sender stamp of every
-// message the session sends reads them from that row (senderStamp), so a session that registers
-// again through another listener, from another directory, is stamped with the registration it has
-// now only if the row moved with it.
+// message the session sends reads them from that row wherever it can read the row (senderStamp),
+// so a session that registers again through another listener, from another directory, is stamped
+// with the registration it has now only if the row moved with it.
 func consumerRegistrationIn(t *testing.T, sessionID, epoch, dir string, topics ...string) string {
 	t.Helper()
 	body, err := json.Marshal(subscribeBody{

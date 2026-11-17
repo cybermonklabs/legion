@@ -4659,7 +4659,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   the stamp is only enrichment, so a read that does not answer leaves it the session id and what this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
   Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
   before it, both named the listener the session first registered through).
-  Where the interest read finds no row, does not answer, or answers a row this build cannot decode, they are the session entry's, which the same registration wrote and which the stamp already reads for the title, so a registered sender's message names its registration with no read added; only a sender with neither has none.
+  Where the interest read finds no row, does not answer, or answers a row this build cannot decode, they are those of the session entry the stamp already reads for the title, which the same registration wrote, so the fallback adds no read:
+  the entry this listener's session cache holds, or the one read through to the bucket within what the interest read left of the same window.
+  A sender whose entry is read neither way, such as one this cache does not hold while the bus does not answer, gets neither field.
   The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
   The publish row's 403 for a denied publish reaches this route too:
   it publishes `contracts.LegacyAgentSubject(target)`, the target's agent subject in the old form, with no project (`contracts.AgentSubject` builds the new form, which no producer writes yet), and the stream's `notifications.agent.>` captures it, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
@@ -4928,7 +4930,7 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - The stored subscription records the `machine_id` and `dir` of the registration that last wrote it, and a registration through another listener moves both (`store.mergeForUpsert`;
   a field the request leaves empty keeps the stored value, so `/v1/roles/set`, which sends no directory, keeps the stored one).
-  The subscription's `machine_id` says which listener fans a topic out to the session and owns its delivery (`store.Registry.Match`), and its `dir` is the `sender.cwd` of each message the session sends (`senderStamp`).
+  The subscription's `machine_id` says which listener fans a topic out to the session and owns its delivery (`store.Registry.Match`), and its `dir` is the `sender.cwd` of each message the session sends wherever the stamp can read the row, the session entry's `dir` otherwise (`senderStamp`).
   The stored subscription's `updated_at` is its last change or refresh, at most `store.InterestRefreshAge` (5 minutes) stale:
   a registration that would store the row it holds (no new topic, and the same machine and directory) writes it only once it is that old, and until then answers with the stored row, `updated_at` included (`store.Registry.UpsertWithin`);
   the session entry is still written on every registration, since its bucket's `MaxAge` is the liveness clock.
