@@ -29,8 +29,9 @@ import (
 // reconnect each serves once the open succeeds.
 type legionAgentRegistry struct {
 	logger *logging.Logger
-	// openBucket opens the bucket on a connection: legionagents.Open with the listener's options.
-	openBucket func(*nats.Conn) (*legionagents.Store, error)
+	// openBucket opens the bucket on a connection, under the retry's context: legionagents.Open
+	// with the listener's options.
+	openBucket func(context.Context, *nats.Conn) (*legionagents.Store, error)
 	// conn is the connection the next open uses, the latest a connection event brought.
 	conn  atomic.Pointer[nats.Conn]
 	state atomic.Pointer[legionAgentState]
@@ -70,14 +71,15 @@ func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
 // ERROR and leaves the registry unavailable rather than ending the start, and the open is retried
 // in the background until it succeeds or close ends it.
 func openLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, opts ...legionagents.Option) *legionAgentRegistry {
-	return startLegionAgentRegistry(conn, logger, func(conn *nats.Conn) (*legionagents.Store, error) {
-		return legionagents.Open(conn, opts...)
+	return startLegionAgentRegistry(conn, logger, func(ctx context.Context, conn *nats.Conn) (*legionagents.Store, error) {
+		return legionagents.Open(ctx, conn, opts...)
 	}, legionAgentRetryFirstWait, legionAgentRetryMaxWait)
 }
 
 // startLegionAgentRegistry opens the bucket on conn through openBucket, and, when that fails,
-// starts the retry with a backoff doubling from firstWait to maxWait.
-func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucket func(*nats.Conn) (*legionagents.Store, error), firstWait, maxWait time.Duration) *legionAgentRegistry {
+// starts the retry with a backoff doubling from firstWait to maxWait. Every open, the first
+// included, runs under the retry's context, so close ends an open that waits on the cluster.
+func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucket func(context.Context, *nats.Conn) (*legionagents.Store, error), firstWait, maxWait time.Duration) *legionAgentRegistry {
 	ctx, stop := context.WithCancel(context.Background())
 	r := &legionAgentRegistry{
 		logger:      logger,
@@ -89,7 +91,7 @@ func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucke
 		retried:     make(chan struct{}),
 	}
 	r.conn.Store(conn)
-	if r.open() {
+	if r.open(ctx) {
 		stop()
 		close(r.retried)
 		return r
@@ -98,15 +100,16 @@ func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucke
 	return r
 }
 
-// open opens the bucket on the latest connection, and reports whether the registry has its store.
-// A connection event that lands during the open moves the store to the new connection: the event's
-// hook stores the connection before it reads the state, and open stores the state before it reads
-// the connection, so one of the two sees the other's. A move open makes that fails leaves the
-// registry without a store, and the retry opens the bucket again on the latest connection: that
-// event's hook found no store to move and only woke the retry, so no later event is owed.
-func (r *legionAgentRegistry) open() bool {
+// open opens the bucket on the latest connection under ctx, and reports whether the registry has
+// its store. A connection event that lands during the open moves the store to the new connection:
+// the event's hook stores the connection before it reads the state, and open stores the state
+// before it reads the connection, so one of the two sees the other's. A move open makes that fails
+// leaves the registry without a store, and the retry opens the bucket again on the latest
+// connection: that event's hook found no store to move and only woke the retry, so no later event
+// is owed.
+func (r *legionAgentRegistry) open(ctx context.Context) bool {
 	conn := r.conn.Load()
-	store, err := r.openBucket(conn)
+	store, err := r.openBucket(ctx, conn)
 	if err != nil {
 		reason := fmt.Sprintf("envoy: the legion agent registry is unavailable: could not open the %s bucket (a missing grant is the usual cause): %v", bus.LegionAgentBucket, err)
 		r.state.Store(&legionAgentState{unavailable: reason})
@@ -151,16 +154,16 @@ func (r *legionAgentRegistry) retry(ctx context.Context) {
 		case <-timer.C:
 			wait = min(wait*2, r.maxWait)
 		}
-		if r.open() {
+		if r.open(ctx) {
 			return
 		}
 		timer.Reset(wait)
 	}
 }
 
-// close ends the retry. main adds it as a drain hook. It does not wait for an open under way: that
-// open takes no context and can run its 10 s, which the drain's hooks, run one after another, cannot
-// spend; an open that ends after close only stores the registry's state.
+// close ends the retry, and an open under way with it, since every open runs under the retry's
+// context. main adds it as a drain hook. It does not wait for that open to return: an open that
+// ends after close only stores the registry's state.
 func (r *legionAgentRegistry) close(context.Context) {
 	if r.stop == nil {
 		return

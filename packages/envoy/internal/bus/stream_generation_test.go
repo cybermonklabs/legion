@@ -119,7 +119,7 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 		t.Fatalf("stream subjects = %v, want this build's stream to carry %s", stamped.Subjects, resumeLane)
 	}
 
-	subjects, err := ensureStreamWithConfig(js, &older, capsAnUnsetStream)
+	subjects, err := ensureStreamWithConfig(t.Context(), js, &older, capsAnUnsetStream)
 	if err != nil {
 		t.Fatalf("the build before this one starts: %v", err)
 	}

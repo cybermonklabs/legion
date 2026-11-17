@@ -110,9 +110,9 @@ type GitHub interface {
 
 // OpenState opens the sweep's KV bucket on conn, through js, creating it on first use with
 // replicas copies, the deployment's ENVOY_NATS_REPLICAS, and raising a bucket found with fewer
-// (bus.EnsureKeyValue).
-func OpenState(conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.WebhookRedeliveryBucket, TTL: retention, Storage: nats.FileStorage, Replicas: replicas})
+// (bus.EnsureKeyValue), for as long as ctx, the sweep's, lasts.
+func OpenState(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.WebhookRedeliveryBucket, TTL: retention, Storage: nats.FileStorage, Replicas: replicas})
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.WebhookRedeliveryBucket, err)
 	}
@@ -216,11 +216,11 @@ type Options struct {
 // Sweeper lists the App webhook's failed deliveries and redelivers them.
 type Sweeper struct {
 	GitHub GitHub
-	// Open opens the sweep's state bucket (OpenState). A sweep calls it until it has once
-	// succeeded, and every later sweep uses that bucket: a sweep it fails for returns its error
-	// and asks GitHub nothing, so a sweeper made while NATS is down opens its bucket on the first
-	// sweep that finds NATS connected.
-	Open func() (bus.KeyValue, error)
+	// Open opens the sweep's state bucket (OpenState) under the sweep's context. A sweep calls it
+	// until it has once succeeded, and every later sweep uses that bucket: a sweep it fails for
+	// returns its error and asks GitHub nothing, so a sweeper made while NATS is down opens its
+	// bucket on the first sweep that finds NATS connected.
+	Open func(ctx context.Context) (bus.KeyValue, error)
 	// Limits is the GitHub rate limits every process shares (github_rate_limits): a sweep reads
 	// its own backoff (redeliveryScope) and the App's limit before every request, and strikes its
 	// backoff at a rate-limited answer. Nil shares none: the sweep stops at GitHub's answer and
@@ -321,7 +321,7 @@ func (s *Sweeper) sweepAndReport(ctx context.Context) {
 // its next request is due or another sweeper's claim ends, or expire it. A rate-limited answer from
 // GitHub ends the sweep there. It opens the state first unless an earlier sweep has (openState).
 func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
-	if err := s.openState(); err != nil {
+	if err := s.openState(ctx); err != nil {
 		return Report{}, err
 	}
 	now := s.now()

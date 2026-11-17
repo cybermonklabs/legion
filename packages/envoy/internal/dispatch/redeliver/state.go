@@ -188,14 +188,14 @@ func writeState(kv bus.KeyValue, key string, value any, revision uint64) (uint64
 	return kv.Update(key, data, revision)
 }
 
-// openState opens the state with Open unless a sweep already has, and keeps it for every sweep
-// after: the one place the bucket is opened. A sweep it fails for opens nothing, so the next one
-// calls Open again.
-func (s *Sweeper) openState() error {
+// openState opens the state with Open, under ctx, the sweep's context, unless a sweep already
+// has, and keeps it for every sweep after: the one place the bucket is opened. A sweep it fails
+// for opens nothing, so the next one calls Open again.
+func (s *Sweeper) openState(ctx context.Context) error {
 	if s.state.Opened() {
 		return nil
 	}
-	state, err := s.Open()
+	state, err := s.Open(ctx)
 	if err != nil {
 		return err
 	}

@@ -28,7 +28,7 @@ func newTestEnvelope(source, topic, summary string) contracts.Envelope {
 func newSessionRegistry(t *testing.T) *session.SessionRegistry {
 	t.Helper()
 	client := session.SetupNATS(t)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(10*time.Second))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}

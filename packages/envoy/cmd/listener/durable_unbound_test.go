@@ -68,7 +68,7 @@ func bindBoundDurable(t *testing.T, client *bus.Client, consumer string, handler
 func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer string, handler natsgo.MsgHandler) func() (int, map[string]any) {
 	t.Helper()
 	bindBoundDurable(t, client, consumer, handler)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -78,7 +78,7 @@ func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer strin
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

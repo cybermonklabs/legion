@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,9 +16,9 @@ import (
 // one send, with an error naming the refusal and the subject it was refused to, rather than
 // sending the lookup again: a request a grant does not cover is refused again however often it is
 // sent. The server answers such a request with nothing and reports the refusal on the connection
-// (recordPublishDenial), so before this change the step read that silence as a member still
-// working and spent unansweredSends sends of RequestTimeout each, ending the start after 30 s
-// with a bare "KV_envoy_denied_lookup STREAM.INFO: context deadline exceeded".
+// (recordPublishDenial), so without that record the step would read the silence as a member still
+// working and send the lookup again until the start's hang guard passed, ending with a bare
+// "KV_envoy_denied_lookup STREAM.INFO: ... context deadline exceeded".
 //
 // The relay counts the sends of the lookup's subject, which is the count this row is about; it
 // drops none, so every send it counts reached the server and was refused there.
@@ -35,7 +36,7 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	conn, js := relayedJetStream(t, relay)
 
 	relay.arm(0)
-	_, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a start whose bucket lookup the server refused = %v, want ErrPublishDenied", err)
@@ -51,11 +52,11 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 
 // A start whose lookup of a bucket draws no answer is not ended by the server's refusal of a
 // subject that lookup never published to: a refusal of another subject is not this send's
-// answer, so the lookup is sent again, up to unansweredSends sends, and the start ends on its
-// own deadline. refusedSend reads the record under the subjects the step publishes to, and that
-// list is what keeps the two apart: a read of whatever refusal the connection holds would end
-// this start at its first send with another subject's violation, and every other row of this
-// package would still pass, since no other one records a refusal the step under it did not earn.
+// answer, so the lookup is sent again, and the start ends at its hang guard. refusedSend reads
+// the record under the subjects the step publishes to, and that list is what keeps the two apart:
+// a read of whatever refusal the connection holds would end this start at its first send with
+// another subject's violation, and every other row of this package would still pass, since no
+// other one records a refusal the step under it did not earn.
 //
 // The grant covers every subject a start of this bucket publishes to, so nothing the call sends
 // is refused, and the relay drops every send of the lookup, so the call draws no answer at all.
@@ -81,12 +82,12 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 		t.Fatal("no client owns the connection the start looks the bucket up on, so nothing records the server's refusals")
 	}
 
-	// Every send of the lookup is dropped, so the step spends all of its sends and the start
-	// ends with the deadline of the last one.
-	relay.arm(unansweredSends)
+	// Every send of the lookup is dropped, so the step sends until its hang guard passes: one send
+	// of RequestTimeout, and a second one the guard cuts.
+	relay.arm(1 << 30)
 	recorded := make(chan error, 1)
 	go func() { recorded <- refusalOfAnotherSubject(t, relay, owner, conn, deleteSubject) }()
-	_, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := ensureKeyValue(context.Background(), refusalGuard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	denial := <-recorded
 
 	if denial == nil {
@@ -94,28 +95,31 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 			deleteSubject)
 	}
 	if errors.Is(err, ErrPublishDenied) {
-		t.Fatalf("a start whose lookup nothing answered ended after %d of its %d sends with %v, want no ErrPublishDenied: the refusal beside it, %v, is of a subject the lookup never published to",
-			relay.sent(), unansweredSends, err, denial)
+		t.Fatalf("a start whose lookup nothing answered ended after %d sends with %v, want no ErrPublishDenied: the refusal beside it, %v, is of a subject the lookup never published to",
+			relay.sent(), err, denial)
 	}
-	if err == nil || !strings.Contains(err.Error(), lookup) || !strings.Contains(err.Error(), "context deadline exceeded") {
-		t.Fatalf("a start whose lookup nothing answered = %v, want %q and its deadline: a send another subject's refusal does not answer ends on the wait it held",
+	if err == nil || !strings.Contains(err.Error(), lookup) || !errors.Is(err, errHangGuard) {
+		t.Fatalf("a start whose lookup nothing answered = %v, want %q and the start's hang guard: a send another subject's refusal does not answer ends on the wait it held",
 			err, lookup)
 	}
-	if sends := relay.sent(); sends != unansweredSends {
-		t.Fatalf("lookups sent = %d, want %d: a send a refusal of another subject does not answer is sent again until the step's sends run out",
-			sends, unansweredSends)
+	if sends := relay.sent(); sends < 2 {
+		t.Fatalf("lookups sent = %d, want at least 2: a send a refusal of another subject does not answer is sent again", sends)
 	}
 	if strings.Contains(err.Error(), deleteSubject) {
 		t.Fatalf("the start's error %q carries %s, a subject no step of it publishes to", err, deleteSubject)
 	}
 }
 
+// refusalGuard is the hang guard of the row above: one send's RequestTimeout, and long enough
+// after it for a second send to go out before the guard passes.
+const refusalGuard = RequestTimeout + 5*time.Second
+
 // refusalRecordWait and refusalRecordPoll bound the waits the row above makes on the relay's
 // count and on the connection's record, and are waitUntil's bound and poll. That helper itself
 // does not serve here: these waits run on a goroutine beside the call under test, where t.Fatalf
-// is the test goroutine's to call. The call lasts unansweredSends waits of RequestTimeout, half
-// a minute, so a bound of five seconds ends a wait whose refusal never came while the call is
-// still running, and a poll of 20 ms costs nothing beside a wait of ten seconds.
+// is the test goroutine's to call. The call lasts refusalGuard, fifteen seconds, so a bound of
+// five seconds ends a wait whose refusal never came while the call is still running, and a poll
+// of 20 ms costs nothing beside a wait of ten seconds.
 const (
 	refusalRecordWait = 5 * time.Second
 	refusalRecordPoll = 20 * time.Millisecond

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -252,7 +253,7 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	relay.arm(1)
 	// Replicas is left at one copy, so no raise is attempted and every send the relay counts from
 	// here is a lookup this call made.
-	handle, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first bucket lookup drew no answer = %v, want it to go on", err)
 	}
@@ -275,6 +276,30 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	}
 }
 
+// A start whose lookup the server never answers ends at the start's hang guard, with an error that
+// names the lookup and the guard, rather than hanging the program's start for as long as the server
+// stays silent. The guard is shortened here (ensureKeyValue), under one send's RequestTimeout, so
+// the send in flight when it passes is cut rather than waited out (Bounded).
+func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
+	const bucket = "envoy_unanswered_never"
+	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
+	conn, js := relayedJetStream(t, relay)
+	relay.arm(1 << 30)
+
+	_, err := ensureKeyValue(context.Background(), 2*time.Second, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a start whose lookup the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
+	}
+	for _, want := range []string{"KV_" + bucket + " STREAM.INFO", "no send answered when the wait ended", "hang guard passed after 2s"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("a start whose lookup the server never answers = %v, want it to name %q", err, want)
+		}
+	}
+	if sends := relay.sent(); sends != 1 {
+		t.Fatalf("lookups sent = %d, want 1: the guard cut the one send in flight", sends)
+	}
+}
+
 // A start whose create of a bucket draws no answer sends it again and goes on, rather than ending
 // the program with "open envoy_unanswered_create KV bucket: KV_envoy_unanswered_create create:
 // context deadline exceeded", which is what it does today. The first create never reaches the
@@ -289,7 +314,7 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
 	relay.arm(1)
-	handle, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first bucket create drew no answer = %v, want it to go on", err)
 	}
@@ -324,7 +349,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
 	relay.arm(1)
-	handle, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first account info drew no answer = %v, want it to go on", err)
 	}
@@ -464,7 +489,7 @@ func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *te
 	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}
 
 	relay.arm(0)
-	if _, err := EnsureKeyValue(conn, js, config); err != nil {
+	if _, err := EnsureKeyValue(t.Context(), conn, js, config); err != nil {
 		t.Fatalf("a start whose every request the server answered = %v, want it to go on", err)
 	}
 	answered := relay.sent()
@@ -473,7 +498,7 @@ func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *te
 	}
 
 	relay.passThenDrop(answered-1, 1)
-	if _, err := EnsureKeyValue(conn, js, config); err != nil {
+	if _, err := EnsureKeyValue(t.Context(), conn, js, config); err != nil {
 		t.Fatalf("a start that found its bucket and lost its handle open = %v, want it to go on", err)
 	}
 	if sends := relay.sent(); sends != answered+1 {

@@ -77,45 +77,84 @@ const RequestTimeout = 10 * time.Second
 // over 25 fresh three-member clusters asked every member for a bucket's stream the instant
 // CreateKeyValue answered, and 67 of the 75 member reads still said so, the slowest for 206 ms. So
 // a read of a bucket this start has just created, or that a concurrent start created while this
-// one looked, is taken again every bucketAppliedInterval until the member answers for it, and
-// given up at bucketAppliedDeadline.
+// one looked, is taken again every bucketAppliedInterval until the member answers for it.
 //
 // bucketAppliedInterval is short against that 206 ms, so the wait ends within a small fraction of
-// the catch-up it waits out, and each miss is one STREAM.INFO a member answers from memory.
-// bucketAppliedDeadline is RequestTimeout, the wait every other read of a bucket's stream already
-// takes (WrapKeyValue, ReadStreamState), and roughly fifty times the slowest catch-up measured, so
-// a member that is not merely behind fails the start where that read would have failed it rather
-// than hanging it.
-const (
-	bucketAppliedInterval = 25 * time.Millisecond
-	bucketAppliedDeadline = RequestTimeout
-)
+// the catch-up it waits out, and each miss is one STREAM.INFO a member answers from memory. It is
+// also the pause between two sends of a request the server left unanswered (sentAgain) and between
+// two reads of a raised stream's copies (awaitReplicasCurrent).
+const bucketAppliedInterval = 25 * time.Millisecond
+
+// startHangGuard bounds a start's wait on a fact of the cluster that the start cannot hurry: an
+// answer the server gives only once a stream's group has elected a leader (the create of a bucket
+// or of the stream with more than one copy, a lookup at a member while the stream's leader is
+// gone), a member applying a create (awaitBucketApplied), or the copies of a raise becoming
+// current (awaitReplicasCurrent). Each of those waits ends on the fact, on the server's own error,
+// or when the caller's context ends, whichever comes first; the guard ends the wait only on a
+// cluster that never settles, so that start fails with an error naming what it waited for
+// (errHangGuard) rather than hanging with its port answering "starting". No shorter bound decides
+// the result: how long an election takes depends on the machine and on the election's own timers.
+//
+// The guard is three times the longest election measured under load, the sizing docs/testing.md
+// gives a bound of this kind. On 2026-11-17, on a dev box with 288 CPUs at a one-minute load of
+// 1,375 to 2,125, fresh three-member clusters of nats-server v2.15.1 were raised and created 64 at a
+// time. In 400 raises of a one-copy bucket to three copies, the copies were current at most 5.1 s
+// after the raise was answered, and a create of a three-copy bucket was answered within 3.3 s. In
+// 160 more, whose preferred member did not campaign at once, the group elected on its election
+// timers alone (4 s to 9 s, minElectionTimeout and maxElectionTimeout in server/raft.go), which is
+// the election a group holds when the preferred member's first campaign is lost: the copies were
+// current at most 11.9 s after the raise was answered (one in ten took more than 10 s), and a create
+// was answered within 8.7 s. Three times 11.9 s is 36 s, inside the listener's start-up probe of
+// 300 s (infra/gcp/testdata/dispatch-listener-pod.golden) for the one step that fails a start.
+const startHangGuard = 36 * time.Second
+
+// errHangGuard is the cause a start's wait ends with when its hang guard passes before the fact it
+// waits on holds (hangGuard).
+var errHangGuard = errors.New("the start's hang guard passed")
+
+// hangGuard is ctx bounded by guard as well. When guard passes first, its cause is errHangGuard
+// naming guard, with context.DeadlineExceeded wrapped too, so a caller that reads a deadline off a
+// start's error reads one whichever of the two ended the wait, and one that reads the cause
+// (context.Cause, waitEnded) is told it was the guard.
+func hangGuard(ctx context.Context, guard time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, guard, fmt.Errorf("%w after %s: %w", errHangGuard, guard, context.DeadlineExceeded))
+}
+
+// pause waits d out and reports nil, or reports ctx's cause when ctx ends first, which is what a
+// wait between two reads of a fact ends with: the caller's context, or the start's hang guard.
+func pause(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-timer.C:
+		return nil
+	}
+}
 
 // awaitBucketApplied is read, a read of the bucket a start has just created, taken again every
-// bucketAppliedInterval while the member answering reports the bucket missing (missing) and no
-// longer than bucketAppliedDeadline. It returns the first answer that is not that, and the last
-// miss as it is once the deadline passes, so its caller wraps one error however the wait ended.
-// Any other error, a refusal included, is returned at once: only a member that has not caught up
-// is waited out. The first miss is logged, as bindListenerDurable logs its first refusal, so a
-// start that waited says which bucket it waited for.
-func awaitBucketApplied[T any](bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
-	start := time.Now()
+// bucketAppliedInterval while the member answering reports the bucket missing (missing) and ctx
+// lasts. It returns the first answer that is not that, and once ctx ends the last miss with ctx's
+// cause wrapped beside it, so its caller wraps one error however the wait ended. Any other error,
+// a refusal included, is returned at once: only a member that has not caught up is waited out.
+// The first miss is logged, as bindListenerDurable logs its first refusal, so a start that waited
+// says which bucket it waited for.
+func awaitBucketApplied[T any](ctx context.Context, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
 	for attempt := 1; ; attempt++ {
 		value, err := read()
 		if err == nil || !missing(err) {
-			return value, err
-		}
-		if time.Since(start) >= bucketAppliedDeadline {
 			return value, err
 		}
 		if attempt == 1 {
 			slog.Warn("envoy nats kv bucket not applied yet, waiting",
 				slog.String("bucket", bucket),
 				slog.String("error", err.Error()),
-				slog.String("retry_in", bucketAppliedInterval.String()),
-				slog.String("deadline", bucketAppliedDeadline.String()))
+				slog.String("retry_in", bucketAppliedInterval.String()))
 		}
-		time.Sleep(bucketAppliedInterval)
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return value, fmt.Errorf("%w; the member had not applied the bucket when the wait ended: %w", err, ended)
+		}
 	}
 }
 
@@ -156,34 +195,35 @@ func namedRequest(request string, err error) error {
 // A bucket this start created, and one a concurrent start created while this one looked (the
 // server answers that create "stream name already in use"), is waited for on the member answering
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
-// before every member has applied it.
+// before every member has applied it. A bucket this start raised is waited for until its copies
+// are current (awaitReplicasCurrent).
+//
+// Every wait of this call is on the cluster, and ends on what the cluster says: the fact it waits
+// for, or the server's own error, which is returned at once. Nothing else ends it but ctx, the
+// caller's context, or the start's hang guard (startHangGuard), which ctx is bounded by here: a
+// cluster electing a leader, or a member catching up, takes as long as the machine makes it take,
+// and no shorter clock may decide that a start failed. The error at the end of ctx or of the guard
+// names the step that was waiting and what it last read, with ctx's cause wrapped
+// (context.DeadlineExceeded, context.Canceled or the guard's errHangGuard).
 //
 // A lookup or a create the server leaves unanswered is sent again rather than waited out for
 // longer (sentAgain): nats.go sends each request once, and a member answers neither while its
 // metadata group is younger than lostQuorumInterval or while it has not yet seen its metadata
 // leader go, and a member that is not an existing bucket's stream leader leaves its lookup
-// unanswered while that stream's leader is gone (sentAgain lists the paths). A member that
-// knows it has no leader answers an error instead, which unanswered() does not match and this
-// call still ends on. Every production caller opens its JetStream context with
+// unanswered while that stream's leader is gone (sentAgain lists the paths). The create of a
+// bucket of more than one copy is answered only once its stream's group has elected its first
+// leader, so on a cluster whose election is slow every send of it can run out unanswered until
+// then. A member that knows it has no leader answers an error instead, which unanswered() does
+// not match and this call still ends on. Every production caller opens its JetStream context with
 // nats.MaxWait(10 * time.Second) (cmd/listener/brokerauth.go:149,
 // internal/cistore/cistore.go:357, internal/session/registry.go:396, internal/store/kv.go:94,
 // internal/bus/nats.go:511), and internal/legionagents/store.go:75 opens its own with
-// nats.MaxWait(openTimeout), the same ten seconds (store.go:29). That wait bounds one request and
-// not one step of this call, so what a step that draws no answer costs is counted a request at a
-// time, and every case of it is counted here. Where the server answers nothing at all, each send
-// ends at its first unanswered request, so each step costs unansweredSends waits of ten seconds:
-// 30 s for the lookup, and 30 s for the create, which nats.go leaves at the first of the requests
-// the comment on the create below lists. The create costs more when some of its requests do
-// answer: at most 60 s where every account info answers and the STREAM.CREATE behind it draws
-// nothing, and up to 120 s where the server answers that create "stream name already in use",
-// since nats.go then reads the stream and may update it, so a send there is up to four requests.
-// The wait on a member that has not applied the create costs bucketAppliedDeadline and up to
-// 30 s beyond it, since awaitBucketApplied reads that deadline between reads and cuts no read in
-// flight: a lookup begun just under the deadline still spends its own three sends after it.
-// The handle open this call ends with is a third such step (wrapKeyValue): 30 s on a start that
-// found its bucket, and bucketAppliedDeadline and up to 30 s beyond it on one that created it,
-// twice on the "stream name already in use" path, which waits a member out before it opens the
-// handle (awaitBucketApplied, below) and again inside the open.
+// nats.MaxWait(openTimeout), the same ten seconds (store.go:29); the known-session bucket's open
+// waits 2 s (internal/session/known.go, knownBucketOpenWait). That wait bounds one send and not
+// one step of this call: a step is sent again until it is answered, ctx ends or the guard passes,
+// and a send in flight then is abandoned with its answer dropped (Bounded). So where the server
+// answers nothing at all, the call costs startHangGuard and ends naming the step that drew no
+// answer and how many sends it made.
 //
 // A request the server refuses under the connection's grant is not sent again, since it would be
 // refused again: the server answers such a request with nothing and reports the refusal on the
@@ -191,10 +231,10 @@ func namedRequest(request string, err error) error {
 // send reads that record rather than take the silence for a member still working (refusedSend).
 // A step whose request is refused therefore costs one send and ends with an error naming
 // ErrPublishDenied and the subject, `KV_legion_agents STREAM.INFO: bus: NATS denied the publish
-// to "$JS.API.STREAM.INFO.KV_legion_agents": ...`, where it cost the whole of the step's three
-// sends and a bare deadline before. That reading needs the client conn belongs to: a connection
-// opened outside a Client records nothing, and a request of its own the server refuses still
-// costs the sends counted above.
+// to "$JS.API.STREAM.INFO.KV_legion_agents": ...`, where it would otherwise be sent again until
+// the hang guard passed. That reading needs the client conn belongs to: a connection opened
+// outside a Client records nothing, so a request of its own the server refuses is sent again
+// until ctx ends or the guard passes.
 //
 // The error names the bucket's stream and the step that drew it:
 // `KV_envoy_webhook_redelivery STREAM.INFO: ...` for the lookup of the bucket, which this call
@@ -216,7 +256,19 @@ func namedRequest(request string, err error) error {
 // webhook redelivery sweep (redeliver.OpenState), which logs the failure and tries again on its
 // next pass. A caller that waits on a budget of its own, such as a request or a watcher's
 // repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
-func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+//
+// ctx is the context the caller runs under, so a stop that ends it ends a start that waits: the
+// listener's start, which a signal ends at once, runs under no other; the legion agent registry's
+// retry passes the retry's context, and the webhook redelivery sweep the context of its pass.
+func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	return ensureKeyValue(ctx, startHangGuard, conn, js, config)
+}
+
+// ensureKeyValue is EnsureKeyValue with guard, its hang guard, named by the caller: a test of the
+// guard shortens it, and every other caller is EnsureKeyValue, which passes startHangGuard.
+func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	ctx, cancel := hangGuard(ctx, guard)
+	defer cancel()
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -240,7 +292,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
-		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) {
+		kv, err := sentAgain(ctx, lookup, func() (nats.KeyValue, error) {
 			return refusedSend(conn, lookupSubjects, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 		})
 		return kv, namedRequest(lookup, err)
@@ -266,7 +318,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 		// the replica or age change updateStream guards is a write another one can race. A
 		// request of the step the server refuses under the connection's grant ends the step at
 		// that send instead (refusedSend): it would be refused again.
-		kv, err = sentAgain(create, func() (nats.KeyValue, error) {
+		kv, err = sentAgain(ctx, create, func() (nats.KeyValue, error) {
 			return refusedSend(conn, createSubjects, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
 		})
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
@@ -281,7 +333,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
-			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
+			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
 		} else {
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
@@ -298,13 +350,28 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// (the webhook redelivery sweep reads its cursor and its index), and a stale miss
 			// there asks GitHub for a delivery it has already redelivered, so the start waits for
 			// the copies and fails rather than reading early.
-			err = awaitReplicasCurrent(js, config.Bucket, config.Replicas)
+			err = awaitReplicasCurrent(ctx, js, stream, config.Replicas)
 		}
 	}
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(context.Background(), conn, kv, created, startSendsAgain)
+	handle, err := wrapKeyValue(ctx, conn, kv, created, startSendsAgain)
+	if err == nil && created && config.Replicas > 1 {
+		// A create of more than one copy can be answered before the bucket's stream has a leader:
+		// the first send of it is answered at the stream's first leader election, but a send made
+		// again while that election runs is an equal create, which the server answers at once
+		// (measured with nats-server v2.15.1, the election held 11 s and 30 s: the second send of
+		// a create through a 2 s wait answered, and the first write to the bucket then failed
+		// "no response from stream"). The caller writes as soon as this call answers, so the
+		// start waits for the stream's leader here (awaitStreamLeader). This read follows the
+		// handle open, which has waited for the member to apply the create.
+		err = awaitStreamLeader(ctx, js, stream)
+	}
+	if err != nil {
+		return KeyValue{}, err
+	}
+	return handle, nil
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
@@ -339,45 +406,84 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	return info.Config.Replicas, nil
 }
 
-// awaitReplicasCurrent waits until the bucket's stream reports replicas copies, each one current
-// with its leader and none of them offline or lagging, read every bucketAppliedInterval and given
-// up at bucketAppliedDeadline. It is what EnsureKeyValue runs after a raise that added copies, and
-// nothing else needs it: a bucket nobody raised has no copy that is behind.
+// awaitReplicasCurrent waits until stream reports replicas copies, each one current with its
+// leader and none of them offline or lagging (copiesBehind), for as long as ctx lasts.
+// EnsureKeyValue runs it on a bucket's stream after a raise that added copies, and nothing else
+// needs it: a bucket nobody raised has no copy that is behind.
 //
-// The deadline is an error naming the bucket's stream, the copies it asked for and what each copy
-// that was not current had to say (copiesBehind), the way a refused raise names its setting, and
-// the caller fails its start on it. Carrying on instead would hand the caller a bucket whose
-// direct gets a copy that is 90% caught up may answer "key not found" for a key that is there
+// A raise of a one-copy stream is answered at once, by the member that held its one copy
+// (processClusterUpdateStream, "If we were a single node being promoted", v2.15.1
+// server/jetstream_cluster.go), and the stream then has no leader until the new group elects one:
+// that election is what this waits out, with the new copies' catch-up after it. The end of ctx is
+// an error naming the bucket's stream, the copies it asked for, what each copy that was not
+// current had to say and ctx's cause, the way a refused raise names its setting, and the caller
+// fails its start on it. Carrying on instead would hand the caller a bucket whose direct gets a
+// copy that is 90% caught up may answer "key not found" for a key that is there
 // (server/jetstream_cluster.go:2622-2641, v2.10.29), and a start that reads one wrong answer is
 // worse than a start that does not come up: the webhook redelivery sweep reads its records the
 // moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
-//
-// A read that fails is returned as it is, since the stream is there: this runs only after a raise
-// of it answered.
-func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int) error {
-	stream := "KV_" + bucket
-	start := time.Now()
-	for attempt := 1; ; attempt++ {
-		info, err := js.StreamInfo(stream)
-		if err != nil {
-			return fmt.Errorf("raise %s: read the raised stream: %w", stream, err)
+func awaitReplicasCurrent(ctx context.Context, js nats.JetStreamContext, stream string, replicas int) error {
+	return awaitStream(ctx, js, "raise", stream, fmt.Sprintf("%d copies were not current", replicas), "envoy nats kv raised copies not current yet, waiting", func(info *nats.StreamInfo) string {
+		return copiesBehind(info, replicas)
+	})
+}
+
+// awaitStreamLeader waits until stream, which this start has just created with more than one
+// copy, reports a leader, for as long as ctx lasts. A create sent again while the stream's first
+// election runs is answered before that election ends (EnsureKeyValue, ensureStreamWithConfig),
+// and a stream with no leader answers no write. It asks for the leader alone and not for every
+// copy current: a new stream holds no message a copy could be behind on, and a create with one
+// member of three stopped lands with that member offline, and serves on the other two
+// (TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp).
+func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, stream string) error {
+	return awaitStream(ctx, js, "create", stream, "the stream had no leader", "envoy nats stream created with no leader yet, waiting", func(info *nats.StreamInfo) string {
+		if info.Cluster == nil || info.Cluster.Leader == "" {
+			return "the stream has no leader yet"
 		}
-		behind := copiesBehind(info, replicas)
+		return ""
+	})
+}
+
+// awaitStream reads stream every bucketAppliedInterval until short, given what a read answered,
+// reports nothing short, or ctx ends: the wait after a raise (awaitReplicasCurrent) and after a
+// create (awaitStreamLeader), step naming which. Its first read that is short logs waiting, the
+// WARN that says a start waited and for which stream. The end of ctx is an error naming step, the
+// stream, want (what was still short), the last thing short reported and ctx's cause.
+//
+// A read the server answers with an error is returned as it is, since the stream is there: this
+// runs only after a raise or a create of it answered. The one exception is a member that has not
+// yet applied a create, which answers "stream not found" for it (bucketAppliedInterval): after a
+// create that answer is read again. A read the server leaves unanswered (unanswered) says nothing
+// of the stream, so it is read again, as sentAgain sends a request again; a read in flight when
+// ctx ends is abandoned (Bounded).
+func awaitStream(ctx context.Context, js nats.JetStreamContext, step, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
+	behind := "no read of the stream answered yet"
+	for attempt := 1; ; attempt++ {
+		info, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		switch {
+		case !answered:
+			return fmt.Errorf("%s %s: %s when the wait ended, a read in flight: %s: %w", step, stream, want, behind, context.Cause(ctx))
+		case unanswered(err):
+			behind = "the stream's read drew no answer: " + err.Error()
+		case step == "create" && bucketMissing(err):
+			behind = "the member has not applied the create yet: " + err.Error()
+		case err != nil:
+			return fmt.Errorf("%s %s: read the stream: %w", step, stream, err)
+		default:
+			behind = short(info)
+		}
 		if behind == "" {
 			return nil
 		}
-		if time.Since(start) >= bucketAppliedDeadline {
-			return fmt.Errorf("raise %s: %d copies were not current within %s: %s", stream, replicas, bucketAppliedDeadline, behind)
-		}
 		if attempt == 1 {
-			slog.Warn("envoy nats kv raised copies not current yet, waiting",
-				slog.String("bucket", bucket),
-				slog.Int("replicas", replicas),
+			slog.Warn(waiting,
+				slog.String("stream", stream),
 				slog.String("behind", behind),
-				slog.String("retry_in", bucketAppliedInterval.String()),
-				slog.String("deadline", bucketAppliedDeadline.String()))
+				slog.String("retry_in", bucketAppliedInterval.String()))
 		}
-		time.Sleep(bucketAppliedInterval)
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return fmt.Errorf("%s %s: %s when the wait ended: %s: %w", step, stream, want, behind, ended)
+		}
 	}
 }
 
@@ -488,13 +594,12 @@ const (
 // A bucket missing and a request unanswered are two different answers and are waited out
 // differently: the first is a member that has not applied the create and is read again until it
 // has, the second is a request that drew nothing and is sent again. So each send is bounded by
-// RequestTimeout, as a lone read is; a start's create path is bounded by bucketAppliedDeadline
-// plus one unanswered read's unansweredSends sends, since awaitBucketApplied reads its deadline
-// between reads and never cuts one already in flight; a start that found its bucket is bounded by
-// those sends alone; and any other caller is one send. One send is right there because such a
-// caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again under
-// its own lock, on a request whose budget is two seconds, and a read that kept it waiting three
-// times as long would stop every role and session read of the process rather than save a start.
+// RequestTimeout, as a lone read is; a start's waits, on the member and on an answer, last as long
+// as its ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
+// caller is one send. One send is right there because such a caller waits on a budget of its own:
+// roles.Buckets.bucket, for one, opens a bucket again under its own lock, on a request whose budget
+// is two seconds, and a read that kept it waiting longer would stop every role and session read of
+// the process rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
@@ -508,11 +613,11 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		open = func() (jetstream.KeyValue, error) { return sentAgain(request, send) }
+		open = func() (jetstream.KeyValue, error) { return sentAgain(ctx, request, send) }
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(ctx, kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}

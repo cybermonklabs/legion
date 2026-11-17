@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -79,7 +81,7 @@ func TestAStreamReadTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *tes
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(losing, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream); err != nil {
 		t.Fatalf("a start whose first stream read drew no answer = %v, want it to go on", err)
 	}
 
@@ -99,7 +101,7 @@ func TestACreateTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *testing
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredCreate: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(losing, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream); err != nil {
 		t.Fatalf("a start whose first create drew no answer = %v, want it to go on", err)
 	}
 
@@ -126,7 +128,7 @@ func TestARefusedCreateIsSentOnce(t *testing.T) {
 	refused := &unansweredJetStream{JetStreamContext: js, refuseCreate: refusal}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	_, err := ensureStreamWithConfig(refused, &cfg, capsAnUnsetStream)
+	_, err := ensureStreamWithConfig(t.Context(), refused, &cfg, capsAnUnsetStream)
 	var apiErr *nats.APIError
 	if err == nil || !errors.As(err, &apiErr) || apiErr.ErrorCode != refusal.ErrorCode {
 		t.Fatalf("a start whose create the server refused = %v, want that refusal back", err)
@@ -136,31 +138,29 @@ func TestARefusedCreateIsSentOnce(t *testing.T) {
 	}
 }
 
-// startSendBound is the most sends of one never-answered JetStream request a start may make
-// before it gives up. Each send carries its own ten-second wait, so six is a full minute spent on
-// a bus that is not answering, and the deployed listener's start-up probe allows 300 s in all
-// (failureThreshold 60 at periodSeconds 5, infra/gcp/testdata/dispatch-listener-pod.golden): past
-// that the kubelet kills the process, and the operator reads a killed container rather than the
-// start's own fatal line naming the step that could not reach the bus.
-const startSendBound = 6
-
-// A request the server never answers is given up on, and the start ends with the deadline rather
-// than sending for ever while its port answers /healthz "starting".
+// A request the server never answers is given up on when the start's wait ends, and the start
+// ends with an error naming the request and that end rather than sending for ever while its port
+// answers /healthz "starting". The wait here is the caller's, a second; with none, it is the
+// start's hang guard (startHangGuard).
 //
-// The three rows above lose one send each and so pass whatever the bound is: with sentAgain's
-// loop made unbounded, or unansweredSends raised to 100, go vet stays clean and all six rows of
-// this change stay green. This row is the one that holds the giving up itself, in both
-// directions - a start that sends past the bound never reaches the deadline below.
+// The three rows above lose one send each and so pass however long the wait is. This row is the
+// one that holds the giving up itself: a start that kept sending past the end of its context never
+// returns, and one that sent once does not send again.
 func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 	js := streamTestJetStream(t)
-	lost := &unansweredJetStream{JetStreamContext: js, unansweredReads: startSendBound + 1}
+	lost := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1 << 30}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
 
-	_, err := ensureStreamWithConfig(lost, &cfg, capsAnUnsetStream)
-	if !unanswered(err) {
+	_, err := ensureStreamWithConfig(ctx, lost, &cfg, capsAnUnsetStream)
+	if !unanswered(err) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose stream read is never answered = %v, want the deadline back: a start that goes on sending writes no fatal line of its own", err)
 	}
-	if reads, _ := lost.sent(); reads > startSendBound {
-		t.Fatalf("stream reads sent = %d, want at most %d: each send carries its own wait, and the start must end inside the listener's start-up probe", reads, startSendBound)
+	if want := Stream + " STREAM.INFO"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("a start whose stream read is never answered = %v, want it to name %q", err, want)
+	}
+	if reads, _ := lost.sent(); reads < 2 {
+		t.Fatalf("stream reads sent = %d, want the read sent again while the start's wait lasted", reads)
 	}
 }

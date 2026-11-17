@@ -58,7 +58,7 @@ func openRegistryAt(t *testing.T, uri string) *registry {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	c := &clock{now: time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)}
-	store, err := legionagents.Open(conn, legionagents.WithReplicas(1), legionagents.WithClock(c.Now))
+	store, err := legionagents.Open(t.Context(), conn, legionagents.WithReplicas(1), legionagents.WithClock(c.Now))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestEntriesSurviveANATSRestart(t *testing.T) {
 func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	uri := testnats.URL(t)
 	first := testnats.Connect(t, uri)
-	store, err := legionagents.Open(first, legionagents.WithReplicas(1))
+	store, err := legionagents.Open(t.Context(), first, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

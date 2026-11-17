@@ -27,12 +27,12 @@ func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.Session
 	}
 	t.Cleanup(client.Close)
 	conn := testnats.Connect(t, url)
-	registry, err := store.Open(conn)
+	registry, err := store.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn, session.WithSessionTTL(2*time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionTTL(2*time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

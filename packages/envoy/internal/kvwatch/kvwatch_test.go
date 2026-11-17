@@ -316,7 +316,7 @@ func bucket(t *testing.T, uri string) (*natsgo.Conn, bus.KeyValue) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
@@ -1200,7 +1200,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	kv, err := bus.EnsureKeyValue(client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: testBucketName})
+	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: testBucketName})
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}

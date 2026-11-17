@@ -1177,10 +1177,15 @@ func main() {
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
+	// The opens below wait on the cluster until it answers them: a bucket's create, a raise's
+	// copies, a member applying a create (bus.EnsureKeyValue), each bounded by the start's hang
+	// guard alone. Until the ordered shutdown below (stopping), a signal ends this start at once, so
+	// starting, the context they run under, is one that never ends.
+	starting := context.Background()
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
-	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
+	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
 		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
@@ -1209,7 +1214,7 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
+		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}
@@ -1228,7 +1233,7 @@ func main() {
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
 	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
-	registry, err := store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
+	registry, err := store.Open(starting, client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1301,6 +1306,7 @@ func main() {
 		log.Fatal(err)
 	}
 	sessions, err := session.OpenSessionRegistry(
+		starting,
 		client.Conn,
 		session.WithSessionReplicas(cfg.NATSReplicas),
 		session.WithSessionLogger(logger.Slog()),
@@ -1355,6 +1361,7 @@ func main() {
 	// restart. This line is the one failure that leaves no store at all, a connection that gives
 	// no JetStream context, which answers as an empty store does.
 	known, knownErr := session.OpenKnownSessions(
+		starting,
 		client.Conn,
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),

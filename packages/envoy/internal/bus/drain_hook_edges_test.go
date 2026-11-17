@@ -26,7 +26,7 @@ func (discardingCache) CompleteRead(kvwatch.Read)         {}
 // finished its first scan, with the server's own view of the bucket's consumers through admin.
 func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string) (*kvwatch.Watcher, func() []string) {
 	t.Helper()
-	kv, err := bus.EnsureKeyValue(client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: bucket})
+	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: bucket})
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}

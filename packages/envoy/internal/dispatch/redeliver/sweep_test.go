@@ -120,7 +120,7 @@ func openState(tb testing.TB) bus.KeyValue {
 	if err != nil {
 		tb.Fatalf("JetStream: %v", err)
 	}
-	state, err := redeliver.OpenState(nc, js, 1)
+	state, err := redeliver.OpenState(tb.Context(), nc, js, 1)
 	if err != nil {
 		tb.Fatalf("open redelivery state: %v", err)
 	}
@@ -130,7 +130,7 @@ func openState(tb testing.TB) bus.KeyValue {
 func (h *harness) sweeper() *redeliver.Sweeper {
 	return &redeliver.Sweeper{
 		GitHub: h.client,
-		Open:   func() (bus.KeyValue, error) { return h.state, nil },
+		Open:   func(context.Context) (bus.KeyValue, error) { return h.state, nil },
 		Limits: h.limits,
 		Logger: slog.New(slog.NewTextHandler(h.logs, nil)),
 		Now:    h.clock.Now,
@@ -852,7 +852,7 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 	paused := &pausedClaim{KeyValue: h.state.Legacy(), entered: make(chan struct{}), release: make(chan struct{})}
 	second := h.sweeper()
 	pausedState := bus.NewKeyValue(paused, h.state.WatchHandle(), h.state.Streams())
-	second.Open = func() (bus.KeyValue, error) { return pausedState, nil }
+	second.Open = func(context.Context) (bus.KeyValue, error) { return pausedState, nil }
 	reports := make(chan redeliver.Report, 1)
 	go func() {
 		report, err := second.Sweep(context.Background(), redeliver.Options{})
@@ -1413,7 +1413,7 @@ func TestAFailedIndexWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 
 	refused := errors.New("nats: no responders available for request")
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingIndex{KeyValue: h.state.Legacy(), refused: refused}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -1495,7 +1495,7 @@ func TestARefusedRecordWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 
 	refused := errors.New("nats: no responders available for request")
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingRecord{KeyValue: h.state.Legacy(), refused: refused}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -1700,7 +1700,7 @@ func TestARecordWithNoIndexEntryIsBackfilledOnTheFirstSweep(t *testing.T) {
 
 	counting := &countingBucket{KeyValue: h.state.WatchHandle()}
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		return bus.NewKeyValue(h.state.Legacy(), counting, h.state.Streams()), nil
 	}
 	report, err := sweeper.Sweep(context.Background(), redeliver.Options{})
@@ -1773,7 +1773,7 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 
 	refused := errors.New("nats: no responders available for request")
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingRecord{KeyValue: h.state.Legacy(), refused: refused}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -1828,7 +1828,7 @@ func TestABackfillThatLosesItsRecordRaceLeavesTheIndexUnmarked(t *testing.T) {
 	}
 
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		return bus.NewKeyValue(&conflictingRecord{KeyValue: h.state.Legacy()}, h.state.WatchHandle(), h.state.Streams()), nil
 	}
 	report, err := sweeper.Sweep(context.Background(), redeliver.Options{})
@@ -2044,7 +2044,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	}
 
 	refusing := h.sweeper()
-	refusing.Open = func() (bus.KeyValue, error) {
+	refusing.Open = func(context.Context) (bus.KeyValue, error) {
 		refusing := refusingPending{KeyValue: h.state.Legacy(), refused: errors.New("nats: no responders available for request")}
 		return bus.NewKeyValue(refusing, h.state.WatchHandle(), h.state.Streams()), nil
 	}
@@ -2143,7 +2143,7 @@ func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
 
 	counting := &countingBucket{KeyValue: h.state.WatchHandle()}
 	sweeper := h.sweeper()
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		return bus.NewKeyValue(h.state.Legacy(), counting, h.state.Streams()), nil
 	}
 	report, err := sweeper.Sweep(context.Background(), redeliver.Options{})
@@ -2283,7 +2283,7 @@ func BenchmarkSweepWithLongPendingRecords(b *testing.B) {
 					b.Fatalf("write index entry %d: %v", i, err)
 				}
 			}
-			sweeper := &redeliver.Sweeper{GitHub: github, Open: func() (bus.KeyValue, error) { return state, nil }, Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }}
+			sweeper := &redeliver.Sweeper{GitHub: github, Open: func(context.Context) (bus.KeyValue, error) { return state, nil }, Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }}
 			// The warm-up leaves the cursor every later index sweep reads its window from, and
 			// the marker that says the records are indexed, so no sweep under the clock below
 			// pays for the back-fill.
@@ -2330,7 +2330,7 @@ func TestASweepOpensTheStateItWasBuiltWithout(t *testing.T) {
 	failed := h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 	sweeper := h.sweeper()
 	opens := 0
-	sweeper.Open = func() (bus.KeyValue, error) {
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) {
 		opens++
 		return h.state, nil
 	}
@@ -2359,7 +2359,7 @@ func TestASweepWhoseStateWillNotOpenFails(t *testing.T) {
 	h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 	sweeper := h.sweeper()
 	refused := errors.New("NATS is not connected")
-	sweeper.Open = func() (bus.KeyValue, error) { return bus.KeyValue{}, refused }
+	sweeper.Open = func(context.Context) (bus.KeyValue, error) { return bus.KeyValue{}, refused }
 
 	if _, err := sweeper.Sweep(context.Background(), redeliver.Options{}); !errors.Is(err, refused) {
 		t.Fatalf("sweep error %v, want %v", err, refused)

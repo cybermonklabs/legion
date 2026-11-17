@@ -560,7 +560,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	}
 	if ensure {
 		ctx, cancel := c.untilStopped()
-		err := c.ensureStreamReported(ctx, nc, js)
+		err := c.ensureStreamReported(ctx, ctx, nc, js)
 		cancel()
 		if err != nil {
 			return err
@@ -594,9 +594,10 @@ const streamSubjectsRead = 10 * time.Second
 // ensureStream ensures the stream through js and keeps the subjects it carries afterwards.
 // defaultsAnUnsetCap is what the connected server is, read from the version it answers
 // (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the server
-// caps at a default of its own.
-func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
-	subjects, err := ensureStreamWithConfig(js, c.streamConfig, defaultsAnUnsetCap)
+// caps at a default of its own. ctx ends the ensure's waits on the server, which the start's hang
+// guard bounds too (ensureStreamWithConfig).
+func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
+	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap)
 	if err != nil {
 		return err
 	}
@@ -614,11 +615,11 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
 // connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
 // request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
-// connection that drops ends with it.
+// connection that drops ends with it, and the ensure's waits on the server end with it too.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStreamReported(lookOnce(), conn, requestsUnder(ctx, js))
+		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js))
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -627,15 +628,15 @@ func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 }
 
 // ensureStreamReported ensures the stream through js with what conn's server reports it is
-// (connectedDefaultsAnUnsetCap), waiting for that report until ctx is done or
+// (connectedDefaultsAnUnsetCap), waiting for that report until versionCtx is done or
 // natsversion.VersionWait passes; a connection that reports none in that time ensures nothing and
-// answers the error.
-func (c *Client) ensureStreamReported(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext) error {
-	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, conn)
+// answers the error. ctx ends the ensure itself (ensureStream).
+func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nats.Conn, js nats.JetStreamContext) error {
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(versionCtx, conn)
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(js, defaultsAnUnsetCap)
+	return c.ensureStream(ctx, js, defaultsAnUnsetCap)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given

@@ -32,7 +32,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	// listener's cache to list it, failing as round's write when it does not within 3s of since.
 	subscribe := func(round int, since time.Time) {
 		writer := testnats.Connect(t, uri)
-		registry, err := store.Open(writer)
+		registry, err := store.Open(t.Context(), writer)
 		if err != nil {
 			t.Fatalf("restart %d: open the interest registry as another listener: %v", round, err)
 		}

@@ -69,7 +69,7 @@ func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSe
 // read of the bucket, as main's start waits for it.
 func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time) *session.KnownSessions {
 	t.Helper()
-	known, err := session.OpenKnownSessions(conn,
+	known, err := session.OpenKnownSessions(t.Context(), conn,
 		session.WithKnownSessionReplicas(1),
 		session.WithKnownSessionClock(clock))
 	if err != nil {

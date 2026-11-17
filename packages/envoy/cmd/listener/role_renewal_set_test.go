@@ -136,7 +136,7 @@ func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T
 	holdInterestCache(t, registry)
 
 	// Another listener grants the role: the claim, and the lane topic on the bucket's row.
-	other, err := store.Open(rig.client.Conn, store.WithReplicas(1))
+	other, err := store.Open(t.Context(), rig.client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the other listener's registry: %v", err)
 	}

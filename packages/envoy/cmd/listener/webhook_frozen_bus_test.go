@@ -127,7 +127,7 @@ func wantDeliveryFailed(t *testing.T, route string, recorder *httptest.ResponseR
 // negative control is a delivery recorded on the same store before the freeze.
 func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 	frozen := newFrozenWebhookBus(t)
-	store, err := cistore.Open(frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
+	store, err := cistore.Open(t.Context(), frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the CI store: %v", err)
 	}

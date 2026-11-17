@@ -44,7 +44,7 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 		t.Fatalf("jetstream: %v", err)
 	}
 	const bucket = "kv_delete_at_read"
-	kv, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}

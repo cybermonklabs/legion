@@ -59,7 +59,7 @@ func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	testnats.AwaitStreamCopies(t, adminJS, bucketStream, 1)
 
 	refused, refusedJS, refusedErrs := connectGranted(t, cluster.URL(), refusedSeed, 2*time.Second)
-	_, err = bus.EnsureKeyValue(refused, refusedJS, bucket(3))
+	_, err = bus.EnsureKeyValue(t.Context(), refused, refusedJS, bucket(3))
 	require.Error(t, err, "a client without the bucket's stream update raised it")
 	refusedRaise := "raise KV_" + bus.InterestBucket + ": " + bus.ReplicasEnvVar + "=3: "
 	require.True(t, strings.HasPrefix(err.Error(), refusedRaise), "the refused raise's error %q does not start %q", err, refusedRaise)
@@ -68,7 +68,7 @@ func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	requirePublishRefused(t, refusedErrs, "$JS.API.STREAM.UPDATE.KV_"+bus.InterestBucket)
 	testnats.AwaitStreamCopies(t, adminJS, bucketStream, 1)
 
-	_, err = bus.EnsureKeyValue(listener, listenerJS, bucket(3))
+	_, err = bus.EnsureKeyValue(t.Context(), listener, listenerJS, bucket(3))
 	require.NoError(t, err, "a client holding ListenerPermissions could not raise the bucket")
 	testnats.AwaitStreamCopies(t, adminJS, bucketStream, 3)
 	require.NoError(t, listener.Flush())

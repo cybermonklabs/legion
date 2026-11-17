@@ -302,7 +302,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	}
 
 	counter := &legacyKinds{}
-	counting, err := store.Open(rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	counting, err := store.Open(t.Context(), rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}

@@ -32,12 +32,12 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	created, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
+	created, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
 	t.Cleanup(func() { _ = js.DeleteKeyValue("kv_key_check") })
-	found, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
+	found, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("find bucket: %v", err)
 	}

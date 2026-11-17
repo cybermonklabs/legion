@@ -50,12 +50,12 @@ type brokerRig struct {
 func newBrokerRig(t *testing.T) *brokerRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest and role registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -70,7 +70,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	// connection, a listener without which refuses every registration (consumer_error). It
 	// needs the Legion agent registry too, which the /v1/legion/agents routes read: main always
 	// hands them one (openLegionAgentRegistry), so they read it with no nil check of their own.
-	agents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
@@ -92,7 +92,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		AccountTokenFile: accountFile,
 		Origin:           listenerBrokerOrigin,
 	})
-	if err := tokens.open(client.Conn, 1); err != nil {
+	if err := tokens.open(t.Context(), client.Conn, 1); err != nil {
 		t.Fatalf("open the spent-proof bucket: %v", err)
 	}
 
@@ -440,7 +440,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	open := func() spentProofs {
-		kv, err := bus.EnsureKeyValue(client.Conn, js, &natsgo.KeyValueConfig{
+		kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, js, &natsgo.KeyValueConfig{
 			Bucket: bus.DPoPProofBucket, TTL: spentProofRetention, Storage: natsgo.FileStorage, Replicas: 1,
 		})
 		if err != nil {
@@ -496,7 +496,7 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	err = tokens.open(conn, 1)
+	err = tokens.open(t.Context(), conn, 1)
 	if err == nil {
 		t.Fatal("a listener took broker tokens on a bus with no JetStream")
 	}

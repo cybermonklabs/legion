@@ -845,10 +845,22 @@ func (r streamReconciliation) log() {
 // (AddStream answers ErrStreamNameAlreadyInUse, as its config's id differs). Two that both find no
 // id write the same one, derived from what both read. A third race is settled here: a server that
 // leaves one of two starts' stream reads or creates unanswered, which each request below is sent
-// again for (sentAgain), since a start that returns such an error ends the program.
-func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+// again for (sentAgain), since a start that returns such an error ends the program. Those sends go
+// on until the server answers, ctx ends or the start's hang guard passes (startHangGuard): the
+// first send of a create of a stream of more than one copy is answered only once its group has
+// elected a leader, however long the election takes. A request that drew no answer by then is
+// named in the error, `ENVOY_NOTIFICATIONS STREAM.CREATE: 4 sends drew no answer when the wait
+// ended: ...`. A create sent again while that election runs is answered before it ends, with the
+// stream still leaderless, so a create of more than one copy is followed by a wait for the
+// stream's leader (awaitStreamLeader): measured with nats-server v2.15.1, a start whose stream's
+// first election was held 11 s and 30 s answered after its second send at 10 s, and its first
+// publish then failed "no response from stream".
+func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
+	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := sentAgain("STREAM.INFO", readStream)
+	info, err := sentAgain(ctx, read, readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -859,14 +871,26 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
 		// this branch reads as such and follows with the read below.
-		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
+			if created.Replicas > 1 {
+				err = awaitStreamLeader(ctx, js, Stream)
+			}
+			if err != nil {
+				return nil, err
+			}
 			return created.Subjects, nil
+		}
+		if unanswered(err) {
+			return nil, namedRequest(create, err)
 		}
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = sentAgain("STREAM.INFO", readStream)
+		info, err = sentAgain(ctx, read, readStream)
+	}
+	if unanswered(err) {
+		return nil, namedRequest(read, err)
 	}
 	if err != nil {
 		return nil, err
@@ -1096,30 +1120,31 @@ func unanswered(err error) bool {
 	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// unansweredSends bounds how many times a caller sends one JetStream request the server left
-// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, the handle
-// open EnsureKeyValue makes, and EnsureKeyValue's lookup of a KV bucket and its create
-// (internal/bus/kv.go). A wait that runs out is either a request the server will never answer,
-// on one of the paths sentAgain lists below, or one it is still working on, and either is safe
-// to send again: a read changes nothing, and a second identical create is deduplicated and
-// carries the same id as the one that may have landed, so no second send can contradict the
-// send before it (an update is read again rather than sent again, updateStream). A longer wait
-// buys nothing for an answer that is never coming. Three sends, because a start that lost two in
-// a row has a bus that is not serving JetStream at all, which is a start that must end. Each
-// send carries the wait of each request it makes, so this count times that wait is a caller's
-// worst case only where the server answers nothing at all and every send ends at its first
-// request; a step whose earlier requests do answer costs more, which EnsureKeyValue's doc counts.
-const unansweredSends = 3
-
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
-// and at most unansweredSends times, with request naming it in the line each further send logs.
+// and ctx lasts, with request naming it in the line each further send logs: the stream read and
+// the create of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and EnsureKeyValue's
+// lookup of a KV bucket and its create (internal/bus/kv.go). A wait that runs out is either a
+// request the server will never answer, on one of the paths listed below, or one it is still
+// working on, and either is safe to send again: a read changes nothing, and a second identical
+// create is deduplicated and carries the same id as the one that may have landed, so no second
+// send can contradict the send before it (an update is read again rather than sent again,
+// updateStream). The create of a stream of more than one copy is one the server is still working
+// on until that stream's group elects its first leader, and the server answers it then: how many
+// sends that takes depends on the election, so no count of sends, and no clock of its own, ends
+// this wait. ctx does, which every caller bounds by the start's hang guard (startHangGuard), so a
+// bus that is not serving JetStream at all ends the start at that guard, with an error that says
+// how many sends drew no answer (unansweredUntil). Each send carries the wait of each request it
+// makes, and a send in flight when ctx ends is abandoned and its answer dropped (Bounded): a create
+// that lands after that leaves a stream the next start finds. Between two sends it pauses
+// bucketAppliedInterval, so a request that a context of the send's own ends at once
+// (requestsUnder) is not sent in a loop.
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
 // once. A refusal the server reports on the connection rather than in the request's answer
 // arrives here as an answer too, because EnsureKeyValue's lookup and create read the connection's
 // record of it before they hand this function a request's silence (refusedSend): on a connection
 // a client owns, a request of theirs the grant does not cover is sent once. The handle open and
 // ensureStreamWithConfig's read and create read no such record, so a request of theirs the grant
-// does not cover is sent unansweredSends times; for a bucket's handle open that cannot happen,
+// does not cover is sent again until ctx ends; for a bucket's handle open that cannot happen,
 // since the lookup before it publishes to the same subject and ends the call at its first refused
 // send.
 //
@@ -1157,21 +1182,37 @@ const unansweredSends = 3
 //     and publishes JSAdvisoryAPILimitReached to the system account
 //     (jetstream_api.go:1029-1045), which is no answer to the caller.
 //
-// So a start that opens a bucket through a member in one of those states waits its whole bound
-// out and ends the program over one send that was never going to be answered.
-func sentAgain[T any](request string, send func() (T, error)) (T, error) {
-	var answer T
-	var err error
-	for sends := 1; sends <= unansweredSends; sends++ {
-		if answer, err = send(); !unanswered(err) {
+// So a start that sent a request once through a member in one of those states waited that send's
+// bound out, and ended the program over a send that was never going to be answered.
+func sentAgain[T any](ctx context.Context, request string, send func() (T, error)) (T, error) {
+	var last T
+	var lastErr error
+	for sends := 1; ; sends++ {
+		answer, answered, err := Bounded(ctx, send)
+		if !answered {
+			return last, unansweredUntil(sends-1, lastErr, context.Cause(ctx))
+		}
+		if !unanswered(err) {
 			return answer, err
 		}
-		if sends < unansweredSends {
-			slog.Warn("envoy nats stream request unanswered; sending it again",
-				slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+		last, lastErr = answer, err
+		slog.Warn("envoy nats stream request unanswered; sending it again",
+			slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return last, unansweredUntil(sends, lastErr, ended)
 		}
 	}
-	return answer, err
+}
+
+// unansweredUntil is sentAgain's error once ended, its context's cause, stopped it: the sends it
+// made with no answer and the last of those sends' errors, nats.ErrTimeout or
+// context.DeadlineExceeded, which unanswered() still reads through it, beside ended. The caller
+// names the request (namedRequest), as it names the server's answers to it.
+func unansweredUntil(sends int, last, ended error) error {
+	if last == nil {
+		return fmt.Errorf("no send answered when the wait ended: %w", ended)
+	}
+	return fmt.Errorf("%d sends drew no answer when the wait ended: %w: %w", sends, last, ended)
 }
 
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of

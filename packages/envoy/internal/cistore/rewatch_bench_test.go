@@ -163,7 +163,7 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 		b.Fatalf("jetstream: %v", err)
 	}
 	// The bucket as Open makes it, so Open finds it already filled.
-	kv, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(b.Context(), conn, js, &natsgo.KeyValueConfig{
 		Bucket:   bus.CIStateBucket,
 		Replicas: 1,
 		Storage:  natsgo.FileStorage,
@@ -177,7 +177,7 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 	fillCIBucket(b, conn, kv, keys)
 
 	warmUps := make(chan benchWarmUp, 4)
-	s, err := Open(conn, logging.NewWithWriter("bench", warmUpWriter{warmUps: warmUps}), WithReplicas(1), WithTTL(time.Hour))
+	s, err := Open(b.Context(), conn, logging.NewWithWriter("bench", warmUpWriter{warmUps: warmUps}), WithReplicas(1), WithTTL(time.Hour))
 	if err != nil {
 		b.Fatalf("open cistore: %v", err)
 	}

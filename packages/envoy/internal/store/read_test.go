@@ -147,7 +147,7 @@ func (kv *delayingKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // buckets are empty, so nothing more reaches the cache through the watcher replaced here.
 func rebuiltRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, *holdingCache, *delayingKV) {
 	t.Helper()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

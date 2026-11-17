@@ -402,7 +402,9 @@ func (r *SessionRegistry) unlockAndNotify() {
 	r.notifyChanged(changed...)
 }
 
-func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*SessionRegistry, error) {
+// OpenSessionRegistry opens the session bucket on conn, creating or raising it to the registry's
+// copies (bus.EnsureKeyValue) for as long as ctx lasts, and starts its cache.
+func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...SessionRegistryOption) (*SessionRegistry, error) {
 	opts := sessionRegistryOpts{replicas: 1, ttl: BucketMaxAge, liveWindow: LiveWindow, goneHorizon: GoneHorizon, lastSeenRetention: LastSeenMemory, now: time.Now}
 	for _, o := range options {
 		o(&opts)
@@ -411,7 +413,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.SessionBucket,
 		TTL:      opts.ttl,
 		Replicas: opts.replicas,

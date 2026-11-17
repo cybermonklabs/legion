@@ -142,7 +142,8 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 // refusal to serve this credential any other way: a listener configured to take broker tokens on
 // a bus with no JetStream fails here, naming EnvBrokerURL, rather than falling back to a store in
 // its own memory, which would let one replica accept a proof another replica had already spent.
-func (b *brokerTokens) open(conn *nats.Conn, replicas int) error {
+// ctx is the start's (bus.EnsureKeyValue).
+func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
 	if b == nil {
 		return nil
 	}
@@ -150,7 +151,7 @@ func (b *brokerTokens) open(conn *nats.Conn, replicas int) error {
 	if err != nil {
 		return fmt.Errorf("%s needs JetStream for the spent-proof bucket %s: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.DPoPProofBucket,
 		TTL:      spentProofRetention,
 		Storage:  nats.FileStorage,

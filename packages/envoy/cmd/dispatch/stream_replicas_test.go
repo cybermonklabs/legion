@@ -209,7 +209,7 @@ func startDispatchNATS(t *testing.T, urls []string, overrides map[string]string)
 	if err != nil {
 		return err
 	}
-	_, err = sweeper.Open()
+	_, err = sweeper.Open(t.Context())
 	return err
 }
 
@@ -300,7 +300,7 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 		t.Fatalf("open the JetStream context the earlier sweep's start uses: %v", err)
 	}
 	start := time.Now()
-	_, err = redeliver.OpenState(conn, buckets, 1)
+	_, err = redeliver.OpenState(t.Context(), conn, buckets, 1)
 	elapsed := time.Since(start)
 	if err != nil {
 		for i, server := range cluster.Servers {
