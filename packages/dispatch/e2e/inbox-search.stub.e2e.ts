@@ -539,7 +539,6 @@ test.describe("inbox search", () => {
     await expect(rows(page).first()).toBeFocused();
     const landedId = await rows(page).first().getAttribute("data-inbox-row");
     const landed = inboxRow(page, landedId ?? "");
-    await expect(landed).toBeFocused();
     await page.keyboard.press("l");
     await expect(paneScroller(page)).toBeFocused();
 
@@ -608,7 +607,6 @@ stepped.describe("inbox search", () => {
       await expect(rows(page).first()).toBeFocused();
       const landedId = await rows(page).first().getAttribute("data-inbox-row");
       const landed = inboxRow(page, landedId ?? "");
-      await expect(landed).toBeFocused();
       await page.keyboard.press("l");
       await expect(paneScroller(page)).toBeFocused();
 

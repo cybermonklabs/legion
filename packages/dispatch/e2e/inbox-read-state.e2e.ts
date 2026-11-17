@@ -1,8 +1,7 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies } from "./api";
-import { inboxPane, selectedRow, selectRow } from "./inbox-pane";
+import { hasReadingPane, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
-import { settledState } from "./settled";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -56,13 +55,7 @@ test("a reply taller than the reading pane is marked read by reading it, and its
     await page.goto("/");
     const row = page.locator(`[data-inbox-row="${replyRowId(thread)}"]`);
     await expect(row).toBeVisible();
-    // The Inbox opens on its first row's thread, drawn in the reading pane where the page has
-    // one and in that row's own card where it has none, so the skip waits for one of the two.
-    const drawnIn = await settledState("the Inbox's first thread", [
-      ["reading pane", inboxPane(page).locator("[data-inbox-thread-body]")],
-      ["card", page.locator("[data-inbox-row] [data-inbox-thread-body]").first()],
-    ]);
-    test.skip(drawnIn !== "reading pane", "the reading pane is this row's subject");
+    test.skip(!hasReadingPane(page), "the reading pane is this row's subject");
     await row.locator("time").first().click();
     await expect(row).toHaveAttribute("data-inbox-selected", "true");
     const reply = page.locator("[data-inbox-thread-turn]").last();

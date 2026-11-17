@@ -12,7 +12,7 @@ import {
 import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { settledState } from "./settled";
+import { expandedState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -31,11 +31,7 @@ async function expandedThread(page: Page, rootId: string): Promise<Locator> {
   const card = threadCard(page, rootId);
   const timelineThread = page.locator(`[data-turn="comment:${rootId}"]`);
   // The card says whether its thread is open, and is read once the Conversation has drawn it.
-  const thread = await settledState("the thread card", [
-    ["open", card.and(page.locator('[aria-expanded="true"]'))],
-    ["collapsed", card.and(page.locator('[aria-expanded="false"]'))],
-  ]);
-  if (thread === "collapsed") {
+  if ((await expandedState("the thread card", card)) === "shut") {
     await timelineThread.getByRole("button", { name: "Expand thread" }).click();
   }
   await expect(card).toHaveAttribute("aria-expanded", "true");

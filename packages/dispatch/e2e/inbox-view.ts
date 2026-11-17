@@ -22,7 +22,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
-import { expandedState, openFilterFields } from "./inbox-filter";
+import { openFilterFields } from "./inbox-filter";
 import { inboxList } from "./inbox-pane";
 import {
   agentRowId,
@@ -33,6 +33,7 @@ import {
   seedMessageThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { expandedState } from "./settled";
 
 /** The list this file reads: every row, whoever holds it, so the fields have something to say. */
 export const INBOX = "/?assignee=everyone";

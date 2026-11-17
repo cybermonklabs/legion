@@ -51,9 +51,11 @@ function check(ok: boolean, what: string): void {
  *  check here or in the server sees it. */
 async function ensureLocalPostgres(boundMs: number): Promise<string> {
   await supervisor.run(["bash", "scripts/dev-postgres.sh"], envoyPackage);
-  // Each attempt is a psql of its own, killed once the time the wait left it has passed, so a
-  // server that takes the connection and never answers holds the wait no longer than that. The
-  // kill's own error says only that it was aborted, so the attempt says what happened instead.
+  // Each attempt is a psql of its own, killed once the time the wait left it has passed, so no
+  // psql outlives its attempt. The kill's own error says only that it was aborted, so the attempt
+  // says what happened. This message is the one a failure names: the kill's timer starts just
+  // before the wait's own timer of the same length (`answeredWithin`), and the killed psql
+  // rejects before that timer fires.
   const probe: PostgresProbe = async (query, limitMs) => {
     const limit = AbortSignal.timeout(limitMs);
     try {
@@ -108,7 +110,7 @@ async function main(): Promise<void> {
 
   // 2. Postgres: DATABASE_URL as given (it is truncated and seeded), else the repo's dev container.
   // It stays ahead of the web build, so a database problem is the failure reported.
-  // A new container runs initdb before it takes connections; 30 s is what this wait always had.
+  // A new container runs initdb before it takes connections, so the wait gives it 30 s.
   const postgresBoundMs = 30_000;
   const databaseUrl = given || (await ensureLocalPostgres(postgresBoundMs));
   process.env.DATABASE_URL = databaseUrl;
@@ -130,9 +132,12 @@ async function main(): Promise<void> {
   // assertion, and this instance has to start on a server without the fix so that spec can go
   // red against it. The reset runs only now, after the server's own loopback check let it boot.
   await untilInterrupted(resetDatabase());
-  // The Inbox was read settling in 230 ms; 15 s is what the seed's two waits had before this.
+  // The Inbox was read settling in 230 ms; 15 s is far above that, so only a seed that does not
+  // settle fails it.
   const seedBoundMs = 15_000;
-  const seeded = await untilInterrupted(seedWorkspace({ boundMs: seedBoundMs }));
+  const seeded = await untilInterrupted(
+    seedWorkspace({ boundMs: seedBoundMs, signal: supervisor.signal })
+  );
   const whoami = await fetch(`${baseUrl}/auth/whoami`, { headers: await userHeaders("alice") });
   const identity = (await whoami.json()) as { login?: string };
   check(whoami.status === 200 && identity.login === "alice", "signed-in whoami");
@@ -147,7 +152,8 @@ async function main(): Promise<void> {
   // The live view rides the live socket, not the API, and Dispatch refuses an agent view whose
   // session id is not a uuid: a seed of named sessions passes every check above and still reads
   // "This session's conversation is unavailable" at /agents/<id>/live.
-  // Dispatch answers an agent view's subscribe at once, accepted or refused; 10 s is its old bound.
+  // Dispatch answers an agent view's subscribe at once, accepted or refused, so 10 s fails only
+  // a Dispatch that does not answer.
   const liveViewBoundMs = 10_000;
   const liveView = await untilInterrupted(
     agentViewRefusal(baseUrl, await userHeaders("alice"), sessionIds.planner, liveViewBoundMs)

@@ -351,8 +351,8 @@ export async function awaitPostgres(
     boundMs,
     fact: `PostgreSQL at ${address} answers \`${query}\``,
     holds: (printed) => printed === "1",
-    // Half a second between attempts while the container starts, the pause the command made
-    // between two attempts before this wait took a probe.
+    // Half a second between attempts while the container starts, so the wait sees the server
+    // within about half a second of its taking connections.
     intervalMs: 500,
     read: (leftMs) => probe(query, leftMs),
     show: (printed) => JSON.stringify(printed),
@@ -459,7 +459,8 @@ export async function awaitDecisionBlock(
     boundMs,
     fact: `seedWorkspace: ${issueKey}'s open asks name its spec's decision block`,
     holds: (found) => found.blockIds.length > 0,
-    // A tenth of a second between reads, the interval this wait read at before it took a bound.
+    // A tenth of a second between reads, so the seed goes on within about a tenth of a second of
+    // the block's ask being written.
     intervalMs: 100,
     read: async () => {
       const asks = await read();

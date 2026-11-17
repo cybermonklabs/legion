@@ -86,7 +86,7 @@
  *   `const { isVisible } = menu`, or a member written in brackets, `menu["isVisible"]()`, or any
  *   other computed property;
  * - an alias: a name bound to a probe or a wrapper rather than to its answer, `const shows =
- *   railIsSheet` or `const visible = menu.isVisible.bind(menu)`;
+ *   menuShows` or `const visible = menu.isVisible.bind(menu)`;
  * - a wrapper that returns a probe through a variable - `const shown = await menu.isVisible();
  *   return shown;` - and a wrapper that is a method, a `let` or a `var`, or that returns a call
  *   of another wrapper, since a call of a wrapper is a probe for judging and not for collecting;
@@ -121,7 +121,7 @@ export type DecidingProbe = {
   line: number;
   /** The 0-based column the call begins at, which orders two probes of one line. */
   column: number;
-  /** What is called: the method, `isVisible`, or the name of a wrapper, `railIsSheet`. */
+  /** What is called: the method, `isVisible`, or the name of a wrapper, `menuShows`. */
   name: string;
   /** What the answer decides, as WHAT DECIDES A PATH reads it: `if`, `ternary`, `while`,
    *  `do-while`, `for`, `test.skip` and its kin, or `const shown -> ternary@42` for a name bound to
@@ -204,7 +204,7 @@ function isProbeCall(node: ts.Node): node is ts.CallExpression {
 }
 
 /** Whether `node` is a function written in place: an arrow or a function expression. */
-function isFunctionLiteral(node: ts.Node): boolean {
+function isFunctionLiteral(node: ts.Node): node is ts.ArrowFunction | ts.FunctionExpression {
   return ts.isArrowFunction(node) || ts.isFunctionExpression(node);
 }
 
@@ -322,10 +322,7 @@ function wrapperNames(parsed: readonly ParsedFile[]): Set<string> {
         (node.parent.flags & ts.NodeFlags.Const) !== 0
       ) {
         const initializer = unparenthesized(node.initializer);
-        if (
-          (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) &&
-          returnsProbe(initializer, skipped)
-        ) {
+        if (isFunctionLiteral(initializer) && returnsProbe(initializer, skipped)) {
           names.add(node.name.text);
         }
       }

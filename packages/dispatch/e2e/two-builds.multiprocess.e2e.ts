@@ -759,7 +759,8 @@ test("a tab of build A focused while A and B are both live shows no new-version 
     // The absence is read once the signed-in page has drawn, not off the shell's loading
     // skeleton, and after the page has read the builds answer (`focusedTab`).
     await expect(heading(page, "Inbox")).toBeVisible();
-    await expect(page.getByRole("status", { name: "A new version is available" })).toHaveCount(0);
+    // The waits above settled the content this reads, so one read is enough.
+    expect(await page.getByRole("status", { name: "A new version is available" }).count()).toBe(0);
   } finally {
     await page.context().close();
   }

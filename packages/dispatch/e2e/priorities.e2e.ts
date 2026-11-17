@@ -503,14 +503,12 @@ test("a priority row opens its work by status, and four writes survive a reload"
         Date.now()
       );
     expect(future).toEqual([]);
-    const body = page.locator("body");
-    await expect(body).not.toContainText(/\bin \d+ (second|minute|hour|day|week|month|year)s?\b/, {
-      useInnerText: true,
-    });
-    await expect(body).not.toContainText(/\d\s?%/, { useInnerText: true });
-    await expect(body).not.toContainText(
-      /\b(on track|at risk|off track|behind schedule|ahead of schedule)\b/i,
-      { useInnerText: true }
+    // The waits above settled the content this reads, so one read is enough.
+    const drawn = await page.locator("body").innerText();
+    expect(drawn).not.toMatch(/\bin \d+ (second|minute|hour|day|week|month|year)s?\b/);
+    expect(drawn).not.toMatch(/\d\s?%/);
+    expect(drawn).not.toMatch(
+      /\b(on track|at risk|off track|behind schedule|ahead of schedule)\b/i
     );
   } finally {
     await context.close();

@@ -7,7 +7,7 @@ import { createAsk, createComment, createIssue, createProject } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
-import { settledState } from "./settled";
+import { expandedState } from "./settled";
 
 export interface FakeSession {
   session_id: string;
@@ -404,10 +404,7 @@ export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
  *  once the page has drawn it rather than at the instant it attaches. */
 export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<void> {
   const toggle = agentGroupToggle(page, group);
-  const fold = await settledState(`the ${group} group's heading`, [
-    ["open", toggle.and(page.locator('[aria-expanded="true"]'))],
-    ["shut", toggle.and(page.locator('[aria-expanded="false"]'))],
-  ]);
+  const fold = await expandedState(`the ${group} group's heading`, toggle);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", fold === "open" ? "false" : "true");
 }
@@ -424,11 +421,7 @@ export function agentFilterState(
   page: Page,
   filter: "group" | "machine" | "role"
 ): Promise<"open" | "shut"> {
-  const trigger = agentFilter(page, filter);
-  return settledState(`the ${filter} filter`, [
-    ["open", trigger.and(page.locator('[aria-expanded="true"]'))],
-    ["shut", trigger.and(page.locator('[aria-expanded="false"]'))],
-  ]);
+  return expandedState(`the ${filter} filter`, agentFilter(page, filter));
 }
 
 /** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never

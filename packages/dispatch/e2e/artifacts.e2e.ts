@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
-import { settledState } from "./settled";
+import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
 const tinyPng =
@@ -46,11 +46,7 @@ function reviewPanelToggle(page: Page): Locator {
  *  and is read once the page has drawn it rather than at the instant it attaches. */
 async function shutReviewPanel(page: Page): Promise<void> {
   const toggle = reviewPanelToggle(page);
-  const panel = await settledState("the review panel", [
-    ["open", toggle.and(page.locator('[aria-expanded="true"]'))],
-    ["shut", toggle.and(page.locator('[aria-expanded="false"]'))],
-  ]);
-  if (panel === "open") await toggle.click();
+  if ((await expandedState("the review panel", toggle)) === "open") await toggle.click();
 }
 
 async function openArtifacts(page: Page, isPhone: boolean) {

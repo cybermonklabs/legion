@@ -154,10 +154,9 @@ const SETTINGS_FORMS: Readonly<Record<string, readonly string[]>> = {
   ],
 };
 
-/** The lines under that row (`SessionSwitchLines`), by the selector each is measured by: what the
- *  latest switch is doing, and why a session shows less. */
+/** The line under that row (`SessionSwitchLines`) that says what the latest switch is doing, by
+ *  the selector it is measured by. */
 const SWITCH_LINES = {
-  notice: '[data-testid="agent-settings-notice"]',
   status: '[data-testid="agent-switch-status"]',
 } as const;
 

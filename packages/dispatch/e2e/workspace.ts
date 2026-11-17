@@ -118,11 +118,13 @@ export interface SeededWorkspace {
  *  decision block (`awaitDecisionBlock`), and at the end for the Inbox rows it declares
  *  (`awaitSeededInbox`), which every caller reads next. Each wait gets the whole of `boundMs`, the
  *  bound its caller's own checks use, so a browser row's seed gives up before the row's own
- *  clock ends it and hides the wait's message. */
+ *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait. */
 export async function seedWorkspace({
   boundMs,
+  signal,
 }: {
   readonly boundMs: number;
+  readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
     const session = workspaceSessions.find((candidate) => candidate.session_id === id);
@@ -311,7 +313,10 @@ export async function seedWorkspace({
   // Every caller reads the Inbox next, and it can list other rows for a moment after the writes
   // above answered: a 25 ms sampler read five wrong rows here about 230 ms before these five
   // stood (dispatch://INFRA-3148). So the seed is done only once these rows stand.
-  const matched = await awaitSeededInbox(inbox, () => getInbox({ login: "alice" }), { boundMs });
+  const matched = await awaitSeededInbox(inbox, () => getInbox({ login: "alice" }), {
+    boundMs,
+    signal,
+  });
 
   return {
     asks: {

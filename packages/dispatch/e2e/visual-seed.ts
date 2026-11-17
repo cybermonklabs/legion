@@ -23,8 +23,8 @@ if (path === undefined) {
 }
 
 await resetDatabase();
-// No Playwright row runs this seed, so no expect timeout applies; 15 s is what the seed's
-// waits had before their caller set them, far above the 230 ms the Inbox was read settling in.
+// No Playwright row runs this seed, so no expect timeout applies; 15 s is far above the 230 ms
+// the Inbox was read settling in, so only a seed that does not settle fails it.
 const seedBoundMs = 15_000;
 const seed = await seedReviewRoutes({ boundMs: seedBoundMs });
 

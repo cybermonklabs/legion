@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { settledState } from "./settled";
+import { expandedState } from "./settled";
 
 /**
  * The Inbox's `?assignee=` control (`features/inbox/AssigneeFilter.tsx`), one of the five fields
@@ -19,17 +19,6 @@ export function assigneeFilter(page: Page): Locator {
 /** The popover's rows; absent while it is shut. */
 export function assigneeOptions(page: Page): Locator {
   return page.getByRole("listbox", { name: "Assignee options" });
-}
-
-/** Whether the panel `control` opens is open, by the control's own `aria-expanded`, read once
- *  the page shows the control: a count taken while the page still loads finds no panel, and
- *  takes it for a shut one. `what` names the control, for the failure. */
-export function expandedState(what: string, control: Locator): Promise<"open" | "shut"> {
-  const page = control.page();
-  return settledState(what, [
-    ["open", control.and(page.locator('[aria-expanded="true"]'))],
-    ["shut", control.and(page.locator('[aria-expanded="false"]'))],
-  ]);
 }
 
 /** Opens the five filter fields of the bar `within` holds - the page's or the drawer's - unless

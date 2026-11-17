@@ -126,9 +126,8 @@ test("the suite's deciding probes are reported for the record", () => {
   if (realRefused.length === 0) {
     console.log(
       `zero-wait probes: scanned ${scannedFiles.length} files and found ${realProbes.length} ` +
-        `probes whose answer decides a path; ${realRefused.length} refused, ` +
-        `${realProbes.length - realRefused.length} reasoned with at least ${minimumReasonWords} ` +
-        "words on the line above them."
+        "probes whose answer decides a path; every one carries a reason of at least " +
+        `${minimumReasonWords} words on the line above it.`
     );
   }
   expect(realRefused).toEqual([]);

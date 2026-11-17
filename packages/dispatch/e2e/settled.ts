@@ -40,10 +40,22 @@ export async function settledState<Name extends string>(
         }
         return false;
       },
-      { message: failure }
+      // Playwright's own web-first retry schedule, so a page that draws early is read early.
+      { intervals: [20, 50, 100, 100, 500], message: failure }
     )
     .toBe(true);
   // A poll whose row has already ended passes without reading, and leaves no state behind.
   if (shown === undefined) throw new Error(failure);
   return shown;
+}
+
+/** Whether the panel `control` opens is open, by the control's own `aria-expanded`, read once
+ *  the page shows the control: a count taken while the page still loads finds no panel, and
+ *  takes it for a shut one. `what` names the control, for the failure. */
+export function expandedState(what: string, control: Locator): Promise<"open" | "shut"> {
+  const page = control.page();
+  return settledState(what, [
+    ["open", control.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", control.and(page.locator('[aria-expanded="false"]'))],
+  ]);
 }

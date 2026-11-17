@@ -125,20 +125,17 @@ async function pass(ms: number): Promise<void> {
  *  fails here, naming that limit, rather than on the runner's timeout. */
 async function clockWhenSettled(waiting: Promise<unknown>, limitMs: number): Promise<number> {
   const started = Date.now();
-  let settledAt: number | undefined;
-  const mark = () => {
-    settledAt = Date.now() - started;
-  };
-  waiting.then(mark, mark);
+  const settled = watch(waiting);
   await nextTurn();
-  for (let step = 0; settledAt === undefined && step < limitMs; step += 1) {
+  for (let step = 0; !settled() && step < limitMs; step += 1) {
     jest.advanceTimersByTime(1);
     await nextTurn();
   }
-  if (settledAt === undefined) {
+  if (!settled()) {
     throw new Error(`the wait had not settled once the fake clock moved ${limitMs} ms`);
   }
-  return settledAt;
+  // The clock moves only in the loop above, so it still reads the moment the wait settled.
+  return Date.now() - started;
 }
 
 /** The message `waiting` rejects with, which must be an Error. */
@@ -155,6 +152,11 @@ async function rejectionOf(waiting: Promise<unknown>): Promise<string> {
  *  still give up: within one second, as each wait's own interval keeps it. */
 const neverHoldsBoundMs = 2_000;
 const pastBoundMs = 1_000;
+
+/** How far a never-holding row moves the clock before it stops waiting: past the bound and the
+ *  margin the row asserts, so a wait that gives up late fails that assertion, and only a wait
+ *  that never gives up fails on this limit. */
+const unsettledLimitMs = neverHoldsBoundMs + 2 * pastBoundMs;
 
 /** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
  *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,
@@ -969,7 +971,7 @@ describe("awaitSeededInbox", () => {
   test("a read that never holds gives up within 1 s of its 2 s bound, naming the rows it last read", async () => {
     const inbox = reader(() => shortSet);
     const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: neverHoldsBoundMs });
-    const at = await clockWhenSettled(waiting, neverHoldsBoundMs + pastBoundMs);
+    const at = await clockWhenSettled(waiting, unsettledLimitMs);
     expect(at).toBeGreaterThanOrEqual(neverHoldsBoundMs);
     expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
     expect(await failureOf(waiting)).toBe(
@@ -1016,7 +1018,7 @@ describe("awaitDecisionBlock", () => {
   test("open asks that never name a block give up within 1 s of the 2 s bound, naming the last read", async () => {
     const asks = openAsks((call) => [{ block_id: null, id: `ask-other-${call}` }]);
     const waiting = awaitDecisionBlock("CORE-1", asks.read, neverHoldsBoundMs);
-    const at = await clockWhenSettled(waiting, neverHoldsBoundMs + pastBoundMs);
+    const at = await clockWhenSettled(waiting, unsettledLimitMs);
     expect(at).toBeGreaterThanOrEqual(neverHoldsBoundMs);
     expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
     expect(await rejectionOf(waiting)).toBe(
@@ -1042,7 +1044,7 @@ describe("awaitPostgres", () => {
       throw new Error(refused(attempts.length));
     };
     const waiting = awaitPostgres("127.0.0.1:55432", probe, neverHoldsBoundMs);
-    const at = await clockWhenSettled(waiting, neverHoldsBoundMs + pastBoundMs);
+    const at = await clockWhenSettled(waiting, unsettledLimitMs);
     expect(at).toBeGreaterThanOrEqual(neverHoldsBoundMs);
     expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
     expect(await rejectionOf(waiting)).toBe(

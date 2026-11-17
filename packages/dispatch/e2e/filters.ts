@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { settledState } from "./settled";
+import { expandedState } from "./settled";
 
 /** A Board strip picker or the List table's header filter. */
 export function filterPicker(page: Page, picker: "Claimed by" | "Labels" | "Status"): Locator {
@@ -20,13 +20,7 @@ export async function pickFilterOption(
   option: string
 ): Promise<void> {
   const trigger = filterPicker(page, picker);
-  const popover = await settledState(`the ${picker} picker`, [
-    ["open", trigger.and(page.locator('[aria-expanded="true"]'))],
-    ["shut", trigger.and(page.locator('[aria-expanded="false"]'))],
-  ]);
-  if (popover === "shut") {
-    await trigger.click();
-  }
+  if ((await expandedState(`the ${picker} picker`, trigger)) === "shut") await trigger.click();
   await page
     .getByRole("option", {
       // "Done, not loaded" while closed issues are still out: its count would be a lie.
