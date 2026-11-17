@@ -78,33 +78,30 @@ func provisioning(pod *corev1.Pod) bool {
 	})
 }
 
-// neverStarted is how long pod has been scheduled onto a node that has not made it ready to start
-// its containers, and whether that is longer than bound at now. The kubelet reports
+// neverStarted is how long pod has existed while scheduled onto a node that has not made it ready
+// to start its containers, and whether that is longer than bound at now. The kubelet reports
 // PodReadyToStartContainers False until it has mounted the pod's volumes and made its sandbox, and
 // no container of the pod runs before then, an init container or the launcher its roles run in: a
 // node that cannot surface the new persistent disk an issue pod owns (FailedMount) holds the pod
 // there for as long as the pod lives, and a launch that keeps such a pod waits for its launcher in
 // vain at every try (relaunch). Such a pod is Pending, PodScheduled True and
-// PodReadyToStartContainers False, counted from that condition's last transition, or from
-// PodScheduled's where the condition carries none. Nothing else is judged: a pod whose kubelet has
-// not reported the condition, whose wait for its image pull is the launcher wait's own
-// (awaitRoleLauncher); a pod that is not scheduled, whose wait is the scheduler's (verdict); a pod
-// that has left Pending, which has started; and a pod whose moment is unknown.
+// PodReadyToStartContainers False, and its time is counted from its creation, not from either
+// condition's transition: the launch's wait for its launcher starts once the store holds the pod,
+// so it gives up about a boot timeout after the pod's creation, while the kubelet writes those
+// conditions seconds later. Counted from them, the next try, a backoff of a second or two after
+// that wait gave up, would find the pod younger than the boot timeout, keep it, and wait on it
+// once more. Nothing else is judged: a pod whose kubelet has not reported the condition, whose
+// wait for its image pull is the launcher wait's own (awaitRoleLauncher); a pod that is not
+// scheduled, whose wait is the scheduler's (verdict); a pod that has left Pending, which has
+// started; and a pod whose creation is unknown.
 func neverStarted(pod *corev1.Pod, now time.Time, bound time.Duration) (time.Duration, bool) {
-	if pod == nil || phaseOf(pod) != corev1.PodPending {
+	if pod == nil || phaseOf(pod) != corev1.PodPending || pod.CreationTimestamp.IsZero() {
 		return 0, false
 	}
 	scheduled, ready := podCondition(pod, corev1.PodScheduled), podCondition(pod, corev1.PodReadyToStartContainers)
 	if scheduled == nil || scheduled.Status != corev1.ConditionTrue || ready == nil || ready.Status != corev1.ConditionFalse {
 		return 0, false
 	}
-	since := ready.LastTransitionTime.Time
-	if since.IsZero() {
-		since = scheduled.LastTransitionTime.Time
-	}
-	if since.IsZero() {
-		return 0, false
-	}
-	unstarted := now.Sub(since)
+	unstarted := now.Sub(pod.CreationTimestamp.Time)
 	return unstarted, unstarted > bound
 }

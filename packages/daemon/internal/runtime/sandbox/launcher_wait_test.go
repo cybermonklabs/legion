@@ -156,43 +156,43 @@ func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 }
 
 // A pod has never started only while it is scheduled, still Pending, and its node has not made it
-// ready to start its containers for longer than the bound: counted from that condition's last
-// transition, or from PodScheduled's where the condition carries none. A pod whose node reports no
-// such condition is the launcher wait's, as an image pull is; a pod not scheduled is the
-// scheduler's; a pod ready to start whose init container still waits is starting; and a pod that
-// has left Pending has started, whatever its node reports of it since.
+// ready to start its containers, once it was created longer than the bound ago: its age counts
+// from its creation, not from the conditions, which the kubelet writes seconds after it. A pod
+// whose node reports no readiness to start is the launcher wait's, as an image pull is; a pod not
+// scheduled is the scheduler's; a pod ready to start whose init container still waits is
+// starting; a pod whose creation is unknown has no age; and a pod that has left Pending has
+// started, whatever its node reports of it since.
 func TestAPodHasNeverStartedOnlyOnceItsNodeLeavesItUnreadyToStartPastTheBound(t *testing.T) {
 	now := time.Date(2026, 11, 17, 15, 8, 0, 0, time.UTC)
 	bound := 10 * time.Minute
-	condition := func(kind corev1.PodConditionType, status corev1.ConditionStatus, age time.Duration) corev1.PodCondition {
-		var at metav1.Time
-		if age > 0 {
-			at = metav1.NewTime(now.Add(-age))
-		}
-		return corev1.PodCondition{Type: kind, Status: status, LastTransitionTime: at}
-	}
-	scheduled := condition(corev1.PodScheduled, corev1.ConditionTrue, time.Hour)
-	unready := func(age time.Duration) corev1.PodCondition {
-		return condition(corev1.PodReadyToStartContainers, corev1.ConditionFalse, age)
-	}
 	for _, tc := range []struct {
-		name       string
-		phase      corev1.PodPhase
-		conditions []corev1.PodCondition
+		name  string
+		phase corev1.PodPhase
+		// created is how long ago the pod was created, 0 for a pod whose creation is unknown, and
+		// reported how long after its creation its node wrote the two conditions below, each ""
+		// for a condition the pod does not carry.
+		created, reported time.Duration
+		scheduled, ready  corev1.ConditionStatus
 		// unstarted is how long the pod has not started, as neverStarted counts it: 0 for a pod
 		// it does not judge.
 		unstarted time.Duration
 		never     bool
 	}{
-		{name: "a pod with no conditions"},
-		{name: "a pod not scheduled", conditions: []corev1.PodCondition{condition(corev1.PodScheduled, corev1.ConditionFalse, time.Hour), unready(time.Hour)}},
-		{name: "a pod scheduled whose node reports no readiness to start", conditions: []corev1.PodCondition{scheduled}},
-		{name: "a pod ready to start whose init container waits", conditions: []corev1.PodCondition{scheduled, condition(corev1.PodReadyToStartContainers, corev1.ConditionTrue, time.Hour)}},
-		{name: "a pod not ready to start for less than the bound", conditions: []corev1.PodCondition{scheduled, unready(bound - time.Second)}, unstarted: bound - time.Second},
-		{name: "a pod not ready to start for exactly the bound", conditions: []corev1.PodCondition{scheduled, unready(bound)}, unstarted: bound},
-		{name: "a pod not ready to start for longer than the bound", conditions: []corev1.PodCondition{scheduled, unready(bound + time.Second)}, unstarted: bound + time.Second, never: true},
-		{name: "a pod not ready to start since no moment, scheduled longer than the bound ago", conditions: []corev1.PodCondition{scheduled, unready(0)}, unstarted: time.Hour, never: true},
-		{name: "a pod Running whose node has since stopped making it ready", phase: corev1.PodRunning, conditions: []corev1.PodCondition{scheduled, unready(time.Hour)}},
+		{name: "a pod with no conditions", created: time.Hour},
+		{name: "a pod not scheduled", created: time.Hour, scheduled: corev1.ConditionFalse, ready: corev1.ConditionFalse},
+		{name: "a pod scheduled whose node reports no readiness to start", created: time.Hour, scheduled: corev1.ConditionTrue},
+		{name: "a pod ready to start whose init container waits", created: time.Hour, scheduled: corev1.ConditionTrue, ready: corev1.ConditionTrue},
+		{name: "a pod not ready to start created less than the bound ago", created: bound - time.Second,
+			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse, unstarted: bound - time.Second},
+		{name: "a pod not ready to start created exactly the bound ago", created: bound,
+			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse, unstarted: bound},
+		{name: "a pod not ready to start created longer than the bound ago", created: bound + time.Second,
+			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse, unstarted: bound + time.Second, never: true},
+		{name: "a pod created longer than the bound ago whose node reported it not ready to start 30 s later", created: bound + 2*time.Second, reported: 30 * time.Second,
+			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse, unstarted: bound + 2*time.Second, never: true},
+		{name: "a pod not ready to start whose creation is unknown", scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse},
+		{name: "a pod Running whose node has since stopped making it ready", phase: corev1.PodRunning, created: time.Hour,
+			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := &corev1.Pod{}
@@ -200,7 +200,19 @@ func TestAPodHasNeverStartedOnlyOnceItsNodeLeavesItUnreadyToStartPastTheBound(t 
 			if tc.phase != "" {
 				pod.Status.Phase = tc.phase
 			}
-			pod.Status.Conditions = tc.conditions
+			reported := metav1.NewTime(now.Add(-time.Hour))
+			if tc.created > 0 {
+				pod.CreationTimestamp = metav1.NewTime(now.Add(-tc.created))
+				reported = metav1.NewTime(pod.CreationTimestamp.Add(tc.reported))
+			}
+			for _, condition := range []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: tc.scheduled, LastTransitionTime: reported},
+				{Type: corev1.PodReadyToStartContainers, Status: tc.ready, LastTransitionTime: reported},
+			} {
+				if condition.Status != "" {
+					pod.Status.Conditions = append(pod.Status.Conditions, condition)
+				}
+			}
 			if unstarted, never := neverStarted(pod, now, bound); unstarted != tc.unstarted || never != tc.never {
 				t.Fatalf("neverStarted = %s, %t; want %s, %t", unstarted, never, tc.unstarted, tc.never)
 			}
@@ -210,21 +222,32 @@ func TestAPodHasNeverStartedOnlyOnceItsNodeLeavesItUnreadyToStartPastTheBound(t 
 
 // A node that cannot surface a pod's new disk leaves the pod scheduled and never ready to start its
 // containers, so its launcher never connects and the launch gives up at the boot timeout, with the
-// error the supervisor charges as a launch failure. The next try finds the pod not started past
-// the boot timeout and replaces it — a new pod, so a new disk — and says so, naming the pod, its
-// node and how long it has not started, rather than waiting on the same pod again at every try
-// until the claim's launch budget runs out. The replaced pod ran no role, so nothing is named
-// displaced from it. A pod not ready to start for less than the boot timeout is kept, as a try
-// keeps every pod of its own still coming up.
+// error the supervisor charges as a launch failure. The next try finds the pod created longer than
+// the boot timeout ago and still not ready to start, and replaces it — a new pod, so a new disk —
+// and says so, naming the pod, its node and how long it has not started, rather than waiting on
+// the same pod again at every try until the claim's launch budget runs out. The replaced pod ran no
+// role, so nothing is named displaced from it. A pod created less than the boot timeout ago is
+// kept, as a try keeps every pod of its own still coming up.
+// The launch's wait starts once the store holds the pod, so it gives up about a boot timeout after
+// the pod's creation, and the next try follows it by a backoff of a second or two, while the
+// kubelet writes the pod's conditions seconds after its creation: so the pod's age counts from its
+// creation, since from the conditions that try would find it younger than the boot timeout, keep
+// it and wait on it once more. The second row is that case at the rig's 2 s boot timeout: the
+// conditions written a second after the pod appeared, the next try half a second past the boot
+// timeout.
 func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing.T) {
-	const said = "sandbox runtime: replacing a pod whose node has not made it ready to start its containers for longer than the boot timeout"
+	const said = "sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers"
+	boot := testOptions().BootTimeout
 	for _, tc := range []struct {
-		name     string
-		aged     time.Duration
-		replaces bool
+		name string
+		// reported is how long after the pod appeared its node wrote its conditions, and aged how
+		// far the clock has moved since the pod appeared when the next try starts.
+		reported, aged time.Duration
+		replaces       bool
 	}{
-		{name: "not started for longer than the boot timeout", aged: testOptions().BootTimeout + time.Second, replaces: true},
-		{name: "not started for less than the boot timeout", aged: testOptions().BootTimeout - time.Second},
+		{name: "not started for longer than the boot timeout", aged: boot + time.Second, replaces: true},
+		{name: "reported a while after the pod appeared, the next try just past the boot timeout", reported: boot / 2, aged: boot + boot/4, replaces: true},
+		{name: "not started for less than the boot timeout", aged: boot - time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedLog{}
@@ -236,7 +259,7 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 			name := SandboxName(spec.Claim)
 			result := make(chan error, 1)
 			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-			g.pendingPod(name, unstartedSince(*g.now.Load()))
+			g.pendingPod(name, unstartedSince(g.now.Load().Add(tc.reported)))
 			stuck := g.pod(name).UID
 			select {
 			case err := <-result:
@@ -263,7 +286,7 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 				}
 				return
 			}
-			for _, want := range []string{said, "pod=" + name, "uid=" + string(stuck), "node=" + unstartedNode, "notStartedFor=" + tc.aged.String()} {
+			for _, want := range []string{said, "pod=" + name, "uid=" + string(stuck), "node=" + unstartedNode, "notStartedFor=" + tc.aged.Round(time.Second).String()} {
 				if !strings.Contains(logged, want) {
 					t.Errorf("the try that replaced the pod logged %q, want it to say %q", logged, want)
 				}

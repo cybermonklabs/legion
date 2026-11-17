@@ -3,10 +3,10 @@ body: |-
     A launch now replaces an issue pod that its node scheduled but never started. A node that
     cannot surface a pod's new disk leaves the pod scheduled with PodReadyToStartContainers=False,
     and each launch try waited the boot timeout on that same pod and was charged a launch failure,
-    so the claim held its slot until its launch budget ran out. A try that finds its pod in that
-    state for longer than the boot timeout now replaces it with a new pod and a new disk, and logs
-    the pod, its node and how long it has not started. The try that timed out is still charged, and
-    the new pod can land on the same node.
+    so the claim held its slot until its launch budget ran out. A try that finds its pod still in
+    that state when it was created longer than the boot timeout ago now replaces it with a new pod
+    and a new disk, and logs the pod, its node and how long it has not started. The try that timed
+    out is still charged, and the new pod can land on the same node.
 time: 2026-11-17T19:49:49Z
 custom:
     Issue: pr4345
