@@ -158,10 +158,9 @@ func fields(s string) []string {
 }
 
 // runes is the number of characters of s, which is how Python counts a string's length and
-// indexes it.
-func runes(s string) int {
-	return utf8.RuneCountInString(s)
-}
+// indexes it. It is the one count of characters of the port, and a variable, so a test can count
+// the characters that Lint counts (TestEachRuleThatWalksMatchesCountsEachCharacterOfALineOnce).
+var runes = utf8.RuneCountInString
 
 // lineBreak reports whether Python's str.splitlines ends a line at r.
 func lineBreak(r rune) bool {
@@ -395,6 +394,25 @@ type synonymHit struct {
 	match        string
 }
 
+// columns is the column ste-lint gives a byte offset of a segment's text: the 1-based character
+// index in the segment's line. It counts the characters from the offset it last answered, so a
+// walk over offsets in increasing order counts each character of the text once, and an offset
+// before the last one counts again from the segment's start.
+type columns struct {
+	text           string
+	start          int
+	offset, counts int
+}
+
+func (c *columns) at(offset int) int {
+	if offset < c.offset {
+		c.offset, c.counts = 0, 0
+	}
+	c.counts += runes(c.text[c.offset:offset])
+	c.offset = offset
+	return c.start + c.counts + 1
+}
+
 // Lint is ste-lint's hard findings for text, in ste-lint's order: by line and column, and in
 // the order ste-lint found them where those are equal.
 func Lint(text string) []Finding {
@@ -405,9 +423,10 @@ func Lint(text string) []Finding {
 	}
 	seen := map[[2]int]synonymHit{}
 	eachSegment(lines, func(line int, from segment, text string) {
+		column := columns{text: text, start: from.column}
 		for index, char := range text {
 			if char == ';' {
-				add(line, from.column+runes(text[:index])+1, "semicolon", ";")
+				add(line, column.at(index), "semicolon", ";")
 			}
 		}
 		for _, rule := range []struct {
@@ -415,21 +434,29 @@ func Lint(text string) []Finding {
 			pattern *regexp.Regexp
 		}{{"phrasal-verb", rules.phrasal}, {"marketing-adjective", rules.marketing}, {"nominalization", rules.nominalization}} {
 			for _, span := range boundedMatches(rule.pattern, text, false) {
-				add(line, from.column+runes(text[:span[0]])+1, rule.name, text[span[0]:span[1]])
+				add(line, column.at(span[0]), rule.name, text[span[0]:span[1]])
 			}
 		}
+		// The first place of each member that has none yet, its column counted in the order of
+		// the line.
+		type first struct {
+			member [2]int
+			span   [2]int
+		}
+		var firsts []first
 		for group, members := range rules.synonyms {
 			for member, pattern := range members {
 				if _, ok := seen[[2]int{group, member}]; ok {
 					continue
 				}
 				if spans := boundedMatches(pattern, text, true); len(spans) > 0 {
-					seen[[2]int{group, member}] = synonymHit{
-						line: line, column: from.column + runes(text[:spans[0][0]]) + 1,
-						match: text[spans[0][0]:spans[0][1]],
-					}
+					firsts = append(firsts, first{[2]int{group, member}, spans[0]})
 				}
 			}
+		}
+		sort.Slice(firsts, func(a, b int) bool { return firsts[a].span[0] < firsts[b].span[0] })
+		for _, hit := range firsts {
+			seen[hit.member] = synonymHit{line: line, column: column.at(hit.span[0]), match: text[hit.span[0]:hit.span[1]]}
 		}
 		for _, piece := range sentencePieces(text) {
 			if words := len(fields(piece)); words > rules.maxWords {

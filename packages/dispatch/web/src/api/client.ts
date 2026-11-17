@@ -88,6 +88,7 @@ interface ErrorPayload {
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
   changes_reason?: string;
+  refusal?: string;
 }
 
 export class ApiError extends Error {
@@ -105,6 +106,10 @@ export class ApiError extends Error {
   /** The reason a request for changes sends to the author once Dispatch refused the person's
    *  approval for the form of The Spec (`SPEC_FORM`); undefined on every other refusal. */
   readonly changesReason: string | undefined;
+  /** A refusal for the form of The Spec (`SPEC_FORM`) without its next step, which Dispatch keeps
+   *  apart (`next_step`): a page that names a next step of its own shows it after these words.
+   *  The message is the whole refusal, as Dispatch wrote it. Undefined on every other refusal. */
+  readonly refusal: string | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -115,6 +120,7 @@ export class ApiError extends Error {
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
     this.changesReason = payload.changes_reason;
+    this.refusal = payload.refusal;
   }
 }
 

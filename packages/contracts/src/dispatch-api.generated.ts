@@ -6083,6 +6083,8 @@ export interface components {
       error: string;
       findings: components["schemas"]["SpecFormFinding"][] | null;
       findings_total: number;
+      next_step: string;
+      refusal: string;
     };
     SpecFormFinding: {
       artifact_id: string;

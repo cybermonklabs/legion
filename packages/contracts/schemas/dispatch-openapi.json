@@ -25606,11 +25606,19 @@
           },
           "findings_total": {
             "type": "integer"
+          },
+          "next_step": {
+            "type": "string"
+          },
+          "refusal": {
+            "type": "string"
           }
         },
         "required": [
           "code",
           "error",
+          "refusal",
+          "next_step",
           "findings",
           "findings_total"
         ],

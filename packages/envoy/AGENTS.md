@@ -553,7 +553,7 @@ the version after the reopen that holds only the reopen's ask-state write, and a
 On an open issue its derived events still name the kept editor (on a closed issue `planRepairs` gives every derived event `SettlementActor`), and so does its move of an approval request that names a version from before the versions written while the issue was closed (`versionWrite.keptEditor`), since that move spans those versions, which the rule takes to hold that editor's text because no stored version says whose text each added; a request that names the version before this one moves in the name of `SettlementActor`.
 A closed issue's settlement of such a write keeps that same editor in `doc_closed_edit_sources`, so the reopen still finds the editor of the text the closed issue's versions hold.
 The latest person sender (`last_person`) is not kept: no edit notice after the reopen reports those edits.
-The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.FollowClosedIssueVersions`), and deletes the kept editor of each document of the issue that owes no settlement.
+The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.ClosedIssueVersions` reads those versions, and `docs.Service.FollowClosedIssueVersions` follows them), and deletes the kept editor of each document of the issue that owes no settlement.
 
 A settlement that meets an update that the append gate refused after the close margin saves nothing of that room (`endOnRefusedUpdate`).
 It fails no room and counts no failure, the room closes for its issue, and the resumption settles the document from the store.
@@ -2574,9 +2574,10 @@ A reopen opens again the asks whose resolution kind is `withdrawn`.
 Each gets `state: open`, no answer and no resolution, and keeps everything else.
 Each gets one `ask.opened` (actor the reopener) before `issue.updated`, and its block reads `state="open"` again.
 The exception is an approval request whose covered document holds a text that breaks the form of The Spec (`api/spec_form.go`).
-Dispatch judges that request at the versions it names, and records it `resolved` with resolution kind `resolved`.
+Dispatch judges that request at the versions that it names when the reopen ends: the reopen reads the versions that it follows (`docs.Service.ClosedIssueVersions`), judges each request at them (`docs.FollowedDocuments`) in its own transaction, and then follows exactly those versions.
+It records a request that breaks the form `resolved` with resolution kind `resolved`.
 Its reason is the findings and its actor is the reopener, and it gets one `ask.resolved` after the `ask.opened` events, so no restore finds it again.
-After those events, the reopen does for each document of the issue what a settlement while the issue was closed did not do (`docs.Service.FollowClosedIssueVersions`):
+After those events, the reopen does for each document of the issue what a settlement while the issue was closed did not do (`docs.Service.FollowClosedIssueVersions`, at the versions that it read):
 it moves the open approval request that names the document to the document's latest version (`docs.MoveApprovalAsk`, with the mover the editor that a settlement while the issue was closed credited and kept in `doc_closed_edit_sources`, or `SettlementActor` where none is kept), and it carries an approval to that version (`docs.carryApproval`'s rules), as the version's own write does on an open issue.
 A document whose stored updates are ahead of its latest version is left to the settlement that it owes, whose version holds the text that the reopen leaves.
 The reopen's own ask-state write is such an update, so a reopen that writes back the text the person was asked about keeps the request with the person.

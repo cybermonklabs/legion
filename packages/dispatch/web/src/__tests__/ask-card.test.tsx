@@ -1249,6 +1249,52 @@ for (const variant of ["full", "compact"] as const) {
   });
 }
 
+// The card reads Dispatch's refusal and the next step from the members that hold them apart, never
+// from a place in the whole message: when Dispatch's message holds one more line after its next
+// step, the card still shows the refusal and its own next step, and none of Dispatch's last lines.
+// A refusal that holds no such member is shown whole, as Dispatch wrote it.
+for (const row of [
+  {
+    name: "shows Dispatch's refusal with its own next step, whatever line ends Dispatch's message",
+    body: {
+      ...specFormRefusalBody,
+      error: `${specFormRefusalBody.error}\nDispatch keeps each refusal for one day.`,
+    },
+    shown: cardRefusal,
+  },
+  {
+    name: "with no refusal apart from its next step shows Dispatch's message whole",
+    body: { code: "SPEC_FORM", error: specFormRefusalBody.error },
+    shown: specFormRefusalBody.error,
+  },
+]) {
+  test(`an approval card refused for the form ${row.name}`, async () => {
+    const user = userEvent.setup();
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <AskCard
+        answerAsk={async () => {
+          throw new ApiError(409, row.body);
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+      />
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      expect((await within(card).findByRole("alert")).textContent).toBe(row.shown);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
 // The press that Dispatch refused for the form is answered, not lost: Answer disables while the
 // answer is out, which hands the focus to the row, and the refusal gives it back to Answer, the
 // press the refusal's last line names. The control: an answer that lands leaves the focus on the
