@@ -1025,8 +1025,8 @@ moment, its pod's restart, with every connection's timer started fresh. The rout
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
 as they were, and the reloader applies it. A
 `gcp:NatsHub` needs none of this: its configuration is the instance template's `user-data`
-(`gcp/natshub.go:795`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
-`RECREATE`: `gcp/natshub.go:822-828`), so any configuration change restarts its server already.
+(`gcp/natshub.go:832`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
+`RECREATE`: `gcp/natshub.go:859-865`), so any configuration change restarts its server already.
 
 <a id="two-ports-guarded-by-the-networkpolicy-alone"></a>
 
@@ -1106,8 +1106,11 @@ Lowering `stage` below `routes`, or removing `routeAuthorization` from `routes` 
 logs `Removed route <url>` with the whole URL (nats-server 2.15.1 `server/reload.go:543`).
 Measured on two local servers: lowering `routes` to `env` logged 4 such lines carrying the
 password, while the forward step from `env` to `routes` logged none. So change the password after
-such a rollback: mint a new one, roll it out from `env` again, and treat the old one as known to
-whoever reads the hub's logs.
+such a rollback, and treat the old one as known to whoever reads the hub's logs. A new value under
+the same Secret key reaches no running pod: a container reads a `secretKeyRef` only when it starts,
+and the `env` apply is then a no-op. Mint the new password under a new `secretKey`, or in a new
+Secret, so the `env` apply changes the pods' env and rolls them; then apply `routes` and
+`authorization` again.
 
 The password holds letters and digits only, a letter first. It is written into the route URLs
 whole, and nats-server types a variable's value as it types a literal of `nats.conf`: a password of
