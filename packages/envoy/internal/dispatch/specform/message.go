@@ -42,24 +42,38 @@ func ChangesReason(findings []Finding, total int, more string, notes ...string) 
 	return refusal("Dispatch refused my approval", findings, total, more, notes, fixAndRequest)
 }
 
-// UnreadLine is the line that says that a judgment compared no text with version of document, an
-// approved document of issue under the root, because Dispatch cannot read that version, and the
-// way out.
+// UnreadLine is the line that says that a judgment compared no text with version of document, the
+// latest approved version of a document of issue under the root, because Dispatch cannot read
+// that version: the list of terms can lack the terms of that version. It ends with the way out.
 func UnreadLine(document string, version int, issue string) string {
 	return fmt.Sprintf("Dispatch cannot read %s version %d of %s, an approved document under the root, so no rule compared its texts. "+
+		"The list of terms can lack the terms of that version. "+
 		"To change that, write a new version of that document and request its approval.", document, version, issue)
 }
 
+// UnreadOlderLine is the line that says that Dispatch cannot read version of document, an older
+// approved version of a document of issue under the root. No list reads an older version: it only
+// orders the definitions of its document, as a version that holds no term. A new version changes
+// nothing of it, so the line names no way out.
+func UnreadOlderLine(document string, version int, issue string) string {
+	return fmt.Sprintf("Dispatch cannot read %s version %d of %s, an older approved version of a document under the root. "+
+		"So the list orders the definitions of that document as if that version held no term.", document, version, issue)
+}
+
 // UnreadListFinding is the finding of a document that holds a definition of a term while version
-// of document, an approved document of issue under the root, is a version that the parser refuses
-// for cause. No rule can compare the definition with the terms of that version, and R50 refuses a
-// second definition, so the judgment refuses the definition: it fails closed, where a judgment of
-// a document with no definition skips that version (UnreadLine).
+// of document, the latest approved version of a document of issue under the root, is a version
+// that the parser refuses for cause. No rule can compare the definition with the terms of that
+// version, and R50 refuses a second definition, so the judgment refuses the definition: it fails
+// closed, where a judgment of a document with no definition skips that version (UnreadLine). The
+// way out is a new version of that document. When that document holds a definition too, and
+// another such version refuses it in turn, a new version with no definition opens: the detail says
+// so.
 func UnreadListFinding(document string, version int, issue, cause string) Finding {
 	return Finding{
 		Node: document, Kind: KindDocument, Where: fmt.Sprintf("%s version %d of %s", document, version, issue), Rule: ruleUnreadable,
 		Detail: fmt.Sprintf("Dispatch cannot read this approved version (%s), so it cannot compare its terms with the definitions of this request. "+
-			"Write a new version of that document and request its approval", cause),
+			"Write a new version of that document and request its approval. "+
+			"If Dispatch refuses that request for the same reason, write that version with no definition first", cause),
 	}
 }
 

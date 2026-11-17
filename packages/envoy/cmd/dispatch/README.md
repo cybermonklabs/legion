@@ -4769,6 +4769,9 @@ A link to a record of Dispatch, and the name of an incident, a pull request or a
   The rules also read the name of a term (kind `term`).
 
 A definition of a term has one sentence, and a term has one definition.
+A footnote of a definition is part of it, so the sentences of the footnote count.
+The finding of such a definition names the footnote.
+It tells the writer to put what the footnote says in the one sentence, or to remove the footnote.
 An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
 So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
 A definition is a term line: `- **<term>**: <definition>` under a heading `Terms`, at any level.
@@ -4805,14 +4808,19 @@ A full-width letter or a ligature folds to its plain letters.
 
 - When Dispatch cannot read a version: an earlier release can store a version that today's parser refuses, and no route stores one now.
   A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
-  Another approved document under the root whose approved version Dispatch cannot read refuses nothing, and each answer names it in `unread`, one line for each.
+  Another approved document under the root whose latest approved version Dispatch cannot read refuses nothing.
+  Each answer names it in `unread`, one line for each.
   A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
   Dispatch refuses its request with one finding of kind `document` and rule `unreadable` that names that approved document and its version.
   No rule compares the texts of that version, so its component names are no nouns of the system.
-  Its terms are no part of the list either.
-  When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
-  Each answer names that version in `unread` too.
+  Its terms are no part of the list either, and its line in `unread` says that the list can lack them.
   The way out of both is a new version of that document, and for the approved document its approval.
+  When two such approved documents hold definitions, each one refuses the new version of the other that holds a definition.
+  So write the new version of one of them first with no definition, and the finding says so.
+  When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
+  So the definition of another document can govern the term then, and no person approved that change.
+  The list reads no older version, so such a version refuses no request, and a new version changes nothing of it.
+  Each answer names that version in `unread`, with a line that says that it changes the order alone.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.

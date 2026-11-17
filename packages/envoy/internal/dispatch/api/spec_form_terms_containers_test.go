@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -223,4 +225,185 @@ func TestAnUnreadableApprovedDocumentRefusesEachRequestThatHoldsADefinition(t *t
 		issue := createFormIssue(t, tree.handler, tree.root, "No definition", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
 		requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
 	})
+}
+
+// olderUnreadLine is the line that names an older approved version that Dispatch cannot read: it
+// is no source of the list, and it only orders the definitions of its document.
+func olderUnreadLine(document string, version int, issue string) string {
+	return fmt.Sprintf("Dispatch cannot read %s version %d of %s, an older approved version of a document under the root. "+
+		"So the list orders the definitions of that document as if that version held no term.", document, version, issue)
+}
+
+// R50: "Dispatch refuses an approval request … that holds a second definition of a term". The list
+// reads the latest approved version of each document, so an older approved version is no source
+// of it: it only orders the definitions of a term that two documents define. When Dispatch cannot
+// read one, it holds no term for that order, each answer names it, and it refuses no request: a
+// request with a new term opens, also after the next version of its document is approved (the
+// reviewer's probe U1b). A defines lease in its first two approved versions, and B, approved
+// outside the root with another definition, moves in. When B moves in after A's second approval,
+// A keeps lease. When B moves in before it (the reviewer's probe U1), A's definition joins at its
+// second approval once its first version cannot be read, so B's governs: the choice that the
+// README states ("an older approved version that Dispatch cannot read holds no term"). The control
+// of each row: before the first version is made unreadable, A keeps lease.
+func TestAnUnreadableOlderApprovedVersionOnlyOrdersTheList(t *testing.T) {
+	const second, third = "The hold of one session on one work unit.", "The hold that one session keeps on one work unit."
+	for _, row := range []struct {
+		name       string
+		movesFirst bool
+	}{
+		{"B moves under the root after A's second approval", false},
+		{"B moves under the root before A's second approval", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+			a := createFormIssue(t, tree.handler, tree.root, "A", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, tree.handler, a.PrimaryArtifactID)
+			b := createFormIssue(t, tree.handler, tree.outside, "B", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, tree.handler, b.PrimaryArtifactID)
+			if row.movesFirst {
+				reparentFormIssue(t, tree.handler, b.Key, tree.root)
+			}
+			approveRevisionThrough(t, tree, tree.handler, a, termLine("lease", leaseDefinition), termLine("lease", second), 2)
+			if !row.movesFirst {
+				reparentFormIssue(t, tree.handler, b.Key, tree.root)
+			}
+			heldByA := specFormTerm{Term: "lease", Definition: second, Document: "spec.md", Version: 2, Issue: a.Key}
+			if listed, count := listedOf(t, tree.handler, a.PrimaryArtifactID, "lease"); count != 1 || listed != heldByA {
+				t.Fatalf("control, before the unreadable version: the list holds lease %d times, as %#v; want once, as %#v", count, listed, heldByA)
+			}
+
+			storeUnreadableVersion(t, tree.database, a.PrimaryArtifactID, 1)
+			want := heldByA
+			if row.movesFirst {
+				want = specFormTerm{Term: "lease", Definition: otherLease, Document: "spec.md", Version: 1, Issue: b.Key}
+			}
+			if listed, count := listedOf(t, tree.handler, a.PrimaryArtifactID, "lease"); count != 1 || listed != want {
+				t.Fatalf("the list holds lease %d times, as %#v; want once, as %#v", count, listed, want)
+			}
+			line := olderUnreadLine("spec.md", 1, a.Key)
+			requireNewTermOpens := func(issue, term string) {
+				t.Helper()
+				c := createFormIssue(t, tree.handler, tree.root, issue, specWithTerms(termLine(term, "A strong wind of one coast.")))
+				opened := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, c.PrimaryArtifactID, nil))
+				if opened.SpecForm == nil || !slices.ContainsFunc(opened.SpecForm.Unread, func(unread specFormUnread) bool { return unread.Line == line }) {
+					t.Errorf("the request of %s opened, and its spec_form = %#v; want unread to name %q", issue, opened.SpecForm, line)
+				}
+			}
+			requireNewTermOpens("C defines gale", "gale")
+			if row.movesFirst {
+				return // B's definition governs lease, so a next version of A that defines it is a second definition.
+			}
+			// The next version of A: the way out of a latest approved version, which changes nothing here.
+			approveRevisionThrough(t, tree, tree.handler, a, termLine("lease", second), termLine("lease", third), 3)
+			requireNewTermOpens("D defines sirocco", "sirocco")
+		})
+	}
+}
+
+// The fail-closed rule, with two approved documents that hold definitions and whose latest
+// approved versions Dispatch cannot read: each refuses a new version of the other that holds a
+// definition. The refusal names the way out, a new version of the named document, and when that
+// version is refused for the same reason, that version first with no definition. That way out
+// clears both: Y's version with no definition opens and is approved, and then X's version with its
+// definition opens.
+func TestTheWayOutOfTwoUnreadableDocumentsIsAVersionWithNoDefinition(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	x := createFormIssue(t, tree.handler, tree.root, "X", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, x.PrimaryArtifactID)
+	y := createFormIssue(t, tree.handler, tree.root, "Y", specWithTerms(termLine("gale", "A strong wind of one coast.")))
+	approveFormDocument(t, tree.handler, y.PrimaryArtifactID)
+	reviseDocument(t, tree.handler, x.PrimaryArtifactID, termLine("lease", leaseDefinition), termLine("lease", otherLease), 2)
+	reviseDocument(t, tree.handler, y.PrimaryArtifactID, "Terms", "Winds", 2)
+	awaitSettled(t, tree.database, x.PrimaryArtifactID, y.PrimaryArtifactID)
+	storeUnreadableVersion(t, tree.database, x.PrimaryArtifactID, 1)
+	storeUnreadableVersion(t, tree.database, y.PrimaryArtifactID, 1)
+
+	refused := requestFormApproval(t, tree.handler, x.PrimaryArtifactID, nil)
+	const wayOut = "Write a new version of that document and request its approval. " +
+		"If Dispatch refuses that request for the same reason, write that version with no definition first"
+	var unreadable []specFormFinding
+	for _, finding := range decodeBody[specFormError](t, refused).Findings {
+		if finding.Kind == specform.KindDocument {
+			unreadable = append(unreadable, finding)
+		}
+	}
+	if refused.Code != http.StatusConflict || len(unreadable) != 1 || unreadable[0].Where != "spec.md version 1 of "+y.Key ||
+		!strings.HasSuffix(unreadable[0].Detail, wayOut) {
+		t.Fatalf("the request of X: status=%d body=%s; want 409 with one unreadable finding of spec.md version 1 of %s that ends %q",
+			refused.Code, refused.Body.String(), y.Key, wayOut)
+	}
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, y.PrimaryArtifactID, nil))
+	approveFormDocument(t, tree.handler, y.PrimaryArtifactID)
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, x.PrimaryArtifactID, nil))
+}
+
+// The candidate inputs of the second reader of this rule that no row above pins, each as its spec,
+// through the approval request route, with session in the list from the root's terms.md. A second
+// definition is refused wherever a person reads it as one: in a block quote or a callout under no
+// heading Terms as a term line, under a heading Terms of a footnote, and under another case or a
+// link of the name. A name in code font or with a Cyrillic letter breaks term-name. A table, and
+// code that shows a heading Terms, hold no definition. The honest controls: a first definition
+// under a heading Terms in bold opens, and a definition whose footnote gives a source has two
+// sentences, with a finding that names the footnote.
+func TestEachCandidateInputOfTheSecondReaderOnTheRoute(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", "One conversation of an agent.")))
+	const footnoted = "the definition has 2 sentences with its footnote, and a definition has one. " +
+		"A footnote is part of the definition that refers to it. " +
+		"Put what the footnote says in the one sentence of the definition, or remove the footnote"
+	for _, row := range []struct {
+		name, markdown string
+		want           []string // each finding as "<kind> <node> <rule>"; none: the request opens
+		definitions    int      // the definitions that an opened request read
+		detail         string   // the detail of the one finding, when set
+	}{
+		{name: "a quote", markdown: "# Spec\n\n> - **session**: One saved process.\n",
+			want: []string{"term_line session term-second-definition"}},
+		{name: "a callout", markdown: "# Spec\n\n:::callout{kind=\"note\"}\n- **session**: One saved process.\n:::\n",
+			want: []string{"term_line session term-second-definition"}},
+		{name: "a table cell", markdown: "# Spec\n\n| Term | Meaning |\n| --- | --- |\n| **session** | One saved process. |\n"},
+		{name: "a code example", markdown: "# Spec\n\n~~~markdown\n## Terms\n\n- **session**: One saved process.\n~~~\n"},
+		{name: "a referenced footnote", markdown: "# Spec\n\nA note.[^meaning]\n\n[^meaning]:\n    ## Terms\n\n    - **session**: One saved process.\n",
+			want: []string{"definition session term-second-definition"}},
+		{name: "another case", markdown: "# Spec\n\n## Terms\n\n- **Session**: One saved process.\n",
+			want: []string{"definition Session term-second-definition"}},
+		{name: "a linked name", markdown: "# Spec\n\n## Terms\n\n- **[session](https://example.com/session)**: One saved process.\n",
+			want: []string{"definition session term-second-definition"}},
+		{name: "a code-font name", markdown: "# Spec\n\n## Terms\n\n- **`session`**: One saved process.\n",
+			want: []string{"definition `session` term-name"}},
+		{name: "a visually similar name", markdown: "# Spec\n\n## Terms\n\n- **sessi\u043en**: One saved process.\n",
+			want: []string{"definition sessi\u043en term-name"}},
+		{name: "the honest control: a first definition under a bold heading Terms", markdown: "# Spec\n\n## **Terms**\n\n- **zephyr**: One warm wind.\n",
+			definitions: 1},
+		{name: "the honest control: a footnote that gives a source", markdown: "# Spec\n\n## Terms\n\n- **zephyr**: One warm wind.[^source]\n\n[^source]: See [source](https://example.com/source).\n",
+			want: []string{"definition zephyr definition-sentences"}, detail: footnoted},
+		{name: "the acceptance tester's footnote", markdown: "# Spec\n\n## Terms\n\n- **mooring**: The rope that ties one boat to a dock.[^1]\n\n[^1]: The harbour manual of 2024 gives this meaning.\n",
+			want: []string{"definition mooring definition-sentences"}, detail: footnoted},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			issue := createFormIssue(t, tree.handler, tree.root, row.name, row.markdown)
+			response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+			if len(row.want) == 0 {
+				read := requireFormRequestOpened(t, response)
+				if read.SpecForm == nil || read.SpecForm.Texts[specform.KindDefinition] != row.definitions {
+					t.Fatalf("the request opened with spec_form %#v; want %d definitions read", read.SpecForm, row.definitions)
+				}
+				return
+			}
+			if response.Code != http.StatusConflict {
+				t.Fatalf("request: status=%d body=%s, want 409 SPEC_FORM naming %q", response.Code, response.Body.String(), row.want)
+			}
+			findings := decodeBody[specFormError](t, response).Findings
+			var got []string
+			for _, finding := range findings {
+				got = append(got, fmt.Sprintf("%s %s %s", finding.Kind, finding.Node, finding.Rule))
+			}
+			if !slices.Equal(got, row.want) {
+				t.Fatalf("the refusal names %q, want %q: %s", got, row.want, response.Body.String())
+			}
+			if row.detail != "" && findings[0].Detail != row.detail {
+				t.Errorf("the detail is %q, want %q", findings[0].Detail, row.detail)
+			}
+		})
+	}
 }

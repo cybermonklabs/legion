@@ -271,12 +271,12 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	if strong.words != "" && list == "bullet_list" {
 		if match := definitionTail.FindStringSubmatch(after.words); match != nil {
 			if words := strings.TrimSpace(match[1]); words != "" {
-				definition, held := e.text(reading{words: words, notes: append(slices.Clip(strong.notes), after.notes...), held: after.held})
+				definition, held, footnotes := e.noted(reading{words: words, notes: append(slices.Clip(strong.notes), after.notes...), held: after.held})
 				if e.termsLevel == 0 {
 					e.termLineElsewhere(strong.words, definition, held)
 					return
 				}
-				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where, NameHeld: strong.held, DefinitionHeld: held})
+				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where, NameHeld: strong.held, DefinitionHeld: held, Footnotes: footnotes})
 				e.out.Counts[KindDefinition]++
 				return
 			}
@@ -410,11 +410,18 @@ func joined(sep string, readings []reading) reading {
 // footnote that they refer to, once and in the order of the first reference, also a footnote
 // that a footnote refers to, and everything they hold.
 func (e *extraction) text(readings ...reading) (string, Held) {
+	body, held, _ := e.noted(readings...)
+	return body, held
+}
+
+// noted is text, and how many footnotes gave words to the body.
+func (e *extraction) noted(readings ...reading) (string, Held, int) {
 	out := joined("\n", readings)
 	var lines []string
 	if out.words != "" {
 		lines = append(lines, out.words)
 	}
+	footnotes := 0
 	seen := map[string]bool{}
 	// The list grows while it is read: a footnote can refer to another one.
 	for index := 0; index < len(out.notes); index++ {
@@ -426,11 +433,12 @@ func (e *extraction) text(readings ...reading) (string, Held) {
 		note := e.note(key)
 		if note.words != "" {
 			lines = append(lines, note.words)
+			footnotes++
 		}
 		out.notes = append(out.notes, note.notes...)
 		out.held = out.held.with(note.held)
 	}
-	return strings.Join(lines, "\n"), out.held
+	return strings.Join(lines, "\n"), out.held, footnotes
 }
 
 // note is the reading of the footnote whose key is key: the words of each paragraph and heading

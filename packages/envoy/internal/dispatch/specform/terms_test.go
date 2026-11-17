@@ -63,6 +63,48 @@ func TestDefinitionOfTwoSentencesIsRefused(t *testing.T) {
 	}
 }
 
+// R50: a term "has one definition of one sentence". A footnote that a definition refers to is
+// part of it, as of every text, so its sentences count, and the finding names the footnote and the
+// way out: what the footnote says goes into the one sentence, or the footnote goes. The rows are
+// the acceptance tester's and the second reader's, each a definition of one sentence with a source
+// in a footnote, and one with two footnotes. The control: a definition of two sentences with no
+// footnote gets the detail that counts its sentences alone.
+func TestTheFindingOfADefinitionWithAFootnoteNamesTheFootnote(t *testing.T) {
+	const oneNote = "the definition has 2 sentences with its footnote, and a definition has one. " +
+		"A footnote is part of the definition that refers to it. " +
+		"Put what the footnote says in the one sentence of the definition, or remove the footnote"
+	for _, row := range []struct{ name, markdown, want string }{
+		{"a footnote that gives a source",
+			"## Terms\n\n- **mooring**: The rope that ties one boat to a dock.[^1]\n\n[^1]: The harbour manual of 2024 gives this meaning.\n",
+			oneNote},
+		{"a footnote that links to a source",
+			"## Terms\n\n- **zephyr**: One warm wind.[^source]\n\n[^source]: See [source](https://example.com/source).\n",
+			oneNote},
+		{"two footnotes",
+			"## Terms\n\n- **lease**: One record of a claim.[^a][^b]\n\n[^a]: The design note names it.\n\n[^b]: The manual names it too.\n",
+			"the definition has 3 sentences with its footnotes, and a definition has one. " +
+				"A footnote is part of the definition that refers to it. " +
+				"Put what the footnotes say in the one sentence of the definition, or remove the footnotes"},
+		{"the control: two sentences and no footnote",
+			"## Terms\n\n- **heartbeat**: The registration that a session sends again. It comes every 90 seconds.\n",
+			"the definition has 2 sentences, and a definition has one"},
+	} {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, row.markdown))
+		if err != nil {
+			t.Fatalf("%s: %v", row.name, err)
+		}
+		var details []string
+		for _, finding := range Check(planted(), Input{Proposed: extracted.Terms}) {
+			if finding.Rule == ruleDefinitionSentences {
+				details = append(details, finding.Detail)
+			}
+		}
+		if len(details) != 1 || details[0] != row.want {
+			t.Errorf("%s: the details of %s are %q, want only %q", row.name, ruleDefinitionSentences, details, row.want)
+		}
+	}
+}
+
 // A definition with no word is no sentence: R50 says a term has "one definition of one sentence",
 // and "42", "...", "—" and "12:30." hold no word with a letter. The control: a definition of one
 // sentence breaks no rule.

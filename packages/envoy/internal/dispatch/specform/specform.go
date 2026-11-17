@@ -85,11 +85,13 @@ func (held Held) withTitle(title string) Held {
 	return held
 }
 
-// Term is a term and its definition, with what each holds beside its words. Where of a listed
-// term is "<document> version <n> of <issue key>" or "<file>:<line>".
+// Term is a term and its definition, with what each holds beside its words, and how many
+// footnotes gave words to the definition: a footnote is part of the definition that refers to it.
+// Where of a listed term is "<document> version <n> of <issue key>" or "<file>:<line>".
 type Term struct {
 	Name, Definition, Where  string
 	NameHeld, DefinitionHeld Held
+	Footnotes                int
 }
 
 // Context is what Check knows of the system: which project keys exist, the email of each person

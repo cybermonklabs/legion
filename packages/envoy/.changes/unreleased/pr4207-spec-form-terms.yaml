@@ -20,9 +20,14 @@ body: |-
   no letter and no digit, breaks the form. A person's approval and a move into a root take the lock
   of the root's list. So two writes at one time cannot both add a definition of one term. The
   finding names the term and the document that defines it. A definition with no sentence, or with
-  more than one, also breaks the form, and a sentence holds a word with a letter. A line under a
-  heading Terms that is no term line breaks it too. So does a heading whose text reads as Terms in
-  another form, such as "## TERMS" or "## Terms:". Emphasis is no part of that text, so
+  more than one, also breaks the form, and a sentence holds a word with a letter. A footnote of a
+  definition is part of it, and the finding of such a definition names the footnote. When Dispatch
+  cannot read the latest approved version of a document under the root, a request that holds a
+  definition is refused, naming that document. An older approved version that Dispatch cannot read
+  only orders the list, as a version with no term, so it refuses nothing. Each answer names both
+  kinds in unread. A line under a heading Terms that is no term line breaks it too. So does a
+  heading whose text reads as Terms in another form, such as "## TERMS" or "## Terms:". Emphasis
+  is no part of that text, so
   "## **Terms**" is the heading Terms. A line of the term-line form in another place is no
   definition, and it adds no term. That holds also in a block quote, a list item, a callout, a
   decision block or a footnote. A line in code or in a table cell is no such line. It breaks the form when a

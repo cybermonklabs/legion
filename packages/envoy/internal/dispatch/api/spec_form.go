@@ -169,11 +169,14 @@ type specFormTerm struct {
 	Issue      string `json:"issue"`
 }
 
-// specFormUnread is an approved document under the root that a judgment did not compare with the
-// documents it judged, because Dispatch cannot read that approved version
-// (specform.UnreadableError). It refuses nothing of a document with no definition, and line says
-// so; a document that holds a definition is refused for it (specform.UnreadListFinding), since no
-// rule can compare the definition with its terms. cause is why the parser refuses it.
+// specFormUnread is an approved version of a document under the root that a judgment did not
+// compare with the documents it judged, because Dispatch cannot read it (specform.UnreadableError).
+// cause is why the parser refuses it. The latest approved version of a document is a source of the
+// list: it refuses nothing of a document with no definition, and line says so, and a document that
+// holds a definition is refused for it (specform.UnreadListFinding), since no rule can compare the
+// definition with its terms. An older approved version (orders) is no source of the list: it only
+// orders the definitions of its document, as a version that holds no term (definitionJoins), so it
+// refuses nothing, and line says that (specform.UnreadOlderLine).
 type specFormUnread struct {
 	Document   string `json:"document"`
 	ArtifactID string `json:"artifact_id"`
@@ -181,6 +184,7 @@ type specFormUnread struct {
 	Version    int    `json:"version"`
 	Line       string `json:"line"`
 	cause      string
+	orders     bool
 }
 
 // specFormSummary is what an approval request's answer says of the form of the documents it
@@ -577,9 +581,13 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 		})
 	}
 	// R50 is a gate: a definition that no rule can compare with the terms of an approved document
-	// that Dispatch cannot read is refused, naming that document (specform.UnreadListFinding).
+	// that Dispatch cannot read is refused, naming that document (specform.UnreadListFinding). An
+	// older approved version is no source of the list, so it refuses nothing.
 	if len(extracted.Terms) > 0 {
 		for _, unread := range document.unread {
+			if unread.orders {
+				continue
+			}
 			document.findings = append(document.findings, specFormFinding{
 				Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version,
 				Finding: specform.UnreadListFinding(unread.Document, unread.Version, unread.Issue, unread.cause),
@@ -793,7 +801,7 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 		}
 		extracted, err := specform.ExtractDocument(artifact.Name, review.Version, markdown)
 		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-			approved.unread = append(approved.unread, unreadApproved(artifact, review.Version, err))
+			approved.unread = append(approved.unread, unreadApproved(artifact, review.Version, err, false))
 			continue
 		}
 		if err != nil {
@@ -868,19 +876,24 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 
 // unreadApproved is an approved version of artifact that the parser refuses (err, a
 // specform.UnreadableError): it gives nothing to compare, so a judgment goes on without its texts,
-// logs it once, and names it to the writer (specFormUnread). A judgment of a document that holds
-// a definition refuses it (specform.UnreadListFinding).
-func unreadApproved(artifact model.Artifact, version int, err error) specFormUnread {
+// logs it once, and names it to the writer (specFormUnread). older says that it is an older
+// approved version, which only orders the definitions of artifact; a judgment of a document that
+// holds a definition refuses the latest one (specform.UnreadListFinding).
+func unreadApproved(artifact model.Artifact, version int, err error, older bool) specFormUnread {
 	issue := deref(artifact.IssueKey)
 	slog.Warn("dispatch: the form of The Spec compares no text with an approved version that it cannot read",
-		"artifact", artifact.ID, "document", artifact.Name, "issue", issue, "version", version, "error", err)
+		"artifact", artifact.ID, "document", artifact.Name, "issue", issue, "version", version, "older", older, "error", err)
 	cause := err.Error()
 	if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
 		cause = unreadable.Err.Error()
 	}
+	line := specform.UnreadLine(artifact.Name, version, issue)
+	if older {
+		line = specform.UnreadOlderLine(artifact.Name, version, issue)
+	}
 	return specFormUnread{
 		Document: artifact.Name, ArtifactID: artifact.ID, Issue: issue, Version: version,
-		Line: specform.UnreadLine(artifact.Name, version, issue), cause: cause,
+		Line: line, cause: cause, orders: older,
 	}
 }
 
@@ -960,7 +973,7 @@ const definitionJoinsQuery = `
 // approved version from which each later approved version holds its term, or at the arrival of its
 // issue under root (parentHistory.arrival), when that came later. An older approved version that
 // the parser refuses holds no term, so a definition joins at a version that Dispatch can read, and
-// the version is named in unread.
+// the version is named in unread as one that only orders the list (specFormUnread.orders).
 func definitionJoins(ctx context.Context, q queryer, root string, roots []string, documents []approvedSpecDocument, contested map[int][]string) (map[definitionOf]joinOrder, []specFormUnread, error) {
 	joins := map[definitionOf]joinOrder{}
 	if len(contested) == 0 {
@@ -1008,7 +1021,7 @@ func definitionJoins(ctx context.Context, q queryer, root string, roots []string
 		if markdown != nil {
 			extracted, err := specform.ExtractDocument(artifacts[id].Name, one.version, *markdown)
 			if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-				unread = append(unread, unreadApproved(artifacts[id], one.version, err))
+				unread = append(unread, unreadApproved(artifacts[id], one.version, err, true))
 				return nil
 			}
 			if err != nil {
