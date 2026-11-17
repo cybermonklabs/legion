@@ -119,7 +119,7 @@ func TestAdvancesRelation(t *testing.T) {
 	if !ended.At.After(stated.At) && !ended.At.Equal(stated.At) {
 		t.Fatalf("the retraction's moment %v is before the statement's %v", ended.At, stated.At)
 	}
-	if stated.Who != (model.Actor{Kind: "user", ID: "bob"}) || ended.Who != (model.Actor{Kind: "user", ID: "bob"}) {
+	if stated.Who != (model.Actor{Kind: "user", ID: "bob", Proven: true}) || ended.Who != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
 		t.Fatalf("the acts were written by %+v and %+v, want the person who wrote them", stated.Who, ended.Who)
 	}
 

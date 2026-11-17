@@ -228,13 +228,13 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
-	for _, kind := range policy.Kinds {
-		if m.Minters[kind] == nil {
-			t.Errorf("request Machine has no minter for kind %q, which the policy serves", kind)
+	for _, secretType := range policy.Types {
+		if m.Minters[secretType] == nil {
+			t.Errorf("request Machine has no minter for type %q, which the policy serves", secretType)
 		}
 	}
-	if len(m.Minters) != len(policy.Kinds) {
-		t.Errorf("request Machine has %d minters for %d kinds: %v", len(m.Minters), len(policy.Kinds), m.Minters)
+	if len(m.Minters) != len(policy.Types) {
+		t.Errorf("request Machine has %d minters for %d types: %v", len(m.Minters), len(policy.Types), m.Minters)
 	}
 }
 
@@ -1048,8 +1048,8 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
 		"an entry the airlock refuses": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": []}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "no host"},
+			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "judge": 1800}]}`),
+			want: []string{"secrets[0]", "DEEL_API_KEY", "1800", "900"},
 		},
 		// An entry whose name is not of the policy's form matches no release, so the file
 		// would hold back nothing of the secret a reviewer read it as covering.

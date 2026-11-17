@@ -259,7 +259,11 @@ jobs:
   # each one's `if:` says why).
   changes:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    runs-on: ubuntu-24.04
+    # changes, pr-title, cancel-started and ci-ok run on arm64: each runs JavaScript actions and
+    # shell scripts over the image's own gh, jq, git and coreutils, and builds or fetches no binary,
+    # so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
+    # about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
       # Each output names the step its filter is declared in. There are three of them because
@@ -2763,6 +2767,12 @@ jobs:
               # main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
               # matches no file (its rule 9).
               - '.dispatch/**'
+              # The step "Check that no CI file of this repository compares the spec files" reads
+              # every file under these four.
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'scripts/**'
             # The text checks of the three Go modules, the Dispatch API's eight static source
             # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
             # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
@@ -5045,7 +5055,8 @@ jobs:
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
   # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module).
+  # binary of every package of the envoy module). It also runs the guard that no CI file of this
+  # repository compares the spec files with the approved spec.
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5561,7 +5572,8 @@ jobs:
   # two events this job runs on rather than excluding the draft alone.
   pr-title:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # What the two scripts below read through gh, and nothing else: the pull request's commits
     # from the compare route (`contents: read`), the pull request itself, its reviews and its
@@ -5653,7 +5665,8 @@ jobs:
   # the run it runs in.
   cancel-started:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       actions: write
@@ -5775,7 +5788,8 @@ jobs:
       - worker-image
       - browser-image
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       checks: write

@@ -493,7 +493,8 @@ func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
 // never UNKNOWN_SECRET, which an agent takes as final; with no request, no record and no judge
 // call, so no approver is asked to approve a secret that holds nothing. Once the value lands, the
 // same name is served: the next request goes to its owner for approval, as any human-tier
-// secret's does, and the grant that approval mints releases the value.
+// secret's does, and is never handed to the model judge, since no rules entry gives the key a
+// judge; the grant that approval mints releases the value.
 func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
@@ -521,8 +522,8 @@ func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T
 	filled.CreatedAt = &created
 	fixtureStore(m).Put(filled)
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
-	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver || len(judged) != 1 {
-		t.Fatalf("Create(TYPED_KEY) once its value landed = %+v, %v, %d judge calls; want pending on %s's approval, judged once", req, err, len(judged), approver)
+	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver || len(judged) != 0 {
+		t.Fatalf("Create(TYPED_KEY) once its value landed = %+v, %v, %d judge calls; want pending on %s's approval, never handed to the judge", req, err, len(judged), approver)
 	}
 	decision, err := m.ApplyDecision(ctx, *req.RecordID, true, approver)
 	if err != nil || decision.GrantID == "" {

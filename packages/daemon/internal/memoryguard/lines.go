@@ -40,6 +40,36 @@ const (
 	reasonNothingToEnd = "nothing to end"
 )
 
+// The guest watch's lines (Guest). Each starts with guestPrefix and carries `key=value` fields as
+// the guard's do, each figure the watch cannot read written `-`; a process the guest kernel killed
+// has the guard's own endedLine, so a reader finds a process stopped for memory by one line,
+// whichever stopped it. The start line names the cgroup's version, its directory, v2's
+// memory.oom.group and the starting score; a watch with no readable kill counter has its
+// guestKillsUnnamedLine once, and one with no readable /proc its guestOffLine once. A watch that
+// reads the kill counter and does not wake on the file-modified event of memory.events (Guest's
+// wake) has its guestWakeOffLine once, with the reason: its cgroup is v1, whose memory.oom_control
+// raises no such event, or the watch of the event could not start, or it ended, with the error
+// that ended it; the watch then reads the counter at its scans alone. The kills of a burst of the
+// counter's rises that no process was named for by the wait's end, since none showed the kernel's
+// kill, or more showed it at one pass than kills were pending, or each that showed it was of a
+// role whose session had ended (Guest's sessionEnded), and every kill of a rise where the watch
+// reads no /proc, have one guestKilledUnnamedLine, which names no process: the count of those
+// kills, the counter's total, and the pod's memory at the burst's first rise, the fields an
+// endedLine gives it (reading, counter, shmem and limit). A process whose score write failed has
+// its guestScoreFailedLine once, with the score the write would have set.
+const (
+	guestPrefix            = "launcher: guest memory: "
+	guestStartLine         = guestPrefix + "start cgroup=%s dir=%s oom_group=%s score=%s"
+	guestOffLine           = guestPrefix + "off reason=%s"
+	guestKillsUnnamedLine  = guestPrefix + "kills unnamed reason=%v"
+	guestWakeOffLine       = guestPrefix + "wake off reason=%s"
+	guestKilledUnnamedLine = guestPrefix + "killed unnamed count=%d oom_kill=%d reading=%d counter=%d shmem=%d limit=%d"
+	guestScoreFailedLine   = guestPrefix + "score failed pid=%d start_time=%d score=%d reason=%v"
+	guestHourLine          = guestPrefix + "hour start=%s end=%s current=%s current_high=%s current_high_at=%s" +
+		" working_set=%s working_set_high=%s working_set_high_at=%s anon=%s file=%s inactive_file=%s shmem=%s limit=%s" +
+		" oom_kills=%s unnamed=%s raised=%s unraised=%s"
+)
+
 // ellipsis marks where escaped cut its text.
 const ellipsis = "…"
 

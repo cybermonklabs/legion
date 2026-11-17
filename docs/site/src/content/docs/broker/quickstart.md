@@ -104,12 +104,11 @@ and two buttons, **Approve** and **Deny**. The broker records the decision under
 approver signed in to the broker as; [approving a request](/legion/broker/guides/approve-a-request/)
 covers the page in full.
 
-Some requests never reach that page. Where the deployment configures a model judge, the broker
-that wrote a request pending puts it to a model in the background, as long as it asks for one
-secret, for 15 minutes or less that the secret's airlock rules let the judge decide, with a
-reason naming a Dispatch issue that is not done. The judge approves such a request or leaves it
-here for the approver, and it never denies. A judged approval takes the request out of every
-Inbox, and the **State** line names `judge:<model id>` as the decider, as
+Some requests never reach that page. Where the deployment configures a model judge, a request for
+keys the airlock rules let the judge decide goes to a model in the background instead, and
+nobody sees it while the judge decides. The judge grants it or refuses it for good, each key against
+its owner's guidance; a request it cannot decide comes to this page once, as any other does. A
+judged grant's **State** line names `judge:<model id>` as the decider, as
 `agent-secrets status <request id>` then does under `decided_by`
 ([Concepts](/legion/broker/concepts/#the-model-judge)). The local stack this page
 uses runs no judge; the airlock stack does ([let the judge decide a

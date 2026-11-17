@@ -54,7 +54,7 @@ func (gcpAirlockGrant) AirlockConnection(_ context.Context, placeholder string) 
 	return requests.AirlockConnection{
 		GrantID: gcpAirlockGrantID,
 		Names: map[string]requests.AirlockGrantName{
-			gcpAirlockName: {Kind: "google-login", Slots: map[string]string{requests.SlotValue: gcpAirlockPlaceholder}},
+			gcpAirlockName: {Type: "google-login", Slots: map[string]string{requests.SlotValue: gcpAirlockPlaceholder}},
 		},
 	}, nil
 }
@@ -64,7 +64,7 @@ func (gcpAirlockGrant) AirlockValues(_ context.Context, grantID string) (map[str
 		return nil, "", requests.ErrGrantNotLive
 	}
 	return map[string]requests.AirlockSecret{
-		gcpAirlockName: {Kind: "google-login", Slots: map[string]string{requests.SlotValue: gcpAirlockToken}, Expires: time.Now().Add(time.Hour)},
+		gcpAirlockName: {Type: "google-login", Slots: map[string]string{requests.SlotValue: gcpAirlockToken}, Expires: time.Now().Add(time.Hour)},
 	}, gcpAirlockPolicy, nil
 }
 

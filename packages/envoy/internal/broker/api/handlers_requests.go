@@ -78,8 +78,13 @@ type createRequestResponse struct {
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
 	// where a person signed in to the broker decides it; absent when the policy decided it at once,
-	// and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// on a broker with BROKER_SIGNIN=off, which serves no page, and while the model judge holds
+	// it, which judge_deciding says instead.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// True while the model judge holds the request: its keys are ones the judge decides, and no
+	// person is asked unless the judge cannot decide it, when the request comes back with its
+	// approve_url. Absent for every other request.
+	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
 // createRequest requests secrets for the proof-verified caller, never for an enrollment named in
@@ -156,7 +161,8 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		LifetimeSeconds: req.LifetimeSeconds,
 		Coalesced:       req.Coalesced,
 		Detail:          req.Detail,
-		ApproveURL:      s.pendingApproveURL(req.State, req.RecordID),
+		ApproveURL:      s.pendingApproveURL(req),
+		JudgeDeciding:   req.JudgeDeciding,
 	})
 }
 
@@ -202,8 +208,12 @@ type requestStatusResponse struct {
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
 	// where a person signed in to the broker decides it; absent once it is no longer pending, when
-	// the policy decided it at once, and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// the policy decided it at once, on a broker with BROKER_SIGNIN=off, which serves no page, and
+	// while the model judge holds it.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// True while the model judge holds the request, as POST /v1/requests answers it; absent for
+	// every other request.
+	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
 // grantValuesBody is POST /v1/grants/{id}/values's optional body: no body at all, or one with no
@@ -431,7 +441,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	}
 	resp := requestStatusResponse{
 		State: req.State, GrantID: req.GrantID, RecordID: req.RecordID, Approver: req.Approver, LifetimeSeconds: req.LifetimeSeconds,
-		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req.State, req.RecordID),
+		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req), JudgeDeciding: req.JudgeDeciding,
 	}
 	if req.DecidedBy != nil && req.DecidedAt != nil {
 		resp.Decision = &requestDecision{By: *req.DecidedBy, At: *req.DecidedAt}
@@ -527,7 +537,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
 	case errors.Is(err, requests.ErrMintFailed):
-		// The kind's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
+		// The type's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
 		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
 		// upstream that could not be asked. Its message says why and never holds the stored value.
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())
