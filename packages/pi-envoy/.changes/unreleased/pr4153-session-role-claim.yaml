@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  A session whose launch names an Envoy role in `ENVOY_SESSION_ROLE` (which agent-infra's
+  sessions workload sets once t-e-32 renames its `RoleEnv`, `AGENT_SESSION_ROLE` today) claims
+  that role for itself, under its own credential, at its first registration and at every
+  registration a pass makes after it, so a session pod no longer needs a claimer of its own that
+  reads the listener's session list under the shared token. The claim is outright,
+  last-claim-wins: the launch named this session the role's holder, so a role that an evicted
+  pod's session still holds comes back to the live session at its next registration. The claim
+  writes its transcript record once; a later claim the newest record already names writes none.
+  A move the model makes with `envoy_role_set` is a record of its own, which no pass undoes. The
+  extension takes the role into a slot every extension instance of the process reads, and leaves
+  the variable set to the empty string, which names no role and lies over the value the process
+  started with in every environment built from `Bun.env`, a PTY's included: an `omp` an agent
+  starts inside the pod claims none of the pod's roles. Only a `Bun.spawn` that names no `env`
+  still hands a child the value. Without the variable nothing changes.
+time: 2026-11-16T04:10:58Z
+custom:
+    Issue: INFRA-840

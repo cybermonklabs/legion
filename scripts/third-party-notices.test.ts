@@ -95,6 +95,20 @@ test("reads the deprecated `{ type }` license object as a declared license", asy
   expect(await thirdPartyNotices([input], root)).toContain("License: ISC");
 });
 
+test("lists the typeface the Dispatch web app ships, with the SIL Open Font License's text", async () => {
+  // A file of this repository that is someone else's work counts by the manifest and the licence
+  // beside it: Vite copies the font into the web build as an asset of its stylesheet, and the
+  // build's THIRD_PARTY_NOTICES.txt is this function's text over the build's inputs.
+  const notices = await thirdPartyNotices(
+    ["packages/dispatch/web/src/fonts/inter/InterVariable-subset.woff2"],
+    join(import.meta.dir, "..")
+  );
+  expect(notices).toContain("Inter@4.1\nLicense: OFL-1.1\nSource: https://github.com/rsms/inter");
+  expect(notices).toContain("--- LICENSE.txt ---");
+  expect(notices).toContain("Copyright (c) 2016 The Inter Project Authors");
+  expect(notices).toContain("SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007");
+});
+
 test("the command lists every package any of its metafiles names, one bundle's alone included", async () => {
   // A package that ships two bundles (an extension and a CLI) passes one metafile per build: a
   // package only the second bundle inlines must reach the notices too.
