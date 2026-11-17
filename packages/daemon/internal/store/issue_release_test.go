@@ -774,7 +774,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			// records its own row as the lane does (outbox.recordPodRelease), because a resume
 			// is recorded against the release it ends and a wake reads the newest one.
 			recordRelease(t, st, at.Add(-2*time.Hour))
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, claim.RoleArchitect,
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 				pods.WakeDelivery, at.Add(-time.Hour), 0); err != nil || !taken {
 				t.Fatalf("take the wake before the mark = %t, %v; want it taken", taken, err)
 			}
@@ -787,7 +787,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
-				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, claim.RoleArchitect,
+				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 					pods.WakeDelivery, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the mark = %t, %v; want it taken", taken, err)
 				}

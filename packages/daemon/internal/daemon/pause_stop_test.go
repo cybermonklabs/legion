@@ -314,13 +314,16 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 // running again (supervise's putStops): the resume let its held launch out, say. The stop is
 // recorded with the claim, and nothing a stopped role is given: no held wake and no start row for
 // the launch it was owed, which is running, no backstop for the open phase's worker, no pod hold,
-// and the role's open resume left open, since it is the wake that launch is answering.
+// and the role's open resume left open, since it is the wake that launch is answering. That wake
+// is taken before the pause, so it is no wake of the pause: a wake taken while the project is
+// paused is the open pause's (store.PodRecords.WakePause).
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
-	held := r.pauseLegion()
-	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, claim.RoleTester, pods.WakeChecks, time.Now(), 0); err != nil || !taken {
+	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester), claim.RoleTester,
+		pods.WakeChecks, time.Now(), 0); err != nil || !taken {
 		t.Fatalf("take the tester's wake = %t, %v", taken, err)
 	}
+	held := r.pauseLegion()
 
 	r.mustStop(r.claim(claim.RoleImplementer, supervise.StateLaunching), supervise.PauseStop{Pause: held.ID})
 	r.mustStop(r.claim(claim.RoleTester, supervise.StateLaunching), supervise.PauseStop{Pause: held.ID, LaunchOwed: true})

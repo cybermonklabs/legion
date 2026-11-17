@@ -448,14 +448,16 @@ func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
 	}
 }
 
-// A role message the pause held is published only once the resume lets its row run, and the
-// Envoy listener reports it to the daemon then, after the pause has ended. The listener's wake of
-// the role the pause stopped finds no open pause, and is that pause's held wake all the same: the
-// role's newest stop is the pause's and newer than the issue's newest release, which is what kept
-// the role down (workflow's wakeReleased, store.StoppingPauseTx). So its resume names the pause
-// and pairs with no release, as the wake of a delivery the pause held does
-// (TestANoticeThePauseHeldWakesItsArchitectWithThatPause). Before the fix the wake read the open
-// pause alone, found none, and was recorded as the wake of the issue's latest release.
+// A role the pause stopped owing nothing stays stopped after the resume until its next wake. A role
+// message queued for it after the resume carries no pause's mark, so the outbox publishes it and
+// wakes nothing itself, and the Envoy listener reports it to the daemon then, after the pause has
+// ended. The listener's wake of the role finds no open pause, and is that pause's held wake all the
+// same: the role's newest stop is the pause's and newer than the issue's newest release and the
+// role's last ready, which is what kept the role down (store.PodRecords.WakePause,
+// store.StoppingPauseTx). So its resume names the pause and pairs with no release, as the wake of a
+// delivery the pause held does (TestANoticeThePauseHeldWakesItsArchitectWithThatPause). Before the
+// fix the wake read the open pause alone, found none, and was recorded as the wake of the issue's
+// latest release.
 func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(t *testing.T) {
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
@@ -471,19 +473,15 @@ func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(
 
 	pause := r.pauseProject()
 	r.awaitState(worker, supervise.StateSuspended, "the pause stops the idle implementer")
-	message := r.enqueue(issue, record.RoleMessage{Role: string(worker), Body: "The checks of your head settled."})
-	// The listener takes the message once the row runs, and keeps it for the stopped role.
-	r.envoy.hold(worker)
-	time.Sleep(time.Second)
-	if sent := r.envoy.publishedTo(worker); len(sent) != 0 {
-		t.Fatalf("the role message was published %d times while the project was paused, want it held", len(sent))
-	}
 	r.resumeProject()
-	testwait.Eventually(t, "the held role message to be published after the resume", func() bool {
+	message := r.enqueue(issue, record.RoleMessage{Role: string(worker), Body: "The checks of your head settled."})
+	// The listener takes the message, and keeps it for the stopped role.
+	r.envoy.hold(worker)
+	testwait.Eventually(t, "the role message queued after the resume to be published", func() bool {
 		return len(r.envoy.publishedTo(worker)) == 1 && r.count(`select count(*) from outbox where id = $1`, message) == 0
 	})
 	if c := r.claim(worker); !c.Released() {
-		t.Fatalf("the implementer after the resume is %s by %s, want it still stopped: the pause stopped it owing nothing", c.State, c.SuspendedBy)
+		t.Fatalf("the implementer after the publish is %s by %s, want it still stopped: the pause stopped it owing nothing", c.State, c.SuspendedBy)
 	}
 
 	r.applyFact("listener", "wake-after-resume", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(worker),
@@ -496,6 +494,100 @@ func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(
 	}
 	if held == nil || *held != pause.ID || release != 0 {
 		t.Fatalf("the listener's wake after the resume is marked with pause %v and release %d, want pause %d and no release", held, release, pause.ID)
+	}
+}
+
+// The wake of a role the pause stopped owing nothing is that pause's whichever path takes it
+// (store.PodRecords.WakePause), a delivery's as a listener's: the pause, not a release, kept the
+// role down. A notice queued after the resume carries no pause's mark, and its wake of the stopped
+// architect reads the pause that stopped it, so the resume names that pause and pairs with no
+// release, as the listener's wake of such a role does
+// (TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake). Before the fix the
+// delivery wake read its row's mark alone, found none, and was recorded as the wake of the release
+// from before the pause.
+func TestANoticeQueuedAfterTheResumeWakesAnArchitectThePauseStoppedWithThatPause(t *testing.T) {
+	r := newPauseDaemonRig(t, nil)
+	issue := r.issue(1)
+	architect := r.token(issue, claim.RoleArchitect)
+	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleArchitect, supervise.StateIdle))
+	// A release of the issue's pod from before the pause, which a wake no pause held would pair
+	// with.
+	if _, err := r.pool.Exec(r.ctx, `insert into pod_releases (project, issue, generation, roles, at)
+		values ($1, $2, 1, 'architect', $3)`, r.project, issue, r.clock.Now().UTC().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("record a release of %s's pod: %v", issue, err)
+	}
+	r.boot()
+
+	pause := r.pauseProject()
+	r.awaitState(architect, supervise.StateSuspended, "the pause stops the idle architect")
+	r.resumeProject()
+	if c := r.claim(architect); !c.Released() {
+		t.Fatalf("the architect after the resume is %s by %s, want it still stopped: the pause stopped it owing nothing", c.State, c.SuspendedBy)
+	}
+	notice := r.enqueue(issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"})
+	testwait.Eventually(t, "the notice queued after the resume to wake its architect", func() bool {
+		return r.count(`select count(*) from pod_resumes where issue = $1 and role = 'architect' and kind = $2`, issue, pods.WakeDelivery) == 1
+	})
+	if marked := r.count(`select count(*) from outbox where id = $1 and held_by_pause is not null`, notice); marked != 0 {
+		t.Fatalf("the notice queued after the resume carries a pause's mark, want none: no pause held it")
+	}
+	var held, release int64
+	if err := r.pool.QueryRow(r.ctx, `select coalesce(pause_id, 0), release_id from pod_resumes where issue = $1 and role = 'architect' and kind = $2`,
+		issue, pods.WakeDelivery).Scan(&held, &release); err != nil {
+		t.Fatalf("read the notice's wake: %v", err)
+	}
+	if held != pause.ID || release != 0 {
+		t.Fatalf("the wake of the notice queued after the resume is marked with pause %d and release %d, want pause %d and no release",
+			held, release, pause.ID)
+	}
+}
+
+// A role message the pause held wakes its role, where an idle release had released that role
+// before the pause, with a held wake of that pause (roleMessage, through wakeForDelivery with the
+// row's mark): the pause held the message, and the role comes back for it only after the resume.
+// The pause stopped nothing of that role, so the listener's report of the publish, whose wake has
+// no row's mark to read, would find no pause either. The role's one resume names the pause and
+// pairs with no release, and the listener's report after it takes no second wake. Before the fix
+// the role message woke nothing, and the listener's wake was recorded as the wake of the release
+// from before the pause.
+func TestARoleMessageThePauseHeldWakesARoleReleasedBeforeThePauseWithThatPause(t *testing.T) {
+	r := newPauseDaemonRig(t, nil)
+	issue := r.issue(1)
+	worker := r.token(issue, claim.RoleImplementer)
+	r.seed(r.root(issue, phase.Implementing), r.released(issue, claim.RoleImplementer))
+	// The release that left the implementer released, which a wake no pause held pairs with.
+	if _, err := r.pool.Exec(r.ctx, `insert into pod_releases (project, issue, generation, roles, at)
+		values ($1, $2, 1, 'implementer', $3)`, r.project, issue, r.clock.Now().UTC().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("record a release of %s's pod: %v", issue, err)
+	}
+	r.boot()
+
+	pause := r.pauseProject()
+	message := r.enqueue(issue, record.RoleMessage{Role: string(worker), Body: "The checks of your head settled."})
+	// The listener takes the message once the row runs, and keeps it for the released role.
+	r.envoy.hold(worker)
+	time.Sleep(time.Second)
+	if sent := r.envoy.publishedTo(worker); len(sent) != 0 {
+		t.Fatalf("the role message was published %d times while the project was paused, want it held", len(sent))
+	}
+	r.resumeProject()
+	testwait.Eventually(t, "the held role message to be published after the resume", func() bool {
+		return len(r.envoy.publishedTo(worker)) == 1 && r.count(`select count(*) from outbox where id = $1`, message) == 0
+	})
+	r.applyFact("listener", "wake-after-resume", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(worker),
+		At: r.clock.Now(), Report: "report-after-resume"})
+
+	if wakes := r.count(`select count(*) from pod_resumes where issue = $1 and role = 'implementer'`, issue); wakes != 1 {
+		t.Fatalf("the implementer took %d wakes after the resume, want one", wakes)
+	}
+	var held, release int64
+	if err := r.pool.QueryRow(r.ctx, `select coalesce(pause_id, 0), release_id from pod_resumes where issue = $1 and role = 'implementer'`,
+		issue).Scan(&held, &release); err != nil {
+		t.Fatalf("read the implementer's wake: %v", err)
+	}
+	if held != pause.ID || release != 0 {
+		t.Fatalf("the implementer's wake after the resume is marked with pause %d and release %d, want pause %d and no release",
+			held, release, pause.ID)
 	}
 }
 

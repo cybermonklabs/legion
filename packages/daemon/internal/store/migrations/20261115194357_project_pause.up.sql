@@ -63,14 +63,14 @@
 -- and the columns stay and are read again by the roll forward. Three steps come before the
 -- earlier image runs, in this order (docs/kubernetes.md, "Rolling back the project pause").
 -- First, resume the project while this release still runs: the earlier release has no pause,
--- and it launches every role a pause
--- still holds. Second, resume one role of each pod a pause still holds, until each hold has ended
--- (select issue from project_pause_pod_holds where ended_at is null): the earlier release reads
--- no hold, and it deletes a held pod in which no role is live as a pod no claim owns, with the
--- unpushed work on its disk. Third, with the daemon stopped, run the three statements below. The
--- earlier release decodes a row strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so
--- a row it cannot decode fails and is retried on its backoff for ever, as 20261111041503 says of
--- its notice kind. The rows of the two new notice kinds go:
+-- and it launches every role a pause still holds. Second, resume one role of each pod a pause
+-- still holds, until each hold has ended (select issue from project_pause_pod_holds where
+-- ended_at is null): the earlier release reads no hold, and it deletes a held pod in which no
+-- role is live as a pod no claim owns, with the unpushed work on its disk. Third, with the daemon
+-- stopped, run the three statements below. The earlier release decodes a row strictly
+-- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row it cannot decode fails and is
+-- retried on its backoff for ever, as 20261111041503 says of its notice kind. The rows of the two
+-- new notice kinds go:
 --
 --   delete from outbox where kind = 'controller_notice'
 --     and payload->>'kind' in ('project-paused', 'project-resumed');

@@ -247,8 +247,11 @@ func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause,
 	at := s.now()
 	var held []record.PauseHeldRow
 	req := store.ResumeRequest{Project: s.project, By: by, At: at, MarkHeld: func(ctx context.Context, tx pgx.Tx, pause store.Pause) error {
+		// The rows are read at a moment taken once the transaction holds the pause's row, not at
+		// the resume's moment, which precedes the wait for that lock: a row that falls due during
+		// the wait is held by the pause, and the earlier moment would leave it unmarked.
 		var err error
-		held, err = s.records.MarkPauseHeldRows(ctx, tx, s.project, pause.ID, at)
+		held, err = s.records.MarkPauseHeldRows(ctx, tx, s.project, pause.ID, s.now())
 		return err
 	}}
 	if tell {

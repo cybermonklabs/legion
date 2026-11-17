@@ -680,19 +680,27 @@ func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *te
 
 // Decision 16 of dispatch://INFRA-3759, through the engine: the task of a wake says the pause
 // stopped the session when the role's newest stop is a pause's stop that ended as `stopped` after
-// the issue's newest pod release, and says the release did once a release is recorded after that
-// stop. The same read decides whose wake it is (decision 15): a wake of a role the ended pause
-// stopped last is that pause's held wake, which pairs with no release, and the wake of a role a
-// later release stopped pairs with that release and names no pause.
+// both the issue's newest pod release and the role's last ready, and says the release did once a
+// release is recorded after that stop. The same read decides whose wake it is (decision 15): a
+// wake of a role the ended pause stopped last is that pause's held wake, which pairs with no
+// release, and the wake of a role a later release stopped pairs with that release and names no
+// pause. A role whose agent was ready after the pause's stop was launched since, by the resume:
+// an idle release that stops it suspends it before its teardown records the release, and a wake
+// taken in between is the release's, which names no pause and pairs with the issue's newest
+// release.
 func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name      string
 		releaseAt time.Duration
-		paused    bool
+		// readyAt is when the role's agent was last ready, relative to the wake; 0 for never.
+		readyAt time.Duration
+		paused  bool
 	}{
 		{name: "the pause's stop is newer than the release", releaseAt: -2 * time.Hour, paused: true},
 		{name: "a release is newer than the pause's stop", releaseAt: -10 * time.Minute, paused: false},
+		{name: "the role was ready after the pause's stop, and an idle release stopped it before its teardown",
+			releaseAt: -2 * time.Hour, readyAt: -4 * time.Minute, paused: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newWakeRig(t)
@@ -709,6 +717,12 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 			if _, err := rig.pool.Exec(ctx, `update project_pauses set ended_at = $2, ended_by_kind = 'operator', ended_by_session = ''
 				where id = $1`, pause, wakeAt.Add(-5*time.Minute)); err != nil {
 				t.Fatalf("resume LEGION: %v", err)
+			}
+			if tc.readyAt != 0 {
+				if _, err := rig.pool.Exec(ctx, `update claims set last_ready = $2 where token = $1`,
+					string(wakeToken(t, claim.RoleImplementer)), wakeAt.Add(tc.readyAt)); err != nil {
+					t.Fatalf("record the implementer's ready after the resume: %v", err)
+				}
 			}
 
 			rig.apply("agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-1"})

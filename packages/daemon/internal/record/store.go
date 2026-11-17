@@ -2923,7 +2923,7 @@ var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from ou
 // due; a row a lane leased before the pause runs to its end and is not listed. project is the
 // Dispatch key.
 func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PauseHeldRow, error) {
-	return pauseHeldRows(ctx, tx, project, now, pauseHeldRowsSQL, now, project)
+	return pauseHeldRows(ctx, tx, pauseHeldRowsSQL, project, now)
 }
 
 // MarkPauseHeldRows is PauseHeldRows for the resume of pause, the project's open pause, run in
@@ -2935,17 +2935,18 @@ func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string,
 // until that commit, and its rule holds every such row. A restart while the project is paused
 // changes nothing of it, since the marks are written by the resume alone.
 func (s *Postgres) MarkPauseHeldRows(ctx context.Context, tx pgx.Tx, project string, pause int64, now time.Time) ([]PauseHeldRow, error) {
-	return pauseHeldRows(ctx, tx, project, now, markPauseHeldRowsSQL, now, project, pause)
+	return pauseHeldRows(ctx, tx, markPauseHeldRowsSQL, project, now, pause)
 }
 
-// pauseHeldRows runs statement, PauseHeldRows' or MarkPauseHeldRows', and reads the rows it
-// answers, each with the claim it is for and how long it has waited at now.
-func pauseHeldRows(ctx context.Context, tx pgx.Tx, project string, now time.Time, statement string, args ...any) ([]PauseHeldRow, error) {
+// pauseHeldRows runs statement, PauseHeldRows' or MarkPauseHeldRows', with now as $1, project as
+// $2 and more after them, and reads the rows it answers, each with the claim it is for and how
+// long it has waited at now.
+func pauseHeldRows(ctx context.Context, tx pgx.Tx, statement, project string, now time.Time, more ...any) ([]PauseHeldRow, error) {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
-	rows, err := tx.Query(ctx, statement, args...)
+	rows, err := tx.Query(ctx, statement, append([]any{now, project}, more...)...)
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
