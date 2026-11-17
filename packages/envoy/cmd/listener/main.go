@@ -1820,14 +1820,11 @@ func main() {
 			monitorCtx,
 			logger,
 			func() error {
-				// Each tick asks whether every copied bucket still exists first, so a cache whose
+				// Each tick reads whether every copied bucket still exists first, so a cache whose
 				// bucket is gone is left out of the checks and the rebuild (bucketMissing), and
-				// logs missingBucketLine for the alarm while it stays gone. A read that fails says
-				// nothing and keeps the last finding.
-				// A bucket whose read failed (a grant that lacks it, say) counts as neither.
-				names, _ := readMissingBuckets(client.JS(), listenerCopiedBuckets(ciStore != nil))
-				missing.record(names)
-				logMissingBuckets(logger, names)
+				// logs missingBucketLine for the alarm while it stays gone. A read that fails
+				// keeps that bucket's last result (checkCopiedBuckets).
+				checkCopiedBuckets(logger, client.JS(), listenerCopiedBuckets(ciStore != nil), missing)
 				if err := checkSelfHealth(caches, probeDurable); err != nil {
 					return err
 				}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -41,22 +42,28 @@ const (
 	bucketCheckTimeout       = 10 * time.Second
 )
 
-// missingBuckets is the copied buckets this listener last found missing: the start's wait and the
-// self-health monitor record what each check found, and /healthz and the
-// envoy_kv_buckets_missing gauge read it. A nil one finds nothing missing, as a test's cache list
-// that names no tracker does.
+// missingBuckets is the copied buckets this listener holds missing: the start's wait and the
+// self-health monitor apply each read they make to it (observe), and /healthz and the
+// envoy_kv_buckets_missing gauge read it. A bucket stays in it from a read that found it missing
+// until a read finds it present; a read that failed says nothing of its bucket and changes
+// nothing. A nil one holds nothing missing, as a test's cache list that names no tracker does.
 type missingBuckets struct {
 	mu    sync.Mutex
 	names []string
 }
 
-// record replaces the set with names, those the latest check found missing.
-func (m *missingBuckets) record(names []string) {
-	sorted := slices.Clone(names)
-	slices.Sort(sorted)
+// observe applies reads to the set: each bucket read missing is added, each read present removed,
+// and each whose read failed left as it was.
+func (m *missingBuckets) observe(reads bucketReads) {
 	m.mu.Lock()
-	m.names = sorted
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	for _, bucket := range reads.missing {
+		if !slices.Contains(m.names, bucket) {
+			m.names = append(m.names, bucket)
+		}
+	}
+	m.names = slices.DeleteFunc(m.names, func(bucket string) bool { return slices.Contains(reads.present, bucket) })
+	slices.Sort(m.names)
 }
 
 // list is the buckets the latest check found missing, sorted; nil when none.
@@ -142,24 +149,54 @@ func openExisting[T any](wait func() error, open func() (T, error)) (T, error) {
 	}
 }
 
-// readMissingBuckets asks the server for each bucket's stream and answers those it says it does
-// not hold. A read that fails any other way is returned as the error, after every bucket was
-// asked, and says nothing of that bucket.
-func readMissingBuckets(js nats.JetStreamContext, buckets []string) ([]string, error) {
-	var missing []string
+// bucketReads is one read of each bucket's stream: the buckets the server holds (present), those
+// it says it does not (missing), and those whose read failed, with the error (unread), of which the
+// read says nothing.
+type bucketReads struct {
+	present []string
+	missing []string
+	unread  map[string]error
+}
+
+// err is the failed reads as one error, nil when none failed.
+func (r bucketReads) err() error {
 	var errs []error
+	for _, bucket := range slices.Sorted(maps.Keys(r.unread)) {
+		errs = append(errs, fmt.Errorf("read KV_%s: %w", bucket, r.unread[bucket]))
+	}
+	return errors.Join(errs...)
+}
+
+// readBuckets asks the server for each bucket's stream, within bucketCheckTimeout each.
+func readBuckets(js nats.JetStreamContext, buckets []string) bucketReads {
+	reads := bucketReads{unread: map[string]error{}}
 	for _, bucket := range buckets {
 		ctx, cancel := context.WithTimeout(context.Background(), bucketCheckTimeout)
 		_, err := js.StreamInfo("KV_"+bucket, nats.Context(ctx))
 		cancel()
 		switch {
+		case err == nil:
+			reads.present = append(reads.present, bucket)
 		case errors.Is(err, nats.ErrStreamNotFound):
-			missing = append(missing, bucket)
-		case err != nil:
-			errs = append(errs, fmt.Errorf("read KV_%s: %w", bucket, err))
+			reads.missing = append(reads.missing, bucket)
+		default:
+			reads.unread[bucket] = err
 		}
 	}
-	return missing, errors.Join(errs...)
+	return reads
+}
+
+// checkCopiedBuckets is the self-health monitor's read of the copied buckets, each tick: it reads
+// every bucket, applies the reads to missing, and logs missingBucketLine for every bucket missing
+// holds - one this read could not read included, so the alarm keeps firing until a read finds the
+// bucket present.
+func checkCopiedBuckets(logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) {
+	reads := readBuckets(js, buckets)
+	missing.observe(reads)
+	logMissingBuckets(logger, missing.list())
+	if err := reads.err(); err != nil {
+		logger.Warn("listener could not read whether its KV buckets exist; it keeps what it last read", slog.String("error", err.Error()))
+	}
 }
 
 // logMissingBuckets logs missingBucketLine for each bucket of names.
@@ -171,23 +208,24 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 	}
 }
 
-// awaitCopiedBuckets returns once every bucket of buckets exists, or ctx ends. A start runs it
-// before it opens a store, so a missing bucket holds the start at its gates, which answer every
-// route 503, while /healthz names the bucket (missing) and the log carries missingBucketLine every
-// missingBucketLogInterval. It creates nothing: only the operator's `envoy-infra buckets` does.
+// awaitCopiedBuckets returns once a read finds every bucket of buckets present, or ctx ends. A
+// start runs it before it opens a store, so a missing bucket holds the start at its gates, which
+// answer every route 503, while /healthz names the bucket (missing) and the log carries
+// missingBucketLine every missingBucketLogInterval. It creates nothing: only the operator's
+// `envoy-infra buckets` does.
 func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
-		names, err := readMissingBuckets(js, buckets)
-		missing.record(names)
-		if len(names) == 0 && err == nil {
+		reads := readBuckets(js, buckets)
+		missing.observe(reads)
+		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil
 		}
-		if len(names) > 0 && time.Since(logged) >= missingBucketLogInterval {
-			logMissingBuckets(logger, names)
+		if held := missing.list(); len(held) > 0 && time.Since(logged) >= missingBucketLogInterval {
+			logMissingBuckets(logger, held)
 			logged = time.Now()
 		}
-		if err != nil {
+		if err := reads.err(); err != nil {
 			logger.Warn("listener could not read whether its KV buckets exist; it asks again", slog.String("error", err.Error()))
 		}
 		select {
