@@ -94,10 +94,16 @@ or the Legion plugin's claim, which refuse it. A session the process moves to fr
 hands the role back, and a resume of the named session claims it again. (A `task` subagent's
 instance registers nothing at all, so it never claims a role.) A launch that names the role and
 no session, or an empty one, names no holder, and no session claims it; an empty role names no
-role. The first time a session the process decides for is refused the role, the process says so,
-once: in its log, `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this
-session <id> claims nothing`, and on screen, where the role stays and that `/resume <id>` takes it
-back.
+role. The first time a session the process decides for is refused the role, the process logs one
+line, once for the process: `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">;
+this session <id> claims nothing`. Each refused session also shows the person one notice on
+screen: `envoy: role <role> stays with the pod's session <id>; messages to the role are not
+delivered here. /resume <id> takes it back`.
+
+So a `/new`, a `/fork` or a tree branch in a pod costs the person the role's messages: they are
+not delivered to the new session. The process hands the role back when it leaves the named
+session, so nobody holds it until the named session runs again. `/resume <id>` of the named
+session claims it again, since that session's own record of the claim is acted on.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so

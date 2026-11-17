@@ -21,7 +21,9 @@ body: |-
   claims it again. A launch that names the role and no session, or an empty one, names no holder.
   The first time a session is refused the role, the process logs one line, `envoy:
   ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this session <id> claims nothing`,
-  and tells the person on screen where the role stays and that `/resume <id>` takes it back.
+  and each refused session tells the person once, on screen, that the role stays with the pod's
+  session and that `/resume <id>` takes it back: role messages are not delivered to a `/new`, a
+  fork or a branch.
   Without the variables nothing changes.
 time: 2026-11-17T03:28:50Z
 custom:

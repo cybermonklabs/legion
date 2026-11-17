@@ -11561,7 +11561,7 @@ console.log(JSON.stringify(args));
         "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_named; this session ses_pod_review claims nothing",
       ]);
       expect(review.notices).toEqual([
-        "envoy: role fan-cloud stays with session ses_pod_named, the session this pod named for it, so this session claims nothing; /resume ses_pod_named takes the role back",
+        "envoy: role fan-cloud stays with the pod's session ses_pod_named; messages to the role are not delivered here. /resume ses_pod_named takes it back",
       ]);
       expect(named.notices).toEqual([]);
     } finally {
@@ -11592,8 +11592,11 @@ console.log(JSON.stringify(args));
   // A `/fork` or a tree branch of the named session carries its branch, and with it the record of
   // the role's claim, to an id of its own. The role stays the named session's: the new session
   // claims nothing for it, and the process hands back the hold it kept under the named one.
-  for (const reason of ["fork", "branch"] as const) {
-    test(`a ${reason} of the session ENVOY_SESSION_ROLE_SESSION names claims nothing for the role its branch records`, async () => {
+  for (const [reason, name] of [
+    ["fork", "fork"],
+    ["branch", "tree branch"],
+  ] as const) {
+    test(`a ${name} of the session ENVOY_SESSION_ROLE_SESSION names claims nothing for the role its branch records`, async () => {
       const listener = sessionPodListener();
       const pod = await bootSessionPod(`session-role-${reason}`, "ses_pod_parent", listener, {
         role: "fan-cloud",
@@ -11609,9 +11612,9 @@ console.log(JSON.stringify(args));
 
   // The comparison is made at every pass, with the session open then, not once for the instance:
   // within one process the named session claims, a `/new` it moves to claims nothing and hands
-  // the role back, and a resume of the named session claims it again. The person is told once,
-  // on screen, where the role stays and how to take it back.
-  test("one process claims ENVOY_SESSION_ROLE while the session open is the one ENVOY_SESSION_ROLE_SESSION names, and only then", async () => {
+  // the role back, and a resume of the named session claims it again. The person is told on
+  // screen, once for the session, where the role stays and how to take it back.
+  test("one instance that leaves the named session and comes back claims, hands the role back, and claims again", async () => {
     const listener = sessionPodListener();
     const pod = await bootSessionPod("session-role-moves", "ses_pod_named", listener, {
       role: "fan-cloud",
@@ -11623,7 +11626,7 @@ console.log(JSON.stringify(args));
     expect(listener.claims("ses_pod_new")).toEqual([]);
     expect(listener.released).toEqual(["fan-cloud@ses_pod_named"]);
     expect(pod.notices.filter((notice) => notice.includes("fan-cloud"))).toEqual([
-      "envoy: role fan-cloud stays with session ses_pod_named, the session this pod named for it, so this session claims nothing; /resume ses_pod_named takes the role back",
+      "envoy: role fan-cloud stays with the pod's session ses_pod_named; messages to the role are not delivered here. /resume ses_pod_named takes it back",
     ]);
 
     await pod.move("resume", "ses_pod_named", named);
@@ -11644,15 +11647,17 @@ console.log(JSON.stringify(args));
     });
     const roleTool = review.fixture.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
-    const refusal =
-      "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_named; this session ses_pod_asked claims nothing";
     const refused = await roleTool.execute("", { role: "fan-cloud" });
-    expect(refused.isError).toBe(true);
-    expect(refused.content[0]?.text).toContain(refusal);
-    await expect(claimEnvoyRole("ses_pod_asked", "fan-cloud", review.context)).rejects.toThrow(
-      refusal
+    const bridged = await claimEnvoyRole("ses_pod_asked", "fan-cloud", review.context).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
     );
     expect(listener.claims()).toEqual([]);
+    const refusal =
+      "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_named; this session ses_pod_asked claims nothing";
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]?.text).toContain(refusal);
+    expect(bridged).toBe(refusal);
 
     const moved = await roleTool.execute("", { role: "librarian" });
     expect(moved.isError).not.toBe(true);
@@ -11660,9 +11665,9 @@ console.log(JSON.stringify(args));
     await review.shutdown();
   });
 
-  // A launch that names the role and no session names no holder: no session claims the role, and
-  // the process says so once, in its log and on screen, however many of its sessions it decides
-  // for and however often. An empty session counts as none, and an empty role as no role.
+  // A launch that names the role and no session names no holder: no session claims the role. The
+  // process says so once in its log, however many of its sessions it decides for and however
+  // often, and each of those sessions is told once on screen. An empty session counts as none.
   test("ENVOY_SESSION_ROLE with no ENVOY_SESSION_ROLE_SESSION claims nothing and says so once", async () => {
     const { lines, stop } = sessionRoleLines();
     try {
@@ -11685,27 +11690,38 @@ console.log(JSON.stringify(args));
       expect(lines).toEqual([
         "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session none; this session ses_pod_unnamed claims nothing",
       ]);
-      expect([...first.notices, ...second.notices]).toEqual([
-        "envoy: this pod names role fan-cloud for no session, so no session claims it",
-      ]);
+      const unnamed =
+        "envoy: role fan-cloud is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here";
+      expect(first.notices).toEqual([unnamed]);
+      expect(second.notices).toEqual([unnamed]);
     } finally {
       stop();
     }
   });
 
-  test("an empty ENVOY_SESSION_ROLE names no role", async () => {
+  // The pod renders an empty `ENVOY_SESSION_ROLE` when it names no role, which names none, whether
+  // or not `ENVOY_SESSION_ROLE_SESSION` names the session open.
+  test("an empty ENVOY_SESSION_ROLE claims nothing and says nothing", async () => {
     const { lines, stop } = sessionRoleLines();
     try {
       const listener = sessionPodListener();
-      const pod = await bootSessionPod("session-role-empty", "ses_pod_empty", listener, {
+      const named = await bootSessionPod("session-role-empty", "ses_pod_empty", listener, {
         role: "",
-        session: "ses_pod_named",
+        session: "ses_pod_empty",
       });
-      await pod.heartbeat();
-      await pod.shutdown();
+      await named.heartbeat();
+      await named.shutdown();
+      delete process.env.ENVOY_SESSION_ROLE_SESSION;
+      const unnamed = await bootSessionPod(
+        "session-role-empty-unnamed",
+        "ses_pod_empty_unnamed",
+        listener
+      );
+      await unnamed.heartbeat();
+      await unnamed.shutdown();
       expect(listener.claims()).toEqual([]);
       expect(lines).toEqual([]);
-      expect(pod.notices).toEqual([]);
+      expect([...named.notices, ...unnamed.notices]).toEqual([]);
     } finally {
       stop();
     }

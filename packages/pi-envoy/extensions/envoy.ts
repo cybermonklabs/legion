@@ -323,11 +323,11 @@ export function resetNatsConnectForTests(): void {
 }
 
 /**
- * Whether this process has said that a session it decides for is not the one a session pod's
- * launch named for its role (`sessionRoleRefusal` in the entry). It says so once per process, in
- * its log and on screen, whichever extension instance of it decides first, and an instance may
- * come from a later load of this entry (each top-level session of an ACP host), so the mark lives
- * on `globalThis`, as the NATS stand-in above does.
+ * Whether this process has logged that a session it decides for is not the one a session pod's
+ * launch named for its role (`sessionRoleRefusal` in the entry). The line is logged once per
+ * process, whichever extension instance of it decides first, and an instance may come from a
+ * later load of this entry (each top-level session of an ACP host), so the mark lives on
+ * `globalThis`, as the NATS stand-in above does.
  */
 const SESSION_ROLE_NOTICE = Symbol.for("legion.pi-envoy.session-role-notice");
 
@@ -2958,9 +2958,10 @@ export default function envoyExtension(pi: PiApi): void {
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
-  // session is. The process says so once (`SESSION_ROLE_NOTICE`), whichever session and path
-  // meets it first: a line in its log, and a notice on screen telling the person where the role
-  // stays and how to take it back.
+  // session is. The process logs the refusal once (`SESSION_ROLE_NOTICE`), whichever session and
+  // path meets it first, and the person is told once for each session refused, on screen, where
+  // the role stays and how to take it back.
+  const sessionRoleNoticed = new Set<string>();
   const sessionRoleRefusal = (id: string, role: string): string | undefined => {
     if (sessionRole === undefined || role !== sessionRole || id === sessionRoleSession) {
       return undefined;
@@ -2969,10 +2970,13 @@ export default function envoyExtension(pi: PiApi): void {
     if (sessionRoleNoticeStore[SESSION_ROLE_NOTICE] === undefined) {
       sessionRoleNoticeStore[SESSION_ROLE_NOTICE] = true;
       logger.warn(refusal);
+    }
+    if (!sessionRoleNoticed.has(id)) {
+      sessionRoleNoticed.add(id);
       activeSessionContext?.ui.notify(
         sessionRoleSession === undefined
-          ? `envoy: this pod names role ${sessionRole} for no session, so no session claims it`
-          : `envoy: role ${sessionRole} stays with session ${sessionRoleSession}, the session this pod named for it, so this session claims nothing; /resume ${sessionRoleSession} takes the role back`,
+          ? `envoy: role ${sessionRole} is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here`
+          : `envoy: role ${sessionRole} stays with the pod's session ${sessionRoleSession}; messages to the role are not delivered here. /resume ${sessionRoleSession} takes it back`,
         "warning"
       );
     }
