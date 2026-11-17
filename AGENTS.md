@@ -924,6 +924,15 @@ Each item below names a task and where its code is, then notes on it.
   a merge group, a push or a dispatched run fails with exit 2.
   A term lives in that secret alone, never in a file, commit, issue, pull request or log of this repository.
 
+- **A pull request's new text names no issue key of the deployment's projects and holds no Dispatch link** — link the pull request from its issue in Dispatch instead:
+  the term list also names each Dispatch project of the deployment, one `key:<KEY>` line each, and `.github/scripts/check-pr-text.sh` refuses an issue key of those projects (`<KEY>-<n>` as a word of its own, in upper case as Dispatch prints it, so the bare word and a lower-case string of that shape such as a job name pass, and `LEGION-<n>` always passes) and any Dispatch link.
+  It reads a pull request's title and body, its trusted comments, reviews and review comments, each new commit's message, and the lines and paths each new commit adds.
+  It reads only text newer than its cutoff, which it derives at each run and nobody types: the publish time of the first `legion-v*` release that contains the commit adding `.github/issue-key-cutoff`, the commit that told every worker to keep keys and links out of this repository's text.
+  A pull request opened before the cutoff is not read for it, and neither is a commit dated before it, so nothing already open turns red and every new line is read.
+  A commit whose patch GitHub does not return whole is refused as UNKNOWN, never passed.
+  The branch name is not read yet: the daemon names an issue's branch after its key, and the change that stops that adds the branch name to the rule.
+  The tree from before the cutoff still holds keys and links, so `check-private-names.sh` holds the whole tree to the rule only once its `issue_keys_in_tree` setting is `yes`, after a cleanup leaves none.
+
 - **A skill, a role prompt and an `AGENTS.md` name no person**
   — write the role instead: "a person" for whoever sends a message or makes a request, "the operator" for whoever runs this deployment, "the human" for whoever an agent asks for a decision.
   The rule covers `skills/`, `packages/daemon/internal/prompts/` and every `AGENTS.md`, and so the generated copies the Claude Code plugin builds from `skills/`:

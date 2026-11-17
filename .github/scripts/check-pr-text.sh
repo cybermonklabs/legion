@@ -12,6 +12,13 @@
 # `review:<id>:<line>` or `review-comment:<id>:<line>` (the id GitHub gives that issue comment,
 # review or review comment), never its text.
 #
+# Then it holds the pull request's new text to check-private-names.sh's rules 6 and 7 (an issue key
+# of the deployment's own projects, and a Dispatch link), from a cutoff it derives at each run: the
+# section "THE ISSUE-KEY RULE" below says how, and which text. A hit there is reported as
+# `title:<line>`, `body:<line>`, `<kind>:<id>:<line>`, `commit:<sha>:<line>` for a
+# commit's message, or `commit:<sha>:<path>:<line>` for a line a commit adds, its path masked
+# where it holds a name.
+#
 # It also requires the title to be a conventional commit subject (`type(scope): summary`, the
 # scope and a `!` optional): squash merges use the title as main's commit subject, and the release
 # workflows version from conventional subjects; this repository's squash merges write an empty
@@ -176,6 +183,120 @@ if [ "$status" -ne 0 ] && grep -q -E "(^|[:=])$kind_pattern:[0-9]+:" "$work/repo
   echo "    Never re-run an older run: it checks the commits of the head its own event named, and"
   echo "    its check lands on that head, not the current one."
 fi
+# THE ISSUE-KEY RULE (check-private-names.sh's rules 6 and 7: an issue key of the deployment's own
+# projects, and a Dispatch link), over new text only. Its cutoff is derived, never typed: the
+# commit that added .github/issue-key-cutoff to the base branch is the one that told every worker
+# to keep keys and links out of this repository's text (skills/legion-worker/references/
+# pr-body.md), and the cutoff is the publish time of the earliest legion-v* release whose commit
+# contains it. No such commit, or no such release yet, and the rule is inactive. Once active, a
+# pull request opened before the cutoff is not read for it; one opened after it is read in its
+# title and body, every trusted comment, review and review comment (all posted after it), and
+# each commit whose committer date is at or after the cutoff: its message, and the lines and paths
+# it adds. A commit whose patch GitHub does not return whole is UNKNOWN, and refused. The branch
+# name is not read by this rule: the daemon names an issue's branch after its key today, and the
+# change that names branches another way adds the branch to this rule.
+key_status=0
+cutoff_file=.github/issue-key-cutoff
+base_ref=$(jq -r '.base.ref // "main"' "$live")
+gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
+  > "$work/cutoff-commits"
+skill_commit=$(jq -s -r '[.[][]] | last | .sha // empty' "$work/cutoff-commits")
+cutoff=''
+if [ -z "$skill_commit" ]; then
+  echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
+else
+  skill_date=$(jq -s -r '[.[][]] | last | .commit.committer.date' "$work/cutoff-commits")
+  gh api "repos/$repository/releases?per_page=100" --paginate > "$work/releases"
+  jq -s -r --arg after "$skill_date" '[.[][] | select(.draft | not)
+      | select(.tag_name | startswith("legion-v")) | select(.published_at >= $after)]
+      | sort_by(.published_at) | .[] | "\(.tag_name)\t\(.published_at)"' "$work/releases" \
+    > "$work/candidates"
+  while IFS=$'\t' read -r tag published; do
+    relation=$(gh api "repos/$repository/compare/$skill_commit...$tag" --jq .status)
+    if [ "$relation" = ahead ] || [ "$relation" = identical ]; then
+      cutoff=$published
+      echo "check-pr-text: the issue-key rule is active since $tag, published $published"
+      break
+    fi
+  done < "$work/candidates"
+  if [ -z "$cutoff" ]; then
+    echo "check-pr-text: the issue-key rule is inactive: no legion-v* release contains the commit" \
+      "that added $cutoff_file yet"
+  fi
+fi
+opened=$(jq -r '.created_at // empty' "$live")
+if [ -n "$cutoff" ] && [ -n "$opened" ] && [[ $opened < $cutoff ]]; then
+  echo "check-pr-text: #$number was opened at $opened, before the issue-key rule's cutoff, so it" \
+    "is not read for issue keys"
+elif [ -n "$cutoff" ]; then
+  keyed=$(mktemp -d)
+  lines_only=$(mktemp -d)
+  trap 'rm -rf "$text" "$work" "$keyed" "$lines_only"' EXIT
+  cp "$text/title" "$text/body" "$keyed/"
+  for kind in "${kinds[@]}"; do cp -r "$text/$kind" "$keyed/$kind"; done
+  mkdir "$keyed/commit" "$keyed/added"
+  # added_lines <patch file>: the patch's added lines at their line numbers in the new file, every
+  # other line empty, so a hit names the line the file holds it at.
+  added_lines() {
+    awk '/^@@ / { split($3, plus, ","); n = substr(plus[1], 2) + 0; next }
+         /^\+/ { while (out < n - 1) { print ""; out++ } print substr($0, 2); out++; n++; next }
+         /^ / { n++; next }' "$1"
+  }
+  jq -r --arg cutoff "$cutoff" '.commits[] | select(.commit.committer.date >= $cutoff) | .sha' \
+    "$compare_json" > "$work/new-commits"
+  while IFS= read -r sha; do
+    short=${sha:0:12}
+    jq -r --arg sha "$sha" '.commits[] | select(.sha == $sha) | .commit.message' "$compare_json" |
+      tr -d '\000' > "$keyed/commit/$short"
+    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
+    files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
+    listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
+    total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
+    if [ "$listed" -ne "$total" ]; then
+      echo "::error::UNKNOWN: commit $short changes $total lines, and GitHub listed $listed of them" \
+        "in $files files, so the lines it adds cannot all be read; it is refused, not passed" >&2
+      key_status=2
+      continue
+    fi
+    for ((i = 0; i < files; i++)); do
+      jq -s -r --argjson i "$i" '[.[].files[]][$i] | "\(.status)\t\(.additions)\t\(.patch != null)"' \
+        "$work/commit-$short" > "$work/file"
+      IFS=$'\t' read -r file_status additions has_patch < "$work/file"
+      if [ "$additions" -gt 0 ] && [ "$has_patch" != true ]; then
+        echo "::error::UNKNOWN: GitHub returned no patch for file $((i + 1)) of commit $short, so" \
+          "the lines it adds cannot be read; it is refused, not passed" >&2
+        key_status=2
+        continue
+      fi
+      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .patch // ""' "$work/commit-$short" |
+        tr -d '\000' > "$work/patch"
+      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .filename' "$work/commit-$short" > "$work/name"
+      name=$(< "$work/name")
+      case $file_status in
+        added | renamed | copied) dest="$keyed/added/$short/$name" ;;
+        *) dest="$lines_only/added/$short/$name" ;;
+      esac
+      mkdir -p "$(dirname "$dest")"
+      added_lines "$work/patch" > "$dest"
+    done
+  done < "$work/new-commits"
+  # Two runs of rules 6 and 7: one over the title, body, branch, items, commit messages and the
+  # files the new commits add or rename, whose paths are new text too; one over the lines they
+  # add to files they only change, whose paths are not.
+  for run in keyed lines_only; do
+    dir=${!run}
+    [ "$run" = lines_only ] && [ ! -d "$dir/added" ] && continue
+    if [ "$run" = keyed ]; then paths_flag=yes; else paths_flag=no; fi
+    run_status=0
+    PRIVATE_NAME_RULES=keys PRIVATE_NAME_CHECK_PATHS=$paths_flag "$script_dir/check-private-names.sh" "$dir" 2>&1 |
+      sed -E -e "s|$dir/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
+        -e "s#(^|[:=])commit/([0-9A-Za-z_-]+)#\\1commit:\\2#g" -e "s#(^|[:=])added/([0-9A-Za-z_-]+)/#\\1commit:\\2:#g" \
+      || run_status=$?
+    if [ "$run_status" -gt "$key_status" ]; then key_status=$run_status; fi
+  done
+fi
+
+if [ "$key_status" -gt "$status" ]; then status=$key_status; fi
 if [ "$status" -eq 0 ] && [ "$title_status" -ne 0 ]; then
   exit 1
 fi

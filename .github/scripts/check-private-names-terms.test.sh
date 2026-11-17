@@ -413,5 +413,188 @@ check "a merge group's run fails with exit 2, the pr-title job's failure" "$(is 
 check "says the list is missing" \
   "$(contains "$out" '::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a merge_group run')"
 
+# THE ISSUE-KEY RULE (check-private-names.sh's rules 6 and 7, from check-pr-text.sh's cutoff).
+# QUILL is a placeholder project key, given as a `key:` line beside the placeholder terms; its
+# issue keys are spelled from pieces, so this file holds none whole, and no case label prints one.
+key_project=QUILL
+planted_key="$key_project-""123"
+key_terms=$(printf '%s\n' "$planted_terms" "key:$key_project" key:LEGION)
+link="dispatch"':''//'
+cutoff_at=2026-11-20T00:00:00Z
+# key_rule_on: the fixtures of an active rule: a commit on main that adds the cutoff marker,
+# dated before a legion-v release that contains it, published at cutoff_at.
+key_rule_on() {
+  jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
+  jq -nc --arg at "$cutoff_at" '[{tag_name: "legion-v9.0.0", published_at: $at, draft: false},
+    {tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases"
+  echo ahead > "$work/contains.legion-v9.0.0"
+  echo behind > "$work/contains.legion-v8.9.9"
+}
+# opened_at <time>: the pull request was opened then.
+opened_at() { jq --arg at "$1" '.created_at = $at' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"; }
+# commits <sha> <date> <message> [...]: the compare route's one page, those commits in order.
+commits() {
+  local list='[]'
+  while [ $# -gt 0 ]; do
+    list=$(jq -c --arg sha "$1" --arg date "$2" --arg msg "$3" '. + [{sha: $sha, commit: {message: $msg,
+      author: {name: "Dev", email: "dev@example.com"},
+      committer: {name: "Dev", email: "dev@example.com", date: $date}}}]' <<< "$list")
+    shift 3
+  done
+  jq -c '{total_commits: length, commits: .}' <<< "$list" > "$work/compare"
+}
+# commit_file <sha> <status> <path> <patch> [total]: the commit route's answer, that one file,
+# its stats.total the file's changes unless a total is given; a patch of "-" is none at all.
+commit_file() {
+  local additions
+  additions=$(grep -c '^+' <<< "$4" || true)
+  jq -nc --arg status "$2" --arg path "$3" --arg patch "$4" --argjson additions "$additions" \
+    --argjson total "${5:-$additions}" \
+    '{stats: {total: $total}, files: [{filename: $path, status: $status, additions: $additions,
+      changes: $additions, patch: (if $patch == "-" then null else $patch end)}]}' > "$work/commit.$1"
+}
+key_run() { PRIVATE_NAME_TERMS=$key_terms run_pr_text; }
+key_refused="names an issue key of the deployment's own projects"
+
+echo "case: the issue-key rule is inactive until a release carries its marker commit"
+write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
+key_run
+check "with no marker commit on main, a planted key in the title passes" "$(is "$status" 0)"
+check "says the rule is inactive and why" \
+  "$(contains "$out" '^check-pr-text: the issue-key rule is inactive: no commit on main adds')"
+write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
+jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
+jq -nc '[{tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases"
+echo behind > "$work/contains.legion-v8.9.9"
+key_run
+check "with a marker commit and no release that contains it, the key still passes" "$(is "$status" 0)"
+check "says no release contains it" "$(contains "$out" 'no legion-v\* release contains the commit')"
+
+echo "case: once a release carries the marker commit, a pull request opened before it is not read"
+write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-19T12:00:00Z
+key_run
+check "a key in the title of a pull request opened before the cutoff passes" "$(is "$status" 0)"
+check "names the release the rule is active since" \
+  "$(contains "$out" "^check-pr-text: the issue-key rule is active since legion-v9.0.0, published $cutoff_at")"
+check "says the pull request is not read" "$(contains "$out" 'before the issue-key rule.s cutoff')"
+
+echo "case: a pull request opened after the cutoff is read in its title and body, not its branch"
+opened_after() { key_rule_on; opened_at 2026-11-21T00:00:00Z; commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"; commit_file new-sha modified docs/notes.md $'@@ -1,1 +1,1 @@\n+clean text'; }
+write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
+opened_after
+key_run
+check "a key in the title fails" "$(is "$status" 1)"
+check "names the title" "$(contains "$out" "title:1: $key_refused")"
+check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-123, with the word $key_project alone." \
+  "fix: keep the order"
+opened_after
+key_run
+check "Legion's own key and the bare project word pass" "$(is "$status" 0)"
+# A key is the upper-case form Dispatch prints; a lower-case string of the same shape, such as a
+# job name, is not one. The same text with the key in upper case is refused.
+lower_key="${key_project,,}-123-job"
+write_pr_text "fix(dispatch): keep the inbox order" "Runs as the $lower_key job." "fix: keep the order"
+opened_after
+key_run
+check "a lower-case job name of a key's shape passes" "$(is "$status" 0)"
+write_pr_text "fix(dispatch): keep the inbox order" "Runs as the $planted_key job." "fix: keep the order"
+opened_after
+key_run
+check "the same text with the key in upper case is refused" "$(is "$status" 1)"
+write_pr_text "fix(dispatch): keep the inbox order" "$(printf 'Line one.\nTracked as %s.\n' "$planted_key")" \
+  "fix: keep the order"
+opened_after
+key_run
+check "a key in the body fails" "$(is "$status" 1)"
+check "names the body's line" "$(contains "$out" "body:2: $key_refused")"
+# The daemon names an issue's branch after its key today; the change that names branches another
+# way adds the branch name to this rule.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" \
+  "fix/$planted_key-keep-order"
+opened_after
+key_run
+check "a key in the branch name is not read by this rule" "$(is "$status" 0)"
+
+echo "case: a pull request opened after the cutoff is read in its comments and reviews"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+opened_after
+items 501 "Fine." 502 "Tracked as $planted_key." > "$work/comments.1"
+items 601 "See ${link}x/spec." > "$work/reviews.1"
+key_run
+check "a key in a comment and a link in a review fail" "$(is "$status" 1)"
+check "names the comment" "$(contains "$out" "comment:502:1: $key_refused")"
+check "names the review's link" "$(contains "$out" 'review:601:1: holds a Dispatch link')"
+
+echo "case: a commit is read after the cutoff and not before it"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits old-sha 2026-11-19T00:00:00Z "fix: as $planted_key said" new-sha 2026-11-21T01:00:00Z "fix: as $planted_key said"
+commit_file old-sha modified docs/notes.md $'@@ -0,0 +1,2 @@\n+line one\n+old '"$planted_key"' line'
+commit_file new-sha modified docs/notes.md $'@@ -3,0 +4,2 @@\n+clean\n+new '"$planted_key"' line'
+key_run
+check "fails on the new commit" "$(is "$status" 1)"
+check "names the new commit's message" "$(contains "$out" "commit:new-sha:1: $key_refused")"
+check "names the line the new commit adds, at its line in the file" \
+  "$(contains "$out" "commit:new-sha:docs/notes.md:5: $key_refused")"
+check "reads nothing of the commit dated before the cutoff" "$(is "$(contains "$out" 'old-sha')" false)"
+check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/old-sha')" false)"
+
+echo "case: a path a new commit adds is new text, and a path it only changes is not"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file new-sha added "docs/notes-$planted_key.md" $'@@ -0,0 +1,1 @@\n+clean text'
+key_run
+check "an added file whose path holds a key fails" "$(is "$status" 1)"
+check "names the path, masked" \
+  "$(contains "$out" "^::error::commit:new-sha:docs/<name>: $key_refused .* in its path\$")"
+check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file new-sha modified "docs/notes-$planted_key.md" $'@@ -1,0 +2,1 @@\n+clean text'
+key_run
+check "a clean line added to a file whose old path holds a key passes" "$(is "$status" 0)"
+
+echo "case: a commit whose patch GitHub does not return whole is UNKNOWN, never passed"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file new-sha modified docs/big.md - 
+jq -c '.files[0].additions = 5 | .files[0].changes = 5 | .stats.total = 5' "$work/commit.new-sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.new-sha"
+key_run
+check "a file with added lines and no patch exits 2" "$(is "$status" 2)"
+check "says UNKNOWN for that file" "$(contains "$out" 'UNKNOWN: GitHub returned no patch for file 1 of commit new-sha')"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' 9
+key_run
+check "a commit whose listed files fall short of its total exits 2" "$(is "$status" 2)"
+check "says UNKNOWN for that commit" "$(contains "$out" 'UNKNOWN: commit new-sha changes 9 lines')"
+
+echo "case: the tree outside a pull request's new text is not held to the issue-key rule"
+root=$(fixture key-tree)
+printf 'From before the rule: %s.\n' "$planted_key" > "$root/docs/notes.md"
+run_check_as pull_request "$key_terms" "$root"
+check "a key in a tree file passes the repository scan" "$(is "$status" 0)"
+check "and the scan names the keys it read" "$(contains "$out" 'PRIVATE_NAME_TERMS: 3 terms and 1 issue key read')"
+set +e
+out=$(cd "$root" && PRIVATE_NAME_TERMS=$key_terms GITHUB_EVENT_NAME=pull_request PRIVATE_NAME_RULES=keys \
+  .github/scripts/check-private-names.sh docs 2>&1)
+status=$?
+set -e
+check "the same file fails a keys run" "$(is "$status" 1)"
+check "names its line" "$(contains "$out" "docs/notes.md:1: $key_refused")"
+
 finish_self_log
 summary "check-private-names.sh's term list"

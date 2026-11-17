@@ -38,7 +38,18 @@
 #      dotless i or a capital I with a dot for an i, a Kelvin sign for a k, a long s for an s, and
 #      so on). A full case folding that turns one character into two (a sharp s into "ss") is not
 #      applied. The allowed hosts of rules 3 and 4 are exceptions to those rules alone, never to a
-#      term.
+#      term. A line of the form `key:<KEY>` (capitals and digits) is no term: it names one Dispatch
+#      project of the deployment's own, whose issue keys the sixth rule refuses;
+#   6. an issue key of one of those projects: the key, a "-" and a number, standing as a word of
+#      its own (`\b<KEY>-[0-9]+\b`, case-sensitive, so the bare word and a lowercase slug pass).
+#      `LEGION` is never such a project, so Legion's own `LEGION-<n>` keys always pass;
+#   7. a Dispatch link: the link scheme Dispatch's references are written in, in any case.
+#
+# Rules 6 and 7 read new text only, until a cleanup leaves the tree with no key and no link.
+# PRIVATE_NAME_RULES picks the rules a run reads: `names` (the default) reads rules 1 to 5, and
+# rules 6 and 7 too when issue_keys_in_tree below is `yes`; `keys` reads rules 6 and 7 alone,
+# which check-pr-text.sh asks for over a pull request's new text (its header says which text, and
+# from when). issue_keys_in_tree is the one setting that holds the whole tree to rules 6 and 7.
 #
 # One matching engine reads everything: GNU grep, in the run's locale. The repository's contents
 # and a named path's are read by the same grep over the same file list, a file's path by grep -z,
@@ -154,6 +165,21 @@ company_label='names the company'
 private_host_label='names a private internal host'
 tailnet_host_label='names a Tailscale MagicDNS host'
 term_label="names a term of the deployment's own list (PRIVATE_NAME_TERMS)"
+issue_key_label="names an issue key of the deployment's own projects (PRIVATE_NAME_TERMS key: lines)"
+link_label='holds a Dispatch link'
+# The seventh rule's link scheme, spelled in pieces so that this file holds no whole one.
+link_rule='dispatch'':''//'
+# Whether the whole tree is held to rules 6 and 7, as well as a pull request's new text: `no`
+# while the tree still holds keys and links from before the rule, `yes` once a cleanup leaves none.
+issue_keys_in_tree=no
+rules=${PRIVATE_NAME_RULES:-names}
+case $rules in
+  names | keys) ;;
+  *)
+    echo "check-private-names: PRIVATE_NAME_RULES must be names or keys" >&2
+    exit 2
+    ;;
+esac
 
 lockfiles=(bun.lock go.sum go.work.sum)
 targets=("$@")
@@ -210,28 +236,38 @@ term_pattern() {
 }
 
 # The fifth rule's terms: each line of PRIVATE_NAME_TERMS with the blanks around it dropped, and
-# none left empty (the header says why), each beside its pattern. They are read before this
-# script prints anything, since every line below that carries a path or another command's message
-# is masked with them.
+# none left empty (the header says why), each beside its pattern; and the sixth rule's projects,
+# each line of the form `key:<KEY>`, LEGION never among them. They are read before this script
+# prints anything, since every line below that carries a path or another command's message is
+# masked with them.
 terms=()
 term_patterns=()
+keys=()
 while IFS= read -r term; do
   term=${term#"${term%%[![:space:]]*}"}
   term=${term%"${term##*[![:space:]]}"}
-  if [ -n "$term" ]; then
+  if [[ $term =~ ^key:([A-Z][A-Z0-9]*)$ ]]; then
+    if [ "${BASH_REMATCH[1]}" != LEGION ]; then keys+=("${BASH_REMATCH[1]}"); fi
+  elif [ -n "$term" ]; then
     terms+=("$term")
     term_patterns+=("$(term_pattern "$term")")
   fi
 done <<< "${PRIVATE_NAME_TERMS:-}"
-# One line says how many terms the run read, and never a term: on a pull request's own run, the
-# proof that the job holds the list. An empty list prints the warning below instead.
+# The sixth rule's pattern: any of the keys, a "-" and a number, as a word of its own.
+key_pattern=''
+if [ ${#keys[@]} -gt 0 ]; then key_pattern="\\b($(IFS='|'; echo "${keys[*]}"))-[0-9]+\\b"; fi
+# One line says how many terms and keys the run read, and never a term or a key: on a pull
+# request's own run, the proof that the job holds the list. An empty list prints the warning
+# below instead.
 if [ ${#terms[@]} -gt 0 ]; then
   printf '%s\n' "${term_patterns[@]}" > "$patterns_file"
-  if [ ${#terms[@]} -eq 1 ]; then
-    echo "check-private-names: PRIVATE_NAME_TERMS: 1 term read"
-  else
-    echo "check-private-names: PRIVATE_NAME_TERMS: ${#terms[@]} terms read"
+  if [ ${#terms[@]} -eq 1 ]; then read_count="1 term"; else read_count="${#terms[@]} terms"; fi
+  if [ ${#keys[@]} -eq 1 ]; then
+    read_count+=" and 1 issue key"
+  elif [ ${#keys[@]} -gt 1 ]; then
+    read_count+=" and ${#keys[@]} issue keys"
   fi
+  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count read"
 fi
 
 # named_parts <part...>: the 1-based index of each part the first two rules match, one a line, by
@@ -244,23 +280,29 @@ named_parts() {
   } | while IFS= read -r -d '' record; do printf '%s\n' "${record%%:*}"; done
 }
 
-# names_term <text>: whether a term of the fifth rule is in text, by the grep its search runs.
+# names_term <text>: whether a term of the fifth rule, or an issue key of the sixth, is in text,
+# by the grep its search runs.
 names_term() {
-  [ ${#terms[@]} -gt 0 ] && grep -q -E -i -f "$patterns_file" <<< "$1"
+  { [ ${#terms[@]} -gt 0 ] && grep -q -E -i -f "$patterns_file" <<< "$1"; } ||
+    { [ -n "$key_pattern" ] && grep -q -E -e "$key_pattern" <<< "$1"; }
 }
 
 # byte_length <text>: text's length in bytes, the unit of grep's -b offsets.
 byte_length() { (LC_ALL=C; printf '%s' "${#1}"); }
 
-# term_spans <text>: one "start end" line, in bytes, for every occurrence of a term in text, by
-# the grep the term search runs. Each search starts again one character after the start of the
-# occurrence before it, so an occurrence that overlaps another, of the same term or of another,
-# has a line of its own.
+# term_spans <text>: one "start end" line, in bytes, for every occurrence of a term or an issue
+# key in text, by the grep their searches run (a term in any case, a key as written). Each search
+# starts again one character after the start of the occurrence before it, so an occurrence that
+# overlaps another, of the same term or of another, has a line of its own.
 term_spans() {
-  local text=$1 pattern at found start match
-  for pattern in "${term_patterns[@]}"; do
+  local text=$1 pattern at found start match case_flag
+  local -a patterns=("${term_patterns[@]}")
+  if [ -n "$key_pattern" ]; then patterns+=("$key_pattern"); fi
+  for pattern in "${patterns[@]}"; do
+    case_flag=-i
+    if [ "$pattern" = "$key_pattern" ]; then case_flag=-E; fi
     at=0
-    while found=$(grep -a -o -b -E -i -e "$pattern" <<< "$(LC_ALL=C; printf '%s' "${text:at}")"); do
+    while found=$(grep -a -o -b -E "$case_flag" -e "$pattern" <<< "$(LC_ALL=C; printf '%s' "${text:at}")"); do
       found=${found%%$'\n'*}
       start=$((at + ${found%%:*}))
       match=${found#*:}
@@ -423,6 +465,9 @@ search() {
 search_paths() {
   local label=$1 path
   shift
+  # PRIVATE_NAME_CHECK_PATHS=no reads the text alone: check-pr-text.sh's run over the lines a
+  # commit adds to a file it did not add or rename, whose path is no new text.
+  [ "${PRIVATE_NAME_CHECK_PATHS:-yes}" = no ] && return 0
   : > "$matches"
   run grep -z "$@" "$paths"
   while IFS= read -r -d '' path; do
@@ -430,17 +475,29 @@ search_paths() {
   done < "$matches" >> "$hits"
 }
 
-search "$repository_label" committed -E -i -e "$repository_rule"
-search "$company_label" committed -E -i -e "$company_rule"
-search "$company_label" committed -E -e "$proper_noun_rule"
-search "$private_host_label" committed -E -i -e "$private_host_rule"
-search "$tailnet_host_label" committed -E -i -e "$tailnet_host_rule"
-search_paths "$repository_label" -E -i -e "$repository_rule"
-search_paths "$company_label" -E -i -e "$company_rule"
-search_paths "$company_label" -E -e "$proper_noun_rule"
-if [ ${#terms[@]} -gt 0 ]; then
-  search "$term_label" term -E -i -f "$patterns_file"
-  search_paths "$term_label" -E -i -f "$patterns_file"
+if [ "$rules" = names ]; then
+  search "$repository_label" committed -E -i -e "$repository_rule"
+  search "$company_label" committed -E -i -e "$company_rule"
+  search "$company_label" committed -E -e "$proper_noun_rule"
+  search "$private_host_label" committed -E -i -e "$private_host_rule"
+  search "$tailnet_host_label" committed -E -i -e "$tailnet_host_rule"
+  search_paths "$repository_label" -E -i -e "$repository_rule"
+  search_paths "$company_label" -E -i -e "$company_rule"
+  search_paths "$company_label" -E -e "$proper_noun_rule"
+  if [ ${#terms[@]} -gt 0 ]; then
+    search "$term_label" term -E -i -f "$patterns_file"
+    search_paths "$term_label" -E -i -f "$patterns_file"
+  fi
+fi
+# Rules 6 and 7: over everything this run reads when it is a `keys` run, and over the whole tree
+# too once issue_keys_in_tree is `yes`. A key or a link has no allowed form, so each is a `term`
+# search, which drops nothing.
+if [ "$rules" = keys ] || [ "$issue_keys_in_tree" = yes ]; then
+  if [ -n "$key_pattern" ]; then
+    search "$issue_key_label" term -E -e "$key_pattern"
+    search_paths "$issue_key_label" -E -e "$key_pattern"
+  fi
+  search "$link_label" term -F -i -e "$link_rule"
 fi
 
 # escape_data <text>: text as a workflow command's message, its %, CR and LF escaped as GitHub
@@ -494,10 +551,18 @@ if [ -s "$hits" ]; then
   echo "  - for a term of PRIVATE_NAME_TERMS, the deployment's own list, write the neutral form above"
   echo "    that fits it (\"the deployment repository\", \"the company\", a placeholder id). The list"
   echo "    is an Actions secret, so this log never prints the term: read the reported line;"
+  echo "  - for an issue key of the deployment's own projects, or a Dispatch link, write neither: a"
+  echo "    pull request's title, body, branch, commits, comments and reviews carry no key but"
+  echo "    Legion's own LEGION-<n> and no link; the Dispatch issue links the pull request instead;"
   echo "  - for a file or directory whose path is reported with <name> in it, rename it."
   exit 1
 fi
 
+if [ "$rules" = keys ]; then
+  echo "check-private-names: no text names an issue key of the deployment's own projects" \
+    "(${#keys[@]} keys) or holds a Dispatch link ($scanned)"
+  exit 0
+fi
 named="the private deployment repository or the company"
 if [ ${#terms[@]} -gt 0 ]; then
   named="the private deployment repository, the company or a term of PRIVATE_NAME_TERMS"
