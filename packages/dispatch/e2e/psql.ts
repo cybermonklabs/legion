@@ -162,6 +162,15 @@ function startSession(): Session {
   return started;
 }
 
+/** Ends this process's psql, so the next `sql` call starts another and resolves its database
+ *  again: a bun test file that points `sql` at a database of its own, before it drops it and
+ *  before a case that needs no psql to have been started. A Playwright worker never calls it;
+ *  its psql ends with the worker. */
+export function resetSession(): void {
+  session?.child.kill();
+  session = null;
+}
+
 /** Runs one statement and returns what each stream carried for it, and psql's verdict on it. The
  *  trailing `;` on its own line terminates a statement the caller left unterminated without
  *  swallowing a last-line comment; a statement that already ends in one leaves an empty query,

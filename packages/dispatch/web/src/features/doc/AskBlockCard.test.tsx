@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
 import type { Ask, AskRead, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AskBlockHost } from "./typed-block-drawing";
 
@@ -687,6 +688,9 @@ test("an existing exchange shows its newest replies under an open decision", asy
 });
 
 test("an answered decision hosts the shared record: who answered and when, the chosen option, the note, and its exchange", async () => {
+  // The record's rows are read before its exchange arrives, which holds only where the engine
+  // draws the rows in the commit that mounts the card (`MarkdownBody`).
+  await warmMarkdownRenderer();
   const card = renderCard({
     ask: answeredAsk,
     node: askNode({ answered_by: "bob", selected: ["Ship"], state: "answered", urgency: "low" }),

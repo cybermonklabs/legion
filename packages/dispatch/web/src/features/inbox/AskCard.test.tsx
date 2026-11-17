@@ -15,6 +15,7 @@ import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
@@ -494,6 +495,9 @@ function mockVersions(versions: Record<number, string>) {
 // unmounts stays in the shared document; these tests read their own card alone (`within`).
 for (const variant of ["full", "compact"] as const) {
   test(`a ${variant} approval card names the earlier approval and diffs the two versions only when asked`, async () => {
+    // The question is read in the commit that mounts the card, which only a loaded engine draws
+    // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+    await warmMarkdownRenderer();
     const user = userEvent.setup();
     const ask = approvalAsk(earlierApproval);
     const getArtifactVersion = mockVersions({ 11: "Before\n", 12: "After\n" });

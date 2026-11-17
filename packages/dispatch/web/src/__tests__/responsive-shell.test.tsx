@@ -79,6 +79,7 @@ const originalApi = {
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
+  listAgentMessages: api.listAgentMessages,
   listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
@@ -456,6 +457,9 @@ test("the shell tells the live-view registry which agents the person pinned", as
   api.getMyAgentState = async () => ({
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
+  // A view the registry mounts reads its session's messages once its page's chunk has arrived,
+  // which in one process is every run after the first (`MountedLiveViews.tsx`); none are asserted.
+  api.listAgentMessages = async () => [];
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
 
