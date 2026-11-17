@@ -27,8 +27,9 @@ import (
 // rcRoom is a room as a load makes one (keepReplica, chargeLoadedRoom), with its update observer
 // draining each commit into the replica inside the apply, as observeRoomUpdates does, unless held:
 // a held room's replica takes nothing until the test releases it, which is the window between a
-// commit of the server's own and the observer that takes it, where the room's apply check has no
-// rendering standing at the commit an apply starts from (renderCheck.base).
+// commit and the observer that takes it: after a commit of the server's own, the room's apply
+// check has no rendering standing at the commit an apply starts from (renderCheck.base), and after
+// a browser's it has only its own record of that apply (roomApplies.checked).
 type rcRoom struct {
 	service *Service
 	live    *crdt.Doc
@@ -75,8 +76,10 @@ func (r *rcRoom) release() {
 
 // frame weighs update and holds the invariant the check exists for: a refused update leaves the
 // room byte for byte as it was; an admitted one leaves the room rendering within
-// maxPeerRenderingBytes, or no larger than the room rendered before it. It reports the hook's
-// answer. what names the frame and the seed it came from in every failure.
+// maxPeerRenderingBytes, or no larger than the room rendered before it. It holds the one the
+// check's reuse rests on as well: an admitted update leaves every rendering the room places at its
+// commit a whole render of the room there (requireRenderedAs). It reports the hook's answer. what
+// names the frame and the seed it came from in every failure.
 func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 	t.Helper()
 	before, beforeErr := renderDocument(r.live)
@@ -105,6 +108,9 @@ func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 		return err
 	}
 	after, afterErr := renderDocument(r.live)
+	if afterErr == nil {
+		r.requireRenderedAs(t, what, after)
+	}
 	if afterErr == nil && len(after) > maxPeerRenderingBytes && (beforeErr != nil || len(after) > len(before)) {
 		// Not fatal: the room goes on taking frames, so a run without the check says how many it
 		// took past the line (tookPast).
@@ -118,6 +124,58 @@ func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 		}
 	}
 	return nil
+}
+
+// requireRenderedAs requires every rendering the room places at the commit position it stands at
+// to be whole, the room's markdown as a render of its whole state writes it there: the check's own
+// record of what the last browser's apply it passed left (roomApplies.checked), which the next
+// apply's check splices into and the replica takes for that commit (takeChecked), and the
+// replica's published rendering (roomWeighing.rendered), which the next apply is weighed against
+// and a write's read of the room takes as the rendering of the state it copies (replicaRead). A
+// splice that misses or misplaces a change can leave the rendering the length a whole render
+// writes, which the published size cannot show, so the markdown itself is compared. A held room's
+// replica stands behind the room's position until it is released, so only the check's record is
+// held to it there; an unheld room's replica must stand there, with its rendering once it holds a
+// copy of the room, which a room whose load handed it none takes at the room's first commit
+// (keepReplica).
+func (r *rcRoom) requireRenderedAs(t *testing.T, what, whole string) {
+	t.Helper()
+	at, counted := r.replica.logged.now()
+	if !counted {
+		t.Fatalf("%s: the room's commit position cannot be read", what)
+	}
+	published := r.replica.rendered.Load()
+	if !r.held.Load() && (published == nil || published.at != at || (published.rendering == nil && r.replica.doc != nil)) {
+		t.Fatalf("%s: the room stands at commit %d and its replica publishes no rendering there (%+v)", what, at, published)
+	}
+	for _, placed := range []struct {
+		name     string
+		rendered *roomRendered
+	}{
+		{"the check's record of the room's rendering", r.replica.applies().checked.Load()},
+		{"the replica's published rendering", published},
+	} {
+		if placed.rendered == nil || placed.rendered.at != at || placed.rendered.rendering == nil {
+			continue
+		}
+		if held := placed.rendered.rendering.markdown; held != whole {
+			t.Fatalf("%s: %s at commit %d is not a whole render of the room there: %s", what, placed.name, at, renderingDifference(held, whole))
+		}
+	}
+}
+
+// renderingDifference says where held, a rendering the room placed, first leaves whole, the whole
+// render of the same state, with a few bytes of each from there: two renderings of a document near
+// the bound are too long to print whole.
+func renderingDifference(held, whole string) string {
+	at := 0
+	for at < len(held) && at < len(whole) && held[at] == whole[at] {
+		at++
+	}
+	excerpt := func(markdown string) string {
+		return markdown[at:min(len(markdown), at+80)]
+	}
+	return fmt.Sprintf("%d bytes against %d, first differing at byte %d: %q against %q", len(held), len(whole), at, excerpt(held), excerpt(whole))
 }
 
 // requireClosed requires err to be the hook's close with code and reason.
@@ -279,7 +337,10 @@ func rcShapes() []rcShape {
 // insert, delete across format items, format and unformat, set start numbers, spans and levels,
 // build deep nesting of their own and type newlines - with a write of the server's own landing
 // before some frames while the replica has not taken it yet, the window where the check knows no
-// rendering standing at the commit the frame starts from (renderCheck.base).
+// rendering standing at the commit the frame starts from (renderCheck.base), and with the replica
+// held behind the room across runs of frames, so that one drain hands it several frames' commits,
+// each with the rendering its check made (takeChecked). After every admitted frame each rendering
+// the room places at its commit is a whole render of the room there (requireRenderedAs).
 //
 // The seed is printed and named in every failure; DISPATCH_RENDER_CHECK_SEED runs one again.
 func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
@@ -310,10 +371,13 @@ func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
 		room := newRCRoom(t, gen.document(t, document%3))
 		for index := range frames {
 			what := fmt.Sprintf("seed %d, document %d, frame %d", seed, document, index)
-			if gen.rng.IntN(5) == 0 {
+			switch gen.rng.IntN(5) {
+			case 0:
 				room.held.Store(true)
 				gen.serverWrite(room)
 				serverWrites++
+			case 1:
+				room.held.Store(true)
 			}
 			update, op := gen.frame(t, room)
 			err := room.frame(t, what+" ("+op+")", update)
@@ -330,12 +394,13 @@ func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
 			default:
 				refused++
 			}
-			if room.held.Load() {
+			if room.held.Load() && (gen.rng.IntN(2) == 0 || index == frames-1) {
 				room.release()
 				if rendering, err := renderDocument(room.live); err == nil {
 					if size, _ := room.replica.size(); size != int64(len(rendering)) {
 						t.Fatalf("%s: once released the room publishes %d bytes and renders %d", what, size, len(rendering))
 					}
+					room.requireRenderedAs(t, what+", once released", rendering)
 				}
 			}
 		}

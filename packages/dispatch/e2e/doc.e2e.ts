@@ -233,26 +233,35 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     await expect(cursorLabel(alicePage, "bob")).toBeVisible();
     await expect(cursorLabel(bobPage, "alice")).toBeVisible();
 
+    // Settlement versions the document 250 ms after the room's last update
+    // (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`), so a pause that long in either person's
+    // typing settles a version of what was typed by then, and a loaded runner can pause that long
+    // between two keystrokes. The version their editing settles at is the newest one: it is
+    // attributed to both of them and holds what each of them typed.
     await expect
-      .poll(() =>
-        getArtifact(artifactId).then((artifact) =>
-          (artifact.versions ?? [])
-            .find(({ number }) => number === 2)
-            ?.authors?.map(({ id }) => id)
-            .sort()
-        )
-      )
-      .toEqual(["alice", "bob"]);
-    await expect
-      .poll(() =>
-        getArtifact(artifactId).then((artifact) =>
-          (artifact.versions ?? []).find(({ number }) => number === 2)
-        )
-      )
-      .toMatchObject({ named: false, number: 2, summary: null });
-    await expect
-      .poll(() => getArtifactVersion(artifactId, 2).then(({ markdown }) => markdown))
-      .toContain("hello from alice");
+      .poll(async () => {
+        const versions = (await getArtifact(artifactId)).versions ?? [];
+        const newest = versions.reduce<(typeof versions)[number] | undefined>(
+          (latest, version) => (latest && latest.number > version.number ? latest : version),
+          undefined
+        );
+        if (!newest) {
+          return undefined;
+        }
+        const { markdown } = await getArtifactVersion(artifactId, newest.number);
+        return {
+          authors: newest.authors?.map(({ id }) => id).sort(),
+          named: newest.named,
+          summary: newest.summary,
+          typed: ["hello from alice", "hello from bob"].filter((typed) => markdown.includes(typed)),
+        };
+      })
+      .toEqual({
+        authors: ["alice", "bob"],
+        named: false,
+        summary: null,
+        typed: ["hello from alice", "hello from bob"],
+      });
   } finally {
     await bob.close();
     await alice.close();
