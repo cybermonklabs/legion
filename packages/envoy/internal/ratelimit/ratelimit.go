@@ -73,12 +73,20 @@ func (k *Keyed) AllowAt(key string, now time.Time) bool {
 //
 // giveBack(at) returns the request at at, the time of the give-back: the bucket refills to at,
 // gains the one request and is capped at its burst. Where at is before the bucket's last update,
-// because the caller read it before a later take of key or change of rate (SetRatesAt) won k's
-// lock, the request is added at that update's time instead, so no time is refilled twice. So the
-// bucket holds what it would hold had the request never been taken, with every other take of key
-// allowed meanwhile still taken, however long after this one it came. Only where another take
-// came while the bucket would have been full without this one can it hold more than that, by up
-// to one request. giveBack runs under k's lock, and only its first call gives anything back.
+// because the caller read it before another update of the bucket won k's lock (a later take of
+// key, a change of rate by SetRatesAt, or another give-back), the request is added at that
+// update's time instead, so the give-back refills no time twice. So the bucket holds what it would
+// hold had the request never been taken, with every other take of key allowed meanwhile still
+// taken, however long after this one it came. Only where another take came while the bucket would
+// have been full without this one can it hold more than that, by up to one request.
+//
+// That bound is exact only where each take of key is stamped in the order it takes k's lock. A
+// take stamped before the bucket's last update moves the bucket's clock back to its own stamp, as
+// rate.Limiter's takes do (tokenBucket.allowAt), and so refills the time between the two again.
+// This take and its give-back each move the clock forward, so after such a take the bucket can
+// hold more than the bound, by up to about twice the requests the rate refills in the time that
+// take waited for k's lock. giveBack runs under k's lock, and only its first call gives anything
+// back.
 func (k *Keyed) TakeAt(key string, now time.Time) (giveBack func(at time.Time), ok bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
