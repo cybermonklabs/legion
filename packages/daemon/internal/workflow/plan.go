@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -152,4 +153,60 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(w.Steps[place.Position-1].Role), Phase: issue.Phase, Reason: said})
+}
+
+// taskStopped is the owner's stop_task of one task of a recorded issue (R16; C2-1): the task
+// stops where it stands, in the fact's own transaction, as stopTask stops it, its running step
+// ending stopped, with the reason that its owner stopped it. The architect the issue's notices
+// reach is told in a task-stopped notice that names the architect that made the call
+// (Notice.StoppedBy): the daemon's notice executor publishes it only where that is another
+// claim, since the caller is answered by its own call.
+//
+// An issue the record does not hold, or one with no plan rows, has no task to stop, and a task
+// the plan does not hold is none either (TaskNotFound, which lists the plan's tasks only where it
+// has some): an issue with no plan rows changes nothing (R20). A stop of a task already stopped
+// changes nothing and is no refusal, so a retry of a stop already applied finds it stopped. A
+// task that is done, or left the workflow with its issue before it was done, has nothing left to
+// stop (TaskDone, TaskLeft): each is refused here, before the store's stop, which refuses both
+// states itself and would fail the whole fact, and before the linger a root's leave begins, since
+// the task's own state is the truer answer. A stop in a lingering tree changes nothing and says
+// so.
+func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if issue == nil {
+		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
+	}
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	switch {
+	case !w.Stored:
+		return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, nil)}, nil
+	case fact.Task != w.Task:
+		return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, []string{w.Task})}, nil
+	case w.State == record.TaskStopped:
+		return intake.Result{}, nil
+	case w.State == record.TaskDone:
+		return intake.Result{Refusal: intake.TaskDone(issue.Key, w.Task)}, nil
+	case w.State == record.TaskLeft:
+		return intake.Result{Refusal: intake.TaskLeft(issue.Key, w.Task)}, nil
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if lingers {
+		return refusedLingering(*issue, fmt.Sprintf("the owner's stop of task %s", w.Task)), nil
+	}
+	from := record.StandsAt(*issue)
+	why := fmt.Sprintf("task %s of %s was stopped by its owner", w.Task, issue.Key)
+	if err := e.stopTask(ctx, tx, *issue, w, why, why, stepStopped); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: phase.RoleFor(from), Phase: from,
+		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
 }

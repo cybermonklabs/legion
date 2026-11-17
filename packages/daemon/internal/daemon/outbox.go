@@ -1502,6 +1502,15 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if err != nil {
 		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
 	}
+	// The architect whose stop_task stopped the task is answered by its own call, so a
+	// task-stopped notice that names it finishes here, and the one the issue's notices reach is
+	// told only when that is another claim (record.Notice.StoppedBy). Published keeps the field,
+	// so a re-held copy is judged the same way.
+	if payload.StoppedBy != "" && payload.StoppedBy == architect {
+		r.log.Info("outbox notice finished without publishing: its architect stopped the task itself",
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect)
+		return nil
+	}
 	notice, key := payload.Published(row.ID)
 	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {

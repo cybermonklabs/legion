@@ -39,6 +39,8 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "LEGION-208 has no plan of tasks in Legion's record, so it has no task a. This stop changed nothing."}},
 		{"a task that is done", TaskDone("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 is done, so nothing of it is left to stop. This stop changed nothing."}},
+		{"a task that left the workflow with its issue", TaskLeft("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got == nil || !reflect.DeepEqual(*tc.got, tc.want) {

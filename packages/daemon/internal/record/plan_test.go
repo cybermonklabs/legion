@@ -516,6 +516,41 @@ func TestATaskThatLeftTheWorkflowIsNeverStartedAgain(t *testing.T) {
 	}
 }
 
+// A stopped task whose issue then leaves the workflow is left where it stands and keeps the
+// reason it was stopped for: the state left says the run is over before the task was done, and
+// the reason is the only record of why it was not done. The control is the same leave of a task
+// that still runs, which had no reason and is left with none.
+func TestAStoppedTaskThatLeavesTheWorkflowKeepsWhyItWasStopped(t *testing.T) {
+	const why = "task a of LEGION-208 was stopped by its owner"
+	step2 := TaskPlace{Kind: PlaceStep, Position: 2}
+	for _, tc := range []struct {
+		name    string
+		stopped bool
+		want    string
+	}{
+		{name: "a stopped task", stopped: true, want: why},
+		{name: "a running task, the control", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			v, tasks, steps := ownersPlan(planIssue, 1, 2, planOwner, planGivenAt)
+			records := NewStore()
+			inTx(t, st, func(tx pgx.Tx) {
+				putPlan(t, tx, v, tasks, steps)
+				must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", step2, TaskRunning))
+				if tc.stopped {
+					must(t, records.StopTask(ctx, tx, planIssue, 1, "a", why))
+				}
+				must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", step2, TaskLeft))
+				if got := readPlan(t, tx, planIssue, 1).Tasks[0]; got.State != TaskLeft || got.StoppedReason != tc.want || got.Place != step2 {
+					t.Fatalf("task a after its issue left = %s (%q) at %+v, want left at step 2 with the reason %q", got.State, got.StoppedReason, got.Place, tc.want)
+				}
+			})
+		})
+	}
+}
+
 // queryCountingTx counts each statement its caller sends, so a test can hold a read to the one
 // query it promises.
 type queryCountingTx struct {

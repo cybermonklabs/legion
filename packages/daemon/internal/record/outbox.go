@@ -305,6 +305,14 @@ type Notice struct {
 	// (skill://legion-controller/references/wakes.md,
 	// skill://legion-architect/references/wake-routing.md).
 	Escalation string `json:"escalation,omitempty"`
+	// StoppedBy is the claim of the architect whose stop_task stopped the task a task-stopped
+	// notice reports (workflow's taskStopped), carried by no other kind (validateOutboxPayload),
+	// and absent from the task-stopped notice of a task that no architect stopped (workflow's
+	// stopUnreturned). The architect that made the call is answered by its own call, so the
+	// daemon's notice executor publishes the notice only when the architect the issue's notices
+	// reach is another claim (the daemon's deliverNotice). Published keeps it, so a re-held copy
+	// is judged the same way.
+	StoppedBy claim.Token `json:"stoppedBy,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
@@ -1665,6 +1673,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -1689,6 +1700,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return err
 		}
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
+		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
@@ -1883,9 +1897,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
 //
-// `task-stopped` is the task a failed step stopped because no step before it of the type
-// implementation can take its work back (workflow's stopUnreturned): its issue is held, and the
-// task's owner reads which task and which step in its reason.
+// `task-stopped` is a task stopped where it stands, its issue held: by its owner's stop_task
+// (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
+// reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
+// or by a failed step that no step before it of the type implementation can take the work back
+// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
+// architect, in its reason.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -1937,6 +1954,17 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	}
 	if kind != "held" || reason != string(HoldEscalated) {
 		return fmt.Errorf("a %s notice with reason %q carries the architect's words for an escalation; only a held notice of an escalation does", kind, reason)
+	}
+	return nil
+}
+
+// validateNoticeStopper holds the claim of the architect that stopped a task to the one notice
+// that carries it: the task-stopped notice of its owner's stop_task (workflow's taskStopped),
+// which the daemon's executor publishes only to an architect that is not that claim. Both arms
+// of the switch above call it, as they call validateNoticeFailure and for the same reason.
+func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
+	if stoppedBy != "" && kind != "task-stopped" {
+		return fmt.Errorf("a %s notice names the architect that stopped its task; only a task-stopped notice does", kind)
 	}
 	return nil
 }

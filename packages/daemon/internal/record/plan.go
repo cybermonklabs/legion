@@ -32,8 +32,8 @@ const (
 )
 
 // The states of a task (PlanTask.State). A task whose issue leaves the workflow before the task is
-// done is left: it keeps its place, and nothing starts it again, since a todo opens a new run with
-// rows of its own.
+// done is left: it keeps its place, and the reason it was stopped for where it was stopped, and
+// nothing starts it again, since a todo opens a new run with rows of its own.
 const (
 	TaskWaiting = "waiting"
 	TaskRunning = "running"
@@ -450,9 +450,10 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 
 // MoveTask writes where task stands in the plan of issue at generation, and its state: the one
 // write of the walk's moveTask. A stop is StopTask's, which records why, so the state stopped is
-// refused here, and a move takes a stop's reason away. A place no task can stand at, a step the
-// task does not have, a task the plan does not hold and a task that left the workflow (TaskLeft),
-// which nothing moves again, are refused.
+// refused here, and a move takes a stop's reason away, but a move to left (TaskLeft): a stopped
+// task whose issue leaves the workflow keeps why it was stopped, the one record of why it was not
+// done. A place no task can stand at, a step the task does not have, a task the plan does not
+// hold and a task that left the workflow, which nothing moves again, are refused.
 func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
@@ -465,7 +466,8 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if !place.valid() {
 		return fmt.Errorf("%s: no task stands at that place", describe)
 	}
-	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6, stopped_reason = ''
+	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6,
+		stopped_reason = case when $6 = 'left' then stopped_reason else '' end
 		where issue = $1 and generation = $2 and task = $3 and state <> 'left'
 		and ($4 <> 'step' or exists (select 1 from plan_steps where plan_steps.issue = $1 and plan_steps.generation = $2
 			and plan_steps.task = $3 and plan_steps.position = $5))`,

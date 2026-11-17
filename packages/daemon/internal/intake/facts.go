@@ -1468,6 +1468,14 @@ func TaskDone(issue, task string) *Refusal {
 		"task %s of %s is done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
 }
 
+// TaskLeft is the 409 TASK_DONE refusal of stop_task for task of issue, which left the workflow
+// with its issue before it was done (record.TaskLeft): nothing starts it again, so there is
+// nothing of it to stop, as for a task that is done, and the code is that one's.
+func TaskLeft(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
+}
+
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of
 // tree, when it is asked to join want: it is that tree's, not want's. A release of children and
 // the workflow's adoption both answer it.
