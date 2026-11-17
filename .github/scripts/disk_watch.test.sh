@@ -42,8 +42,13 @@ trap cleanup EXIT
 
 # A PATH with python3 and nothing else on it: no go, no docker. The script's own shebang finds
 # python3 through it, and the sampler it starts is started by sys.executable, an absolute path.
+# The link names the interpreter itself, as python3 reports it while it still runs in this
+# script's environment (check-ci-filters.test.sh resolves its python the same way). The python3
+# that `command -v` finds can be a version manager's shim, as a mise shim is, and a shim needs the
+# HOME and settings `env -i` takes away: under run_watch it exits 1 before the script starts.
 mkdir "$work/bin"
-ln -s "$(command -v python3)" "$work/bin/python3"
+python=$(python3 -c 'import sys; print(sys.executable)')
+ln -s "$python" "$work/bin/python3"
 
 # run_watch <arguments...>: runs the script under test with that bare PATH, leaving its merged
 # output in $out and its status in $status.
