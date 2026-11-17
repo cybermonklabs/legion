@@ -367,7 +367,7 @@ describe("drawSlices under a read of the reserve", () => {
         .filter((one) => one.row.caseId.endsWith("-0"))
         .map((one) => ({
           group: `tree:${one.row.issueKey}`,
-          slice: "report",
+          slice: "report" as const,
           cases: [0, 1, 2].map((at) => one.row.caseId.replace(/-0$/, `-${at}`)),
         }))
         .sort((one, other) => (one.group < other.group ? -1 : 1)),

@@ -1316,15 +1316,17 @@ describe("the claim's measure, over the final test's trees", () => {
     expect(claim?.trees).toBe(6);
     expect(claim?.withoutApproval).toBe(1);
     expect(claim?.outsideFinalTest).toBe(1);
-    expect(claim?.read).toBe(4);
+    expect(claim?.read).toBe(5);
     // T1 and T2: four decided requests, but two trees, of which T2 disagrees once.
     expect(claim?.decided).toBe(2);
     expect(claim?.disagreeing).toBe(1);
-    // T3, under the threshold, and T4, held, decided nothing.
-    expect(claim?.neverDecide).toEqual({ count: 2, share: 0.5 });
+    // T3, under the threshold, T4, held, and T6, a question alone, decided no approval request,
+    // so all three are never-decide trees of the five read; T5 went to fit and is read by none.
+    expect(claim?.neverDecide).toEqual({ count: 3, share: 0.6 });
     // One disagreeing tree of two: the bound solves 1 - p ^ 2 = 0.10.
     expect(claim?.bound).toBeCloseTo(Math.sqrt(0.9), 10);
     expect(claim?.withinRate).toBe(false);
+    expect(claim?.missing).toBeNull();
     expect(claim?.rows).toEqual([
       { group: "tree:T1", slice: "report", approvals: 2, decided: 2, disagreements: 0 },
       { group: "tree:T2", slice: "report", approvals: 2, decided: 2, disagreements: 1 },
@@ -1341,10 +1343,10 @@ describe("the claim's measure, over the final test's trees", () => {
     const claim = named.arms[0]?.claim;
     expect(claim?.threshold).toBe(0);
     expect(claim?.thresholdFrom).toBe("named");
-    // T3's split verdict now counts; T4, held, still decided nothing.
+    // T3's split verdict now counts; T4, held, and T6, a question alone, still decided nothing.
     expect(claim?.decided).toBe(3);
     expect(claim?.disagreeing).toBe(1);
-    expect(claim?.neverDecide).toEqual({ count: 1, share: 0.25 });
+    expect(claim?.neverDecide).toEqual({ count: 2, share: 0.4 });
     // The arm's own report reading is unchanged by the claim's threshold.
     expect(named.arms[0]?.approval.fit.threshold).toBe(1);
   });
@@ -1362,31 +1364,31 @@ describe("the claim's measure, over the final test's trees", () => {
     expect(of44.withinRate).toBe(false);
   });
 
-  test("an arm missing too many judgements carries the words in place of the bound", () => {
+  test("an arm missing too many judgements prints its bound, and the words beside it", () => {
     const { trees, readings, byCaseId } = decidedTrees(45);
-    const missing = "no bound: this arm is missing 12.0 percent of its judgements";
+    const missing = "this arm is missing 12.0 percent of its judgements (330 of 375 answered)";
     const claim = claimMeasureOf(trees, readings, byCaseId, 1, "fitted", missing);
     expect(claim.decided).toBe(45);
-    expect(claim.bound).toBeNull();
-    expect(claim.noBound).toBe(missing);
-    expect(claim.withinRate).toBeNull();
+    expect(claim.bound).toBeCloseTo(0.049_881, 5);
+    expect(claim.missing).toBe(missing);
   });
 
-  test("an arm that fitted no threshold decides nothing, and no tree carries a bound", () => {
+  test("with no decided tree the bound is 1, and it is still reported", () => {
     const { trees, readings, byCaseId } = decidedTrees(3);
+    // An arm the fit slice fitted no threshold for decides nothing.
     const claim = claimMeasureOf(trees, readings, byCaseId, null, "fitted", null);
     expect(claim.decided).toBe(0);
     expect(claim.neverDecide).toEqual({ count: 3, share: 1 });
-    expect(claim.bound).toBeNull();
-    expect(claim.noBound).toBe("no bound: no tree read holds a request the arm decided");
+    expect(claim.bound).toBe(1);
+    expect(claim.withinRate).toBe(false);
   });
 
   test("a tree naming a case the corpus does not hold stops the reading", () => {
     const { trees, readings, byCaseId } = decidedTrees(2);
     const ghost: FinalTestTree = { group: "tree:ghost", slice: "report", cases: ["ghost-1"] };
-    expect(() =>
-      claimMeasureOf([...trees, ghost], readings, byCaseId, 1, "named", null)
-    ).toThrow(CorpusError);
+    expect(() => claimMeasureOf([...trees, ghost], readings, byCaseId, 1, "named", null)).toThrow(
+      CorpusError
+    );
   });
 
   test("the report prints the measure over a draw with trees, and nothing of it over one without", () => {

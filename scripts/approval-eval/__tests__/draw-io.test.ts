@@ -9,6 +9,7 @@ import {
   corpusSlicesPath,
   type DrawRecord,
   drawPath,
+  type FinalTestTree,
   readDraw,
   readSlices,
   rootFactsOf,
@@ -230,7 +231,7 @@ describe("readDraw", () => {
   });
 
   test("reads the final test's trees, and none from a draw that recorded none", async () => {
-    const trees = [
+    const trees: FinalTestTree[] = [
       { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1"] },
       { group: "tree:RES-1", slice: null, cases: ["r-1-0"] },
     ];
@@ -272,6 +273,14 @@ describe("readDraw", () => {
     ]);
     await expect(readDraw(twice)).rejects.toThrow(
       `${twice} names the case r-0-0 in the trees tree:RES-0 and tree:RES-1`
+    );
+    // One tree written as two, with no case in common, would count twice.
+    const split = await withTrees([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0"] },
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-1"] },
+    ]);
+    await expect(readDraw(split)).rejects.toThrow(
+      `${split} names the finalTest tree tree:RES-0 twice`
     );
   });
 });

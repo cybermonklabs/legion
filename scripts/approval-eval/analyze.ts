@@ -276,14 +276,14 @@ export interface ClaimTree {
 
 /**
  * The claim's measure over trees, as the reserve's version 3 registers it (item 8): the requests
- * of one tree count once. Of the eligible trees, those holding an answered approval request and
- * either in report or in no slice are the trees read; n is those of them in which the arm decided
- * at least one answered approval request, a tree disagrees when any decided request in it
- * disagrees with the person's answer, the read trees with no decided request are the never-decide
- * trees, apart and not in n, and the bound is the one-sided 90 percent Clopper-Pearson upper bound
- * on the disagreeing trees over n. The registration reports that bound below 45 trees too, so no
- * floor applies; only an arm missing too many of its judgements carries none, as everywhere in
- * this report.
+ * of one tree count once. The trees read are the eligible trees in report or in no slice; n is
+ * those in which the arm decided at least one answered approval request, a tree disagrees when
+ * any decided request in it disagrees with the person's answer, the trees read with no decided
+ * request are the never-decide trees, apart and not in n, a tree holding no approval request
+ * among them, and the bound is the one-sided 90 percent Clopper-Pearson upper bound on the
+ * disagreeing trees over n. The registration has the run report that bound however few trees it
+ * is over, so it is always given: 1 where n is 0, and an arm missing judgements carries the words
+ * that say so beside the bound, never in its place.
  */
 export interface ClaimMeasure {
   /** The counted confidence a verdict was read at, and null where the arm fitted none. */
@@ -292,26 +292,27 @@ export interface ClaimMeasure {
   thresholdFrom: "fitted" | "named";
   /** Every eligible tree the draw recorded. */
   trees: number;
-  /** Eligible trees holding no answered approval request, which no count below reads. */
+  /** Of those, the trees holding no answered approval request, wherever they went. */
   withoutApproval: number;
   /**
-   * Eligible trees holding one that the draw put in another slice than report, for want of room
-   * there: development data, which no count below reads.
+   * Eligible trees the draw put in another slice than report, for want of room there:
+   * development data, which no count below reads.
    */
   outsideFinalTest: number;
-  /** The trees read: eligible, holding an answered approval request, in report or in no slice. */
+  /** The trees read: eligible, and in report or in no slice. */
   read: number;
-  /** n: the read trees in which the arm decided at least one answered approval request. */
+  /** n: the trees read in which the arm decided at least one answered approval request. */
   decided: number;
   /** Of n, the trees in which a decided request disagrees with the person's answer. */
   disagreeing: number;
-  /** The read trees with no decided request, and their share of the read trees. */
+  /** The trees read with no decided request, and their share of the trees read. */
   neverDecide: { count: number; share: number | null };
-  /** The one-sided 90 percent upper bound on the disagreeing share of n, or null with why. */
-  bound: number | null;
-  noBound: string | null;
-  /** Whether that bound is at or under the person's 1 in 20, and null where there is none. */
-  withinRate: boolean | null;
+  /** The one-sided 90 percent upper bound on the disagreeing share of n; 1 where n is 0. */
+  bound: number;
+  /** Whether that bound is at or under the person's 1 in 20. */
+  withinRate: boolean;
+  /** The words that say the arm is missing too many of its judgements, and null where it is not. */
+  missing: string | null;
   /** Every eligible tree, in the order of its group key. */
   rows: ClaimTree[];
 }
@@ -1536,21 +1537,21 @@ export function claimMeasureOf(
     }
     return { group: tree.group, slice: tree.slice, approvals, decided, disagreements };
   });
-  const withApproval = rows.filter((tree) => tree.approvals > 0);
-  const read = withApproval.filter((tree) => tree.slice === "report" || tree.slice === null);
+  const read = rows.filter((tree) => tree.slice === "report" || tree.slice === null);
   const decidedTrees = read.filter((tree) => tree.decided > 0);
   const disagreeing = decidedTrees.filter((tree) => tree.disagreements > 0).length;
   const neverDecide = read.length - decidedTrees.length;
+  // With no decided tree nothing rules out any rate, so the bound is 1, and it is still reported.
   const bound =
-    missing === null && decidedTrees.length > 0
-      ? clopperPearsonUpper(disagreeing, decidedTrees.length, DEFAULT_CONFIDENCE)
-      : null;
+    decidedTrees.length === 0
+      ? 1
+      : clopperPearsonUpper(disagreeing, decidedTrees.length, DEFAULT_CONFIDENCE);
   return {
     threshold,
     thresholdFrom,
     trees: rows.length,
-    withoutApproval: rows.length - withApproval.length,
-    outsideFinalTest: withApproval.length - read.length,
+    withoutApproval: rows.filter((tree) => tree.approvals === 0).length,
+    outsideFinalTest: rows.length - read.length,
     read: read.length,
     decided: decidedTrees.length,
     disagreeing,
@@ -1559,11 +1560,8 @@ export function claimMeasureOf(
       share: read.length === 0 ? null : neverDecide / read.length,
     },
     bound,
-    noBound:
-      bound !== null
-        ? null
-        : (missing ?? "no bound: no tree read holds a request the arm decided"),
-    withinRate: bound === null ? null : bound <= RATE,
+    withinRate: bound <= RATE,
+    missing,
     rows,
   };
 }
@@ -1586,12 +1584,17 @@ function armAnalysisOf(
 ): ArmAnalysis {
   const missingShare = planned === 0 ? 1 : Math.max(0, (planned - arm.answered) / planned);
   const bounded = missingShare <= MOST_MISSING;
-  const noBound = bounded
+  // What is short, in words: the report's own bounds give way to it, while the claim's measure,
+  // which its registration has reported at any count, prints it beside its bound.
+  const short = bounded
     ? null
-    : `no bound: this arm is missing ${(100 * missingShare).toFixed(1)} percent of its ` +
-      `judgements (${count(arm.answered)} of ${count(planned)} answered), and the plan gives ` +
-      "no bound past " +
-      `${(100 * MOST_MISSING).toFixed(0)} percent`;
+    : `this arm is missing ${(100 * missingShare).toFixed(1)} percent of its judgements ` +
+      `(${count(arm.answered)} of ${count(planned)} answered)`;
+  const noBound =
+    short === null
+      ? null
+      : `no bound: ${short}, and the plan gives no bound past ` +
+        `${(100 * MOST_MISSING).toFixed(0)} percent`;
   const casesBySlice: Record<string, Record<string, number>> = {};
   for (const one of arm.cases) {
     const bySlice = casesBySlice[one.slice] ?? {};
@@ -1631,7 +1634,7 @@ function armAnalysisOf(
             claim.byCaseId,
             claim.threshold === "fitted" ? approval.fit.threshold : claim.threshold,
             claim.threshold === "fitted" ? "fitted" : "named",
-            noBound
+            short
           ),
   };
 }
@@ -2727,14 +2730,14 @@ function claimLines(analysis: Analysis): string[] {
   const lines = ["", "## The claim's measure, over the final test's trees", ""];
   lines.push(
     "Read as the reserve's version 3 registers it (item 8): the requests of one tree count " +
-      "once. The trees read are the eligible trees holding an answered approval request that " +
-      "the draw put in report, or in no slice where the never-decide rule held or the draw left " +
-      "out every case of them. n is those in which the arm decided at least one such request; " +
-      "a tree disagrees when any request decided in it disagrees with the person's answer; the " +
-      "trees read with no decided request are never-decide, apart and not in n. The bound is " +
-      "the one-sided 90 percent Clopper-Pearson upper bound on the disagreeing trees over n, at " +
-      "any n. An eligible tree the draw put in another slice, report having no room for it, is " +
-      "development data and is counted apart."
+      "once. The trees read are the eligible trees the draw put in report, or in no slice where " +
+      "the never-decide rule held or the draw left out every case of them. n is those in which " +
+      "the arm decided at least one answered approval request; a tree disagrees when any " +
+      "request decided in it disagrees with the person's answer; the trees read with no decided " +
+      "request, a tree holding no approval request among them, are never-decide, apart and not " +
+      "in n. The bound is the one-sided 90 percent Clopper-Pearson upper bound on the " +
+      "disagreeing trees over n, at any n, and 1 where n is 0. An eligible tree the draw put in " +
+      "another slice, report having no room for it, is development data and is counted apart."
   );
   lines.push("");
   lines.push(
@@ -2766,11 +2769,14 @@ function claimLines(analysis: Analysis): string[] {
         claim.neverDecide.share === null
           ? count(claim.neverDecide.count)
           : `${count(claim.neverDecide.count)} (${num(claim.neverDecide.share)})`,
-        claim.bound === null ? (claim.noBound ?? "no bound") : `at most ${num(claim.bound)}`,
-        claim.withinRate === null ? "no bound" : claim.withinRate ? "yes" : "no",
+        `at most ${num(claim.bound)}`,
+        claim.withinRate ? "yes" : "no",
       ])
     )
   );
+  for (const { arm, claim } of measured) {
+    if (claim.missing !== null) lines.push("", `${arm}: ${claim.missing}.`);
+  }
   return lines;
 }
 

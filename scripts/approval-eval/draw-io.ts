@@ -374,9 +374,10 @@ function rootsAt(value: unknown, path: string): Array<{ key: string } & IssueFac
 
 /**
  * The eligible trees a draw under a registered read recorded, and none where it recorded no
- * final test or recorded one before the trees were. A tree that names no group, a slice that is
- * none of the four, a case that is no string, or a case two trees both name, is the file being
- * no draw: the claim's measure counts trees, so a tree read wrongly is a count read wrongly.
+ * final test or recorded one before the trees were. A tree that names no group, a group named
+ * twice, a slice that is none of the four, a case that is no string, or a case named twice, is
+ * the file being no draw: the claim's measure counts trees, so a tree read wrongly is a count
+ * read wrongly, and one tree written as two would count twice.
  */
 function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null {
   if (value === undefined || value === null) return null;
@@ -385,6 +386,7 @@ function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null 
   const held = record.trees;
   if (held === undefined) return null;
   if (!Array.isArray(held)) throw new CorpusError(`${path} holds finalTest trees that are no list`);
+  const groups = new Set<string>();
   const seen = new Map<string, string>();
   return held.map((entry, at) => {
     const tree = recordOf(entry);
@@ -392,6 +394,8 @@ function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null 
     if (tree === null || group === null || group === "") {
       throw new CorpusError(`${path} finalTest tree ${at + 1} names no group`);
     }
+    if (groups.has(group)) throw new CorpusError(`${path} names the finalTest tree ${group} twice`);
+    groups.add(group);
     // A tree with no drawable case is written with a slice of null, so a missing slice is no
     // tree a draw wrote, not a tree in no slice.
     const slice = tree.slice;
