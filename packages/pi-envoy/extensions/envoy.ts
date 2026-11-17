@@ -69,6 +69,7 @@ import {
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
 import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
+import { goBlankPattern } from "@legion/envoy-client/dispatch-execute";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -329,18 +330,32 @@ export function resetNatsConnectForTests(): void {
  * later load of this entry (each top-level session of an ACP host), so the mark lives on
  * `globalThis`, as the NATS stand-in above does.
  */
-const SESSION_ROLE_NOTICE = Symbol.for("legion.pi-envoy.session-role-notice");
+const SESSION_ROLE_LOGGED = Symbol.for("legion.pi-envoy.session-role-logged");
 
-interface GlobalSessionRoleNotice {
+interface GlobalSessionRoleLogged {
   [key: symbol]: true | undefined;
 }
 
-const sessionRoleNoticeStore = globalThis as unknown as GlobalSessionRoleNotice;
+const sessionRoleLoggedStore = globalThis as unknown as GlobalSessionRoleLogged;
 
 // The mark outlives every instance of this entry in the process, so a suite clears it between
 // rows, as it clears the NATS stand-in above. Production callers never call this.
-export function resetSessionRoleNoticeForTests(): void {
-  delete sessionRoleNoticeStore[SESSION_ROLE_NOTICE];
+export function resetSessionRoleLoggedForTests(): void {
+  delete sessionRoleLoggedStore[SESSION_ROLE_LOGGED];
+}
+
+/**
+ * A role's name as the listener reads a claim's: with the characters Go's `strings.TrimSpace`
+ * takes trimmed from both ends, which is Go's set and not JavaScript's `trim` (`goBlankPattern`
+ * says where the two differ).
+ */
+function listenerRoleName(role: string): string {
+  const characters = [...role];
+  let start = 0;
+  let end = characters.length;
+  while (start < end && goBlankPattern.test(characters[start] ?? "")) start += 1;
+  while (end > start && goBlankPattern.test(characters[end - 1] ?? "")) end -= 1;
+  return characters.slice(start, end).join("");
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
@@ -2954,26 +2969,30 @@ export default function envoyExtension(pi: PiApi): void {
   // session; not an id a `/new`, a `/fork` or a tree branch mints, though a fork's or a branch's
   // transcript carries the named session's record of the claim. Each pass compares the session
   // open then. Read when the instance is created; nothing takes them out of the environment.
-  const sessionRole = process.env.ENVOY_SESSION_ROLE?.trim() || undefined;
+  const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
-  // session is. The name is read trimmed, as the listener reads a claim's, so a padded name is the
-  // same role. The process logs the refusal once (`SESSION_ROLE_NOTICE`), whichever session and
-  // path meets it first, and the person is told once for each session refused, on screen, where
-  // the role stays and how to take it back.
-  const sessionRoleNoticed = new Set<string>();
+  // session is. The name is read as the listener reads a claim's (`listenerRoleName`), so a padded
+  // name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`), whichever
+  // session and path meets it first, and the person is told once for each session refused, on
+  // screen, where the role stays and how to take it back.
+  const sessionRoleNotified = new Set<string>();
   const sessionRoleRefusal = (id: string, role: string): string | undefined => {
-    if (sessionRole === undefined || role.trim() !== sessionRole || id === sessionRoleSession) {
+    if (
+      sessionRole === undefined ||
+      listenerRoleName(role) !== sessionRole ||
+      id === sessionRoleSession
+    ) {
       return undefined;
     }
     const refusal = `envoy: ENVOY_SESSION_ROLE ${sessionRole} belongs to session ${sessionRoleSession ?? "none"}; this session ${id} claims nothing`;
-    if (sessionRoleNoticeStore[SESSION_ROLE_NOTICE] === undefined) {
-      sessionRoleNoticeStore[SESSION_ROLE_NOTICE] = true;
+    if (sessionRoleLoggedStore[SESSION_ROLE_LOGGED] === undefined) {
+      sessionRoleLoggedStore[SESSION_ROLE_LOGGED] = true;
       logger.warn(refusal);
     }
-    if (!sessionRoleNoticed.has(id)) {
-      sessionRoleNoticed.add(id);
+    if (!sessionRoleNotified.has(id)) {
+      sessionRoleNotified.add(id);
       activeSessionContext?.ui.notify(
         sessionRoleSession === undefined
           ? `envoy: role ${sessionRole} is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here`
@@ -2982,6 +3001,12 @@ export default function envoyExtension(pi: PiApi): void {
       );
     }
     return refusal;
+  };
+  // A claim the model or a plugin asks for refuses the launch's role to a session the launch did
+  // not name, before it calls the listener.
+  const requireSessionRoleFor = (id: string, role: string): void => {
+    const refusal = sessionRoleRefusal(id, role);
+    if (refusal !== undefined) throw new Error(refusal);
   };
 
   // The registration and role state the two serial queues write, the queues themselves, each
@@ -3889,9 +3914,7 @@ export default function envoyExtension(pi: PiApi): void {
     // a held role would take them all and deliver none, so the claim refuses before any listener
     // call registers the session or sets the role.
     requireInbound();
-    // The launch's role is the session's the launch named, whoever asks for it.
-    const refusal = sessionRoleRefusal(targetSessionID, role);
-    if (refusal !== undefined) throw new Error(refusal);
+    requireSessionRoleFor(targetSessionID, role);
     if (registrationState.establishedFor() !== targetSessionID) {
       await establishForBridge(context);
     }
@@ -4966,9 +4989,7 @@ export default function envoyExtension(pi: PiApi): void {
             async (handle) => {
               target = sessionID;
               handle.actFor(target);
-              // The launch's role is the session's the launch named, whoever asks for it.
-              const refusal = sessionRoleRefusal(target, role);
-              if (refusal !== undefined) throw new Error(refusal);
+              requireSessionRoleFor(target, role);
               const held = registrationState.heldRole();
               const moving = held !== undefined && held !== role;
               // Moving off a role closes every subscription another plugin opened `whileHolding`

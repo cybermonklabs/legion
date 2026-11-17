@@ -101,7 +101,8 @@ screen: `envoy: role <role> stays with the pod's session <id>; messages to the r
 delivered here. /resume <id> takes it back`, or, when the launch names no session, `envoy: role
 <role> is the pod's, but the pod names no session for it, so no session claims it; messages to
 the role are not delivered here`. A role name given to `envoy_role_set` or the Legion claim is read
-trimmed, as the listener reads it, so a padded name is the same role.
+with the white space Go's `strings.TrimSpace` takes trimmed from both ends, as the listener reads
+it (U+0085 included), so a padded name is the same role.
 
 So a `/new`, a `/fork` or a tree branch in a pod moves the person off the role: its messages are
 not delivered to the new session. The process hands the role back when it leaves the named

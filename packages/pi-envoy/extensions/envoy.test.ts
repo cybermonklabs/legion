@@ -93,6 +93,7 @@ import { version as packageVersion } from "../package.json" with { type: "json" 
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import { runSessionPod } from "../test/session-pod-report";
 import {
   type BranchEntry,
   type CommandContext,
@@ -608,7 +609,7 @@ let configDirectory = "";
 // the capture below puts them back as soon as the entry is loaded; every row's own load changes
 // them again.
 const restoreEntryLoad = captureEnvironment(["PATH", "DISPATCH_HOST", "ENVOY_CONFIG_FILE"]);
-const { resetNatsConnectForTests, resetSessionRoleNoticeForTests, setNatsConnectForTests } =
+const { resetNatsConnectForTests, resetSessionRoleLoggedForTests, setNatsConnectForTests } =
   await import("./envoy.ts?nats-stand-in");
 restoreEntryLoad();
 // The slot the setter writes is the process's, not this file's, so the set and the reset are one
@@ -643,7 +644,7 @@ beforeEach(() => {
   // decides for is another is unsaid again, so a row that reads it reads its own.
   delete process.env.ENVOY_SESSION_ROLE;
   delete process.env.ENVOY_SESSION_ROLE_SESSION;
-  resetSessionRoleNoticeForTests();
+  resetSessionRoleLoggedForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
@@ -1580,9 +1581,10 @@ function sessionPodListener(): SessionPodListener {
  * `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the environment
  * is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes it to session
  * `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a `/new` starts an
- * empty one, a resume opens the branch `resumed` gives). `heartbeat` runs one heartbeat pass and
- * lets it settle, `records` reads the role claim records the session's transcript holds, and
- * `notices` is every notice the extension showed on screen.
+ * empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives, where given; a tree
+ * branch keeps its own). `heartbeat` runs one heartbeat pass and lets it settle, `records` reads the
+ * role claim records the session's transcript holds, and `notices` is every notice the extension
+ * showed on screen, as `<level>: <text>`.
  */
 async function bootSessionPod(
   query: string,
@@ -1611,7 +1613,10 @@ async function bootSessionPod(
       getBranch: () => manager.branch(),
     },
     setInterval: (callback) => intervals.push(callback),
-    ui: { ...base.ui, notify: (message: string) => notices.push(message) },
+    ui: {
+      ...base.ui,
+      notify: (message: string, level: string) => notices.push(`${level}: ${message}`),
+    },
   };
   envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
@@ -1637,7 +1642,7 @@ async function bootSessionPod(
     move: async (
       reason: "fork" | "branch" | "new" | "resume",
       id: string,
-      resumed?: () => readonly unknown[]
+      opens?: () => readonly unknown[]
     ) => {
       if (reason === "branch") {
         await fixture.handlers.get("session_before_branch")?.({ entryId: "entry" }, context);
@@ -1654,7 +1659,7 @@ async function bootSessionPod(
         const from = fixture.entries.length;
         manager.branch = () => fixture.entries.slice(from);
       }
-      if (resumed !== undefined) manager.branch = resumed;
+      if (opens !== undefined) manager.branch = opens;
       await fixture.handlers.get("session_switch")?.({ reason }, context);
     },
     shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
@@ -11585,7 +11590,7 @@ console.log(JSON.stringify(args));
         "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_named; this session ses_pod_review claims nothing",
       ]);
       expect(review.notices).toEqual([
-        "envoy: role fan-cloud stays with the pod's session ses_pod_named; messages to the role are not delivered here. /resume ses_pod_named takes it back",
+        "warning: envoy: role fan-cloud stays with the pod's session ses_pod_named; messages to the role are not delivered here. /resume ses_pod_named takes it back",
       ]);
       expect(named.notices).toEqual([]);
     } finally {
@@ -11685,7 +11690,7 @@ console.log(JSON.stringify(args));
     expect(listener.claims("ses_pod_new")).toEqual([]);
     expect(listener.released).toEqual(["fan-cloud@ses_pod_named"]);
     expect(pod.notices.filter((notice) => notice.includes("fan-cloud"))).toEqual([
-      "envoy: role fan-cloud stays with the pod's session ses_pod_named; messages to the role are not delivered here. /resume ses_pod_named takes it back",
+      "warning: envoy: role fan-cloud stays with the pod's session ses_pod_named; messages to the role are not delivered here. /resume ses_pod_named takes it back",
     ]);
 
     await pod.move("resume", "ses_pod_named", named);
@@ -11711,10 +11716,19 @@ console.log(JSON.stringify(args));
       () => undefined,
       (error: unknown) => (error instanceof Error ? error.message : String(error))
     );
-    // The listener trims a role's name before it decides, so a name padded with spaces is the
-    // same role there, and the gate reads it the same way.
+    // The listener trims a role's name before it decides (Go's `strings.TrimSpace`, which also
+    // takes U+0085), so a padded name is the same role there, and the gate reads it the same way.
     const padded = await roleTool.execute("", { role: " fan-cloud" });
+    const nextLine = await roleTool.execute("", { role: "\u0085fan-cloud" });
     const paddedBridge = await claimEnvoyRole("ses_pod_asked", "fan-cloud ", review.context).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    const nextLineBridge = await claimEnvoyRole(
+      "ses_pod_asked",
+      "fan-cloud\u0085",
+      review.context
+    ).then(
       () => undefined,
       (error: unknown) => (error instanceof Error ? error.message : String(error))
     );
@@ -11724,9 +11738,12 @@ console.log(JSON.stringify(args));
     expect(refused.isError).toBe(true);
     expect(refused.content[0]?.text).toContain(refusal);
     expect(bridged).toBe(refusal);
-    expect(padded.isError).toBe(true);
-    expect(padded.content[0]?.text).toContain(refusal);
+    for (const result of [padded, nextLine]) {
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain(refusal);
+    }
     expect(paddedBridge).toBe(refusal);
+    expect(nextLineBridge).toBe(refusal);
 
     const moved = await roleTool.execute("", { role: "librarian" });
     expect(moved.isError).not.toBe(true);
@@ -11761,7 +11778,7 @@ console.log(JSON.stringify(args));
         "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session none; this session ses_pod_unnamed claims nothing",
       ]);
       const unnamed =
-        "envoy: role fan-cloud is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here";
+        "warning: envoy: role fan-cloud is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here";
       expect(first.notices).toEqual([unnamed]);
       expect(second.notices).toEqual([unnamed]);
     } finally {
@@ -11804,34 +11821,21 @@ console.log(JSON.stringify(args));
   // `test/session-pod-process.ts`, with the host package stood in by the role takeover smoke's
   // preload: the first is the pod's session, which claims, and it starts the two others.
   test("a process the session starts gets the variables and claims nothing, since its session is another", async () => {
-    const marker = "session-pod-report ";
-    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
-    const driver = join(import.meta.dir, "..", "test", "session-pod-process.ts");
-    const run = Bun.spawn(
-      [process.execPath, "--preload", hostStub, driver, "ses_pod_parent", "spawn"],
-      {
-        cwd: import.meta.dir,
-        env: {
-          ...process.env,
-          ENVOY_SESSION_ROLE: "fan-cloud",
-          ENVOY_SESSION_ROLE_SESSION: "ses_pod_parent",
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    );
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(run.stdout).text(),
-      new Response(run.stderr).text(),
-      run.exited,
-    ]);
-    const report = stdout.split("\n").find((line) => line.startsWith(marker));
-    if (exitCode !== 0 || report === undefined) {
-      throw new Error(`the pod's process reported nothing (exit ${exitCode}): ${stderr}`);
-    }
+    const report = await runSessionPod({
+      session: "ses_pod_parent",
+      spawn: true,
+      cwd: import.meta.dir,
+      env: {
+        ...process.env,
+        ENVOY_SESSION_ROLE: "fan-cloud",
+        ENVOY_SESSION_ROLE_SESSION: "ses_pod_parent",
+      },
+      // Killed before the row's own bound, so a hung run leaves no process and reports its stderr.
+      timeoutMs: 30_000,
+    });
     const refusal = (session: string) =>
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
-    expect(JSON.parse(report.slice(marker.length))).toEqual({
+    expect(report).toEqual({
       session: "ses_pod_parent",
       claims: [{ role: "fan-cloud", session_id: "ses_pod_parent" }],
       lines: [],

@@ -10,7 +10,7 @@
  * the suite's stand-in host (`createStandInHost`), a NATS connection that takes every subscription
  * and delivers nothing, and a listener in `globalThis.fetch` that accepts every registration and
  * every role claim, then opens the session `<session id>` and lets its first pass settle. What it
- * prints, as one line after `session-pod-report `, is that session's role claims and the
+ * prints is its `Report` (`test/session-pod-report.ts`): that session's role claims and the
  * extension's `envoy: ENVOY_SESSION_ROLE …` lines.
  *
  * With `spawn`, it then starts this script twice more, as an agent starts an `omp` inside the pod,
@@ -18,21 +18,13 @@
  * the environment this process started with, and once with `env: process.env`, the live
  * environment Oh My Pi's shell is built from. Their reports are part of its own.
  */
-import { join } from "node:path";
+import { roleTopic } from "@legion/contracts";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import { logger } from "@oh-my-pi/pi-utils";
 import envoyExtension, { setNatsConnectForTests } from "../extensions/envoy";
+import { REPORT_MARKER, type Report, runSessionPod } from "./session-pod-report";
 import { createStandInHost, type EventHandler } from "./stand-in-host";
-
-const REPORT_MARKER = "session-pod-report ";
-
-interface Report {
-  readonly session: string;
-  readonly claims: readonly { readonly role: string; readonly session_id: string }[];
-  readonly lines: readonly string[];
-  readonly children?: readonly (Report & { readonly spawn: string })[];
-}
 
 const [sessionID = "", mode] = process.argv.slice(2);
 if (sessionID === "")
@@ -115,7 +107,7 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestIni
       session_id: body.session_id,
       machine_id: "test",
       dir: "/tmp/session-pod-process",
-      topics: [`notifications.role.${body.role}`],
+      topics: [roleTopic(body.role)],
     });
   }
   if (pathname.startsWith("/v1/roles/")) {
@@ -154,45 +146,36 @@ const start: EventHandler | undefined = handlers.get("session_start");
 if (start === undefined) throw new Error("the extension registered no session_start handler");
 await start({}, context);
 
-/** This script for the session `child`, started the way `spawn` names, and what it reported. */
-async function child(spawn: string, child: string): Promise<Report & { readonly spawn: string }> {
-  const argv = [
-    process.execPath,
-    "--preload",
-    join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts"),
-    join(import.meta.dir, "session-pod-process.ts"),
-    child,
-  ];
-  const started =
-    spawn === "no env"
-      ? Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" })
-      : Bun.spawn(argv, { env: process.env, stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(started.stdout).text(),
-    new Response(started.stderr).text(),
-    started.exited,
-  ]);
-  const line = stdout.split("\n").find((entry) => entry.startsWith(REPORT_MARKER));
-  if (exitCode !== 0 || line === undefined) {
-    throw new Error(
-      `the ${spawn} child for ${child} reported nothing (exit ${exitCode}): ${stderr}`
-    );
-  }
-  return { spawn, ...(JSON.parse(line.slice(REPORT_MARKER.length)) as Report) };
+/**
+ * This script for `session`, started the way `spawn` names, and what it reported. A child that
+ * hangs is killed at 20 s, before the test's own bound on this process, so none is left running
+ * and its stderr comes back in the error.
+ */
+async function child(
+  spawn: "no env" | "process.env",
+  session: string
+): Promise<Report & { readonly spawn: string }> {
+  const report = await runSessionPod({
+    session,
+    timeoutMs: 20_000,
+    ...(spawn === "process.env" ? { env: process.env } : {}),
+  });
+  return { spawn, ...report };
 }
 
+// The two children share nothing, so they start together; the report keeps their order.
+const children =
+  mode === "spawn"
+    ? await Promise.all([
+        child("no env", `${sessionID}_no_env`),
+        child("process.env", `${sessionID}_process_env`),
+      ])
+    : undefined;
 const report: Report = {
   session: sessionID,
   claims,
   lines,
-  ...(mode === "spawn"
-    ? {
-        children: [
-          await child("no env", `${sessionID}_no_env`),
-          await child("process.env", `${sessionID}_process_env`),
-        ],
-      }
-    : {}),
+  ...(children === undefined ? {} : { children }),
 };
 console.log(`${REPORT_MARKER}${JSON.stringify(report)}`);
 // The extension's own timers would keep the process up; its report is all it is for.
