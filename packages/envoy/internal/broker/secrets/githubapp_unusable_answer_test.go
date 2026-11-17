@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,12 +56,19 @@ const (
 	// minter that read a token out of an answer whatever its status would send a revoke for it.
 	answerCut500 tokenAnswerFault = "a 500 cut off"
 	// answerUnreachable is no answer at all: the minter's transport fails the request as a refused
-	// dial does, before anything reaches GitHub, so GitHub mints nothing.
+	// dial does, before anything reaches GitHub, so GitHub mints nothing. answerUnresolved fails it
+	// as a name that did not resolve does, and answerUntrusted as a TLS handshake whose certificate
+	// the broker does not trust does.
 	answerUnreachable tokenAnswerFault = "unreachable"
+	answerUnresolved  tokenAnswerFault = "a name that did not resolve"
+	answerUntrusted   tokenAnswerFault = "a certificate the broker does not trust"
 	// answerWriteFails has GitHub receive the whole request and mint its token, while the minter's
 	// own write of that request reports an error, as a connection that fails as the last bytes
 	// leave can; GitHub then closes the connection with no answer.
 	answerWriteFails tokenAnswerFault = "received whole, though the write reported an error"
+	// answerReset has GitHub receive the whole request, mint its token and reset the connection
+	// with no answer, so the minter's read fails as a *net.OpError that is no dial's.
+	answerReset tokenAnswerFault = "reset after it was received"
 )
 
 // pastTheCap is more than the minter reads of a token answer (secrets' accessTokensResponseLimit,
@@ -72,10 +81,11 @@ const pastTheCap = 8 << 20
 // whole. The stand-in mints each token before its answer breaks, but for answerCut500, so it holds
 // every one as live as GitHub would, and its revoke route forgets the one it is given, unless
 // refuseRevokes has GitHub answer every revoke 500. client is the transport a minter reaches it
-// through, which fails each answerUnreachable request before it is sent and reports an error for
-// the write of each answerWriteFails one; silentClient is the same but for its last step, a
-// transport of its own that tells a request's trace nothing, as a transport a caller injects need
-// not. Every other route is the stand-in's own. minted is every token it minted, in order.
+// through, which fails each answerUnreachable, answerUnresolved or answerUntrusted request before
+// it is sent and reports an error for the write of each answerWriteFails one; silentClient is the
+// same but for its last step, a transport of its own that tells a request's trace nothing, as a
+// transport a caller injects need not. Every other route is the stand-in's own. minted is every
+// token it minted, in order.
 type breakingGitHub struct {
 	service      *airlocktest.Service
 	client       *http.Client
@@ -174,22 +184,35 @@ func (g *breakingGitHub) peek() tokenAnswerFault {
 	return answerWhole
 }
 
-// unreachableFirst is the minter's transport: a token request whose fault is answerUnreachable
-// fails as a refused dial does, and reaches nothing; every other request goes on to next.
+// unreachableFirst is the minter's transport: a token request whose fault is answerUnreachable,
+// answerUnresolved or answerUntrusted fails as a refused dial, a name that did not resolve or a
+// certificate the broker does not trust does, and reaches nothing; every other request goes on
+// to next.
 type unreachableFirst struct {
 	github *breakingGitHub
 	next   http.RoundTripper
 }
 
 func (u unreachableFirst) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/access_tokens") && u.github.peek() == answerUnreachable {
-		u.github.next()
-		if request.Body != nil {
-			_ = request.Body.Close()
-		}
-		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/access_tokens") {
+		return u.next.RoundTrip(request)
 	}
-	return u.next.RoundTrip(request)
+	var failed error
+	switch u.github.peek() {
+	case answerUnreachable:
+		failed = &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	case answerUnresolved:
+		failed = &net.DNSError{Err: "no such host", Name: "api.github.com", IsNotFound: true}
+	case answerUntrusted:
+		failed = &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}
+	default:
+		return u.next.RoundTrip(request)
+	}
+	u.github.next()
+	if request.Body != nil {
+		_ = request.Body.Close()
+	}
+	return nil, failed
 }
 
 // silentTransport sends each request over a connection of its own, one request to a connection,
@@ -271,6 +294,15 @@ func breakAnswer(w http.ResponseWriter, fault tokenAnswerFault, members map[stri
 		if err == nil {
 			_ = connection.Close()
 		}
+	case answerReset:
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		if tcp, isTCP := connection.(*net.TCPConn); isTCP {
+			_ = tcp.SetLinger(0)
+		}
+		_ = connection.Close()
 	case answerCut:
 		writeCut(w, "201 Created", whole, pastToken)
 	case answerStalled:
@@ -461,10 +493,16 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		{name: "a 500 cut off, to a release", narrowing: lean, faults: []tokenAnswerFault{answerCut500, answerCut500, answerCut500}, noRevoke: true},
 		{name: "a token request that never reached GitHub, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
 		{name: "a token request that never reached GitHub, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUnreachable}, requests: 1, live: 1, released: true},
+		{name: "a token request whose name did not resolve, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUnresolved}, requests: 1, verdict: true},
+		{name: "a token request whose TLS handshake the broker refused, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUntrusted}, requests: 1, verdict: true},
 		{name: "a token request GitHub received whole though its write reported an error, to a check", check: true, narrowing: wide,
 			faults: []tokenAnswerFault{answerWriteFails, answerWriteFails, answerWriteFails}, requests: 1, live: 1},
 		{name: "a token request GitHub received whole though its write reported an error, to a release", narrowing: wide,
 			faults: []tokenAnswerFault{answerWriteFails, answerWriteFails, answerWriteFails}, requests: 3, live: 3},
+		{name: "a connection GitHub reset after it received the request, to a check", check: true, narrowing: lean,
+			faults: []tokenAnswerFault{answerReset, answerReset, answerReset}, requests: 1, live: 1},
+		{name: "a connection GitHub reset after it received the request, to a release", narrowing: lean,
+			faults: []tokenAnswerFault{answerReset, answerReset, answerReset}, requests: 3, live: 3},
 		{name: "an answer lost through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
 		{name: "an answer lost through a transport that reports no connection, to a release", narrowing: lean, silent: true,
