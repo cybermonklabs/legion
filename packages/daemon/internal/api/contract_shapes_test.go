@@ -230,13 +230,14 @@ runtime:
 `
 
 // sandboxSettingsBlock is a `runtime.kubernetes.sandbox` block that sets every member the
-// settings show (version.go's 151): a canary list, and a microvm block with its compute class,
-// its storage class and both members of its metadata endpoint. It is appended to
-// settingsFixtureFile, as the settings tests append each block of theirs to it
-// (TestSettingsOfTheSandboxShowsEachMember), rather than written into that file, where a block
-// of its own would be a second `sandbox` key beside each one those tests append. The third state
-// body carries it (stateCarryingEveryDeclaredValue), so the records describe the microvm block
-// and its keys, which no body of the maximal file alone carries. Names and hosts are placeholders.
+// settings show (version.go's 151) but `type`, which they show as `gvisor` when the file names
+// none: a canary list, and a microvm block with its compute class, its storage class and both
+// members of its metadata endpoint. It is appended to settingsFixtureFile, as the settings tests
+// append each block of theirs to it (TestSettingsOfTheSandboxShowsEachMember), rather than
+// written into that file, where a block of its own would be a second `sandbox` key beside each
+// one those tests append. The third state body carries it (stateCarryingEveryDeclaredValue), so
+// the records describe the microvm block and its keys, which no body of the maximal file alone
+// carries. Names and hosts are placeholders.
 const sandboxSettingsBlock = `    sandbox:
       canary_issues: [LEGION-208]
       microvm:
@@ -354,10 +355,10 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the twelve issues carry all eight words at both key paths.
 //
-// Its settings are the maximal kubernetes file with a sandbox block that sets every member
-// (sandboxSettingsBlock), which neither other body carries: populatedState's settings are that
-// file alone, and stay so because the state golden is written from them, and the second body's
-// are a tmux file's.
+// Its settings are the maximal kubernetes file with a sandbox block that sets every member but
+// `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
+// that file alone, and stay so because the state golden is written from them, and the second
+// body's are a tmux file's.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)

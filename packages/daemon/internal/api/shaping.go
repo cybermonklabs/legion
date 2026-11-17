@@ -1613,9 +1613,8 @@ const answerUnparsed AnswerID = "unparsed"
 var answerWritten func(pattern string, id AnswerID)
 
 // writeAnswer writes body as the answer id names it, shaped down to the contracts the caller
-// reads at (contractsFor, shapeAnswer). Every body this package writes goes through it, or
-// through writeAnswerFrom which it stands on, and writeAnswerFrom is the one place a body is
-// written, so a shape a later contract moves cannot be written past the shaping.
+// reads at (contractsFor, shapeAnswer). Every body this package writes goes through it or through
+// writeAnswerFrom, which it stands on.
 //
 // It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
 // contract is placed by its header alone, and the state and the record are the two answers whose

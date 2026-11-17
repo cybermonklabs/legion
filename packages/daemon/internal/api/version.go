@@ -2177,22 +2177,32 @@ package api
 // `assignments` (`withoutAssignments`, the band of `assignmentsContract`).
 // Contract 144 is served with no code of its own here: its two shapes are on the launcher's wire,
 // which the image probe pairs by number.
-// Contract 146, the entry right above, is one of the contracts served down here too, by its row
-// of shaping.go's stateNarrowings, and this contract is served above it: a caller below 146 is
-// served every issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`
-// (`withoutEntryTimes`, the band of `entryTimesContract`).
+// Contract 151 is served with no code of its own here: its four shapes are on the launcher's
+// wire, which the image probe pairs by number, and its one state key is a settings key, so a
+// caller at 151 is served what one at 146 is, and 151's records are 146's under its own number.
+// Contract 146 is one of the contracts served down here too, by its row of shaping.go's
+// stateNarrowings, and this contract is served above it: a caller below 146 is served every
+// issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,
+// the band of `entryTimesContract`).
 // Five settings keys are read loosely by every plugin and recorded at every contract, with no
 // band and no strip. That rests on one measurement, made the way the measurement of #3982's two
 // stand-in keys below was (`pod_update_retask_hours` and `pod_update_notice_hours`, read at the
 // commit of each of the 24 contracts from 46 to 111): `legionSettings` in
-// `packages/contracts/src/legion-api.ts` is a `z.looseObject` that types `review_round_cap` and
-// `worker_boot_timeout_seconds` alone, nothing types the parents of these keys under it
-// (`projects`, `experiments`, `runtime`, `kubernetes`, `agent_secrets` and `sandbox`), and no
-// plugin source names the keys (`experiments`, `memory_guard`, `roles` under `experiments`,
+// `packages/contracts/src/legion-api.ts` is a `z.looseObject` that types only top-level scalar
+// keys at every contract (`max_fix_attempts` and `worker_boot_timeout_seconds` to 58,
+// `worker_boot_timeout_seconds` alone from 59, and `review_round_cap` beside it from 86),
+// nothing types the parents of these keys under it (`projects`, `experiments`, `runtime`,
+// `kubernetes`, `agent_secrets`, `sandbox`, `microvm` and `metadata`), and no plugin source
+// names the keys (`experiments`, `memory_guard`, `roles` under `experiments`,
 // `exchange_audience`, and the sandbox's own `canary_issues`, `microvm`, `compute_class`,
-// `workload_pool` and `identity_provider`; the `sandbox` a plugin names is a claim locator's or
-// a repository cache's, never a settings key), so no reader refuses them. The five keys, each
-// with the commits that measurement was made at, are these. 141's
+// `storage_class`, `workload_pool` and `identity_provider`; the `sandbox` a plugin names is a
+// claim locator's or a repository cache's, never a settings key), so no reader refuses them.
+// The two other members, the sandbox's `type` and the microvm block's `metadata`, were not
+// searched by name, since plugin sources use both words everywhere for other things: what
+// covers them is that nothing types their parents and no plugin code reads `settings.runtime`
+// (at 151's commit and at this change's merge with it, the plugin sources name it only in
+// prose, never in code). The five keys, each with the commits that measurement was made at, are
+// these. 141's
 // `settings.projects.<KEY>.experiments`, at the commit of each contract from 111 to 141: 123
 // (25f3e38a), 132 (8b0f29b9), 133 (2e546572) and 137 (7baa398b), so the measurement of 46 to
 // 111 holds to 137.
@@ -2203,9 +2213,7 @@ package api
 // with it. `settings.runtime.kubernetes.agent_secrets.exchange_audience`, which main's #4153
 // (8a4dbb9f) added the same way, at #4153's commit and at this change's merge with it.
 // `settings.runtime.kubernetes.sandbox`, the one key main's 151 (d9299f7a) adds to the state, at
-// 151's commit and at this change's merge with it. Its key paths are in the state record of
-// every contract; 151's records are 146's under its own number with them, and a caller at 151 is
-// served what one at 146 is, with this contract above it.
+// 151's commit and at this change's merge with it.
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller
@@ -2321,7 +2329,9 @@ package api
 // before the push that followed, when #4021 had taken 144, and 145 again at the merge that
 // brought main in at 141 (#3575), and at the merge that brought main in at 144 (#4021), and 154
 // at the merge that brought main in at 146 (#3711), the lowest number above 146 that no open
-// pull request declared at 2026-11-16T20:01Z. 87 was free when this head took it and was gone
+// pull request declared at 2026-11-16T20:01Z, and 154 again at the merge that brought main in
+// at 151 (#4106), where the reading of the 194 open pull requests at 2026-11-17T12:23:43Z gave
+// 154 to this change alone. 87 was free when this head took it and was gone
 // when the head was pushed: the gate holds a head against main alone and sees no other head's
 // number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
