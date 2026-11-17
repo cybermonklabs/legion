@@ -466,6 +466,10 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Every dial below this point is made for this grant, and the lines it writes name it
+	// (dialFields): the CONNECT's own check and its tunnel's dial run under this context, and a
+	// plain-HTTP request's transport dials under it too.
+	r = r.WithContext(withCaller(r.Context(), grant))
 	if r.Method == http.MethodConnect {
 		s.serveConnect(w, r, placeholder, grant)
 		return
@@ -704,9 +708,18 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 // read. The dial comes before the hijack, so a service that cannot be reached is a 502 the
 // command's own HTTP client reports, rather than a tunnel that opens and then dies. It dials
 // the addresses serveConnect checked, in order, and resolves nothing of its own.
+//
+// A tunnel that opened writes one line (logTunnel), and a dial that failed writes one
+// (logDialFailure): no request of a tunnel is read, so these are the whole of what the broker
+// knows about where a command went through it.
 func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target string, addrs []netip.Addr, port string) {
-	upstream, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
+	host, _, err := net.SplitHostPort(target)
 	if err != nil {
+		host = target
+	}
+	upstream, dialed, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
+	if err != nil {
+		s.logDialFailure(r.Context(), host, port, addressList(addrs, port), dialUnreachable, err.Error())
 		fail(w, http.StatusBadGateway, codeUpstream, "dial "+target+": "+err.Error())
 		return
 	}
@@ -720,6 +733,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 		upstream.Close()
 		return
 	}
+	s.logTunnel(r.Context(), host, port, dialed)
 	// The idle limit on both sides, so that neither end of the tunnel outlives it. The
 	// command's side alone would not: once that side has half-closed, the copy below sits in
 	// a read of the upstream connection, which a service that answers nothing and closes

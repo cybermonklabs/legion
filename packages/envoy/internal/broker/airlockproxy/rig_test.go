@@ -52,6 +52,8 @@ const (
 	testGrantID  = "grant-00000000"
 	testEnrollID = "enrollment-00000000"
 	testRequest  = "request-00000000"
+	testSession  = "session-00000000"
+	testRuntime  = "runtime-00000000"
 	testIssue    = "INFRA-1352"
 )
 
@@ -104,6 +106,7 @@ func testRules() airlock.Rules {
 func testConnection() requests.AirlockConnection {
 	return requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
+		SessionID: testSession, RuntimeID: testRuntime,
 		Names: map[string]requests.AirlockGrantName{
 			workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},
 		},
@@ -352,6 +355,42 @@ func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }
 // way.
 func (c *logCapture) cuts() []logLine { return c.lines(cutMessage) }
 
+// tunnels is every line one tunnel the proxy opened logged, and dialFailures every line one dial
+// it could not make logged, read the same way.
+func (c *logCapture) tunnels() []logLine { return c.lines(tunnelMessage) }
+
+func (c *logCapture) dialFailures() []logLine { return c.lines(dialFailedMessage) }
+
+// tunnelsAtLeast and dialFailuresAtLeast are those lines once there are n of them, as
+// callsAtLeast is for a call's: the proxy writes a tunnel's line once both ends are joined, and a
+// row whose CONNECT has answered can be a few instructions ahead of that write.
+func (c *logCapture) tunnelsAtLeast(t *testing.T, n int) []logLine {
+	t.Helper()
+	return c.linesAtLeast(t, tunnelMessage, c.tunnels, n)
+}
+
+func (c *logCapture) dialFailuresAtLeast(t *testing.T, n int) []logLine {
+	t.Helper()
+	return c.linesAtLeast(t, dialFailedMessage, c.dialFailures, n)
+}
+
+// linesAtLeast waits for n lines of one message, and fails t rather than hanging when they never
+// come.
+func (c *logCapture) linesAtLeast(t *testing.T, message string, read func() []logLine, n int) []logLine {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		lines := read()
+		if len(lines) >= n {
+			return lines
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the proxy wrote %d %q lines; want at least %d", len(lines), message, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // lines is every line the proxy wrote under one message, with the attributes it wrote them with.
 func (c *logCapture) lines(message string) []logLine {
 	var lines []logLine
@@ -376,17 +415,7 @@ func (c *logCapture) lines(message string) []logLine {
 // to be written. It fails the row rather than hanging when the line never comes.
 func (c *logCapture) callsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		calls := c.calls()
-		if len(calls) >= n {
-			return calls
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the proxy wrote %d lines for a call to a bound host; want at least %d", len(calls), n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return c.linesAtLeast(t, callMessage, c.calls, n)
 }
 
 // rig is one row's whole world: the proxy, what it dials, what it may resolve, the stand-in
