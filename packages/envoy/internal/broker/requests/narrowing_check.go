@@ -101,7 +101,7 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 		skippedNarrowingCheck(enr.ID, "", "the requester could not be read", err)
 		return nil
 	}
-	e, err := evaluate(set, names, requester, reason)
+	e, err := m.evaluate(set, names, requester, reason)
 	if err != nil || e.state != "pending" {
 		return nil
 	}

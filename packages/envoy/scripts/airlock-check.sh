@@ -1318,6 +1318,8 @@ check_k6() {
 # at main and nothing of them is rewritten; what this check adds around them is a DOTFILES_DIR
 # of its own holding the files they read of each other (scripts/secret-run-reason and
 # agent-secrets/broker-url.sh), because secret-run resolves both relative to its own directory.
+# One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
+# manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
 # The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
 # the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
@@ -1384,7 +1386,7 @@ k7_names() {
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com"]},
+	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": "GWS_THEOREM_READ_OAUTH", "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": "GWS_THEOREM_ADMIN_OAUTH", "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
@@ -1455,6 +1457,13 @@ say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GIT
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
 
+# A gRPC client: Pulumi's gcpkms secrets manager, which calls Cloud KMS over gRPC alone and offers
+# h2 and nothing else in its TLS handshake, makes a stack's data key at stack init with the
+# placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
+# value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
+# ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
+say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$GCLOUD_SAMI" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+
 # gcloud-broker with gcloud projects list.
 say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
@@ -1490,6 +1499,7 @@ EOF
 check_k7() {
 	expect "each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses"
 	expect "each real service refused the fake value"
+	expect "a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value"
 	expect "the gh consumer's own call is refused the fake value by GitHub"
 	expect "S got the fake value in each client's call"
 	expect "the command's exit status is 3, and the CLI's stderr has the line agent-secrets: NAME from …"
@@ -1542,6 +1552,7 @@ check_k7() {
 	observe "slack.com/api/auth.test under bun: ${K7[slack]-}"
 	observe "gh api user under secret-run for GITHUB_ADMIN_PAT: ${K7[gh]-}"
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
+	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
 	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
 	observe "the gws theorem read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
@@ -1566,6 +1577,7 @@ check_k7() {
 	k7_refused gws "${K7[gws]-}"
 	k7_refused admin "${K7[admin]-}"
 	k7_refused git "${K7[git]-}"
+	k7_refused kms "${K7[kms]-}"
 	observe "what each real service answered the fake value${refusals}"
 	observe "the gh consumer: $(printf '%s' "${K7[gh]-}" | head -c 300)"
 
@@ -1582,8 +1594,15 @@ check_k7() {
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
-	judge "$([ "$refused" = 6 ] && echo 0 || echo 1)" \
-		"each real service refused the fake value" "$refused of the 6 consumers that can run in this pod refused it${refusals}"
+	judge "$([ "$refused" = 7 ] && echo 0 || echo 1)" \
+		"each real service refused the fake value" "$refused of the 7 consumers that can run in this pod refused it${refusals}"
+	# The gRPC consumer on its own: Google's own UNAUTHENTICATED is what says the call crossed the
+	# proxy in HTTP/2 and reached Cloud KMS, and a call line naming its host is the proxy's side.
+	local kms_calls
+	kms_calls="$(jq -s '[.[] | select(.host == "cloudkms.googleapis.com")] | length' <<<"$calls")"
+	judge "$(printf '%s' "${K7[kms]-}" | grep -qi 'unauthenticated' && ! printf '%s' "${K7[kms]-}" | grep -qi 'application protocol' && [ "$kms_calls" -ge 1 ] && echo 0 || echo 1)" \
+		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
+		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
 	if [ -z "$K7_GH_DIR" ]; then
 		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. shims/gh's own admin line is \`secret-run … GITHUB_ADMIN_PAT -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
 	else

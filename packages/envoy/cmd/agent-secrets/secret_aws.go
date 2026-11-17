@@ -56,21 +56,27 @@ var (
 )
 
 // awsClients loads the AWS sign-in this command's environment gives it, pinned to the broker's
-// region: the SDK reads every source from the environment itself, in its own order (awsSourceOf),
-// so this takes none. A profile AWS_PROFILE or AWS_DEFAULT_PROFILE names that the shared config
-// and credentials files do not hold is refused, as R1 refuses a source that is present but fails:
-// the SDK refuses such an AWS_PROFILE itself, and ignores such an AWS_DEFAULT_PROFILE
+// region, and answers the credential sources the SDK resolved it from
+// (aws.CredentialProviderSource, read without asking for a credential): the SDK reads every
+// source from the environment itself, in its own order (awsSourceOf), so this takes none. A
+// profile AWS_PROFILE or AWS_DEFAULT_PROFILE names that the shared config and credentials files do
+// not hold is refused, as R1 refuses a source that is present but fails: the SDK refuses such an
+// AWS_PROFILE itself, and ignores such an AWS_DEFAULT_PROFILE
 // (config.loadSharedConfigIgnoreNotExist), which would sign in under the rest of its chain - an
 // instance role among them - while the profile was the caller's choice. Tests replace it.
-var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, error) {
+var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
-		return nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
+		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
 	}
 	if named := os.Getenv("AWS_DEFAULT_PROFILE"); named != "" && os.Getenv("AWS_PROFILE") == "" && !loadedProfile(cfg) {
-		return nil, nil, fmt.Errorf("load your AWS sign-in: %w (AWS_DEFAULT_PROFILE names it)", config.SharedConfigProfileNotExistError{Profile: named})
+		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w (AWS_DEFAULT_PROFILE names it)", config.SharedConfigProfileNotExistError{Profile: named})
 	}
-	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), nil
+	var sources []aws.CredentialSource
+	if provider, ok := cfg.Credentials.(aws.CredentialProviderSource); ok {
+		sources = provider.ProviderSources()
+	}
+	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), sources, nil
 }
 
 // loadedProfile reports whether the SDK found the profile it looked for in the shared config and
@@ -183,9 +189,12 @@ func firstSet(names ...string) (name, value string) {
 //
 // Only a profile set in code outranks 1 and 2, and this command sets none, as the AWS CLI does not
 // for AWS_PROFILE: so where keys or a token file are set, a profile variable chooses nothing, and
-// the phrase says so. The phrase names no key and no token, only the variables and the file's
-// path.
-func awsSourceOf() awsSource {
+// the phrase says so. A profile that holds no credential of its own (no keys, sign-in, process,
+// source profile or credential source) chooses nothing either: the SDK goes on to a container's
+// credentials endpoint or the instance's role (resolveCredsFromProfile), and sources, the ones it
+// resolved, then start with that one (profileFellThrough), so the phrase names it too. The phrase
+// names no key and no token, only the variables and the file's path.
+func awsSourceOf(sources []aws.CredentialSource) awsSource {
 	profileVar, profile := firstSet("AWS_PROFILE", "AWS_DEFAULT_PROFILE")
 	outranks := func(verb string) string {
 		if profileVar == "" {
@@ -223,9 +232,34 @@ func awsSourceOf() awsSource {
 		if profileVar == "AWS_DEFAULT_PROFILE" {
 			source.another += ", which outranks AWS_DEFAULT_PROFILE"
 		}
+		if fell := profileFellThrough(sources); fell != "" {
+			source.phrase += ", which holds no credential, so " + fell + " signed in"
+			source.another += ", naming a profile that holds a credential"
+		}
 		return source
 	}
 	return awsSource{phrase: "the AWS SDK's default credential chain", another: "choose another with AWS_PROFILE"}
+}
+
+// profileFellThrough names what signed in where the profile the SDK loaded holds no credential of
+// its own: the SDK records the profile's own kind of credential first in sources (keys, a sign-in,
+// a process, a source profile, a named credential source), and only where it holds none does the
+// first one name the container's credentials endpoint or the instance's role, which it then
+// reached on its own. "" for any other sources, none included.
+func profileFellThrough(sources []aws.CredentialSource) string {
+	if len(sources) == 0 {
+		return ""
+	}
+	switch sources[0] {
+	case aws.CredentialSourceHTTP:
+		if variable, _ := firstSet("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI"); variable != "" {
+			return "the container credentials endpoint " + variable + " names"
+		}
+		return "the container credentials endpoint"
+	case aws.CredentialSourceIMDS:
+		return "this machine's instance role"
+	}
+	return ""
 }
 
 func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }

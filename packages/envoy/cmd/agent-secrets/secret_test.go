@@ -247,20 +247,21 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 	}
 }
 
-// useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, for the
-// rest of t, and clears every variable that chooses where the AWS SDK takes the sign-in from, so a
-// developer's own shell names no other source.
+// useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, with no
+// credential sources reported, for the rest of t, and clears every variable that chooses where the
+// AWS SDK takes the sign-in from, so a developer's own shell names no other source.
 func useAWS(t *testing.T, sm secretsAPI, account, arn string) {
 	t.Helper()
 	for _, name := range []string{
 		"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY",
 		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
 	} {
 		t.Setenv(name, "")
 	}
 	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, error) {
-		return sm, fakeSTS{account: account, arn: arn}, nil
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+		return sm, fakeSTS{account: account, arn: arn}, nil, nil
 	}
 	t.Cleanup(func() { awsClients = restore })
 }
@@ -354,48 +355,66 @@ func (refusingCreates) CreateSecret(context.Context, *secretsmanager.CreateSecre
 	return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform: secretsmanager:CreateSecret"}
 }
 
-// TestAWSRefusalNamesTheSourceAndTheChoice: the using line and a store refusal on AWS name the
-// source the AWS SDK takes the sign-in from, in its own order (keys in the environment, then a web
-// identity token file, then AWS_PROFILE, then AWS_DEFAULT_PROFILE, then the rest of its chain),
-// its ARN, and the variable that chooses another: one that a source higher in that order outranks
-// is never named as the one that chose. A command it prints for running again carries the profile
-// variable only where that profile signed in.
+// TestAWSRefusalNamesTheSourceAndTheChoice: the using line, a store refusal and the account
+// refusal on AWS name the source the AWS SDK takes the sign-in from, in its own order (keys in the
+// environment, then a web identity token file, then AWS_PROFILE, then AWS_DEFAULT_PROFILE, then
+// the rest of its chain), its ARN, and the variable that chooses another: one that a source higher
+// in that order outranks is never named as the one that chose. Where the profile a variable names
+// holds no credential of its own, the SDK signs in with a container's credentials endpoint or the
+// instance's role, and the sources it resolved say so (aws.CredentialProviderSource), so the line
+// names that too. A command it prints for running again carries the profile variable only where
+// that profile was chosen.
 func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 	const tokenFile = "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+	const endpoint = "http://127.0.0.1:9/credentials"
 	for _, row := range []struct {
 		name            string
 		env             map[string]string
+		sources         []aws.CredentialSource
 		source, another string
 		prefix          string
 	}{
-		{"AWS_PROFILE", map[string]string{"AWS_PROFILE": "work"},
+		{"AWS_PROFILE", map[string]string{"AWS_PROFILE": "work"}, nil,
 			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
-		{"AWS_DEFAULT_PROFILE", map[string]string{"AWS_DEFAULT_PROFILE": "work"},
+		{"AWS_DEFAULT_PROFILE", map[string]string{"AWS_DEFAULT_PROFILE": "work"}, nil,
 			"the AWS profile work (AWS_DEFAULT_PROFILE)", "choose another with AWS_PROFILE, which outranks AWS_DEFAULT_PROFILE", "AWS_DEFAULT_PROFILE=work "},
-		{"AWS_PROFILE over AWS_DEFAULT_PROFILE", map[string]string{"AWS_PROFILE": "work", "AWS_DEFAULT_PROFILE": "other"},
+		{"AWS_PROFILE over AWS_DEFAULT_PROFILE", map[string]string{"AWS_PROFILE": "work", "AWS_DEFAULT_PROFILE": "other"}, nil,
 			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
-		{"neither", nil,
+		{"neither", nil, nil,
 			"the AWS SDK's default credential chain", "choose another with AWS_PROFILE", ""},
-		{"keys outrank AWS_PROFILE", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_PROFILE": "admin"},
+		{"keys outrank AWS_PROFILE", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_PROFILE": "admin"}, nil,
 			"the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE",
 			"choose another by unsetting AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
-		{"keys alone, by their older names", map[string]string{"AWS_ACCESS_KEY": "AKIAEXAMPLE", "AWS_SECRET_KEY": "not-a-secret"},
+		{"keys alone, by their older names", map[string]string{"AWS_ACCESS_KEY": "AKIAEXAMPLE", "AWS_SECRET_KEY": "not-a-secret"}, nil,
 			"the access keys in AWS_ACCESS_KEY and AWS_SECRET_KEY",
 			"choose another by unsetting AWS_ACCESS_KEY and AWS_SECRET_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
-		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"},
+		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"}, nil,
 			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
-		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"},
+		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"}, nil,
 			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + tokenFile + "), which outranks AWS_PROFILE",
 			"choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
 			"AWS_WEB_IDENTITY_TOKEN_FILE=" + tokenFile + " AWS_ROLE_ARN=arn:aws:iam::111122223333:role/agent "},
-		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile},
+		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile}, nil,
 			"the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
 			"choose another by unsetting AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
+		{"a profile that holds its own keys", map[string]string{"AWS_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceProfile},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"a profile that holds an SSO sign-in", map[string]string{"AWS_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceSSO, aws.CredentialSourceProfileSSO},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"a profile that names the instance as its credential source", map[string]string{"AWS_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceProfileNamedProvider, aws.CredentialSourceIMDS},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"a profile with no credential, then a container endpoint", map[string]string{"AWS_PROFILE": "work", "AWS_CONTAINER_CREDENTIALS_FULL_URI": endpoint}, []aws.CredentialSource{aws.CredentialSourceHTTP},
+			"the AWS profile work (AWS_PROFILE), which holds no credential, so the container credentials endpoint AWS_CONTAINER_CREDENTIALS_FULL_URI names signed in",
+			"choose another with AWS_PROFILE, naming a profile that holds a credential", "AWS_PROFILE=work "},
+		{"AWS_DEFAULT_PROFILE with no credential, then the instance role", map[string]string{"AWS_DEFAULT_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceIMDS},
+			"the AWS profile work (AWS_DEFAULT_PROFILE), which holds no credential, so this machine's instance role signed in",
+			"choose another with AWS_PROFILE, which outranks AWS_DEFAULT_PROFILE, naming a profile that holds a credential", "AWS_DEFAULT_PROFILE=work "},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, refusingCreates{local}, testAccount, adaSignIn)
+			useAWSSources(t, row.sources)
 			for name, value := range row.env {
 				t.Setenv(name, value)
 			}
@@ -423,8 +442,31 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 			if want := "pipe the value in: " + row.prefix + "agent-secrets secret set HELD_KEY < FILE"; code != exitUsageError || !strings.Contains(stderr, want) {
 				t.Fatalf("set: exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, want)
 			}
+
+			// A sign-in in another account is refused, and the refusal says how to choose another.
+			inner := awsClients
+			awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+				sm, _, sources, err := inner(ctx, region)
+				return sm, fakeSTS{account: "999999999999", arn: "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"}, sources, err
+			}
+			_, stderr, code = runSecret("list")
+			if want := "sign in to account " + testAccount + "; " + row.another; code != 1 || !strings.Contains(stderr, want) {
+				t.Fatalf("list in another account: exit %d, stderr %q; want 1 naming %q", code, stderr, want)
+			}
 		})
 	}
+}
+
+// useAWSSources makes the AWS clients awsClients answers for the rest of t report sources as the
+// sources the SDK resolved their credential from.
+func useAWSSources(t *testing.T, sources []aws.CredentialSource) {
+	t.Helper()
+	inner := awsClients
+	awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+		sm, st, _, err := inner(ctx, region)
+		return sm, st, sources, err
+	}
+	t.Cleanup(func() { awsClients = inner })
 }
 
 // TestEverySecretFormNamesTheSourceItUses: every secret form, on each store, prints exactly one
@@ -502,9 +544,9 @@ func (w *usingWatch) String() string {
 func TestSecretRefusesSettingsInconsistentWithKeyARN(t *testing.T) {
 	calledAWS := false
 	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, error) {
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 		calledAWS = true
-		return nil, nil, fmt.Errorf("awsClients must not run")
+		return nil, nil, nil, fmt.Errorf("awsClients must not run")
 	}
 	t.Cleanup(func() { awsClients = restore })
 	region, account := secrets.AWSKeyARNParts(policytest.KeyARN)
@@ -543,9 +585,9 @@ func TestSecretRefusesSettingsInconsistentWithKeyARN(t *testing.T) {
 func TestSecretRefusesNonLoopbackHTTPBrokerURL(t *testing.T) {
 	calledAWS := false
 	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, error) {
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 		calledAWS = true
-		return nil, nil, fmt.Errorf("awsClients must not run")
+		return nil, nil, nil, fmt.Errorf("awsClients must not run")
 	}
 	t.Cleanup(func() { awsClients = restore })
 	t.Setenv("AGENT_SECRETS_URL", "http://example.internal")
@@ -1723,9 +1765,9 @@ func TestSecretFormsSignInInTheBrokersRegion(t *testing.T) {
 	startSecretBroker(t, servedBy(local))
 	var regions []string
 	restore := awsClients
-	awsClients = func(_ context.Context, region string) (secretsAPI, stsAPI, error) {
+	awsClients = func(_ context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 		regions = append(regions, region)
-		return local, fakeSTS{account: testAccount, arn: adaSignIn}, nil
+		return local, fakeSTS{account: testAccount, arn: adaSignIn}, nil, nil
 	}
 	t.Cleanup(func() { awsClients = restore })
 	useStdin(t, "v2")

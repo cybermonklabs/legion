@@ -121,7 +121,10 @@ the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
 `using the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY: ARN`,
 `using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (PATH): ARN`, or
 `using the AWS SDK's default credential chain: ARN`; where keys or a token file are set beside a
-profile variable, the line adds that they outrank it.
+profile variable, the line adds that they outrank it. Where the profile holds no credential of
+its own, the SDK goes on to a container's credentials endpoint or the machine's instance role,
+and the line adds `, which holds no credential, so the container credentials endpoint VARIABLE
+names signed in` or `…, so this machine's instance role signed in`.
 
 When you have made your writes, remove a sign-in you made for them from the machine, so nothing
 else that runs as your user there can use it:
@@ -457,11 +460,12 @@ sign-in may change. Where IAM refuses one, the refusal names the credential it r
 `using` line does - its source and whom it acts as - and how to choose another from that source.
 On GCP, under every source after `GOOGLE_APPLICATION_CREDENTIALS`: a gcloud configuration in
 `CLOUDSDK_ACTIVE_CONFIG_NAME`, an account in `CLOUDSDK_CORE_ACCOUNT`, or a credentials file in
-`GOOGLE_APPLICATION_CREDENTIALS`; under a credentials file, another file, or unsetting the
-variable to reach the gcloud variables; under a lent token, unsetting `CLOUDSDK_AUTH_ACCESS_TOKEN`,
-which outranks every other source. On AWS, `AWS_PROFILE`, or unsetting the access keys or the web
-identity token file that outrank it. A create that IAM lets make the secret but not add its value
-says the same.
+`GOOGLE_APPLICATION_CREDENTIALS`. Where `CLOUDSDK_CORE_ACCOUNT` is set, it outranks the account
+of any configuration, so the refusal names the account first and a configuration only once that
+variable is unset. Under a credentials file, another file, or unsetting the variable to reach the
+gcloud variables; under a lent token, unsetting `CLOUDSDK_AUTH_ACCESS_TOKEN`, which outranks every
+other source. On AWS, `AWS_PROFILE`, or unsetting the access keys or the web identity token file
+that outrank it. A create that IAM lets make the secret but not add its value says the same.
 
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
@@ -474,8 +478,8 @@ refuses `me` (exit 2) before it reads the value, and `--owner <email>` names the
 
 ```console
 $ agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
-agent-secrets secret create: using the AWS SDK's default credential chain: arn:aws:sts::111122223333:assumed-role/example-devbox-instance-role/i-0abc
-agent-secrets secret create: --owner me: arn:aws:sts::111122223333:assumed-role/example-devbox-instance-role/i-0abc is no IAM Identity Center sign-in, so it names no person: name the owner with --owner <email>; looked in AWS Secrets Manager account 111122223333 in us-east-1
+agent-secrets secret create: using the AWS SDK's default credential chain: arn:aws:sts::111122223333:assumed-role/example-instance-role/i-0abc
+agent-secrets secret create: --owner me: arn:aws:sts::111122223333:assumed-role/example-instance-role/i-0abc is no IAM Identity Center sign-in, so it names no person: name the owner with --owner <email>; looked in AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
 GCP has no wrong-account check: every call already names `projects/<project number>/...`

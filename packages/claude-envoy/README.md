@@ -538,7 +538,8 @@ in the session's Dispatch state directory carries the same name. Its negative co
 first case again against the committed `dist/envoy-channel.js` of `BASE_REV` (default
 `0306bcbe16df-`, the last revision without the fallback), which registers the folder name instead.
 It needs `bun`, `curl`, `jq`, `go` and `nats-server`
-(`go install github.com/nats-io/nats-server/v2@v2.11.4`), and no Claude authentication: the two
+(`go install github.com/nats-io/nats-server/v2@v2.15.1`, the hub's version: the listener refuses a
+nats-server below v2.11.12, v2.12.4 or v2.14.0), and no Claude authentication: the two
 hook payloads are written by the script, and that the field arrives at all rests on Claude Code's
 documentation. Claude Code is not installed in an issue pod's image, though it runs there from
 `bunx --package @anthropic-ai/claude-code@<version> claude`, as

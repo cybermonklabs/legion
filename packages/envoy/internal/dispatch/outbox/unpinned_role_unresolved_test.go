@@ -109,7 +109,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	if slices.Contains(reached, subject) {
 		t.Fatalf("the comment reached %s while its only mention's attempt was live, named no session, and the outbox could name no holder for %s; the sender names one a round trip later and pins it on that row, so this copy shows the comment twice (reached %v)",
 			subject, target, reached)
