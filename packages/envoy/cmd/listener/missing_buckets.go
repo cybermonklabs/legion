@@ -27,11 +27,17 @@ import (
 // missing bucket answers the bus-unavailable 503 (writeStoreError) while /healthz names the bucket
 // and the self-health monitor neither rebuilds nor restarts over it. Every check logs
 // missingBucketLine at ERROR, which the AWS listener's bucket-missing alarm pages on
-// (infra/aws/rendering/metricfilters.go). The operator recreates the bucket with `envoy-infra
-// buckets`, which refuses while any listener of the deployment runs.
+// (infra/aws/rendering/metricfilters.go). The operator makes the bucket with `envoy-infra buckets
+// create` (missingBucketRepair).
 
 // missingBucketLine is the ERROR a listener logs for each check that finds a copied bucket missing.
 const missingBucketLine = "listener KV bucket is missing"
+
+// missingBucketRepair is the repair a listener names for a missing bucket, in /healthz's error and
+// in missingBucketLine's action: the runbook's create, which until the auth service's cutover
+// (INFRA-840) no hub holds the key for but as `--break-glass`, run as a listener's NATS user, which
+// stops no listener.
+const missingBucketRepair = "make it with `envoy-infra buckets create`, with `--break-glass` until the auth service's cutover (INFRA-840), by the runbook at packages/envoy/infra/README.md#envoy-infra-buckets"
 
 // bucketWaitInterval is how often a start that found a copied bucket missing asks again, and
 // missingBucketLogInterval how often it logs missingBucketLine while one stays missing: as often
@@ -117,8 +123,8 @@ type bucketsMissingError struct {
 }
 
 func (e *bucketsMissingError) Error() string {
-	return fmt.Sprintf("%s %s: no listener creates a bucket it copies; stop every listener of the deployment, then run `envoy-infra buckets create`",
-		map[bool]string{true: "bucket", false: "buckets"}[len(e.buckets) == 1], strings.Join(e.buckets, ", "))
+	return fmt.Sprintf("%s %s: no listener creates a bucket it copies; %s",
+		map[bool]string{true: "bucket", false: "buckets"}[len(e.buckets) == 1], strings.Join(e.buckets, ", "), missingBucketRepair)
 }
 
 // listenerCopiedBuckets are the copied buckets this listener opens: all of bus.CopiedBuckets but
@@ -217,7 +223,7 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 	for _, bucket := range names {
 		logger.Error(missingBucketLine,
 			slog.String("bucket", bucket),
-			slog.String("action", "stop every listener of the deployment, then run `envoy-infra buckets create`; no listener creates a bucket it copies (INFRA-4094)"))
+			slog.String("action", missingBucketRepair+"; no listener creates a bucket it copies (INFRA-4094)"))
 	}
 }
 

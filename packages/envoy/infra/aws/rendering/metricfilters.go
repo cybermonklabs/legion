@@ -178,9 +178,9 @@ var ListenerLogSignals = []LogSignal{
 			"the line's `bucket` names it): no listener creates one, since a bucket created again under a " +
 			"running listener loses every write the deleted bucket acknowledged (INFRA-4094). Until it is back, " +
 			"every write that needs it answers 503, a start waits at its gate, and `/healthz` answers 200 " +
-			"`degraded` with `missing_buckets`. Stop every listener of the deployment (and envoy-dispatch, for " +
-			"`envoy_ci_state`), then run `envoy-infra buckets create` with the inventory it proves ended " +
-			"(cybermonklabs/legion packages/envoy/infra/README.md). Read %s for the bucket.",
+			"`degraded` with `missing_buckets`. Make it with `envoy-infra buckets create`, with `--break-glass` " +
+			"until the auth service's cutover (INFRA-840), which needs no listener stopped, by the runbook " +
+			"(cybermonklabs/legion packages/envoy/infra/README.md#envoy-infra-buckets). Read %s for the bucket.",
 	},
 }
 
