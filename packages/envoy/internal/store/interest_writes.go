@@ -309,14 +309,14 @@ func (r *Registry) writeRowAt(ctx context.Context, cur storedRow, revision uint6
 	if unchanged {
 		return cur.Interest, true, nil
 	}
-	written, epoch, layout, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, revision, cur.layout)
+	written, epoch, err := r.putInterestAt(ctx, merged.SessionID, buf, revision, cur.layout)
 	if err != nil {
 		return Interest{}, false, err
 	}
-	if !stored {
+	if !written.Stored {
 		return Interest{}, false, nil
 	}
-	r.recordInterest(storedRow{Interest: merged, layout: layout}, written, epoch, getErr)
+	r.recordInterest(storedRow{Interest: merged, layout: written.Layout}, written.Revision, epoch, getErr)
 	return merged, true, nil
 }
 
@@ -693,15 +693,15 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		if err != nil {
 			return err
 		}
-		written, epoch, layout, stored, err := r.putInterestAt(ctx, sessionID, buf, revision, read.layout)
+		written, epoch, err := r.putInterestAt(ctx, sessionID, buf, revision, read.layout)
 		if err != nil {
 			return err
 		}
-		if !stored {
+		if !written.Stored {
 			continue
 		}
 		r.mu.Lock()
-		r.cache.Put(r.watcher, epoch, sessionID, storedRow{Interest: item, layout: layout}, written)
+		r.cache.Put(r.watcher, epoch, sessionID, storedRow{Interest: item, layout: written.Layout}, written.Revision)
 		r.mu.Unlock()
 		return nil
 	}

@@ -656,6 +656,9 @@ func (kv KeyValue) MaxPayload() int {
 // on the refusal, and a read of it that fails leaves it out of the error. Any other error is
 // returned as it is.
 func (kv KeyValue) tooLarge(key string, value int, err error) error {
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, nats.ErrMaxPayload) {
 		return fmt.Errorf("%w: a value of %d bytes for key %q against the server's max payload of %d bytes: %w", ErrTooLarge, value, key, kv.MaxPayload(), err)
 	}

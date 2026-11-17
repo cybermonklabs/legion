@@ -59,8 +59,8 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 // is stored in, which a write over it or a delete of it reads to remove the chunks it leaves
 // unnamed: the revision the copy's fence holds on a cache hit, the entry's own on a bucket read,
 // and 0 for a session the bucket holds no record for. A record this build cannot decode carries
-// its revision too, since the write that replaces it is conditional on it (putInterestAt), and
-// the layout its manifest names when the manifest itself decoded. A cache hit whose fence belongs
+// its revision too, since the write that replaces it is conditional on it (putInterestAt), and a
+// layout only when its chunks joined and its JSON did not decode (decodeEntry). A cache hit whose fence belongs
 // to another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it then
 // creates the record, the bucket refuses it for a record it holds (ErrInterestPlanConflict), and
 // the plan made again over the bucket's own row carries the revision that write needs. No record

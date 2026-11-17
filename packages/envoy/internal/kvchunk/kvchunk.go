@@ -362,11 +362,11 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, repl
 		Delete(ctx, kv, keys, log, what, key)
 		return Written{}, nil
 	}
-	var refused *nats.APIError
-	if errors.As(err, &refused) || errors.Is(err, bus.ErrRefused) {
-		Delete(ctx, kv, keys, log, what, key)
-	}
 	if err != nil {
+		var refused *nats.APIError
+		if errors.As(err, &refused) || errors.Is(err, bus.ErrRefused) {
+			Delete(ctx, kv, keys, log, what, key)
+		}
 		return Written{}, err
 	}
 	Delete(ctx, kv, replaced.Keys(), log, what, key)

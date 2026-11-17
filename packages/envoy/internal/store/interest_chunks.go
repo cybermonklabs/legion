@@ -54,14 +54,16 @@ func decodeRecord(record []byte, layout kvchunk.Layout) (storedRow, error) {
 // decodeEntry decodes entry, the value under sessionID that a read through kv answered, into the
 // row it stores, with the revision of the entry it was read from (kvchunk.Read, which reads a
 // record's chunks from the stream's leader and a manifest a rewrite replaced under it again). A
-// record this build cannot decode - a damaged chunked record among them (kvchunk.ErrDamaged) - is
-// ErrMalformedInterest, logged at WARN naming the session, with the layout its manifest names when
-// that decoded, so the write that replaces it deletes its chunks. nats.ErrKeyNotFound is a record
-// deleted while it was read, and any other error a read that did not answer.
+// record this build cannot decode is ErrMalformedInterest, logged at WARN naming the session. A
+// damaged chunked record (kvchunk.ErrDamaged) carries no layout, since its chunks were never proved
+// to be its own, so the write that replaces it deletes none of them; a record whose chunks joined
+// but whose JSON does not decode carries its layout, so that write deletes its chunks.
+// nats.ErrKeyNotFound is a record deleted while it was read, and any other error a read that did
+// not answer.
 func (r *Registry) decodeEntry(ctx context.Context, kv bus.KeyValue, sessionID string, entry nats.KeyValueEntry) (storedRow, uint64, error) {
 	record, layout, revision, err := kvchunk.Read(ctx, kv, sessionID, entry)
 	if errors.Is(err, kvchunk.ErrDamaged) {
-		return storedRow{layout: layout}, revision, r.malformedRecord(sessionID, revision, err)
+		return storedRow{}, revision, r.malformedRecord(sessionID, revision, err)
 	}
 	if err != nil {
 		return storedRow{}, 0, err
@@ -86,20 +88,20 @@ func (r *Registry) malformedRecord(sessionID string, revision uint64, err error)
 
 // putInterestAt writes record as sessionID's interest record only while its latest revision is
 // revision, creating it when revision is 0, which names the session that had no row when its plan
-// read the bucket. replaced is the layout of the record read at revision. It reports the revision
-// written, the epoch of the handle it was written through, the layout record was stored in, and
-// whether the bucket took the write: a bucket that refused it holds another writer's row since,
-// which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create and an Update
-// share), and the caller plans again over that row. Each call waits no longer than ctx
-// (bus.Bounded); a write ctx abandoned may still land, and is safe for the same reason a
-// conditional delete is: it stores only over the very revision it read, so it cannot undo a write
-// that landed after it.
+// read the bucket. replaced is the layout of the record read at revision. It reports what the write
+// stored (kvchunk.Written: the revision written, the layout record was stored in, and whether the
+// bucket took the write) and the epoch of the handle it was written through. A bucket that refused
+// the write holds another writer's row since, which is no error here (nats.ErrKeyExists, the
+// wrong-last-sequence answer a Create and an Update share), and the caller plans again over that
+// row. Each call waits no longer than ctx (bus.Bounded); a write ctx abandoned may still land, and
+// is safe for the same reason a conditional delete is: it stores only over the very revision it
+// read, so it cannot undo a write that landed after it.
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
 // same compare-and-swap, and the chunks replaced named are deleted once it lands (kvchunk.Write,
 // which says what else a write deletes and what it leaves to the reaper's collection). A session
 // id under the chunk keys' prefix is refused (kvchunk.ReservedKey): no record stands there.
-func (r *Registry) putInterestAt(ctx context.Context, sessionID string, record []byte, revision uint64, replaced kvchunk.Layout) (uint64, uint64, kvchunk.Layout, bool, error) {
+func (r *Registry) putInterestAt(ctx context.Context, sessionID string, record []byte, revision uint64, replaced kvchunk.Layout) (kvchunk.Written, uint64, error) {
 	kv, epoch := r.watcher.Handle()
 	written, err := kvchunk.Write(ctx, kv, sessionID, record, replaced, func(head []byte) (uint64, error) {
 		if revision == 0 {
@@ -107,10 +109,7 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, record [
 		}
 		return kv.Update(sessionID, head, revision)
 	}, r.now, r.logger(), interestRecord)
-	if err != nil {
-		return 0, epoch, kvchunk.Layout{}, false, err
-	}
-	return written.Revision, epoch, written.Layout, written.Stored, nil
+	return written, epoch, err
 }
 
 // deleteChunks deletes the chunks of sessionID's record that a delete of it left unnamed
