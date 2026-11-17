@@ -1,7 +1,15 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 import {
   temporaryDirectories,
@@ -241,7 +249,19 @@ wait
       [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
     );
 
-    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: tmuxDirectory() };
+    // The caller's mise configuration, with a state directory of the row's own seeded from the
+    // caller's (callerMiseEnvironment, seedMiseState): `tmux` on PATH can be a mise shim, which under
+    // `home` finds no version, and fails ("tmux is not a valid shim"), or runs another tmux behind it
+    // on PATH. MISE_NO_ENV keeps the caller's config's [env] out of the pane.
+    const miseState = join(mkdtempSync(join(dir, "mise-")), "state");
+    seedMiseState(miseState);
+    const env = {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      TMUX_TMPDIR: tmuxDirectory(),
+      ...callerMiseEnvironment(miseState),
+      MISE_NO_ENV: "1",
+    };
     const pidFile = join(runtime, "broker.pid");
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.
     // Ending that session is registered before the pane that starts it, so a wait below that times

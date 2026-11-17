@@ -107,7 +107,16 @@ describe("ask census since #1671", () => {
       ...environment
     } = process.env;
     const census = Bun.spawn(
-      ["bun", script, "--from", recordedAt(2), "--to", recordedAt(7), "--project", "TEST"],
+      [
+        process.execPath,
+        script,
+        "--from",
+        recordedAt(2),
+        "--to",
+        recordedAt(7),
+        "--project",
+        "TEST",
+      ],
       {
         cwd: home,
         env: { ...environment, HOME: home },
@@ -169,7 +178,16 @@ describe("ask census since #1671", () => {
       ...environment
     } = process.env;
     const census = Bun.spawn(
-      ["bun", script, "--from", recordedAt(2), "--to", recordedAt(7), "--project", "TEST"],
+      [
+        process.execPath,
+        script,
+        "--from",
+        recordedAt(2),
+        "--to",
+        recordedAt(7),
+        "--project",
+        "TEST",
+      ],
       {
         cwd: checkout,
         env: { ...environment, HOME: home },

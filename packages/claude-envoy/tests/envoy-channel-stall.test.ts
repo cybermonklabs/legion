@@ -59,7 +59,9 @@ async function startChannelServer(
     JSON.stringify({ envoy: { enabled: true, url: stack.envoyUrl, natsUrls: [proxy.url] } }),
   )
   const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
-  const server = Bun.spawn(["bun", channelEntry], {
+  // This Bun by its path: under `home`, a `bun` looked up on PATH can be a version manager's shim
+  // with no version there ("bun is not a valid shim").
+  const server = Bun.spawn([process.execPath, channelEntry], {
     cwd: home,
     env: {
       PATH: process.env["PATH"] ?? "",

@@ -48,7 +48,13 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     }),
   )
   const send = Bun.spawn(
-    ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "file", "send"],
+    [
+      process.execPath,
+      resolve(import.meta.dir, "../bin/envoy-send.ts"),
+      "ses_receiver",
+      "file",
+      "send",
+    ],
     {
       cwd: scratch,
       env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
@@ -71,7 +77,7 @@ test("envoy-send with no Envoy configured refuses, saying why, and sends nothing
   requests.length = 0
   const missing = join(scratch, "absent", "envoy.json")
   const send = Bun.spawn(
-    ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "nothing"],
+    [process.execPath, resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "nothing"],
     {
       cwd: scratch,
       env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: missing },
