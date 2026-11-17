@@ -641,8 +641,7 @@ port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connecti
   fail "the nats-server logged no client port; see $evidence/logs/nats.log"
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listener starts.
-"$work/fixturebuckets" -url "nats://127.0.0.1:$port_nats" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
-  fail "fixturebuckets could not provision the run's NATS server; see $evidence/logs/fixturebuckets.log"
+provision_fixture_buckets "$work/fixturebuckets" "nats://127.0.0.1:$port_nats" "$evidence/logs/fixturebuckets.log"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "4b.13b acceptance $project" '{key:$key,name:$name}')" >/dev/null

@@ -431,7 +431,7 @@ RULES = {
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
     f"{DAEMON}/internal/daemon/idle_rig_listener_test.go": [
-        run(ENVOY, ["./cmd/listener", "./internal/testnats/cmd/fixturebuckets"], "internal/daemon/idle_rig_listener_test.go:52 and :121 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+        run(ENVOY, ["./cmd/listener", "./internal/testnats/cmd/fixturebuckets"], "internal/daemon/idle_rig_listener_test.go:52 testbuild.EnvoyBinary, and :53 testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -455,7 +455,7 @@ RULES = {
         Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
-        run(ENVOY, ["./cmd/listener", "./cmd/dispatch", "./internal/testnats/cmd/fixturebuckets"], "internal/intake/redelivered_test.go:299-301 testbuild.EnvoyBinary, which runs go build ./cmd/listener, ./cmd/dispatch and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+        run(ENVOY, ["./cmd/listener", "./cmd/dispatch", "./internal/testnats/cmd/fixturebuckets"], "internal/intake/redelivered_test.go:299-300 testbuild.EnvoyBinary, and :94 testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener, ./cmd/dispatch and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:855 globs it and reads each file; :955 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:202")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(

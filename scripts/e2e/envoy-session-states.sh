@@ -704,8 +704,7 @@ nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listeners start. The store keeps them across the outage check's restart of natsd.
-"$work/bin/fixturebuckets" -url "$nats_url" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
-  fail "fixturebuckets could not provision $nats_url; see $evidence/logs/fixturebuckets.log"
+provision_fixture_buckets "$work/bin/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 
 # start_listener NAME KEEPER starts one of the two running listeners on the port its keeper holds,
 # so a listener stopped and started again comes back on the same port and nothing can take it in

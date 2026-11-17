@@ -773,8 +773,7 @@ nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listener starts.
-"$work/bin/fixturebuckets" -url "$nats_url" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
-  fail "fixturebuckets could not provision $nats_url; see $evidence/logs/fixturebuckets.log"
+provision_fixture_buckets "$work/bin/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 
 keep_port listener_keeper listener_port
 start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \

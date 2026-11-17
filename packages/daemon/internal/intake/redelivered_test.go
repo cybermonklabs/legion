@@ -91,7 +91,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	natsURL := js.Conn().ConnectedUrl()
 
-	provisionFixtureBuckets(t, binaries.fixtureBuckets, natsURL)
+	testbuild.ProvisionFixtureBuckets(t, natsURL)
 	listener := startListener(t, binaries.listener, natsURL)
 
 	logs := &warnings{}
@@ -287,28 +287,17 @@ func seedRedeliveredIssue(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-// envoyBinaries are Envoy's listener, Dispatch and the fixturebuckets command, built from this
-// checkout once per test process (testbuild.EnvoyBinary).
-type envoyBinaries struct{ listener, dispatch, fixtureBuckets string }
+// envoyBinaries are Envoy's listener and Dispatch, built from this checkout once per test process
+// (testbuild.EnvoyBinary).
+type envoyBinaries struct{ listener, dispatch string }
 
 // builtEnvoyBinaries is the set of paths, each built on the first test of this process that
 // asked for it.
 func builtEnvoyBinaries(t *testing.T) envoyBinaries {
 	t.Helper()
 	return envoyBinaries{
-		listener:       testbuild.EnvoyBinary(t, "./cmd/listener"),
-		dispatch:       testbuild.EnvoyBinary(t, "./cmd/dispatch"),
-		fixtureBuckets: testbuild.EnvoyBinary(t, "./internal/testnats/cmd/fixturebuckets"),
-	}
-}
-
-// provisionFixtureBuckets runs the fixturebuckets binary on the NATS server at natsURL. No
-// listener creates a bucket it copies (INFRA-4094), so the test's own server is given them before
-// the listener starts on it.
-func provisionFixtureBuckets(t *testing.T, binary, natsURL string) {
-	t.Helper()
-	if output, err := exec.Command(binary, "-url", natsURL).CombinedOutput(); err != nil {
-		t.Fatalf("fixturebuckets could not provision %s with the buckets a listener copies: %v\n%s", natsURL, err, output)
+		listener: testbuild.EnvoyBinary(t, "./cmd/listener"),
+		dispatch: testbuild.EnvoyBinary(t, "./cmd/dispatch"),
 	}
 }
 

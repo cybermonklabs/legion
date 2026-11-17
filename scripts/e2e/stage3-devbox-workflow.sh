@@ -720,8 +720,7 @@ port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listener starts.
-"$work/fixturebuckets" -url "nats://127.0.0.1:$port_nats" >/dev/null ||
-  fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"
+provision_fixture_buckets "$work/fixturebuckets" "nats://127.0.0.1:$port_nats"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 proof $project" '{key:$key,name:$name}')" >/dev/null

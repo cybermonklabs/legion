@@ -651,8 +651,7 @@ nats_ready() { curl -fsS --max-time 2 "${nats_monitor}/healthz" | jq -e '.status
 await natsd "$work/logs/natsd.log" 30 nats_ready
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listeners start.
-"$work/bin/fixturebuckets" -url "$nats_url" >"$work/logs/fixturebuckets.log" 2>&1 ||
-  fail "fixturebuckets could not provision $nats_url; see $work/logs/fixturebuckets.log"
+provision_fixture_buckets "$work/bin/fixturebuckets" "$nats_url" "$work/logs/fixturebuckets.log"
 
 # Each listener, Dispatch and each proxy restarts in a window, and the sessions' envoy.json and
 # Dispatch's environment name their ports before they first start: each serves on a keeper's port.

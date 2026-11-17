@@ -899,11 +899,11 @@ jobs:
               - 'packages/daemon/**'
               - *daemon_envoy_deps
               - *dispatch_server
-              # internal/intake/redelivered_test.go:299-301 and
-              # internal/daemon/idle_rig_listener_test.go:52,121 build ./cmd/listener and
-              # ./internal/testnats/cmd/fixturebuckets with testbuild.EnvoyBinary, beside the
-              # Dispatch server dispatch_server covers; fixturebuckets provisions through
-              # internal/bustest.
+              # internal/intake/redelivered_test.go:94,299-300 and
+              # internal/daemon/idle_rig_listener_test.go:52-53 build ./cmd/listener and
+              # ./internal/testnats/cmd/fixturebuckets with testbuild.EnvoyBinary and
+              # testbuild.ProvisionFixtureBuckets, beside the Dispatch server dispatch_server
+              # covers; fixturebuckets provisions through internal/bustest.
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
               - 'packages/envoy/internal/bustest/*'
@@ -1005,7 +1005,7 @@ jobs:
               - *omp_install
               - 'packages/daemon/**'
               - *dispatch_server
-              # internal/daemon/idle_rig_listener_test.go:52,121 build ./cmd/listener and
+              # internal/daemon/idle_rig_listener_test.go:52-53 build ./cmd/listener and
               # ./internal/testnats/cmd/fixturebuckets, and the job compiles that package's tests
               # whichever three its -run then selects.
               - *listener_command

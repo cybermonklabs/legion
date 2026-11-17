@@ -223,8 +223,7 @@ until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listener starts.
-"$work/fixturebuckets" -url "$nats_url" >/dev/null ||
-  fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"
+provision_fixture_buckets "$work/fixturebuckets" "$nats_url"
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&

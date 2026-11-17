@@ -50,7 +50,7 @@ func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListene
 func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
-	provisionFixtureBuckets(t, natsURL)
+	testbuild.ProvisionFixtureBuckets(t, natsURL)
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
 	// the log below.
 	home := testtmp.Dir(t, "listener.log")
@@ -110,18 +110,6 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		return body.Status == "healthy"
 	})
 	return l
-}
-
-// provisionFixtureBuckets runs envoy's fixturebuckets command, built once per test process
-// (testbuild.EnvoyBinary), on the NATS server at natsURL. No listener creates a bucket it copies
-// (INFRA-4094), so the test's own server is given them before a listener starts on it; the
-// command leaves a server it already provisioned as it is.
-func provisionFixtureBuckets(t *testing.T, natsURL string) {
-	t.Helper()
-	binary := testbuild.EnvoyBinary(t, "./internal/testnats/cmd/fixturebuckets")
-	if output, err := exec.Command(binary, "-url", natsURL).CombinedOutput(); err != nil {
-		t.Fatalf("fixturebuckets could not provision %s with the buckets a listener copies: %v\n%s", natsURL, err, output)
-	}
 }
 
 // log is the listener's own output so far, which a failure names.

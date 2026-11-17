@@ -207,8 +207,7 @@ until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 # No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
 # before the listener starts.
-"$work/fixturebuckets" -url "$nats_url" >"$evidence/logs/fixturebuckets.log" 2>&1 ||
-  fail "fixturebuckets could not provision $nats_url; see $evidence/logs/fixturebuckets.log"
+provision_fixture_buckets "$work/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 
 psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1

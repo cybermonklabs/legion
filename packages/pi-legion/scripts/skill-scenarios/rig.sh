@@ -784,8 +784,7 @@ services_up() {
     go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
   # No listener creates a bucket it copies (INFRA-4094): the batch provisions its own NATS with
   # them before the listener starts.
-  "$S/fixturebuckets" -url "nats://127.0.0.1:$nats_port" >"$S/logs/fixturebuckets.log" 2>&1 ||
-    fail "fixturebuckets could not provision the batch's NATS; see $S/logs/fixturebuckets.log"
+  provision_fixture_buckets "$S/fixturebuckets" "nats://127.0.0.1:$nats_port" "$S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
