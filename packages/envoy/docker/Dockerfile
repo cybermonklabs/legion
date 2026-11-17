@@ -120,6 +120,8 @@ COPY packages/envoy/roleholder ./roleholder
 # natsversion: the nats-server versions envoy-listener refuses to start against, which its session
 # consumers read (internal/bus) and the Legion daemon reads too.
 COPY packages/envoy/natsversion ./natsversion
+# pgguard: the nested-acquire guard Dispatch's store and the Legion daemon's wrap their pools in.
+COPY packages/envoy/pgguard ./pgguard
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go

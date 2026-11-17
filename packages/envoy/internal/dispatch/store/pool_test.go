@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/pgguard"
 )
 
 // The pool refuses a second connection to a caller that already holds one of its transactions:
@@ -200,6 +199,69 @@ func TestPoolRefusesASecondConnectionWhileOneIsHeld(t *testing.T) {
 	release()
 	if err := database.Pool.QueryRow(ctx, "select 1").Scan(&one); err != nil {
 		t.Fatalf("pool read after the connection was released: %v", err)
+	}
+}
+
+// The store's own acquire path - Acquire, then HoldsConnection around the connection it handed
+// out, as the durable append's withRoomLock takes its connection - is refused through the shared
+// guard (pgguard), with the one error pgguard refuses with. A caller inside a transaction is
+// refused the connection and a concurrent read of its own; a caller holding the connection
+// Acquire handed it is refused a second one, a transaction and a read mark of their own, until it
+// runs the release.
+//
+// Control: make pgguard.Guard return nil whatever its caller holds, and this fails at its first
+// check, the Acquire inside the transaction, which the pool then serves.
+func TestTheStoresAcquireIsRefusedThroughTheSharedGuard(t *testing.T) {
+	database := openTestStore(t)
+	ctx := WithTransactionTracking(context.Background())
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holding transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "select 1"); err != nil {
+		t.Fatalf("a statement in the holding transaction: %v", err)
+	}
+	inside, err := database.Pool.Acquire(ctx)
+	if inside != nil {
+		inside.Release()
+	}
+	if !errors.Is(err, pgguard.ErrNestedAcquire) {
+		t.Fatalf("a connection acquired inside the transaction: %v, want pgguard's %v", err, pgguard.ErrNestedAcquire)
+	}
+	if _, err := ForConcurrentRead(ctx); !errors.Is(err, pgguard.ErrNestedAcquire) {
+		t.Fatalf("a concurrent read's mark inside the transaction: %v, want pgguard's %v", err, pgguard.ErrNestedAcquire)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll back: %v", err)
+	}
+
+	conn, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire with no connection held: %v", err)
+	}
+	defer conn.Release()
+	holding, release := HoldsConnection(ctx)
+	defer release()
+	if second, err := database.Pool.Acquire(holding); !errors.Is(err, pgguard.ErrNestedAcquire) {
+		if second != nil {
+			second.Release()
+		}
+		t.Fatalf("a second connection under the acquired one: %v, want pgguard's %v", err, pgguard.ErrNestedAcquire)
+	}
+	if _, err := database.Pool.Begin(holding); !errors.Is(err, pgguard.ErrNestedAcquire) {
+		t.Fatalf("a transaction under the acquired connection: %v, want pgguard's %v", err, pgguard.ErrNestedAcquire)
+	}
+	if _, err := ForConcurrentRead(holding); !errors.Is(err, pgguard.ErrNestedAcquire) {
+		t.Fatalf("a concurrent read's mark under the acquired connection: %v, want pgguard's %v", err, pgguard.ErrNestedAcquire)
+	}
+
+	release()
+	conn.Release()
+	var one int
+	if err := database.Pool.QueryRow(holding, "select 1").Scan(&one); err != nil {
+		t.Fatalf("a read once the acquired connection is back: %v, want it served", err)
 	}
 }
 
@@ -525,54 +587,43 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	}
 }
 
-// A refusal is keyed and logged by the call site that asked for the connection: one caller
-// tripping the guard in a loop logs its stack once, and another caller still logs its own.
-// Leaving Begin's guard to BeginTx, instead of to the unexported begin both entry points share,
-// records Begin's own frame instead, which is no call site at all - every caller the compiler
-// gives no inlined copy of Begin, a transaction opened through an interface (refs.Pool) among
-// them, then shares that single key and only the first of them ever logs a stack.
+// A refusal is logged once per calling stack (pgguard's logRefusal), with that stack, under
+// Dispatch's name: one caller tripping the guard in a loop logs its stack once, and another caller
+// still logs its own. A log keyed on a frame every caller shares - Begin's own, the frame of a
+// transaction opened through an interface (refs.Pool) - would have only the first of them ever log
+// a stack.
 func TestEachBeginRefusalIsKeyedToItsCaller(t *testing.T) {
 	database := openTestStore(t)
-	// The guard logs each call site once per process, so a repeat run has nothing left to log.
-	loggedSites.Clear()
+	// The guard logs each calling stack once per process, so a repeat run has nothing left to log.
+	pgguard.ForgetLoggedRefusalsForTest()
 	ctx, release := HoldsConnection(context.Background())
 	defer release()
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
-	if _, err := beginFromOneSite(ctx, database.Pool); !errors.Is(err, ErrNestedAcquire) {
-		t.Fatalf("transaction from the first call site: %v, want ErrNestedAcquire", err)
+	for range 2 {
+		if _, err := beginFromOneSite(ctx, database.Pool); !errors.Is(err, ErrNestedAcquire) {
+			t.Fatalf("transaction from the first call site: %v, want ErrNestedAcquire", err)
+		}
 	}
 	if _, err := beginFromAnotherSite(ctx, database.Pool); !errors.Is(err, ErrNestedAcquire) {
 		t.Fatalf("transaction from the second call site: %v, want ErrNestedAcquire", err)
 	}
 
-	refusals := 0
+	var refusals []string
 	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(line, "second pooled connection requested while one is held") {
-			refusals++
+		if strings.Contains(line, "dispatch: second pooled connection requested while one is held") {
+			refusals = append(refusals, line)
 		}
 	}
-	if refusals != 2 {
-		t.Fatalf("refusals logged = %d, want one per call site:\n%s", refusals, logs.String())
+	if len(refusals) != 2 {
+		t.Fatalf("refusals logged = %d, want one per call site:\n%s", len(refusals), logs.String())
 	}
-	sites := refusalSites()
-	for _, want := range []string{"beginFromOneSite", "beginFromAnotherSite"} {
-		if !slices.ContainsFunc(sites, func(site string) bool { return strings.HasSuffix(site, want) }) {
-			t.Errorf("refusals keyed to %v, want one keyed to %s", sites, want)
+	for i, want := range []string{"beginFromOneSite", "beginFromAnotherSite"} {
+		if !strings.Contains(refusals[i], want) {
+			t.Errorf("refusal %d's stack names no %s:\n%s", i+1, want, refusals[i])
 		}
 	}
-}
-
-// refusalSites names the function of every call site the guard has logged a refusal for.
-func refusalSites() []string {
-	var sites []string
-	loggedSites.Range(func(key, _ any) bool {
-		frame, _ := runtime.CallersFrames([]uintptr{key.(uintptr)}).Next()
-		sites = append(sites, frame.Function)
-		return true
-	})
-	return sites
 }
 
 func beginFromOneSite(ctx context.Context, pool *Pool) (pgx.Tx, error) {

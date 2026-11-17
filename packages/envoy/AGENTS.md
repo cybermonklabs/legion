@@ -1444,16 +1444,17 @@ Nothing holding a connection of the shared pool (`store.Pool`)
 
 The rule enforces itself.
 `store.Pool` keeps the pgx pool private and every way it hands out a connection - `Query`, `QueryRow`, `Exec`, `Acquire`, `AcquireFunc`, `AcquireAllIdle`, `CopyFrom`, `SendBatch`, `Begin`, `BeginTx` - refuses one taken while the caller already holds one, with `store.ErrNestedAcquire`, so a second acquisition fails a test instead of wedging production.
+The guard itself is `packages/envoy/pgguard`, public because the Legion daemon's store wraps its pool in the same one: the store's marks and its `ErrNestedAcquire` are pgguard's, so a change to the guard reaches both pools.
 Every entry point that opens one of this pool's transactions marks its context with `store.WithTransactionTracking`:
 `api.Register` marks every route and the document websocket, and settlement, the architecture importer's `Sync`, the outbox publisher's `Run`, `MaterializeAt`, the two CLI backfills (`BackfillBlockIDs`, `BackfillAnchorBlocks`), `rebuild-refs`, the startup seeds and each migration mark their own.
 There is no exception: the document rooms' room sync runs each of its lanes on a mark of its own (`store.ForConcurrentWorker`, `docs.Service.RegisterRoomSync`), since a lane reads and writes the store outside any request, and the lanes run side by side - on one shared mark the catch-up lane's open transaction would have the issue-open lane's read of the issue refused, and that close or reopen would reach no room.
 A durable writer that holds its connection directly rather than through a transaction - `lockRoom` and a batch of browser updates (`appendRoomTx`) - marks its context with `store.HoldsConnection` for as long as it holds that connection and the room's advisory lock (`holdRoom`), and `Query` marks the caller for as long as its rows are open, so a cursor counts as the held connection it is.
-A refusal logs its stack once per call site, so a caller that trips it in a loop cannot flood the log; the error itself is returned every time.
+A refusal logs its stack once per distinct calling stack, so a caller that trips it in a loop cannot flood the log, and two callers that reach the pool through one forwarder (`pgx.BeginFunc`, a store method) still log a line each; the error itself is returned every time.
 A caller that runs independent reads side by side gives each its own mark with `store.ForConcurrentRead`, which refuses a caller already holding a connection:
 on one shared mark, one read's open cursor would refuse the others, and each read still takes one connection only (the delivery timeline's four reads do this).
 A goroutine that runs on beside the caller that started it takes `store.ForConcurrentWorker` instead, which always installs a fresh mark where `store.WithTransactionTracking` hands back the one the parent already carries (room sync's lanes, a broadcast's detached delivery): the caller must hold no connection when it starts that goroutine, because a mark of its own cannot see one the parent holds.
-`store/pool_test.go` and `api/anchored_write_concurrency_test.go` hold the halves:
-the refusal on every guarded method, concurrent reads each holding one connection, concurrent anchored writes, and two settlements queued behind one held write on a four-connection pool.
+`pgguard/pgguard_test.go`, `store/pool_test.go` and `api/anchored_write_concurrency_test.go` hold the halves:
+the guard on every guarded method and each holder's release, the refusal through the store's own methods, concurrent reads each holding one connection, concurrent anchored writes, and two settlements queued behind one held write on a four-connection pool.
 
 **Every pool's size is set in code.**
 `store.Open` fixes `MaxConns` at `store.sharedPoolSize` (64, from 16 since 2026-10-27), so neither the task's CPU allotment nor the DSN another repository's URL builder writes decides it, and a `DATABASE_URL` that carries `pool_max_conns` is **refused at open** rather than silently overridden

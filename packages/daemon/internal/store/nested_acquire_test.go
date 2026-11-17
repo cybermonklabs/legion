@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/pgguard"
 )
 
 // refusalBound is how long a connection is allowed to be asked for before the test calls the
@@ -25,9 +27,9 @@ import (
 // failure here instead of a hang that runs until the test binary's own timeout kills the package.
 const refusalBound = 10 * time.Second
 
-// refusalLine is the message logRefusal writes, which is what a count of refusals in the log
-// counts.
-const refusalLine = "second pooled connection requested while one is held"
+// refusalLine is the message the guard (pgguard) writes for this pool, under the daemon's name,
+// which is what a count of refusals in the log counts.
+const refusalLine = "legion: second pooled connection requested while one is held"
 
 // A caller holding one connection of the pool is refused a second, by name and at once, whichever
 // of the pool's two holders holds it: a transaction, asked for a second one the way the daemon
@@ -128,6 +130,61 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	refusalsLogged(t, logged, 2)
 }
 
+// The store's own acquire path — acquire, through which Store.apply takes the connection a
+// migration runs on — is refused through the shared guard (pgguard), and marks its caller in turn.
+// A caller inside a transaction is refused the connection at once, with the one error pgguard
+// refuses with, and a caller holding a connection acquire handed it is refused a second one until
+// it gives that connection back and runs the release. One connection in the pool, so a request the
+// guard did not refuse would wait out refusalBound for the connection the caller holds.
+//
+// Control: make pgguard.Guard return nil whatever its caller holds, and this fails at its first
+// check, the acquire inside the transaction, with the deadline refusalBound set.
+func TestTheStoresAcquireIsRefusedThroughTheSharedGuard(t *testing.T) {
+	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
+	pool := store.Pool()
+	logged := captureLog(t)
+	ctx := WithTransactionTracking(context.Background())
+
+	var inside error
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		// A statement, so the transaction is open on the server and not only in the driver.
+		if _, err := tx.Exec(ctx, "select 1"); err != nil {
+			return err
+		}
+		asking, cancel := context.WithTimeout(ctx, refusalBound)
+		defer cancel()
+		conn, release, err := pool.acquire(asking)
+		if err == nil {
+			conn.Release()
+			release()
+		}
+		inside = err
+		return nil
+	}); err != nil {
+		t.Fatalf("the holding transaction: %v", err)
+	}
+	if !errors.Is(inside, pgguard.ErrNestedAcquire) {
+		t.Fatalf("the connection acquired inside the held transaction = %v, want pgguard's %v", inside, pgguard.ErrNestedAcquire)
+	}
+	refusalsLogged(t, logged, 1)
+
+	conn, release, err := pool.acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire with no connection held: %v", err)
+	}
+	asking, cancel := context.WithTimeout(ctx, refusalBound)
+	defer cancel()
+	var one int
+	err = pool.QueryRow(asking, "select 1").Scan(&one)
+	conn.Release()
+	release()
+	if !errors.Is(err, ErrNestedAcquire) {
+		t.Fatalf("the read asked for while the caller holds the connection acquire handed it = %v, want %v", err, ErrNestedAcquire)
+	}
+	refusalsLogged(t, logged, 2)
+	served(t, pool, ctx, "the caller whose acquired connection is back in the pool")
+}
+
 // served fails the test unless the pool serves caller a read within refusalBound: a hold the pool
 // never ended refuses it, and a connection it never got back leaves it, in a pool of one,
 // nothing to be served with.
@@ -157,17 +214,16 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 }
 
 // captureLog sends the process's default logger into a buffer for the length of the test, which
-// is where logRefusal writes, and gives the test the buffer to read. It forgets the stacks logged
-// before the test, so a test the binary runs again (-count) logs its own stacks again.
+// is where the guard (pgguard) writes its refusals, and gives the test the buffer to read. It
+// forgets the stacks logged before the test, so a test the binary runs again (-count) logs its own
+// stacks again.
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logged bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	loggedSites.Lock()
-	clear(loggedSites.seen)
-	loggedSites.Unlock()
+	pgguard.ForgetLoggedRefusalsForTest()
 	return &logged
 }
 

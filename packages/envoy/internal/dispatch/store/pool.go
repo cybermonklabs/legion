@@ -4,22 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/pgguard"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
-// holds one of its connections.
+// holds one of its connections. It is pgguard's ErrNestedAcquire, the guard this pool and the
+// Legion daemon's share, so errors.Is matches either name.
 //
 // One caller, one connection, is the rule the pool cannot survive without. A transaction
 // holds its connection until it commits; a caller that asks for a second one while it holds a
@@ -41,55 +40,26 @@ import (
 // importer, the outbox publisher, the CLI backfills, the startup seeds and the migrations mark
 // their own goroutines), and an acquisition that arrives under a held connection fails here,
 // loudly, instead of wedging production.
-var ErrNestedAcquire = errors.New(
-	"this caller already holds a connection of the pool: a second one would deadlock it",
-)
+var ErrNestedAcquire = pgguard.ErrNestedAcquire
 
-// holding records whether the context's caller holds a connection of this pool: its
-// transaction, or one it acquired directly. One writer sets it and one reader tests it, so a
-// flag is the whole state - a transaction never opens a second transaction of its own.
-type holding struct {
-	connection atomic.Bool
-}
-
-type holdingKey struct{}
+// guardProgram is the name this pool's refusals are logged under (pgguard.Options).
+const guardProgram = "dispatch"
 
 // WithTransactionTracking marks ctx so the pool can refuse a second connection while one of its
-// transactions is open. API requests are marked by middleware; every background entry point
-// that opens a transaction - settlement, the architecture importer, the outbox publisher, the
-// CLI backfills, startup seeding and the migrations - marks its own context.
+// transactions is open (pgguard.WithTransactionTracking). API requests are marked by middleware;
+// every background entry point that opens a transaction - settlement, the architecture importer,
+// the outbox publisher, the CLI backfills, startup seeding and the migrations - marks its own
+// context.
 func WithTransactionTracking(ctx context.Context) context.Context {
-	if ctx.Value(holdingKey{}) != nil {
-		return ctx
-	}
-	return context.WithValue(ctx, holdingKey{}, &holding{})
+	return pgguard.WithTransactionTracking(ctx)
 }
 
 // HoldsConnection marks ctx as already holding a pooled connection until the returned release
 // runs, so an acquisition under it is refused like one inside a transaction. The durable
 // document appends hold their connection directly, outside any transaction of this pool's.
 func HoldsConnection(ctx context.Context) (context.Context, func()) {
-	ctx = WithTransactionTracking(ctx)
-	return ctx, hold(ctx)
-}
-
-// hold records that ctx's caller now holds a connection of this pool and returns the release
-// that clears it, or nil for a context the pool cannot see, which has no mark to clear. The
-// release runs at most once: a holder that releases twice - a transaction that commits and
-// then runs its deferred rollback, a cursor drained and then closed - must not clear the mark
-// of whatever holds a connection by then.
-func hold(ctx context.Context) func() {
-	state, ok := ctx.Value(holdingKey{}).(*holding)
-	if !ok {
-		return nil
-	}
-	state.connection.Store(true)
-	return sync.OnceFunc(func() { state.connection.Store(false) })
-}
-
-func holdsConnection(ctx context.Context) bool {
-	state, ok := ctx.Value(holdingKey{}).(*holding)
-	return ok && state.connection.Load()
+	ctx = pgguard.WithTransactionTracking(ctx)
+	return ctx, pgguard.Hold(ctx)
 }
 
 // HoldsPooledConnection reports whether ctx's caller already holds one of this pool's connections:
@@ -98,7 +68,7 @@ func holdsConnection(ctx context.Context) bool {
 // such caller - because a second connection taken while one is held is the deadlock
 // ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
 // stack names a call site that is working as intended.
-func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
+func HoldsPooledConnection(ctx context.Context) bool { return pgguard.Holds(ctx) }
 
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own, so that read takes one
@@ -106,56 +76,33 @@ func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ct
 // other, since one read's open cursor marks the context they share. A caller already holding a
 // connection (its transaction, a cursor, an acquired connection) is refused with
 // ErrNestedAcquire, because each of its reads would be a second connection taken while it holds
-// one.
+// one. The fresh mark is ForConcurrentWorker's: what this adds is the refusal.
 func ForConcurrentRead(ctx context.Context) (context.Context, error) {
-	if holdsConnection(ctx) {
-		logRefusal()
-		return nil, ErrNestedAcquire
+	if err := pgguard.Guard(ctx, guardProgram); err != nil {
+		return nil, err
 	}
-	return context.WithValue(ctx, holdingKey{}, &holding{}), nil
+	return pgguard.ForConcurrentWorker(ctx), nil
 }
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
-// for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
-// its own, always a fresh one. A worker that takes a connection - a transaction, a cursor - marks
-// only itself, so its siblings are still free to take theirs, and the pool still refuses each
-// worker a second connection of its own.
-//
-// It differs from the other two marks by never reusing ctx's: WithTransactionTracking hands back
-// the mark ctx already carries, which siblings sharing it would set and clear under each other,
-// and ForConcurrentRead refuses a caller that holds a connection. A worker's mark is its own
-// whatever the parent carries, so the caller must start these goroutines outside any transaction
-// or connection of this pool's: a process-lifetime context, as room sync's lanes run off
-// (docs.Service.RegisterRoomSync), or a request's once its write has committed, as a broadcast's
-// detached delivery runs on (api.server.deliverBroadcast). A fresh mark cannot see a connection
-// the parent holds.
+// for as long as the caller lives, with a hold mark of its own, always a fresh one
+// (pgguard.ForConcurrentWorker says how it differs from WithTransactionTracking's). Unlike
+// ForConcurrentRead it refuses nothing, so the caller must start these goroutines outside any
+// transaction or connection of this pool's: a process-lifetime context, as room sync's lanes run
+// off (docs.Service.RegisterRoomSync), or a request's once its write has committed, as a
+// broadcast's detached delivery runs on (api.server.deliverBroadcast). A fresh mark cannot see a
+// connection the parent holds.
 func ForConcurrentWorker(ctx context.Context) context.Context {
-	return context.WithValue(ctx, holdingKey{}, &holding{})
-}
-
-// loggedSites remembers the call sites that have already logged a refusal, so a caller that
-// trips the guard in a loop reports its stack once instead of flooding the log. The error
-// itself is returned to every caller, every time.
-var loggedSites sync.Map
-
-func logRefusal() {
-	var caller [1]uintptr
-	// Skip runtime.Callers, logRefusal, guard, and the pool method that called it.
-	if runtime.Callers(4, caller[:]) == 0 {
-		return
-	}
-	if _, seen := loggedSites.LoadOrStore(caller[0], struct{}{}); seen {
-		return
-	}
-	slog.Error("dispatch: second pooled connection requested while one is held",
-		"error", ErrNestedAcquire, "stack", string(debug.Stack()))
+	return pgguard.ForConcurrentWorker(ctx)
 }
 
 // Pool is the shared Dispatch connection pool. Every way it hands out a connection refuses one
-// asked for while the caller already holds one; see ErrNestedAcquire. The pgx pool is private
+// asked for while the caller already holds one; see ErrNestedAcquire. It hands out the shared
+// pool's connections only through the guarded pool (pgguard.Pool), and the pgx pool is private
 // so no caller can reach past the refusal.
 type Pool struct {
-	pool *pgxpool.Pool
+	guarded *pgguard.Pool
+	pool    *pgxpool.Pool
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
 	// will ever close.
@@ -181,7 +128,10 @@ type Pool struct {
 
 // NewPool wraps an open pgx pool.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool}
+	return &Pool{
+		guarded: pgguard.New(pool, pgguard.Options{Program: guardProgram, BeforeCommit: beforeCommitStep}),
+		pool:    pool,
+	}
 }
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
@@ -779,14 +729,6 @@ func (p *Pool) RoomPoolStats() (rooms, roomAppends *pgxpool.Stat) {
 	return rooms, roomAppends
 }
 
-func (p *Pool) guard(ctx context.Context) error {
-	if !holdsConnection(ctx) {
-		return nil
-	}
-	logRefusal()
-	return ErrNestedAcquire
-}
-
 // Query runs a query on a pooled connection. The rows hold that connection until they close,
 // so the caller counts as holding one for as long as they are open. A cursor is one of this
 // pool's three connection-holders - a transaction, an open cursor, and a connection taken
@@ -794,95 +736,34 @@ func (p *Pool) guard(ctx context.Context) error {
 // done inside the loop - a publish, a follower lookup, a write per row - is exactly the shape
 // that wedges the pool.
 func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	rows, err := p.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	release := hold(ctx)
-	if release == nil {
-		return rows, nil
-	}
-	return &trackedRows{Rows: rows, release: release}, nil
-}
-
-// trackedRows clears the caller's mark when pgx hands the cursor's connection back: an
-// explicit Close, a Next that runs out of rows, or a Scan or Values error, which pgx treats as
-// fatal and closes the rows on.
-type trackedRows struct {
-	pgx.Rows
-	release func()
-}
-
-func (r *trackedRows) Close() {
-	defer r.release()
-	r.Rows.Close()
-}
-
-func (r *trackedRows) Next() bool {
-	if r.Rows.Next() {
-		return true
-	}
-	r.release()
-	return false
-}
-
-func (r *trackedRows) Scan(dest ...any) error {
-	err := r.Rows.Scan(dest...)
-	if err != nil {
-		r.release()
-	}
-	return err
-}
-
-func (r *trackedRows) Values() ([]any, error) {
-	values, err := r.Rows.Values()
-	if err != nil {
-		r.release()
-	}
-	return values, err
+	return p.guarded.Query(ctx, sql, args...)
 }
 
 // QueryRow runs a single-row query on a pooled connection.
 func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if err := p.guard(ctx); err != nil {
-		return errRow{err: err}
-	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	return p.guarded.QueryRow(ctx, sql, args...)
 }
 
 // Exec runs a statement on a pooled connection.
 func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if err := p.guard(ctx); err != nil {
-		return pgconn.CommandTag{}, err
-	}
-	return p.pool.Exec(ctx, sql, args...)
+	return p.guarded.Exec(ctx, sql, args...)
 }
 
-// Acquire takes a pooled connection the caller holds until it releases it.
+// Acquire takes a pooled connection the caller holds until it releases it. It marks nothing: a
+// caller that keeps the connection while it reads through this pool marks itself with
+// HoldsConnection, as the durable append's withRoomLock does.
 func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.pool.Acquire(ctx)
+	return p.guarded.Acquire(ctx)
 }
 
 // AcquireFunc runs fn with a pooled connection.
 func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) error {
-	if err := p.guard(ctx); err != nil {
-		return err
-	}
-	return p.pool.AcquireFunc(ctx, fn)
+	return p.guarded.AcquireFunc(ctx, fn)
 }
 
 // AcquireAllIdle takes every idle connection the pool holds.
 func (p *Pool) AcquireAllIdle(ctx context.Context) []*pgxpool.Conn {
-	if err := p.guard(ctx); err != nil {
-		return nil
-	}
-	return p.pool.AcquireAllIdle(ctx)
+	return p.guarded.AcquireAllIdle(ctx)
 }
 
 // CopyFrom streams rows into a table on a pooled connection.
@@ -892,18 +773,12 @@ func (p *Pool) CopyFrom(
 	columns []string,
 	source pgx.CopyFromSource,
 ) (int64, error) {
-	if err := p.guard(ctx); err != nil {
-		return 0, err
-	}
-	return p.pool.CopyFrom(ctx, table, columns, source)
+	return p.guarded.CopyFrom(ctx, table, columns, source)
 }
 
 // SendBatch runs a batch on a pooled connection.
 func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	if err := p.guard(ctx); err != nil {
-		return errBatchResults{err: err}
-	}
-	return p.pool.SendBatch(ctx, batch)
+	return p.guarded.SendBatch(ctx, batch)
 }
 
 // QueueExec queues sql with args into b; its error, wrapped in what as a statement sent alone
@@ -919,44 +794,23 @@ func QueueExec(b *pgx.Batch, what, sql string, args ...any) {
 	}
 }
 
-// Begin opens a transaction and marks the request as holding one.
+// Begin opens a transaction and marks the request as holding one. The transaction takes the
+// request's BeforeCommit step before it commits.
 func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.begin(ctx, pgx.TxOptions{})
+	return p.guarded.Begin(ctx)
 }
 
-// BeginTx opens a transaction with options and marks the request as holding one.
+// BeginTx opens a transaction with options and marks the request as holding one. The
+// transaction takes the request's BeforeCommit step before it commits.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.begin(ctx, options)
-}
-
-// begin is the guarded body both transaction entry points share: guard runs in the exported
-// method, as it does in every exported method that hands out one of this pool's connections,
-// so a refusal records the caller that asked for the transaction rather than one of this
-// pool's own frames. A transaction with nothing to do at either end - no hold mark to clear and no
-// BeforeCommit step to take - is handed on as pgx opened it: a trackedTx around it would only
-// forward its Commit and Rollback.
-func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	tx, err := p.pool.BeginTx(ctx, options)
-	if err != nil {
-		return nil, err
-	}
-	release := hold(ctx)
-	beforeCommit, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
-	if release == nil && beforeCommit == nil {
-		return tx, nil
-	}
-	return &trackedTx{Tx: tx, release: release, beforeCommit: beforeCommit}, nil
+	return p.guarded.BeginTx(ctx, options)
 }
 
 // BeforeCommit is a step every transaction a request opens takes just before its COMMIT, inside
 // that transaction, so what it writes commits with the request's own write or not at all. An
-// error from it rolls the transaction back, and Commit returns that error.
+// error from it rolls the transaction back, and Commit returns that error. The guarded pool
+// (pgguard.Options' BeforeCommit) takes it, reading it off the context the transaction opens on
+// (beforeCommitStep).
 type BeforeCommit func(ctx context.Context, tx pgx.Tx) error
 
 type beforeCommitKey struct{}
@@ -979,52 +833,9 @@ func WithoutBeforeCommit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, beforeCommitKey{}, BeforeCommit(nil))
 }
 
-// trackedTx clears the caller's mark however the transaction ends, and takes the caller's
-// BeforeCommit step before it commits. Callers commit and then run a deferred rollback; the
-// release absorbs that second call. Either part may be absent: a context the pool does not track
-// has no mark, and one with no step commits as it is.
-type trackedTx struct {
-	pgx.Tx
-	release      func()
-	beforeCommit BeforeCommit
+// beforeCommitStep is the step a transaction opened under ctx takes before it commits
+// (WithBeforeCommit), or nil for none: what the guarded pool reads as each transaction opens.
+func beforeCommitStep(ctx context.Context) func(context.Context, pgx.Tx) error {
+	step, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
+	return step
 }
-
-func (t *trackedTx) Commit(ctx context.Context) error {
-	defer t.end()
-	if t.beforeCommit != nil && t.Tx.Conn().PgConn().TxStatus() == 'T' {
-		if err := t.beforeCommit(ctx, t.Tx); err != nil {
-			_ = t.Tx.Rollback(ctx)
-			return err
-		}
-	}
-	return t.Tx.Commit(ctx)
-}
-
-func (t *trackedTx) Rollback(ctx context.Context) error {
-	defer t.end()
-	return t.Tx.Rollback(ctx)
-}
-
-// end clears the caller's mark, when the pool tracks one.
-func (t *trackedTx) end() {
-	if t.release != nil {
-		t.release()
-	}
-}
-
-type errRow struct {
-	err error
-}
-
-func (r errRow) Scan(...any) error { return r.err }
-
-// errBatchResults carries a refusal through the batch surface, which has no error return of
-// its own: every result the caller reads is the refusal.
-type errBatchResults struct {
-	err error
-}
-
-func (b errBatchResults) Exec() (pgconn.CommandTag, error) { return pgconn.CommandTag{}, b.err }
-func (b errBatchResults) Query() (pgx.Rows, error)         { return nil, b.err }
-func (b errBatchResults) QueryRow() pgx.Row                { return errRow{err: b.err} }
-func (b errBatchResults) Close() error                     { return b.err }
