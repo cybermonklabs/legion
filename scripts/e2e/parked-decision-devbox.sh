@@ -517,7 +517,7 @@ since() { printf '%ss' "$((SECONDS - $1))"; }
 # ended four minutes later. A wait that can make a single attempt is not a wait, and a longer
 # deadline alone would only be a new wager on the machine.
 wait_for_run_processes() {
-  local limit=${1:-600} floor=${2:-10} polls=0 started=$SECONDS beat=$SECONDS left line
+  local limit=${1:-600} floor=${2:-10} polls=0 started=$SECONDS beat=$SECONDS left line survivors
   note "waiting up to ${limit}s and at least $floor polls for every process of the run to end"
   while :; do
     polls=$((polls + 1))
@@ -529,8 +529,9 @@ wait_for_run_processes() {
     fi
     if ((SECONDS - started >= limit && polls >= floor)); then
       # Each survivor's line, read before the EXIT trap's sweep kills it, so the failure names what
-      # each process was and whose session it ran in.
-      while IFS= read -r line; do note "$line"; done < <(ps -o pid,ppid,pgid,sid,lstart,args -p "${left//$'\n'/,}" 2>&1 || true)
+      # each process was and whose session it ran in (lib/rig.sh's proc_describe, one read of each).
+      mapfile -t survivors <<<"$left"
+      while IFS= read -r line; do note "$line"; done < <(proc_describe "${survivors[@]}" 2>&1 || true)
       fail "timed out after $(since "$started") ($polls polls) waiting for every process of the run to end; still running: ${left//$'\n'/ }"
     fi
     if ((SECONDS - beat >= 60)); then

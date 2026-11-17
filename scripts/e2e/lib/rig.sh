@@ -255,11 +255,13 @@ start_process() {
 # hold both; /proc/PID/task/*/children), never every process on the machine as `ps -p` and
 # `pgrep -P` do: procps-ng's `ps -o ppid= -p PID` read /proc/<pid>/stat 43,778 times for one pid
 # at 21,742 processes, about a second each on a loaded devbox. Each prints nothing for a process
-# that is gone. A host with no /proc (macOS) asks ps and pgrep.
+# that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with `read` and
+# `mapfile`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE, even on the
+# left of `||`.
 proc_stat_field() {
   local stat fields
   if [ -d /proc/self ]; then
-    { stat=$(<"/proc/$1/stat"); } 2>/dev/null || return 0
+    { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 0
     read -r -a fields <<<"${stat##*) }"
     printf '%s\n' "${fields[$2 - 3]}"
   else
@@ -278,6 +280,31 @@ proc_children() {
   else
     pgrep -P "$1" || true
   fi
+}
+
+# proc_describe PID... prints one line for each PID that runs: its pid, parent, process group,
+# session, start time and command line, what `ps -o pid,ppid,pgid,sid,lstart,args -p` prints, read
+# from that process alone. The command line's words are joined by spaces and each control character
+# is a space, as procps-ng prints it, so a process is one line. A PID that is gone prints nothing,
+# as ps prints no line for it. A host with no /proc asks ps.
+proc_describe() {
+  local pid stat fields words boot ticks IFS=' '
+  if [ ! -d /proc/self ]; then
+    IFS=,
+    ps -o pid,ppid,pgid,sid,lstart,args -p "$*" 2>&1 || true
+    return 0
+  fi
+  boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+  ticks=$(getconf CLK_TCK)
+  for pid in "$@"; do
+    { read -r stat <"/proc/$pid/stat"; } 2>/dev/null || continue
+    read -r -a fields <<<"${stat##*) }"
+    words=()
+    { mapfile -d '' words <"/proc/$pid/cmdline"; } 2>/dev/null || true
+    words=("${words[@]//[[:cntrl:]]/ }")
+    printf '%s ppid %s pgid %s sid %s started %s: %s\n' "$pid" "${fields[1]}" "${fields[2]}" \
+      "${fields[3]}" "$(date -d "@$((boot + fields[19] / ticks))" '+%a %b %e %T %Y')" "${words[*]}"
+  done
 }
 
 # signalable PID is whether PID can name one process the run started: a number without a leading
