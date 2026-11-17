@@ -2065,28 +2065,4 @@ package api
 // again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-//
-// 156: every launch says which experiment arms it runs with. A launch in an arm of a declared
-// experiment carries `legion.arms` in `OTEL_RESOURCE_ATTRIBUTES`, after the `legion.issue` and
-// `legion.role` of contract 64: one `<experiment>:<variant>` for each arm whose files it runs
-// with, comma-joined in the order the project's file declares the experiments and percent-encoded
-// as the daemon's other pairs are (`internal/runtime/spendattrs.go`'s SpendResourceAttributes and
-// SpendArmsValue). The Kubernetes runtime names only the arms whose every overlay the launch's
-// pod holds (`internal/runtime/sandbox/manifest.go`'s launch.overlays), so a launch that keeps a
-// pod built before an arm's overlays were mounted, which starts without them, names no such arm;
-// a role an experiment's `roles` leaves out names none of its arms, since it loads none; and a
-// launch in no arm carries no such pair. A unit's recorded arm (contract 141's `assignments`)
-// says what the unit was drawn into; this says what each of its generations ran with, on every
-// model call the generation makes, beside the issue the call was spent on. Both configuration
-// loaders refuse an operator member naming `legion.arms`, as they refuse the other two keys, and
-// a project whose declared experiments, each at its longest arm's name, could make the value
-// longer than the 255 characters the agent's detector takes. No route, state key or plugin
-// shape moves: the pane environment and the worker container's environment are surfaces of this
-// contract, as the entry of 64 says, which is why the change takes a number. (A reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 174 open pull requests of
-// this repository, made between 2026-11-17T06:19:37Z and 06:20:36Z, gave above main's 146: 147
-// (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and #4065), 151 (#4106), 152 (#3730), 153
-// (#4115), 154 (#3659) and 155 (#4273), and no head declared a number above 155, so this change
-// took 156, the lowest number above main's that no open head declared. Read the base's own
-// number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 156
+const DaemonAPIVersion = 146
