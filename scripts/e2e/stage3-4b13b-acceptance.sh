@@ -558,7 +558,7 @@ until_true_quiet() {
 }
 
 begin prerequisites
-for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj key-command; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, which the lib sourced

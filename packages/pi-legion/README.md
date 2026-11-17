@@ -81,3 +81,5 @@ The two cross-entry tests (`extensions/legion-role-claim.test.ts`,
 the pinned Oh My Pi (`LEGION_TEST_OMP`). Each release's changelog entries are in its GitHub release
 notes; `CHANGELOG.md` is the history before that, and the history before the split is in
 `packages/pi-envoy/CHANGELOG.md`.
+
+The gateway route runs hawk-token.
