@@ -306,7 +306,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
-	created := false
+	created, createdElsewhere := false, false
 	switch {
 	case errors.Is(err, nats.ErrBucketNotFound):
 		// A create the server leaves unanswered is sent again, where an unanswered update is not
@@ -334,13 +334,15 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			// of this deployment, and the member answering may not have applied that create
 			// either: the lookup is taken again until it has. The copies are not raised here, as
 			// they are for a bucket this start found: the start that created it just now carries
-			// the deployment's count too.
+			// the deployment's count too. That start may carry more copies than this one, so the
+			// leader is waited for below whatever this start's count is.
 			//
 			// Each of those lookups is sent again when the server leaves it unanswered
 			// (sentAgain). A bucket the member has not applied and a request that drew no answer
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
+			createdElsewhere = true
 			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
 		} else if unanswered(err) || ctx.Err() != nil {
 			// No answer, or the wait ended: the server refused nothing, so no setting is named.
@@ -349,17 +351,24 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil
-	case err == nil && config.Replicas > 1:
-		// The bucket is there: its stream is read for its copies, sent again while the server
-		// leaves the read unanswered as the lookup is (nats.go's lookup answers a handle, not the
-		// stream's info), and raised when it has fewer than the deployment's count. The raise is
-		// a write the server answers at once, and the wait is bounded by ctx: a raise in flight
-		// when ctx ends is abandoned (Bounded), and a raise that lands after that is one the
-		// keeper would have made.
+	case err == nil:
+		// The bucket is there: its stream is read for its copies and its leader, sent again while
+		// the server leaves the read unanswered as the lookup is (nats.go's lookup answers a
+		// handle, not the stream's info), and raised when it has fewer than the deployment's
+		// count. The read is made at one copy too: a start at one copy can find a stream another
+		// program, configured with more, has just raised, whose new group has no leader yet
+		// (leaderless below). The raise is a write the server answers at once, and the wait is
+		// bounded by ctx: a raise in flight when ctx ends is abandoned (Bounded), and a raise that
+		// lands after that is one the keeper would have made. A start at one copy raises nothing
+		// (raiseStream).
+		step := "read"
+		if config.Replicas > 1 {
+			step = "raise"
+		}
 		var info *nats.StreamInfo
 		info, err = sentAgain(ctx, lookup, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 		if err != nil {
-			err = fmt.Errorf("raise %s: %w", stream, namedRequest(lookup, err))
+			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
 		}
 		before, answered, raiseErr := Bounded(ctx, func() (int, error) { return raiseStream(js, info, config.Replicas) })
@@ -391,15 +400,16 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		return KeyValue{}, err
 	}
 	handle, err := wrapKeyValue(ctx, conn, kv, created, startSendsAgain)
-	if err == nil && created && config.Replicas > 1 {
+	if err == nil && created && (config.Replicas > 1 || createdElsewhere) {
 		// A create of more than one copy can be answered before the bucket's stream has a leader:
 		// the first send of it is answered at the stream's first leader election, but a send made
 		// again while that election runs is an equal create, which the server answers at once
 		// (measured with nats-server v2.15.1, the election held 11 s and 30 s: the second send of
 		// a create through a 2 s wait answered, and the first write to the bucket then failed
 		// "no response from stream"). The caller writes as soon as this call answers, so the
-		// start waits for the stream's leader here (awaitStreamLeader). This read follows the
-		// handle open, which has waited for the member to apply the create.
+		// start waits for the stream's leader here (awaitStreamLeader), and for a create another
+		// start made, whose count this start does not know, at one copy too. This read follows
+		// the handle open, which has waited for the member to apply the create.
 		err = awaitStreamLeader(ctx, js, "create", stream)
 	}
 	if err != nil {
@@ -580,7 +590,8 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // fails that start, so it waits on the cluster as EnsureKeyValue does: the read is sent again
 // while the server leaves it unanswered (sentAgain), and the read and the update end when ctx
 // ends or the start's hang guard passes (startHangGuard), the update in flight then abandoned
-// (Bounded).
+// (Bounded). The session reaper also makes this call on each pass, under a context of one
+// RequestTimeout, since a pass has no start behind it and its next tick asks again.
 func SetKeyValueMaxAge(ctx context.Context, js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
 	if maxAge <= 0 {
 		return 0, nil

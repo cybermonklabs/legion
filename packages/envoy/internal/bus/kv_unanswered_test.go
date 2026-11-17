@@ -252,7 +252,7 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 
 	relay.arm(1)
 	// Replicas is left at one copy, so no raise is attempted and every send the relay counts from
-	// here is a lookup this call made.
+	// here is a read of the bucket's stream this call made.
 	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first bucket lookup drew no answer = %v, want it to go on", err)
@@ -268,11 +268,12 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	if got := string(entry.Value()); got != "value" {
 		t.Fatalf("the key read back = %q, want %q", got, "value")
 	}
-	// Three lookups ride this subject: the one whose send was lost, the one that answered, and the
-	// STREAM.INFO wrapKeyValue sends through its open to build the bucket's jetstream handle,
-	// which is the same request on the same subject.
-	if sends := relay.sent(); sends != 3 {
-		t.Fatalf("lookups sent = %d, want 3: the lost one, the one that answered, and the handle open", sends)
+	// Four reads ride this subject: the lookup whose send was lost, the lookup that answered, the
+	// read of the found bucket's stream for its leader (a start at one copy can find a stream
+	// another program has just raised), and the STREAM.INFO wrapKeyValue sends through its open
+	// to build the bucket's jetstream handle, each the same request on the same subject.
+	if sends := relay.sent(); sends != 4 {
+		t.Fatalf("lookups sent = %d, want 4: the lost lookup, the one that answered, the stream read, and the handle open", sends)
 	}
 }
 

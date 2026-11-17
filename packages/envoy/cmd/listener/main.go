@@ -1181,8 +1181,9 @@ func main() {
 	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
 	// it answers them (a bucket's create, a raise's copies, a member applying a create, a stream's
 	// leader: bus.EnsureKeyValue), and what bounds each of them is the start's hang guard, 36 s per
-	// bus.EnsureKeyValue call (bus's startHangGuard, three times the slowest election measured under
-	// load), after which the start fails naming the wait. A signal needs no context here: this
+	// bus.EnsureKeyValue call (bus's startHangGuard, three times the slowest wait measured under
+	// load from a raise's answer until its stream had a leader and every copy was current), after
+	// which the start fails naming the wait. A signal needs no context here: this
 	// process installs no handler for SIGTERM or SIGINT until signal.NotifyContext makes stopping
 	// below, so until then the signal's default action ends the process at once, wherever the
 	// start is. Making stopping here instead would change that for the whole start, the NATS

@@ -700,6 +700,32 @@ func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
 	}
 }
 
+// A start configured with one copy that finds a bucket another program, configured with three,
+// raised a moment ago waits for that leader too: programs with different ENVOY_NATS_REPLICAS run
+// side by side while a deployment raises the setting, and the start at one copy raises nothing,
+// so the read of the stream it makes is for the leader alone.
+func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	conn, js := memberJetStream(t, cluster, 0)
+	const bucket = "envoy_found_raised_one_copy_test"
+	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+		t.Fatalf("create the one-copy bucket: %v", err)
+	}
+	if _, err := raiseReplicas(js, bucket, 3); err != nil {
+		t.Fatalf("another program's raise: %v", err)
+	}
+	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
+	if err != nil {
+		t.Fatalf("a start at one copy that finds the raised bucket: %v", err)
+	}
+	if !hasLeader(t, js, "KV_"+bucket) {
+		t.Fatal("the start at one copy answered while the raised bucket's stream had no leader")
+	}
+	if _, err := kv.Put("key", []byte("value")); err != nil {
+		t.Fatalf("the first put after the start: %v", err)
+	}
+}
+
 // A start that finds the notification stream another program raised a moment ago waits for its
 // leader too, for the same reason: the raise was answered at once, and a publish sent while the
 // stream has no leader draws no answer.
