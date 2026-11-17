@@ -48,12 +48,13 @@ test("a second copy of one publish is a repeat by its event id, whatever its key
 // Dispatch's outbox sends one event to the owner's topic family and to a session's own subject as
 // two publishes: every copy carries the event id `dispatch-<event id>`, and a dedupe key that names
 // its event, which is `dispatch-<event id>` on the topic copy and most others, that key behind the
-// forward prefix on a role forward, and a failed mention's own key on a new comment's copy for the
-// session that mention failed for. Its sends to the two subjects have no order between them, so a
-// session that follows the topic and is sent the event on its own subject takes whichever copy
-// comes first and drops the other, in either order, by the event id whatever the key. The outbox's
-// Go test that lets the two copies go either way round
-// (TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch) holds that it writes them so.
+// forward prefix on most role forwards, and a mention's own key on a new comment's copy for the
+// session that mention failed for and on its role forward to a holder whose own mention of it
+// settled. Its sends to the two subjects have no order between them, so a session that follows the
+// topic and is sent the event on its own subject takes whichever copy comes first and drops the
+// other, in either order, by the event id whatever the key. The outbox's Go test that lets the two
+// copies go either way round (TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch) holds
+// that it writes them so.
 test("the outbox's topic copy and session copy of one event are one delivery, in either order", () => {
   const topicCopy = {
     event_id: "dispatch-42",

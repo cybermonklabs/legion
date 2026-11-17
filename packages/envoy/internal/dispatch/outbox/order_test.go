@@ -879,7 +879,8 @@ func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (p
 // kind the batch stops reading, fails it. And once among every statement a real scan of that
 // batch runs (tracedStore), counting each whose SQL is one of the statements loadLookups ran,
 // the comment_fallback_copies read among them: a scan that read the lookups more than once - per
-// event, per owner, or once again - fails it.
+// event, per owner, or once again - fails it. The second issue's events ask a kind the first's
+// ask too (a reply to a message on it), so a read per owner runs that kind's statement twice.
 func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -940,6 +941,13 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 			Payload: map[string]any{"id": uuid.NewString(), "body": "On the second issue"},
 		}))
 	}
+	// A reply on the second issue to a message there: the message authors are a kind the first
+	// issue's events ask too, so a scan that read the lookups once per owner would run it twice.
+	otherMessage := seedMessage(t, database, "T-2", model.Actor{Kind: "session", ID: "other-sender"}, "Status?", nil)
+	seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-2"), Type: "message.created", Actor: alice,
+		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-2"), Body: "Fine", InReplyTo: &otherMessage},
+	}))
 
 	// The batch the scan is about to read, read the same way, with its lookups run through a
 	// queryer that counts them (resolveDestinations): the scan's own statements are many more than
@@ -1005,16 +1013,17 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	// Each comment reply whose mention failed reaches its thread's author, each resolution its
 	// thread root's author, each ask answer its two followers, each message reply its parent's
 	// sender, each person's edit the edited document's author, and each comment on the unclaimed
-	// issue its spec's author; and every reply, resolution, answer, message and comment on the
-	// claimed issue - a person's - reaches the claimant, which an edit, no claimant event, does
-	// not. Each comment on a document of the claimed issue reaches that document's author no
+	// issue its spec's author, and the one reply on it its parent's sender; and every reply,
+	// resolution, answer, message and comment on the claimed issue - a person's - reaches the
+	// claimant, which an edit, no claimant event, does not. Each comment on a document of the
+	// claimed issue reaches that document's author no
 	// more: on an issue a session claims, the credits of a document are no second reason to
 	// deliver what the claimant already hears on its own topic (addAuthorRoutes). The read of
 	// those credits is made all the same, so the statement count above is unchanged.
 	if want := each * 5; claimant != want {
 		t.Fatalf("the batch reached the claimant %d times, want %d", claimant, want)
 	}
-	if want := each/2 + each*6 + each*5; agents != want {
+	if want := each/2 + each*6 + each*5 + 1; agents != want {
 		t.Fatalf("the batch reached %d sessions' own subjects, want %d", agents, want)
 	}
 }
