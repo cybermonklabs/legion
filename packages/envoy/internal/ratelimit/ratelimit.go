@@ -1,7 +1,9 @@
 // Package ratelimit is the broker's token buckets: per key (a source address, the person a machine
 // login names, the one bucket every service's login shares, an enrollment whose requests name
 // secrets the policy does not serve and so cost a policy reread), so a flood under one key never
-// spends another's, and one every caller shares.
+// spends another's, and one every caller shares. It is also the listener's count of the messages
+// each agent session sends through it (cmd/listener, sender_limit.go): one Keyed whose key is the
+// sending session, so one session past its limit never spends another's.
 package ratelimit
 
 import (
@@ -17,13 +19,16 @@ type Limit struct {
 	Burst int
 }
 
-// RetryAfterSeconds is the Retry-After a bucket refilled one request every every names: whole
-// seconds rounded up, and never 0, which would invite an immediate retry the bucket would refuse
-// again. Every refusal of a bucket of this package carries it — the broker's own 429s
-// (internal/broker/api) and Dispatch's refusal of an introspection it would not make
-// (internal/dispatch/api) — so the two cannot read one wait differently.
-func RetryAfterSeconds(every time.Duration) int {
-	return max(int((every+time.Second-1)/time.Second), 1)
+// RetryAfterSeconds is the Retry-After a refusal names for wait: its whole seconds, rounded up,
+// and at least 1, since 0 would invite an immediate retry the bucket would refuse again. The
+// broker's own 429s (internal/broker/api), Dispatch's refusal of an introspection it would not
+// make (internal/dispatch/api) and the listener's refusal of a broker token it would not check
+// pass their bucket's Every, how long one request takes to come back. The listener's refusal of
+// a sender past its limit (cmd/listener) passes the wait until the sender's bucket holds one
+// request (WaitAt), which a bucket deeper than one request reaches sooner. One rounding for every
+// refusal means a caller reads each wait the same way, whichever refused it.
+func RetryAfterSeconds(wait time.Duration) int {
+	return max(int((wait+time.Second-1)/time.Second), 1)
 }
 
 // maxBuckets bounds a Keyed's memory: past it, full buckets (indistinguishable from fresh ones)
@@ -84,6 +89,25 @@ func (k *Keyed) TakeAt(key string, now time.Time) (giveBack func(), ok bool) {
 		defer k.mu.Unlock()
 		reservation.CancelAt(now)
 	}, true
+}
+
+// WaitAt is how long key's bucket at now waits until it holds one request: 0 for a key with no
+// bucket, since a new bucket is full, and 0 for a bucket that holds one request or more. It reads
+// key's bucket under k's lock and makes none, so asking after a key spends no slot of maxBuckets.
+// The wait is truncated to whole nanoseconds, so two thirds of a request missing at one request
+// every 15 s is 10 s exactly, and not 10 s and 1 ns, which RetryAfterSeconds would round up to 11.
+func (k *Keyed) WaitAt(key string, now time.Time) time.Duration {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	bucket, ok := k.buckets[key]
+	if !ok {
+		return 0
+	}
+	tokens := bucket.TokensAt(now)
+	if tokens >= 1 {
+		return 0
+	}
+	return time.Duration((1 - tokens) * float64(k.limit.Every))
 }
 
 // AllowBothAt takes one request from key's bucket and one from shared at now when each has one

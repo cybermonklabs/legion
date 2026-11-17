@@ -128,6 +128,51 @@ func TestARefusedTakeSpendsNothing(t *testing.T) {
 	}
 }
 
+// TestKeyedWaitAt pins the wait the listener's refusal of a sender past its limit names: none for
+// a key with no bucket, which WaitAt does not make, nor for a full one; else the time until the
+// key's bucket holds one request again, exact to the nanosecond, which RetryAfterSeconds turns
+// into whole seconds of at least 1. A wait one nanosecond too long would round up to 11 s where
+// the bucket holds its request again after 10.
+func TestKeyedWaitAt(t *testing.T) {
+	k := NewKeyed(Limit{Every: 15 * time.Second, Burst: 1})
+	if wait := k.WaitAt("unseen", t0); wait != 0 {
+		t.Fatalf("a key with no bucket waits %s, want 0: a new bucket is full", wait)
+	}
+	if _, made := k.buckets["unseen"]; made {
+		t.Fatal("WaitAt made a bucket for the key it was asked about")
+	}
+
+	giveBack, ok := k.TakeAt("full", t0)
+	if !ok {
+		t.Fatal("the take that makes a full bucket was refused")
+	}
+	giveBack()
+	if wait := k.WaitAt("full", t0); wait != 0 {
+		t.Fatalf("a full bucket waits %s, want 0", wait)
+	}
+
+	if _, ok := k.TakeAt("a", t0); !ok {
+		t.Fatal("a's first take was refused")
+	}
+	if wait := k.WaitAt("a", t0); wait != 15*time.Second {
+		t.Fatalf("at the take a waits %s, want 15s", wait)
+	}
+	wait := k.WaitAt("a", t0.Add(5*time.Second))
+	if wait != 10*time.Second {
+		t.Fatalf("5 s after the take a waits %s, want 10s", wait)
+	}
+	if seconds := RetryAfterSeconds(wait); seconds != 10 {
+		t.Fatalf("RetryAfterSeconds(%s) = %d, want 10", wait, seconds)
+	}
+	if wait := k.WaitAt("a", t0.Add(15*time.Second)); wait != 0 {
+		t.Fatalf("15 s after the take a waits %s, want 0: its bucket holds its request again", wait)
+	}
+
+	if seconds := RetryAfterSeconds(time.Nanosecond); seconds != 1 {
+		t.Fatalf("RetryAfterSeconds(1ns) = %d, want 1", seconds)
+	}
+}
+
 // TestSetRatesAtKeepsEachKeysTokensAndSlowsItsRefill pins what a rate change does to a bucket a
 // caller already spent from: the tokens it holds stay, and only the rate it gains them back at
 // moves. The broker rewrites these rates when its replica count changes
