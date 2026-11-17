@@ -2077,42 +2077,101 @@ check "names the workflow and what it no longer builds" \
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
 
-# Rule 20. darwin_vet <root> <tags>: a step of the app job that vets ./lib for darwin with
-# -tags <tags> (none when empty), pinned as an exact entry whose Run carries that platform and
-# those tags, as ci_job_reads.py's darwin_vet pins this repository's three. lib gets a file under
-# the build tag probe, one under linux, a platform and never a tag, and one under race, which
-# go_build_tags.NOT_TAGS leaves to the toolchain.
+# Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
+# darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
+# per set carrying that platform and those tags, as ci_job_reads.py's darwin_vet pins this
+# repository's three. lib gets a file under the build tag probe, and three no tag choice brings
+# to darwin/arm64: one under linux, one under race, which the toolchain sets, and one under
+# amd64.v1, an architecture feature. The app filter takes all of mod, which `./...` reads.
 darwin_vet() {
-  local flag=""
-  [ -n "$2" ] && flag="-tags $2 "
-  printf '//go:build probe\n\npackage lib\n\nfunc Probe() {}\n' > "$1/mod/lib/probe.go"
-  printf '//go:build linux\n\npackage lib\n\nfunc Linux() {}\n' > "$1/mod/lib/linux_only.go"
-  printf '//go:build race\n\npackage lib\n\nconst Race = true\n' > "$1/mod/lib/race_on.go"
-  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
-    "      - name: Vet the library for darwin"$'\n'"        run: GOOS=darwin GOARCH=arm64 go vet ${flag}./lib"$'\n'"        working-directory: mod"$'\n'"      - name: Test the app"
-  replace "$1/.github/scripts/ci_job_reads.py" "from ci_filter_coverage import Read, at, gate, run" \
+  local root=$1 runs="" set
+  shift
+  for set in "$@"; do
+    runs+="        run(\"mod\", [\"./...\"], \"the darwin vet\", tags=\"$set\", mode=\"vet\", env={\"GOOS\": \"darwin\", \"GOARCH\": \"arm64\"}),"$'\n'
+  done
+  printf '//go:build probe\n\npackage lib\n\nfunc Probe() {}\n' > "$root/mod/lib/probe.go"
+  printf '//go:build linux\n\npackage lib\n\nfunc Linux() {}\n' > "$root/mod/lib/linux_only.go"
+  printf '//go:build race\n\npackage lib\n\nconst Race = true\n' > "$root/mod/lib/race_on.go"
+  printf '//go:build amd64.v1\n\npackage lib\n\nconst Feature = true\n' > "$root/mod/lib/feature.go"
+  replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" "              - 'mod/**'"
+  replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+    "      - name: Vet the library for darwin"$'\n'"        run: GOOS=darwin GOARCH=arm64 go vet ./..."$'\n'"        working-directory: mod"$'\n'"      - name: Test the app"
+  replace "$root/.github/scripts/ci_job_reads.py" "from ci_filter_coverage import Read, at, gate, run" \
     "from ci_filter_coverage import Read, at, exact, gate, run"
-  replace "$1/.github/scripts/ci_job_reads.py" '    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),' \
-    "    ], exact=[exact(\"Vet the library for darwin\", \"mod\", \"GOOS=darwin GOARCH=arm64 go vet ${flag}./lib\", ["$'\n'"        run(\"mod\", [\"./lib\"], \"the darwin vet\", tags=\"$2\", mode=\"vet\", env={\"GOOS\": \"darwin\", \"GOARCH\": \"arm64\"}),"$'\n'"    ])], reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\")]),"
+  replace "$root/.github/scripts/ci_job_reads.py" '    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),' \
+    "    ], exact=[exact(\"Vet the library for darwin\", \"mod\", \"GOOS=darwin GOARCH=arm64 go vet ./...\", ["$'\n'"$runs    ])], reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\")]),"
 }
 
-echo "case: a darwin vet whose -tags names every tag its package's files are built under"
+echo "case: a darwin vet whose tag set names every tag its module's files are built under"
 root=$(fixture vet-tags-whole)
 darwin_vet "$root" probe
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "and reports what it judged" \
-  "$(contains "$out" 'report: job app step "Vet the library for darwin": vets mod for darwin with -tags probe; go list passes over 2 files there, 0 of them for want of a tag')"
+  "$(contains "$out" 'report: job app step "Vet the library for darwin": vets mod for darwin/arm64 under -tags probe; go list compiles 5 of the 8 .go files on disk there, 0 of the rest name a tag, and 0 of those build for darwin/arm64 under tags no set holds')"
 
-echo "case: a darwin vet whose -tags leaves out a tag a file of its package is built under"
+echo "case: a darwin vet whose tag set leaves out a tag a file of its module is built under"
 root=$(fixture vet-tags-missing)
 darwin_vet "$root" ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the file and the tag that would compile it" \
-  "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin with -tags (none), so it never compiles mod/lib/probe.go, which tag probe would')"
-check "and passes over the platform's and the toolchain's files" \
-  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go')" false)"
+check "names the file and the tags that would compile it" \
+  "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags (none), and none of them compiles mod/lib/probe.go, which go builds for darwin/arm64 with -tags probe')"
+check "and passes over the platform's, the toolchain's and the feature's files" \
+  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go')" false)"
+
+echo "case: one tag set beside a file under the negated tag"
+root=$(fixture vet-tags-negated)
+darwin_vet "$root" probe
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file the set leaves out and the empty set that builds it" \
+  "$(contains "$out" '::error file=mod/lib/noprobe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags probe, and none of them compiles mod/lib/noprobe.go, which go builds for darwin/arm64 with -tags (none)')"
+
+echo "case: two tag sets, one with the tag and one without, beside the negated file"
+root=$(fixture vet-tags-negated-covered)
+darwin_vet "$root" probe ""
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a package whose every file is under a tag, a tag in another script, and a +build line"
+root=$(fixture vet-tags-unlisted)
+darwin_vet "$root" probe
+mkdir -p "$root/mod/only"
+printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
+printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
+printf '// +build legacy\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file of the package go list ./... leaves out" \
+  "$(contains "$out" '::error file=mod/only/only.go::.*which go builds for darwin/arm64 with -tags hidden')"
+check "names the file under the tag a byte-wise reader would cut short" \
+  "$(contains "$out" $'::error file=mod/lib/beta.go::.*which go builds for darwin/arm64 with -tags probe_\xce\xb2:')"
+check "names the file whose only constraint is a +build line" \
+  "$(contains "$out" '::error file=mod/lib/legacy.go::.*which go builds for darwin/arm64 with -tags legacy')"
+
+# go_build_tags.py, the script the vet steps take their sets from, over a module holding each
+# shape above: the first set is every tag, and the file under the negated tag adds a set
+# without it, which also builds the file whose +build line wants legacy and not probe. No set
+# names the platform's, the toolchain's or the feature's names.
+echo "case: go_build_tags.py's sets for a module with a negated tag, a tag-only package and +build lines"
+root=$(fixture vet-tags-sets)
+darwin_vet "$root" probe
+mkdir -p "$root/mod/only"
+printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
+printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
+printf '// +build legacy,!probe\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
+check "prints every tag, then the set without probe" \
+  "$(is "$sets" $'hidden,legacy,probe,probe_\xce\xb2\nhidden,legacy,probe_\xce\xb2')"
+printf '//go:build probe && (\n\npackage lib\n' > "$root/mod/lib/broken.go"
+status=0
+sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+check "and refuses a constraint it cannot read" "$(is "$status" 1)"
+check "naming the file" "$(contains "$sets" 'mod/lib/broken.go: its build constraint cannot be read')"
 
 # No case runs this rule, or any other rule of check-ci-filters.sh, over this repository's own
 # tree: ci.yaml's ci-filters job runs the whole check there (.github/workflows/ci-job-ci-filters.yaml,

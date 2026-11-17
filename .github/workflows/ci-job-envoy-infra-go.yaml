@@ -83,15 +83,17 @@ jobs:
         working-directory: packages/envoy/infra
       # The same vet as macOS compiles the module: its commands ship for darwin
       # (.github/envoy-infra-targets.json), and a file with no build constraint that uses a symbol
-      # only a `//go:build linux` file defines compiles on this runner and nowhere else. The tags are
-      # read off the module's own `//go:build` lines by .github/scripts/go_build_tags.py, so a file
-      # under a tag that lands later is vetted too. One darwin architecture is enough: no file of
-      # the module tells amd64 from arm64 on darwin.
+      # only a `//go:build linux` file defines compiles on this runner and nowhere else. The vet
+      # runs once per tag set .github/scripts/go_build_tags.py reads off the module's own build
+      # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
+      # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
       - name: Vet envoy-infra for darwin, its live-test tags included
         run: |
-          tags=$(python3 ../../../.github/scripts/go_build_tags.py .)
-          echo "Vetting for darwin with -tags $tags"
-          GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...
+          sets=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r tags; do
+            echo "Vetting for darwin with -tags ${tags:-(none)}"
+            GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...
+          done <<< "$sets"
         working-directory: packages/envoy/infra
       # Every package of the module except internal/textcheck, whose tests are the text-check
       # job's: a change to only what they read must not start this job, and they must not run

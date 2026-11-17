@@ -321,18 +321,20 @@
 #      paths-filter step carries no filter and is held only to being a step of the job: that is
 #      the step merging the three steps' verdicts into the `filter_verdicts` output
 #      .github/scripts/ci-ok.jq reads as one object,
-#  20. a vet for another platform - a Run of mode vet whose env sets GOOS, today the three darwin
-#      vets ci_job_reads.py's darwin_vet pins - that passes over a file a build tag would
-#      compile, naming the file, the job, the step and the tag. Such a vet is its module's one
-#      compile for that platform, and a file under a tag its -tags leaves out is never read while
-#      the vet still passes: the miss a hand-kept tag list makes the day a tag lands. go list
-#      decides, under the Run's own platform and tags: of the files it ignores there, each whose
-#      //go:build line names a tag the Run does not set (a name that is no GOOS or GOARCH of
-#      `go tool dist list` and none of .github/scripts/go_build_tags.py's NOT_TAGS) is listed
-#      again with those tags added, and one go list then compiles is the miss. The darwin vets
-#      read their -tags off the module with that script at run time and ci_job_reads.py gives
-#      their Runs what it prints now, so this rule fails when the script stops printing a tag
-#      the module uses.
+#  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
+#      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
+#      between them pass over a file go builds for that platform under some tags, naming the
+#      file, the job, the step and the tags that build it. Such a step is its module's one
+#      compile for that platform, and a file outside every set is never read while the vet still
+#      passes: the miss a hand-kept tag list makes the day a tag lands, and the one a single set
+#      makes beside a `!tag` file. The files are those on disk under the Runs' patterns, so a
+#      package whose every file a missing tag excludes is among them; go list says which each
+#      Run compiles, and of the rest, each whose constraint names a tag (no platform or
+#      architecture feature name, none the toolchain sets) is listed under every choice of its
+#      own tags, and one go list then compiles is the miss. The steps read their sets off the
+#      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
+#      Runs what it prints now, so this rule fails when that script stops printing a set a
+#      file needs.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

@@ -1125,7 +1125,7 @@ jobs:
               # END generated
 
             # `go vet -tags e2e ./...` in packages/daemon, as linux and as darwin compile it, the
-            # darwin vet with the tags .github/scripts/go_build_tags.py reads off the module.
+            # darwin vet once per tag set .github/scripts/go_build_tags.py reads off the module.
             typecheck:
               - *ci_router
               - '.github/workflows/ci-job-typecheck.yaml'
@@ -2623,7 +2623,7 @@ jobs:
               - '.github/workflows/ci-job-envoy-infra-go.yaml'
               - *go_workspace
               - 'packages/envoy/infra/**'
-              # Its darwin vet takes its -tags from this script.
+              # Its darwin vet takes its tag sets from this script.
               - '.github/scripts/go_build_tags.py'
               - *dispatch_server
               - *listener_command
@@ -2752,7 +2752,7 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
-              # Its darwin vet takes its -tags from this script.
+              # Its darwin vet takes its tag sets from this script.
               - '.github/scripts/go_build_tags.py'
               # The steps "Check this repository's architecture notes with the composite action"
               # and "Check this repository's spec files with the composite action" run the two
@@ -4386,7 +4386,7 @@ jobs:
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
-              # ci_job_reads.py runs it for each darwin vet's -tags, and rule 20 imports it.
+              # ci_job_reads.py runs it for each darwin vet's tag sets, and rule 20 imports it.
               - '.github/scripts/go_build_tags.py'
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'

@@ -461,7 +461,8 @@ The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
-GOOS=darwin GOARCH=arm64 go vet -tags "$(python3 ../../../.github/scripts/go_build_tags.py .)" ./...
+sets=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+while IFS= read -r tags; do GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...; done <<< "$sets"
 go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```

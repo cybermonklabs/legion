@@ -55,7 +55,7 @@ from typing import NamedTuple
 
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
 from ci_filter_coverage import at as at_in, gate as gate_in
-from go_build_tags import go_skips_dir, module_tags
+from go_build_tags import go_skips_dir, tag_sets
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -128,35 +128,43 @@ def pinned_step(job, step, workdir, script, runs, workflow=""):
                                          for where, pkgs, what, options in runs])
 
 
+def darwin_vet_script(workdir):
+    """The run of a darwin vet step in `workdir`: the tag sets BUILD_TAGS prints for the module,
+    taken into a variable first so a failure of the script fails the step before go runs, then
+    one vet of every package per set."""
+    up = "/".join([".."] * len(Path(workdir).parts))
+    return (f"sets=$(python3 {up}/{BUILD_TAGS} . darwin arm64)\n"
+            "while IFS= read -r tags; do\n"
+            '  echo "Vetting for darwin with -tags ${tags:-(none)}"\n'
+            '  GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...\n'
+            'done <<< "$sets"')
+
+
 def darwin_vet(job, step, workdir):
     """A step that vets every package of a module, its tests and every tagged file included, as
     darwin/arm64 compiles them: the vet each Go module's job runs so that a file compiling on
-    linux alone fails the pull request, not a Mac. The step reads its -tags off the module's own
-    `//go:build` lines with BUILD_TAGS, so a command substitution and GOOS and GOARCH in front of
-    the go command put it outside the simple form: it is pinned whole, and its one Run carries
-    the platform and the tags that script prints for the module now, which makes the closure the
-    one darwin compiles. check-ci-filters.sh's rule 20 then asks go list whether that vet passes
-    over any file a tag would bring in.
+    linux alone fails the pull request, not a Mac. The step loops over the tag sets BUILD_TAGS
+    reads off the module's own build constraints, so a command substitution, a loop and GOOS and
+    GOARCH in front of the go command put it outside the simple form: it is pinned whole, with
+    one Run per set the script prints for the module now, each carrying the platform and that
+    set, which makes the closure the one darwin compiles. check-ci-filters.sh's rule 20 then asks
+    go list whether those vets between them pass over any file darwin builds under some tags.
 
-    The gate reads BUILD_TAGS and every .go file of the module, whose `//go:build` lines it scans;
+    The gate reads BUILD_TAGS and every .go file of the module, whose constraints it scans;
     darwin_vet_reads names both for the gate's `reads`."""
-    up = "/".join([".."] * len(Path(workdir).parts))
-    script = (f"tags=$(python3 {up}/{BUILD_TAGS} .)\n"
-              'echo "Vetting for darwin with -tags $tags"\n'
-              'GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...')
-    tags = ",".join(module_tags(Path(workdir)))
-    return pinned_step(job, step, workdir, script, [
-        (workdir, ["./..."], f"GOOS=darwin GOARCH=arm64 go vet -tags {tags or '(none)'} ./...",
-         {"tags": tags, "mode": "vet", "env": {"GOOS": "darwin", "GOARCH": "arm64"}}),
+    return pinned_step(job, step, workdir, darwin_vet_script(workdir), [
+        (workdir, ["./..."], f"GOOS=darwin GOARCH=arm64 go vet -tags {','.join(tags) or '(none)'} ./...",
+         {"tags": ",".join(tags), "mode": "vet", "env": {"GOOS": "darwin", "GOARCH": "arm64"}})
+        for tags in tag_sets(Path(workdir), "darwin", "arm64")
     ])
 
 
 def darwin_vet_reads(job, step, workdir):
     """What darwin_vet's step reads beside its go command's closure: the script that prints its
-    -tags, and the .go files whose `//go:build` lines that script scans."""
+    tag sets, and the .go files whose build constraints that script reads."""
     return reads(
-        (BUILD_TAGS, f"{at(job, step)} runs it for the vet's -tags"),
-        (f"{workdir}/**/*.go", f"{at(job, step)}: {BUILD_TAGS} reads the `//go:build` line of each"),
+        (BUILD_TAGS, f"{at(job, step)} runs it for the vet's tag sets"),
+        (f"{workdir}/**/*.go", f"{at(job, step)}: {BUILD_TAGS} reads the build constraint of each"),
     )
 
 

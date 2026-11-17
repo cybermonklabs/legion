@@ -13,6 +13,7 @@ import ...` gets these very classes.
 from __future__ import annotations
 
 import atexit
+import itertools
 import json
 import os
 import re
@@ -27,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from go_build_tags import constraint, go_skips_dir, is_tag, names_of
+from go_build_tags import constraint, go_files, go_skips_dir, is_tag, names_of, platforms
 from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -2357,68 +2358,105 @@ def rewrite(path: str, lines: list, blocks: dict, wanted: dict, heads=lambda nam
         (REPO / path).write_text(text)
 
 
+# Rule 20 searches every choice of a file's own tags for one go builds it under; a file naming
+# more tags than this is refused by name rather than searched.
+MAX_TRIAL_TAGS = 6
+
+
 def check_vet_tags(session: Session, data, problems: list) -> list:
-    """Rule 20: a vet for another platform, a Run of mode vet whose env sets GOOS, passes over no
-    file of its packages that a build tag would compile. Such a vet is the one compile of its
-    module for that platform, and a file under a tag its -tags leaves out is a file it never
-    reads, while the vet still passes. go list decides, under the Run's own platform and tags:
-    of the files it ignores there (IgnoredGoFiles, test files included), each whose `//go:build`
-    line names a tag the Run does not set is a candidate, and a candidate go list compiles once
-    those tags are added is a file the vet skips for want of a tag. A tag is a name of such a
-    line that go_build_tags.is_tag accepts against the GOOS and GOARCH names of `go tool dist
-    list`, run with the module's own toolchain: the script the darwin vets take their -tags from
-    decides what a tag is by that same function, so the two agree on what a missing tag is while
-    this rule asks go list, not that script, which files the vet compiles."""
-    report = []
-    platforms: dict = {}
+    """Rule 20: the vets for another platform of one step - the Runs of mode vet whose env sets
+    GOOS, one per tag set the step loops over - compile between them every file of their
+    packages that go builds for that platform under some choice of tags. Such a step is its
+    module's one compile for that platform, and a file outside every set it vets under is a file
+    it never reads while it still passes: the miss a hand-kept tag list makes the day a tag
+    lands, and the one a single set makes beside a file under a negated tag.
+
+    The files are those on disk under the Runs' patterns (go_build_tags.go_files, the directories
+    `./...` walks), never go list's own package list, which leaves out a package whose every file
+    a missing tag excludes. go list then says, under each Run's platform and tags, which of them
+    it compiles. For each file none compiles that names a tag (go_build_tags.is_tag: no platform
+    or architecture feature name, none the toolchain sets), every choice of its own tags is
+    tried, and go list says again whether the file is compiled under it: one that is, is a miss,
+    named with the tags that build it. go decides each answer; this rule's own reading of a
+    constraint only chooses which tags to try, and it reads a name in any script Go accepts."""
+    groups: dict = defaultdict(list)
     for g in data.GATES:
         for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:
-            goos = dict(r.env).get("GOOS")
-            if r.mode != "vet" or not goos:
+            env = dict(r.env)
+            if r.mode == "vet" and env.get("GOOS"):
+                groups[(g.job, step, r.workdir, env["GOOS"], env.get("GOARCH", ""), r.pkgs)].append(r)
+    report = []
+    for (job, step, workdir, goos, goarch, pkgs), runs in groups.items():
+        where = f'job {job} step "{step}"' if step else f"job {job}"
+        target = f"{goos}/{goarch}" if goarch else goos
+        try:
+            known = platforms(REPO / workdir)
+        except (OSError, subprocess.CalledProcessError) as failure:
+            problems.append(error(None, f"{where}: go tool dist list failed in {workdir}, so which names of a "
+                                        f"build constraint are platforms is unknown: {failure}"))
+            continue
+        disk = set()
+        for pattern in pkgs:
+            base = REPO / workdir / pattern.removesuffix("...").rstrip("/")
+            found = go_files(base) if pattern.endswith("...") else (
+                p for p in sorted(base.glob("*.go")) if not p.name.startswith(("_", ".")))
+            disk |= {rel(str(path)) for path in found}
+        if not disk:
+            problems.append(error(None, f"{where}: no .go file is on disk under {' '.join(pkgs)} in {workdir}, "
+                                        f"so rule 20 checked nothing there"))
+            continue
+        dirs = sorted({path.rsplit("/", 1)[0] for path in disk})
+        sets = [r.tags for r in runs]
+        compiled = set().union(*(compiled_files(session, r, r.tags, dirs) for r in runs))
+        tagged = misses = 0
+        trials: dict = {}
+        for path in sorted(disk - compiled):
+            names = sorted(n for n in names_of(constraint(REPO / path) or "") if is_tag(n, known))
+            if not names:
                 continue
-            if r.workdir not in platforms:
-                listed = subprocess.run([session.toolchain(r.workdir), "tool", "dist", "list"], cwd=REPO / r.workdir,
-                                        capture_output=True, text=True)
-                platforms[r.workdir] = frozenset(part for line in listed.stdout.split() for part in line.split("/"))
-                if listed.returncode != 0 or not platforms[r.workdir]:
-                    problems.append(error(None, f"in {r.workdir}, go tool dist list failed, so which names of a "
-                                                f"//go:build line are platforms is unknown: "
-                                                f"{' '.join(listed.stderr.split())[:300]}"))
-            known = platforms[r.workdir]
-            if not known:
+            tagged += 1
+            if len(names) > MAX_TRIAL_TAGS:
+                problems.append(error(path, f"{where}: {path} names {len(names)} tags, more than the "
+                                            f"{MAX_TRIAL_TAGS} rule 20 tries, so whether a vet of {target} "
+                                            f"misses it is unknown"))
                 continue
-            tags = set(filter(None, r.tags.split(",")))
-            ignored = ignored_files(session, r, tags)
-            needed: dict = {}
-            for path in sorted(ignored):
-                extra = {name for name in names_of(constraint(REPO / path) or "") if is_tag(name, known)} - tags
-                if extra:
-                    needed[path] = extra
-            skipped = sorted(needed.keys() - ignored_files(session, r, tags.union(*needed.values()))) if needed else []
-            where = f'job {g.job} step "{step}"' if step else f"job {g.job}"
-            report.append(f"{where}: vets {r.workdir} for {goos} with -tags {r.tags or '(none)'}; go list passes over "
-                          f"{len(ignored)} files there, {len(skipped)} of them for want of a tag")
-            for path in skipped:
-                problems.append(error(path, f"{where} vets {r.workdir} for {goos} with -tags {r.tags or '(none)'}, "
-                                            f"so it never compiles {path}, which tag "
-                                            f"{','.join(sorted(needed[path]))} would: the vet passes without "
-                                            f"reading the file. The darwin vets take their -tags from "
-                                            f".github/scripts/go_build_tags.py, which must print every tag the "
-                                            f"module's //go:build lines name"))
+            directory = path.rsplit("/", 1)[0]
+            for bits in itertools.product((True, False), repeat=len(names)):
+                tags = ",".join(n for n, on in zip(names, bits) if on)
+                if (directory, tags) not in trials:
+                    trials[directory, tags] = compiled_files(session, runs[0], tags, [directory])
+                if path in trials[directory, tags]:
+                    misses += 1
+                    problems.append(error(path, f"{where} vets {workdir} for {target} under -tags "
+                                                f"{' and '.join(s or '(none)' for s in sets)}, and none of them "
+                                                f"compiles {path}, which go builds for {target} with -tags "
+                                                f"{tags or '(none)'}: the vet passes without reading the file. The "
+                                                f"vet steps take their tag sets from .github/scripts/"
+                                                f"go_build_tags.py, which must print a set that builds every such "
+                                                f"file"))
+                    break
+        report.append(f"{where}: vets {workdir} for {target} under -tags "
+                      f"{' and '.join(s or '(none)' for s in sets)}; go list compiles {len(compiled & disk)} of "
+                      f"the {len(disk)} .go files on disk there, {tagged} of the rest name a tag, and "
+                      f"{misses} of those build for {target} under tags no set holds")
     return report
 
 
-def ignored_files(session: Session, r: Run, tags: set) -> set:
-    """The files go list ignores in the Run's packages under its platform and `tags`, as
-    repository paths: IgnoredGoFiles, which holds a package's test files too."""
-    args = ["list", "-e", "-json=Dir,IgnoredGoFiles"]
+def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
+    """The files go list compiles in `dirs`, each named as a directory and not as a pattern, under
+    the Run's platform and `tags`, as repository paths: GoFiles, CgoFiles and the test files,
+    which a vet reads too. A directory whose every file is excluded is still listed, with an
+    error -e keeps."""
+    args = ["list", "-e", "-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles"]
     if tags:
-        args += ["-tags", ",".join(sorted(tags))]
+        args += ["-tags", tags]
+    patterns = [f"./{Path(d).relative_to(r.workdir).as_posix()}" if d != r.workdir else "." for d in dirs]
     out = set()
-    for pkg in decode_stream(session.go(r, args + list(r.pkgs))):
+    for pkg in decode_stream(session.go(r, args + patterns)):
         d = rel(pkg["Dir"]) if pkg.get("Dir") else None
         if d is not None:
-            out |= {f"{d}/{name}" for name in pkg.get("IgnoredGoFiles") or []}
+            for field in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):
+                out |= {f"{d}/{name}" for name in pkg.get(field) or []}
     return out
 
 
