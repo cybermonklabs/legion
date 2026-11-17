@@ -809,6 +809,10 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	})
 	settleCurrentGeneration(t, service, original)
 	requireOneOpenAskOn(t, service, "shared", copied)
+	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
+	// block's author on the room only after its commit (commitVersion, consumeAskAuthors), so the
+	// room is read once the settlement has ended, not once its row shows.
+	waitForSettlementsToEnd(t, service, []string{copied})
 	if author := blockAskAuthor(t, service, copied, "shared"); author != session {
 		t.Errorf("the copy's own ask names %#v, want the session that wrote the block", author)
 	}
