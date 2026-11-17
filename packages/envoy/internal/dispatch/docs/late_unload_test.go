@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -459,6 +460,121 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 	if settleErr != nil || err != nil || owed {
 		t.Errorf("the settlement that started as the room retired ended with %v, and the document still owes a settlement: %v (%v); want the debt settled", settleErr, owed, err)
 	}
+}
+
+// errLateSettlementStopsShort is what afterSettleVersionWrite answers for the late departure's
+// settlement in the retry tests: it stops that settlement short once, after its version write, so
+// the settlement is retried (retrySettleLocked).
+var errLateSettlementStopsShort = errors.New("the test stops the late departure's settlement short once")
+
+// A late departure's settlement that stops short is retried on the settle timer
+// (retrySettleLocked), and the room it loaded is retired as the timer's retry of it ends
+// (scheduleSettleAfterLocked): the departing browser's socket end retires nothing while the retry is
+// armed or running, since the retry holds the room's record. The retry is held at its version write
+// until the departing socket has ended, so the retry's end, not the socket's, is what retires the
+// room, and that end comes whatever the order the machine runs the two in.
+func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+
+	// The retry is armed a settle delay after the late settlement stops short.
+	r.service.settle = 20 * time.Millisecond
+	socketEnded := make(chan struct{})
+	var endOnce sync.Once
+	letRetry := func() { endOnce.Do(func() { close(socketEnded) }) }
+	t.Cleanup(letRetry)
+	var versionWrites atomic.Int32
+	r.service.afterSettleVersionWrite = func(room string) error {
+		if room != r.room {
+			return nil
+		}
+		if versionWrites.Add(1) == 1 {
+			return errLateSettlementStopsShort
+		}
+		select {
+		case <-socketEnded:
+		case <-time.After(roomWait(t)):
+			t.Error("the departing browser's socket never ended while the retry waited for it")
+		}
+		return nil
+	}
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letDeparture()
+	r.awaitSocketEnd("the second room's browser")
+	if got := versionWrites.Load(); got < 1 {
+		t.Fatal("the late departure's settlement never reached its version write, so nothing here is tested")
+	}
+	if r.service.srv.GetDoc(r.room) == nil {
+		t.Fatal("no room of the document is resident once the departing browser's socket has ended, want the one the late settlement loaded: its retry holds the room's record")
+	}
+
+	letRetry()
+	r.awaitUnload("the room the late settlement loaded, which the timer's retry of that settlement retires as it ends,")
+	if got := versionWrites.Load(); got != 2 {
+		t.Fatalf("the document's settlements reached %d version writes, want 2: the late settlement's, stopped short, and its retry's", got)
+	}
+	r.requireLateSettlementLoadedARoom()
+	r.requireNothingCounted("once the timer's retry of the late departure's settlement has ended")
+}
+
+// A late departure's settlement that stops short arms its retry (retrySettleLocked), and an issue's
+// synchronous settlement (settleOwedNow) that runs before the retry's timer fires takes that retry
+// over: the room the late settlement loaded is retired as the synchronous settlement ends. The
+// departing browser's socket end retires nothing while the retry's timer is armed, and the
+// fixture's settle delay of an hour keeps it armed until the synchronous settlement takes it.
+func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesItsRetryOverEnds(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+
+	var versionWrites atomic.Int32
+	r.service.afterSettleVersionWrite = func(room string) error {
+		if room == r.room && versionWrites.Add(1) == 1 {
+			return errLateSettlementStopsShort
+		}
+		return nil
+	}
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letDeparture()
+	r.awaitSocketEnd("the second room's browser")
+	if got := versionWrites.Load(); got != 1 {
+		t.Fatalf("the late departure's settlement reached %d version writes, want the one it stopped short at; nothing here is tested", got)
+	}
+	state := r.service.lockExistingState(r.room)
+	armed := state != nil && r.service.isSettleTimerArmed(state.settle)
+	if state != nil {
+		r.service.unlockState(r.room, state)
+	}
+	if !armed {
+		t.Fatal("no retry of the late departure's settlement is armed once its browser's socket has ended, so nothing here is tested")
+	}
+	if r.service.srv.GetDoc(r.room) == nil {
+		t.Fatal("no room of the document is resident once the departing browser's socket has ended, want the one the late settlement loaded: its armed retry holds the room's record")
+	}
+
+	if err := r.service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("the synchronous settlement that takes the retry over: %v", err)
+	}
+	if got := versionWrites.Load(); got != 2 {
+		t.Fatalf("the document's settlements reached %d version writes, want 2: the late settlement's, stopped short, and the synchronous one's", got)
+	}
+	r.requireLateSettlementLoadedARoom()
+	r.requireNothingCounted("once the synchronous settlement that took the retry over has ended")
 }
 
 // signal sends on c, a channel with room for one value, unless it already holds one.
