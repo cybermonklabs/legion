@@ -13,12 +13,14 @@ import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
@@ -39,9 +41,11 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
+import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
 import { shortCommit } from "./statement-state";
 import {
+  type FailedRead,
   VerificationFilterBody,
   type VerificationRead,
   type VerificationReads,
@@ -78,12 +82,15 @@ beforeAll(async () => {
 /** What a case gives the body beside its statements and its checks: the words the reader typed
  *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
  *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
- *  and the view with no query where a case builds it itself (`whole`), which is otherwise built
- *  as the slot builds it. */
+ *  the view with no query where a case builds it itself (`whole`), which is otherwise built as
+ *  the slot builds it, and whether the body is drawn inside the stage the page draws a view in
+ *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
+ *  tree itself takes it (`ViewStage`). */
 interface DrawOptions {
   readonly named?: readonly string[];
   readonly query?: string;
   readonly reads?: VerificationReads;
+  readonly staged?: boolean;
   readonly whole?: TreeNode;
 }
 
@@ -98,12 +105,19 @@ function testClient(): QueryClient {
  *  the Verification filter's own view: the tree it leaves and the rows it marks as context, and
  *  the view with no query as the slot builds it, which is given only where a query is typed: a
  *  query that is not empty once trimmed, as `presetView` reads it. It is drawn inside
- *  `NoTooltips`, as the slot draws it, so an author is named as the page names one. A case that
+ *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
+ *  `staged` inside `ViewStage` around that, as the page's stage draws the slot. A case that
  *  draws the body again with other reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
-  { named = [], query = "", reads = { state: "answered" }, whole: given }: DrawOptions = {},
+  {
+    named = [],
+    query = "",
+    reads = { state: "answered" },
+    staged = false,
+    whole: given,
+  }: DrawOptions = {},
   client: QueryClient = testClient()
 ): ReactElement {
   const issue = node({ children: statements, id: ISSUE_KEY, text: "An issue", type: "issue" });
@@ -111,18 +125,21 @@ function bodyOf(
   const whole =
     given ??
     (query.trim() === "" ? undefined : presetView(issue, "verification", "", new Set(named)).root);
+  const slot = (
+    <NoTooltips>
+      <VerificationFilterBody
+        checks={checks}
+        context={view.context}
+        reads={reads}
+        view={view.root}
+        whole={whole}
+      />
+    </NoTooltips>
+  );
   return (
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <NoTooltips>
-          <VerificationFilterBody
-            checks={checks}
-            context={view.context}
-            reads={reads}
-            view={view.root}
-            whole={whole}
-          />
-        </NoTooltips>
+        {staged ? <ViewStage view="verification">{slot}</ViewStage> : slot}
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -135,6 +152,15 @@ function drawBody(
   options: DrawOptions = {}
 ): RenderResult {
   return render(bodyOf(statements, checks, options));
+}
+
+/** Draws `view` again as `body`, a body `bodyOf` built with `staged`, and lets the stage place
+ *  the focus: it places it a microtask after the render a failed read's line left in with the
+ *  focus, and is told of the rows or the line its tree waits for a microtask after the render
+ *  that draws them (`ViewStage`), where the body once placed it in the render itself. */
+async function redrawStaged(view: RenderResult, body: ReactElement): Promise<void> {
+  view.rerender(body);
+  await act(async () => undefined);
 }
 
 /** The text of every element matching `selector`, in the order they are drawn. */
@@ -188,14 +214,14 @@ function holdKeys(): { held: string[]; stop: () => void } {
 }
 
 /** The reads named refused before they first answered, each by its name with its own Retry,
- *  which notes that read in `retried`. The record holds them in the order named, which the body
- *  does not draw them by. */
+ *  which notes that read in `retried`, and none of them running again. The record holds them in
+ *  the order named, which the body does not draw them by. */
 function refusedReads(
   retried: VerificationRead[],
   ...reads: VerificationRead[]
 ): VerificationReads {
-  const failed: Partial<Record<VerificationRead, () => void>> = {};
-  for (const read of reads) failed[read] = () => retried.push(read);
+  const failed: Partial<Record<VerificationRead, FailedRead>> = {};
+  for (const read of reads) failed[read] = { retry: () => retried.push(read), retrying: false };
   return { failed, state: "failed" };
 }
 
@@ -1458,11 +1484,12 @@ test("a read that fails before it first answers says so with a Retry, for each o
   }
 });
 
-// A press by the keyboard never leaves the focus on the page's body. A read asked again with no
-// answer held is out rather than refused, so Retry takes its own line, and the focus on it, off
-// the page. The focus goes to the next refused read's Retry, to the view's tree while the read is
-// out, back to the read's Retry when it is refused again, and to the tree's tab stop, the issue's
-// row, once it answers.
+// A press by the keyboard never leaves the focus on the page's body. The body is handed its reads
+// by hand here, so each step is a line that leaves the page, with the focus on its Retry, as its
+// read stops reading as refused, and the stage the page draws the view in (`ViewStage`) keeps the
+// focus in the view: on the next refused read's Retry, on the view's tree while the read is out,
+// back on the read's Retry when it is refused again, and on the tree's tab stop, the issue's row,
+// once it answers.
 test("Enter on a Retry keeps the focus in the view: on the next refused read's Retry, on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", async () => {
   const user = userEvent.setup();
   const met = passing("c-one");
@@ -1471,9 +1498,11 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
   const failed = (...reads: VerificationRead[]) => refusedReads(retried, ...reads);
   // One client for every drawing, as the page keeps one while its reads answer again.
   const client = testClient();
-  const view = render(bodyOf(statements, [met], { reads: failed("coverage", "blocks") }, client));
+  const view = render(
+    bodyOf(statements, [met], { reads: failed("coverage", "blocks"), staged: true }, client)
+  );
   const redraw = (reads: VerificationReads) =>
-    view.rerender(bodyOf(statements, [met], { reads }, client));
+    redrawStaged(view, bodyOf(statements, [met], { reads, staged: true }, client));
   /** The Retry on the line of `read`. */
   const retryOf = (read: VerificationRead) =>
     within(
@@ -1487,27 +1516,27 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage"]);
     // The coverage read is out again, and the blocks read is still refused.
-    redraw(failed("blocks"));
+    await redraw(failed("blocks"));
     expect(document.activeElement, "the focus left the view with coverage's line").toBe(
       retryOf("blocks")
     );
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage", "blocks"]);
     // The blocks read is out again, and no read is refused.
-    redraw({ state: "waiting" });
+    await redraw({ state: "waiting" });
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement, "the focus left the view while the read is out").toBe(tree());
     // Refused again: its line comes back, and its Retry takes the focus from the tree.
-    redraw(failed("blocks"));
+    await redraw(failed("blocks"));
     expect(document.activeElement, "the read refused again left the focus on the tree").toBe(
       retryOf("blocks")
     );
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage", "blocks", "blocks"]);
-    redraw({ state: "waiting" });
+    await redraw({ state: "waiting" });
     expect(document.activeElement).toBe(tree());
     // It answers: the tree's tab stop, the issue's row, takes the focus.
-    redraw({ state: "answered" });
+    await redraw({ state: "answered" });
     expect(document.activeElement, "the rows that came left the focus on the tree").toBe(
       view.container.querySelector("[data-verification-issue]")
     );
@@ -1529,7 +1558,12 @@ test("the failed reads' lines stand in the body's own order whatever order they 
   // One client for every drawing, as the page keeps one while its reads answer again.
   const client = testClient();
   const view = render(
-    bodyOf(statements, [met], { reads: refusedReads(retried, "results", "coverage") }, client)
+    bodyOf(
+      statements,
+      [met],
+      { reads: refusedReads(retried, "results", "coverage"), staged: true },
+      client
+    )
   );
   /** The read each failed-read line names, in the order the lines stand. */
   const lines = () =>
@@ -1554,7 +1588,10 @@ test("the failed reads' lines stand in the body's own order whatever order they 
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage"]);
     // The coverage read is out again, and the results read is still refused.
-    view.rerender(bodyOf(statements, [met], { reads: refusedReads(retried, "results") }, client));
+    await redrawStaged(
+      view,
+      bodyOf(statements, [met], { reads: refusedReads(retried, "results"), staged: true }, client)
+    );
     expect(lines()).toEqual(["results"]);
     expect(document.activeElement, "the focus moved elsewhere than the next line's Retry").toBe(
       retryOf("results")
@@ -1564,20 +1601,20 @@ test("the failed reads' lines stand in the body's own order whatever order they 
   }
 });
 
-// The page asks a refused read again with no press too: on the window's focus, and on an event
-// that names its key. That takes the read's line, and the Retry the reader's focus is on, off the
-// page as a press does, and the focus stays in the view all the same: on the view's tree while
-// the read is out, on the read's Retry when it is refused again, and on the tree's tab stop, the
-// issue's row, once it answers.
-test("a refused read asked again with no press keeps the focus in the view: on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", () => {
+// A line can leave with no press too, and the focus stays in the view all the same: on the view's
+// tree while the read is out, on the read's Retry when it is refused again, and on the tree's tab
+// stop, the issue's row, once it answers. The page asks a refused read again with no press, on
+// the window's focus and on an event that names its key; the slot keeps the read's line while it
+// runs (`useVerificationReads`), and the reads here are handed to the body by hand.
+test("a refused read asked again with no press keeps the focus in the view: on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", async () => {
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
   const refused = refusedReads([], "results");
   // One client for every drawing, as the page keeps one while its reads answer again.
   const client = testClient();
-  const view = render(bodyOf(statements, [met], { reads: refused }, client));
+  const view = render(bodyOf(statements, [met], { reads: refused, staged: true }, client));
   const redraw = (reads: VerificationReads) =>
-    view.rerender(bodyOf(statements, [met], { reads }, client));
+    redrawStaged(view, bodyOf(statements, [met], { reads, staged: true }, client));
   /** The Retry on the results read's line. */
   const retry = () =>
     within(
@@ -1589,17 +1626,17 @@ test("a refused read asked again with no press keeps the focus in the view: on t
     act(() => retry().focus());
     expect(document.activeElement).toBe(retry());
     // Asked again with nothing pressed: the read is out, and its line is gone.
-    redraw({ state: "waiting" });
+    await redraw({ state: "waiting" });
     expect(document.activeElement, "the focus left the view while the read is out").toBe(
       view.container.querySelector('[role="tree"]')
     );
     // Refused again: its line comes back, and its Retry takes the focus from the tree.
-    redraw(refused);
+    await redraw(refused);
     expect(document.activeElement, "the read refused again left the focus on the tree").toBe(
       retry()
     );
     // Asked again once more, it answers: the tree's tab stop, the issue's row, takes the focus.
-    redraw({ state: "answered" });
+    await redraw({ state: "answered" });
     expect(document.activeElement, "the read that answered left the focus off the view").toBe(
       view.container.querySelector("[data-verification-issue]")
     );
@@ -1610,13 +1647,13 @@ test("a refused read asked again with no press keeps the focus in the view: on t
 
 // `t k` with a refused read puts the focus on that read's Retry, not on the empty tree, which has
 // nothing to act on and from which Tab never reaches the Retry. The page's chord focuses the tree,
-// which holds no row to take its tab stop, so the tree hands its focus to the Retry. A tree with
-// rows keeps a focus that a click on its headings gives it: only rows that come where the tree
-// drew none take it.
+// which holds no row to take its tab stop, so the stage hands the tree's focus to the Retry. A
+// tree with rows keeps a focus that a click on its headings gives it: only rows that come where
+// the tree drew none take it.
 test("with a read refused, the view's tree gives its focus to that read's Retry", () => {
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
-  const refused = drawBody(statements, [met], { reads: refusedReads([], "results") });
+  const refused = drawBody(statements, [met], { reads: refusedReads([], "results"), staged: true });
   try {
     const tree = refused.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
@@ -1634,12 +1671,12 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
   // A tree with rows, focused as a click on the table's headings focuses it, and drawn again as
   // any read's answer draws it: no row came, so the focus stays on the tree.
   const client = testClient();
-  const drawn = render(bodyOf(statements, [met], {}, client));
+  const drawn = render(bodyOf(statements, [met], { staged: true }, client));
   try {
     const tree = drawn.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
     expect(document.activeElement).toBe(tree);
-    drawn.rerender(bodyOf(statements, [met], {}, client));
+    drawn.rerender(bodyOf(statements, [met], { staged: true }, client));
     expect(document.activeElement, "a tree whose rows were drawn gave its focus to a row").toBe(
       tree
     );
@@ -1723,7 +1760,7 @@ async function retried(
     const before = hook.result.current.reads;
     const failed = before.state === "failed" ? before.failed : undefined;
     expect(Object.keys(failed ?? {})).toEqual([refused]);
-    act(() => failed?.[refused]?.());
+    act(() => failed?.[refused]?.retry());
     await act(() => Bun.sleep(20));
     return {
       asked: {
@@ -1764,6 +1801,65 @@ test("the Retry of a refused results read asks the results read again and no oth
     results: 2,
   });
   expect(reads).toEqual({ state: "answered" });
+});
+
+// TanStack Query puts a read that holds no answer back to `pending` while it runs again, so a
+// read refused before it first answered, asked again, would read as out rather than failed and
+// take its line, with the Retry the reader's focus may be on, off the page until it answered or
+// was refused again. It still reads as failed while the new request is out, its Retry running,
+// and leaves the failed state once it answers.
+test("a refused read asked again reads as failed, with its Retry running, while the new request is out, and as answered once it answers", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [],
+    spec_artifact_id: "",
+  };
+  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
+  // The coverage read's request after its refusal, which answers when the case says.
+  const again = Promise.withResolvers<IssueCoverage>();
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
+  coverageRead.mockRejectedValueOnce(new Error("Refused.")).mockReturnValueOnce(again.promise);
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  try {
+    await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
+    const refused = hook.result.current.reads;
+    expect(refused, "the refused coverage read does not read as failed, its Retry at rest").toEqual(
+      { failed: { coverage: { retry: expect.any(Function), retrying: false } }, state: "failed" }
+    );
+    act(() => (refused.state === "failed" ? refused.failed.coverage?.retry() : undefined));
+    await waitFor(() => expect(coverageRead).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        hook.result.current.reads,
+        "the coverage read asked again does not read as failed, its Retry running, while its request is out"
+      ).toEqual({
+        failed: { coverage: { retry: expect.any(Function), retrying: true } },
+        state: "failed",
+      })
+    );
+    await act(async () => {
+      again.resolve(coverage);
+      await again.promise;
+    });
+    await waitFor(() =>
+      expect(
+        hook.result.current.reads,
+        "the coverage read that answered does not read as answered"
+      ).toEqual({ state: "answered" })
+    );
+  } finally {
+    hook.unmount();
+    coverageRead.mockRestore();
+    resultsRead.mockRestore();
+    client.clear();
+  }
 });
 
 // An agent that recorded a result is named by its role's word, as the outline's rows name one
@@ -2026,7 +2122,8 @@ function layOut(height: number): () => void {
 // order Tab takes them in is read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks
 // it. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`, so none of them takes
 // its controls out of the tab order. In document order the issue's row comes before the chip
-// All, so the Tab after `t k` reaches the first chip.
+// All, so the Tab after `t k` reaches the first chip. The page measures only the words of rows
+// near the viewport, so the rows' words are brought near and measured before the cut is read.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
   const linked = check({
@@ -2046,6 +2143,7 @@ test("each control of the view is a tab stop", async () => {
   // than the twenty a cut must hide, so the statement is cut and draws its "more" control.
   const long = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
   const restore = layOut(9600);
+  const near = installIntersectionObserver();
   try {
     const view = drawBody(
       [statementNode("r1", long, [linkedCheckNode(linked), checkNode(plain)]), named],
@@ -2053,6 +2151,7 @@ test("each control of the view is a tab stop", async () => {
       { named: [named.id] }
     );
     try {
+      await measureNearWords(near);
       // In document order the issue's row, the tree's one tab stop, comes before the chip All.
       expect(
         [...view.container.querySelectorAll("[data-verification-issue], [data-verification-chip]")]
@@ -2134,6 +2233,7 @@ test("each control of the view is a tab stop", async () => {
       view.unmount();
     }
   } finally {
+    near.restore();
     restore();
   }
 });

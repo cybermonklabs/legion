@@ -1,10 +1,11 @@
-import { type QueryStatus, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
+import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -12,6 +13,7 @@ import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueTree } from "../useIssueTree";
 import {
+  type FailedRead,
   VerificationFilterBody,
   type VerificationRead,
   type VerificationReads,
@@ -114,23 +116,22 @@ export function useVerificationReads(issueKey: string): {
   // the query cache keeps that data when the stage mounts this slot again as the reader comes
   // back to the view. A view drawn by `isSuccess` would empty itself on one failed refetch, and
   // draw nothing on its return for as long as the refetch kept failing, and take its tab stop
-  // and the reader's presses with it. A read has failed where it holds no data and its status
-  // is error (`failedWithNothing`): it was refused before it first answered. The view draws its
-  // rows only once all three have answered, so it never says that an issue has no checks before
-  // they are in; where a read failed it says which, each with a Retry that asks that read alone
-  // again, rather than draw an empty view that gives the reader nothing to act on.
+  // and the reader's presses with it. A read has failed where it holds no data and was refused,
+  // while it is in error and while it runs again after that (`failedWithNothing`): it was
+  // refused before it first answered. The view draws its rows only once all three have answered,
+  // so it never says that an issue has no checks before they are in; where a read failed it says
+  // which, each with a Retry that asks that read alone again, rather than draw an empty view that
+  // gives the reader nothing to act on.
   const answered =
     coverage.data !== undefined &&
     results.data !== undefined &&
     (documentId === undefined || blocks.data !== undefined);
   // Each read that failed with no answer held, by its name, with the press that asks that read
-  // alone again; the body says them in an order of its own.
-  const failed: Partial<Record<VerificationRead, () => void>> = {};
-  if (failedWithNothing(coverage)) failed.coverage = () => void coverage.refetch();
-  if (failedWithNothing(results)) failed.results = () => void results.refetch();
-  if (documentId !== undefined && failedWithNothing(blocks)) {
-    failed.blocks = () => void blocks.refetch();
-  }
+  // alone again and whether it runs again; the body says them in an order of its own.
+  const failed: Partial<Record<VerificationRead, FailedRead>> = {};
+  if (failedWithNothing(coverage)) failed.coverage = failedRead(coverage);
+  if (failedWithNothing(results)) failed.results = failedRead(results);
+  if (documentId !== undefined && failedWithNothing(blocks)) failed.blocks = failedRead(blocks);
   const reads: VerificationReads =
     Object.keys(failed).length > 0
       ? { failed, state: "failed" }
@@ -140,17 +141,35 @@ export function useVerificationReads(issueKey: string): {
   return { checks, reads };
 }
 
-/** Window focus asks a read again only while it is in error, so a read refused past its
- *  retries recovers on the open page while one that answered stays quiet, and it is asked even
- *  over the answer it holds, which no age makes stale (`staleTime: Infinity`). A copy of the
- *  unexported `refetchFailedOnFocus` of `features/refs/reference-target.ts`: the slot imports
- *  that one once a branch that exports it is under this one, and this copy goes. */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
+/**
+ * Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
+ * had, which the view still draws from, so only a read that left nothing to draw says it failed,
+ * as the Spec view reads its own.
+ *
+ * It says so while it runs again too, on a Retry or with no press (the window's focus, or an
+ * event that names its key), until it answers. TanStack Query puts a read that holds no answer
+ * back to `pending` as it runs again, so read by its error alone the line, and the Retry the
+ * reader's focus is on, would leave the page for as long as the read runs and come back if it is
+ * refused again; the line stays instead, and leaves only when the read answers. The read keeps
+ * its count of refusals (`errorUpdateCount`) as it runs again, which tells it from a read on its
+ * first load, out with nothing refused yet, which the view draws as waiting.
+ */
+function failedWithNothing(read: {
+  readonly data: unknown;
+  readonly errorUpdateCount: number;
+  readonly isError: boolean;
+  readonly isFetching: boolean;
+}): boolean {
+  return (
+    read.data === undefined && (read.isError || (read.isFetching && read.errorUpdateCount > 0))
+  );
+}
 
-/** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
- *  had, which the view still draws from, so only a read that left nothing to draw says it
- *  failed, as the Spec view reads its own. */
-function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
-  return read.isError && read.data === undefined;
+/** What the line of a read that failed is given: the press that asks that read alone again, and
+ *  whether it runs again (`isFetching`), while which the line's Retry asks nothing more. */
+function failedRead(read: {
+  readonly isFetching: boolean;
+  readonly refetch: () => Promise<unknown>;
+}): FailedRead {
+  return { retry: () => void read.refetch(), retrying: read.isFetching };
 }

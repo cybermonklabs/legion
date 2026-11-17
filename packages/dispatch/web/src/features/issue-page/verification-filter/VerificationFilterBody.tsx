@@ -2,8 +2,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
-  useCallback,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,7 +9,6 @@ import {
 import { Link } from "react-router-dom";
 
 import type { Actor, CheckBlock } from "../../../api/types";
-import { QueryError } from "../../../components/QueryError";
 import {
   focusVisibleRing,
   pageFailedText,
@@ -34,10 +31,8 @@ import {
 import { useAgentText } from "../../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
-import { focusOnDocument } from "../../shell/roving";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
-import { bringOnScreen } from "../identity-block";
 import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
@@ -59,6 +54,8 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { RowText } from "../RowText";
+import { FailedReadLine } from "../slots/failed-read-line";
+import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
   STATEMENT_STATES,
@@ -75,16 +72,23 @@ import {
 export type VerificationRead = "coverage" | "results" | "blocks";
 
 /** How the reads the body is drawn from stand: one still out, all of them answered, or one or
- *  more failed before they first answered, each by its name with the press that asks that read
- *  alone again. The body says the failed ones in an order of its own (`UNREADABLE_ORDER`),
- *  whatever order they are given in. */
+ *  more failed before they first answered, each by its name (`FailedRead`). The body says the
+ *  failed ones in an order of its own (`UNREADABLE_ORDER`), whatever order they are given in. */
 export type VerificationReads =
   | { readonly state: "waiting" }
   | { readonly state: "answered" }
   | {
       readonly state: "failed";
-      readonly failed: Partial<Record<VerificationRead, () => void>>;
+      readonly failed: Partial<Record<VerificationRead, FailedRead>>;
     };
+
+/** A read that failed before it first answered, as its line takes it (`FailedReadLine`): the
+ *  press that asks that read alone again, and whether it runs again, while which a press asks
+ *  nothing more. */
+export interface FailedRead {
+  readonly retry: () => void;
+  readonly retrying: boolean;
+}
 
 /**
  * The Verification filter's body, as the approved picture `page-v3-verification-1440.png` and the
@@ -201,7 +205,7 @@ export function VerificationFilterBody({
   const answered = reads.state === "answered";
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
   // Each read that failed before it first answered, by its name with the press that asks it
-  // alone again, which the body says over the tree.
+  // alone again and whether it runs again, which the body says over the tree.
   const failed = reads.state === "failed" ? reads.failed : undefined;
   // Each statement of the issue by its address, named by its first words, which "Also under"
   // names a check's other statements by (`AlsoUnder`). Every statement a check is drawn under is
@@ -303,10 +307,12 @@ export function VerificationFilterBody({
     if (to != null) {
       event.preventDefault();
       // The row the focus moves to takes the tree's one tab stop, so Tab back into the tree
-      // lands on the row the reader left.
+      // lands on the row the reader left. It takes the focus as an outline's row does
+      // (`moveToRow`), so Home on the first row or End on the last, which leave the focus where
+      // it is, still bring that row back on screen where the reader scrolled it off.
       const id = to.dataset.verificationRow;
       if (id !== undefined) setRovingId(id);
-      to.focus();
+      moveToRow(to);
       return;
     }
     // Enter is the row's only on the row itself: on a control inside it, a chip, a link or a
@@ -315,97 +321,42 @@ export function VerificationFilterBody({
       key === "Enter" ? target === row && pressChecks(row) : key === "o" && keepChecks(row);
     if (acted) event.preventDefault();
   };
-  // The body and its tree, which the focus is kept in when a failed read's line leaves the page
-  // with the focus in it: the focus of a reader of the keyboard never falls to the page's body. A
-  // read asked again that holds no answer is out again rather than failed (TanStack Query's
-  // `pending`), so its line and the Retry on it leave the page, whether the reader pressed that
-  // Retry or the page asked the read again with no press: on the window's focus, or on an event
-  // that names its key.
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const treeRef = useRef<HTMLDivElement>(null);
-  // Whether the focus was in a failed read's line that left the page, until the layout effect
-  // after that render reads it.
-  const fellFrom = useRef(false);
-  // Whether the render before this one drew rows in the tree.
-  const drewRows = useRef(false);
-  // The ref of each failed read's line, one function for every line and every render, so React
-  // runs its cleanup only when a line leaves the page. React runs that cleanup before it takes
-  // the line off the page, while the focus is still in it; once the line is gone the browser
-  // has moved the focus to the page's body, where nothing says where it was.
-  const unreadableLine = useCallback(
-    (line: HTMLDivElement | null) =>
-      line === null
-        ? undefined
-        : () => {
-            if (line.contains(document.activeElement)) fellFrom.current = true;
-          },
-    []
-  );
-  /** Where the focus goes from the tree while the tree itself holds it, or null where it stays
-   *  there: to the first failed read's Retry where one is drawn, since the tree then holds
-   *  nothing to act on and Tab from it never reaches the Retry over it; else, where rows came
-   *  (`rowsCame`), to the row that holds the tree's tab stop. */
-  const fromTree = (rowsCame: boolean): HTMLElement | null =>
-    bodyRef.current?.querySelector<HTMLElement>(UNREADABLE_RETRY) ??
-    (rowsCame ? (treeRef.current?.querySelector<HTMLElement>(TAB_STOP_ROW) ?? null) : null);
-  // After every render, since any render can take a failed read's line away or bring the rows.
-  useLayoutEffect(() => {
-    const drawsRows = rows.length > 0;
-    const rowsCame = drawsRows && !drewRows.current;
-    drewRows.current = drawsRows;
-    const fell = fellFrom.current;
-    fellFrom.current = false;
-    const tree = treeRef.current;
-    if (tree === null) return;
-    // A line left with the focus in it: to the next failed read's Retry, to the tree's tab stop
-    // where the rows are drawn, or to the tree itself while a read is out, unless something else
-    // took the focus in the same render, where it stays. Otherwise the tree itself holds the
-    // focus where it had no row to give it to: while a read is out, after the step above, or
-    // after `t k`. A read refused again gives it to its Retry, and rows that came give it to the
-    // tree's tab stop; where rows were drawn already it stays on the tree, since a click on the
-    // table's headings, which stand in no row, focuses the tree and moves no row's focus.
-    const to =
-      fell && focusOnDocument()
-        ? (fromTree(true) ?? tree)
-        : document.activeElement === tree
-          ? fromTree(rowsCame)
-          : null;
-    if (to !== null) focusOn(to);
-  });
   return (
-    <div className={BODY} data-verification-body="" ref={bodyRef}>
-      {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the body's own order (`UNREADABLE_ORDER`)
-          whatever order the reads are given in, since the first line's Retry is the one that
-          takes the focus when a line leaves with it. The lines stand over the tree and never in
-          it: an alert inside a tree would break the tree's own structure of rows. This line and
-          its focus handling are the view's own copy of the page's shared failed-read line
-          (`FailedReadLine`), and go once a branch that exports that line is under this one. */}
+    <div className={BODY} data-verification-body="">
+      {/* Each read that failed before it first answered, the page's one line for a failed read
+          (`FailedReadLine`): its words and a Retry that asks that read alone again. The lines
+          stand in the body's own order (`UNREADABLE_ORDER`) whatever order the reads are given
+          in, since the stage the view is drawn in gives the first line's Retry the focus when a
+          line leaves with it. They stand over the tree and never in it: an alert inside a tree
+          would break the tree's own structure of rows. Each stands in an element that names its
+          read, so one read's line is found by that name, and that is marked while its read runs
+          again: a press on its Retry then asks nothing more and the line draws no change, so the
+          browser rows read the mark to press Retry once the run under way has ended. */}
       {UNREADABLE_ORDER.map((read) => {
-        const retry = failed?.[read];
-        return retry === undefined ? null : (
-          <div data-verification-unreadable={read} key={read} ref={unreadableLine}>
-            <QueryError message={UNREADABLE_LINES[read]} onRetry={retry} />
+        const line = failed?.[read];
+        return line === undefined ? null : (
+          <div
+            data-verification-retrying={line.retrying ? "" : undefined}
+            data-verification-unreadable={read}
+            key={read}
+          >
+            <FailedReadLine
+              message={UNREADABLE_LINES[read]}
+              onRetry={line.retry}
+              retrying={line.retrying}
+            />
           </div>
         );
       })}
       {/* The page holds one tree on every address, and it holds everything the view draws: the
           issue's row and the table, or in their place the one line that says the issue holds
           nothing to draw. While a read is out or has failed it holds nothing, and is still the
-          tree `t k` and the stage focus. With a read refused it gives its focus to that read's
-          Retry. */}
+          tree `t k` and the stage focus; the stage hands a focus on it to a refused read's Retry,
+          or to the tree's tab stop once the rows come (`ViewStage`). */}
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
-        onFocus={(event) => {
-          // `t k` with a read refused: the page's chord focuses the tree, and no render follows
-          // that focus, so the tree hands it on here as the layout effect does after a render.
-          if (event.target !== event.currentTarget) return;
-          const to = fromTree(false);
-          if (to !== null) focusOn(to);
-        }}
         onKeyDown={keyDown}
-        ref={treeRef}
         role="tree"
         tabIndex={-1}
       >
@@ -690,21 +641,6 @@ const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
 /** The one order the body says the reads that failed in, whatever order it is given them in:
  *  the statements' read, then the results', then the checks' blocks. */
 const UNREADABLE_ORDER: readonly VerificationRead[] = ["coverage", "results", "blocks"];
-
-/** The first failed read's Retry, and the row that holds the tree's one tab stop. */
-const UNREADABLE_RETRY = "[data-verification-unreadable] button";
-const TAB_STOP_ROW = '[role="treeitem"][tabindex="0"]';
-
-/** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame
- *  where it still holds the focus (`bringOnScreen`). The frame is for `t k` with a read refused:
- *  `reachPart` (`useIssueKeymap.ts`) scrolls the tree to the screen's top after it focuses it,
- *  which would leave the Retry that stands over the tree above the screen. */
-function focusOn(to: HTMLElement): void {
-  to.focus({ preventScroll: true });
-  requestAnimationFrame(() => {
-    if (document.activeElement === to) bringOnScreen(to);
-  });
-}
 
 /** The seven states a check can be in, in the order the page declares them. */
 const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
