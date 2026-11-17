@@ -146,7 +146,6 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # $LEGION_VERSION_ARGS is the argument list, split on purpose
           .github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS >> "$GITHUB_OUTPUT"
-          x=read
       # why: .github/ci-notes/release.md#why-legion_build-resolves-the-plugin-pair-before-setup-go
       - name: Resolve plugin versions for the smoke test and worker image
         id: plugin_versions

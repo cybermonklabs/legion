@@ -226,7 +226,7 @@ jobs:
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
-    needs: changes
+    needs: [changes, no_such_job]
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-the-lint-job-holds-each-of-its-scopes
     permissions:
