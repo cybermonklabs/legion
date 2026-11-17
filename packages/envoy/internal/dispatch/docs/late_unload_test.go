@@ -294,9 +294,11 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 // A writer that opens on the document while the room a late departure's settlement loaded retires -
 // past the retirement's last look at the room's record, before ygo's close of the room - takes up
 // no room the close then takes away: it waits for the close to return (awaitRetirement) and forks
-// from what is there then, so its write is published into the room it forked from, or forks from
-// the store where no room is. A writer is inside no Apply on the room while it holds the writer
-// slot, so ygo's own checks before its close cannot see it.
+// from what is there then, so its write is published into the very room it forked from, or forks
+// from the store where no room is. A writer is inside no Apply on the room while it holds the
+// writer slot, so ygo's own checks before its close cannot see it. The check is the room the write
+// forked from against the room the name holds at the publish, not that some room is resident: a
+// room another load put back under the name is no room the write forked from.
 func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
 	r := unloadAcrossAReload(t)
 	r.letFirstUnload()
@@ -317,12 +319,15 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 			signal(waiting)
 		}
 	}
-	type publish struct{ cold, resident bool }
+	type publish struct {
+		cold             bool
+		forkedFrom, held *crdt.Doc
+	}
 	publishes := make(chan publish, 1)
 	r.service.checkRendering = func(at string, write *liveWrite) {
 		if at == "publish" && write.artifactID == r.room {
 			select {
-			case publishes <- publish{cold: write.cold, resident: r.service.srv.GetDoc(r.room) != nil}:
+			case publishes <- publish{cold: write.cold, forkedFrom: write.forkedFrom.Value(), held: r.service.srv.GetDoc(r.room)}:
 			default:
 			}
 		}
@@ -366,8 +371,8 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 	}
 	select {
 	case got := <-publishes:
-		if !got.cold && !got.resident {
-			t.Error("the write forked from the room the late departure's settlement loaded and found no room to publish into: the retirement closed the room under the writer holding it")
+		if !got.cold && (got.forkedFrom == nil || got.held != got.forkedFrom) {
+			t.Errorf("the write forked from room %p and found room %p under the name to publish into, want the room it forked from: the retirement closed the room under the writer holding it", got.forkedFrom, got.held)
 		}
 	default:
 		t.Fatal("the write that opened as the room retired published nothing, so nothing here is tested")
