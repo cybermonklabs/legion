@@ -71,7 +71,7 @@ test("the outbox's topic copy and session copy of one event are one delivery, in
   const failedMentionCopy = {
     ...topicCopy,
     topic: "notifications.agent.S",
-    dedupe_key: "agent.S.5a660655-04ad-4ce0-8a9b-93dd03c412b7:steer",
+    dedupe_key: "agent.S.5a660655-04ad-4ce0-8a9b-93dd03c412b7:session:S:steer",
   };
   for (const [first, second] of [
     [topicCopy, sessionCopy],

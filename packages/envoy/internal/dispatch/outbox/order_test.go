@@ -888,7 +888,9 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	claimIssue(t, database, "T-1", model.Actor{Kind: "session", ID: "claimant"})
 	seedSecondIssue(t, database, "T-2")
 	seedSpec(t, database, "T-2", model.Actor{Kind: "session", ID: "primary-author"})
-	const each = batchSize / 7
+	// Seven events of each index and the one reply on the second issue below: at most batchSize, so
+	// one batch reads them all whatever batchSize is.
+	const each = (batchSize - 1) / 7
 	var seeded []model.Event
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for index := range each {
