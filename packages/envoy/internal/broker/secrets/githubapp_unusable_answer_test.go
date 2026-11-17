@@ -93,14 +93,16 @@ const pastTheCap = 8 << 20
 // same but for its last step, a transport of its own that tells a request's trace nothing, as a
 // transport a caller injects need not; partialClient is client behind a wrapper that forwards
 // the standard transport's GetConn to the request's trace and not its GotConn, as a wrapper need
-// not forward every hook. Every other route is the stand-in's own. minted is every token it
-// minted, in order.
+// not forward every hook; registeredClient sends through an *http.Transport that hands every
+// http request to that same wrapper, a protocol registered on it. Every other route is the
+// stand-in's own. minted is every token it minted, in order.
 type breakingGitHub struct {
-	service       *airlocktest.Service
-	client        *http.Client
-	silentClient  *http.Client
-	partialClient *http.Client
-	faults        []tokenAnswerFault
+	service          *airlocktest.Service
+	client           *http.Client
+	silentClient     *http.Client
+	partialClient    *http.Client
+	registeredClient *http.Client
+	faults           []tokenAnswerFault
 	// received is told each time GitHub has received an answerWriteFails request whole.
 	received chan struct{}
 
@@ -132,6 +134,9 @@ func newBreakingGitHub(t *testing.T, refuseRevokes bool, faults ...tokenAnswerFa
 	g.client = &http.Client{Transport: unreachableFirst{github: g, next: transport}}
 	g.silentClient = &http.Client{Transport: unreachableFirst{github: g, next: silentTransport{}}}
 	g.partialClient = &http.Client{Transport: partialTrace{next: g.client.Transport}}
+	registered := &http.Transport{}
+	registered.RegisterProtocol("http", partialTrace{next: g.client.Transport})
+	g.registeredClient = &http.Client{Transport: registered}
 	service.AnswerWith(func(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
 		if seen.Method == http.MethodDelete && seen.Path == "/installation/token" {
 			g.mu.Lock()
@@ -499,6 +504,9 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		silent bool
 		// partial has the minter reach GitHub through a wrapper that forwards GetConn alone.
 		partial bool
+		// registered has the minter reach GitHub through an *http.Transport whose http protocol
+		// is registered to that wrapper.
+		registered bool
 		// deadline ends the caller's context that long after the run starts, and zero leaves it
 		// the test's own.
 		deadline time.Duration
@@ -567,6 +575,8 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
 		{name: "an answer lost through a wrapper that forwards GetConn and not GotConn, to a check", check: true, narrowing: lean, partial: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
+		{name: "an answer lost through an *http.Transport whose protocol is registered to that wrapper, to a check", check: true, narrowing: lean, registered: true,
+			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
 		{name: "an undecodable answer whose revoke GitHub refuses, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "an undecodable answer whose revoke GitHub refuses, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "a release of two accounts whose second answer is undecodable", faults: []tokenAnswerFault{answerWhole, answerUndecodable}, requests: 2},
@@ -584,6 +594,9 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			}
 			if tc.partial {
 				client = github.partialClient
+			}
+			if tc.registered {
+				client = github.registeredClient
 			}
 			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: client, Retry: retry}
 

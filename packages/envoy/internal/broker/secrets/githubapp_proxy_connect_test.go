@@ -19,11 +19,15 @@ import (
 // proxy that refuses that tunnel answers with a status the transport returns as an error of no
 // type of its own. GitHub received nothing, so the check of a narrowing sends its token request
 // again, as a release does, rather than read the refusal as a request GitHub may have minted
-// for: the standard transport reports the connection it got to the request's trace before it
-// writes a byte, and this one never got one. Each run mints exactly one token, at the second
-// tunnel.
+// for: a transport the minter owns, as its own default one is, reports the connection it got to
+// the request's trace before it writes a byte, and this one never got one. This test's transport
+// is one it made itself and registers no protocol on, so it counts as owned. Each run mints
+// exactly one token, at the second tunnel.
 func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 	key, err := testAppKey()
+	if own, callers := secrets.OwnClientTracesConnectionsForTest(); !own || callers {
+		t.Fatalf("the minters' own client is traced: %t, a caller's own *http.Transport is traced: %t; want true and false", own, callers)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +88,7 @@ func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 			transport.Proxy = http.ProxyURL(proxyURL)
 			transport.DisableKeepAlives = true
 			defer transport.CloseIdleConnections()
+			secrets.TraceTransportForTest(transport)
 			retry, _, _ := testRetry(atTheBottom)
 			app := secrets.GitHubApp{Base: github.URL, HTTP: &http.Client{Transport: transport}, Retry: retry}
 

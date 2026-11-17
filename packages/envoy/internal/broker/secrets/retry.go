@@ -18,7 +18,7 @@ import (
 // call, and at most mintWaitBudget of added wait over every call one mint makes (a GitHub mint
 // lists installation pages, asks for a token for each owner, perhaps once more without actions,
 // perhaps revokes one). Each attempt runs under mintAttemptTimeout, since the production minters'
-// http.DefaultClient has none and the airlock mints under a caller's request that has no
+// own client (ownClient) has none and the airlock mints under a caller's request that has no
 // deadline: without it a hung attempt would spend the whole release and leave no time to retry.
 const (
 	mintAttemptsPerCall = 3
