@@ -296,7 +296,7 @@ No line it prints is a credential: the child reads its token out of its own
 environment and prints the repository it asked for and the status it got, and a
 refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
 child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+served over plain http on `127.0.0.1`, because the broker mints a type's value with
 an HTTP client that trusts the host's own roots and nothing else.
 
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
