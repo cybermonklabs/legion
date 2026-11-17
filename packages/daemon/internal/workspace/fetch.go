@@ -916,11 +916,11 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // CacheStreamLowSpeedBytes arrived. It reads the count the Reads keep rather than checking inside
 // one, so a stream whose Read has blocked on a cache that sends nothing is ended at the same
 // bound as one that dribbles. It opens the first window and reads the count that window starts
-// from before it returns, and only then starts the goroutine that judges the windows, so a window
-// and its count always start together: one taken when the scheduler first ran that goroutine,
-// after Reads had begun, would leave those bytes out of its window and could end a stream that
-// delivered them. The goroutine returns when ctx ends, which unpackCache's own cancel does as
-// soon as the answer has been read to its end.
+// from before it returns, and only then starts the goroutine that judges the windows, so the first
+// window and its baseline are set before the ask and every Read: taken when the scheduler first
+// ran that goroutine, after Reads had begun, they would leave those bytes out of the window and
+// could end a stream that delivered them. The goroutine returns when ctx ends, which
+// unpackCache's own cancel does as soon as the answer has been read to its end.
 func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc) {
 	window, at := r.window(CacheStreamLowSpeedTime), r.read.Load()
 	go r.judgeWindows(ctx, stop, window, at)
