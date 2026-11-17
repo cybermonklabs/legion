@@ -4871,11 +4871,17 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 	}
 }
 
-// TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket deletes envoy_roles, the one listener
-// bucket no watcher reads. A rebuild opens a bucket and never creates one, so every rebuild fails
-// and the listener terminates; the next start's store Open creates the bucket again. Without that,
-// the listener would stay up with role routing broken and nothing repairing it.
-func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
+// TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator deletes envoy_roles, the one
+// listener bucket no watcher reads, under a monitor that runs as the listener's does: its probe
+// reads the copied buckets first (checkCopiedBuckets) into the tracker the caches share
+// (listenerCaches), so the interest cache, which reads that bucket, is left out of the checks. No
+// listener creates a bucket it copies, and a restart would only wait for it at the start's gate,
+// so the monitor neither rebuilds nor restarts over it: every probe answers bucketsMissingError
+// naming the bucket, which /healthz and the alarm's ERROR line carry until the operator creates
+// it. Before, this test ran the probe without the tracker and asserted three rebuilds and a
+// restart, on the claim that the next start's store Open creates the bucket again, which no
+// longer holds.
+func TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator(t *testing.T) {
 	client := setupTestNATS(t)
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -4894,16 +4900,28 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
 
-	caches := []listenerCache{{name: "interest", cache: registry}}
-	var rebuilds atomic.Int32
+	missing := &missingBuckets{}
+	caches := listenerCaches(registry, nil, nil, missing)[:1]
+	logger := logging.NewWithWriter("test", &cmdtest.LockedBuffer{})
+	var rebuilds, probes atomic.Int32
+	var last atomic.Pointer[error]
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	terminated := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runSelfHealthMonitor(ctx, logging.New("test"),
-			func() error { return checkSelfHealth(caches, nil) },
+		runSelfHealthMonitor(ctx, logger,
+			func() error {
+				checkCopiedBuckets(ctx, logger, client.JS(), []string{bus.InterestBucket, bus.RoleClaimBucket}, missing)
+				err := checkSelfHealth(caches, nil)
+				if err == nil {
+					err = missing.err()
+				}
+				last.Store(&err)
+				probes.Add(1)
+				return err
+			},
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, client, caches) },
 			client.Connected,
 			func() error {
@@ -4915,18 +4933,35 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 			3,
 		)
 	}()
-	select {
-	case <-terminated:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the listener stayed up without its role bucket: %d rebuilds, no termination", rebuilds.Load())
+	deadline := time.Now().Add(10 * time.Second)
+	for probes.Load() < 10 {
+		select {
+		case <-terminated:
+			t.Fatalf("the monitor restarted the listener over a missing role bucket after %d probes and %d rebuilds", probes.Load(), rebuilds.Load())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("10 s gave %d probes, want 10", probes.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("the monitor did not return after terminating")
+		t.Fatal("the monitor did not return after its context ended")
 	}
-	if got := rebuilds.Load(); got != 3 {
-		t.Fatalf("rebuilds = %d, want 3", got)
+	select {
+	case <-terminated:
+		t.Fatal("the monitor restarted the listener over a missing role bucket")
+	default:
+	}
+	if got := rebuilds.Load(); got != 0 {
+		t.Fatalf("rebuilds = %d over %d probes, want 0: no rebuild brings a bucket back", got, probes.Load())
+	}
+	var missingErr *bucketsMissingError
+	if err := *last.Load(); !errors.As(err, &missingErr) || !slices.Equal(missingErr.buckets, []string{bus.RoleClaimBucket}) {
+		t.Fatalf("the last probe answered %v, want bucketsMissingError naming [%s]", err, bus.RoleClaimBucket)
 	}
 }
 
