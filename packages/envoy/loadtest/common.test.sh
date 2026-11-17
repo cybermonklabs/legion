@@ -571,6 +571,9 @@ echo ready >"$4"; exec sleep 300' writer "$dir/root-foreign" $'a\rb\tc\e[0m\\e\x
   # reads every descriptor of every process, minutes on a shared machine. The listener is Python by
   # its own path: a version manager's python3 shim passes its arguments on as text, the 0xff byte
   # replaced by U+FFFD, and the listener's command line would no longer be the one under test.
+  # port_holder runs with bash's `read` wrapped in a function that leaves a mark: a port_holder that
+  # read the tables with `read` again, whose seeks rebuild a /proc table once for each row, would
+  # still answer, only slower, so the mark is what fails the case.
   "$(python3 -c 'import sys; print(sys.executable)')" -c '
 import os, socket, sys, time
 s = socket.socket()
@@ -588,8 +591,10 @@ time.sleep(300)
   ln -s /proc/net/tcp "$dir/proc/net/tcp"
   ln -s /proc/net/tcp6 "$dir/proc/net/tcp6"
   ln -s "/proc/$listener" "$dir/proc/$listener"
-  out=$(proc_root="$dir/proc" bash -c 'source "$1"; eval "$(sed -n "/^port_holder() {/,/^}/p" "$2")"; port_holder "$3"' \
-    check "$helper" "$here/stack.sh" "$port")
+  out=$(proc_root="$dir/proc" bash -c 'source "$1"; eval "$(sed -n "/^port_holder() {/,/^}/p" "$2")"; mark=$4; read() { : >"$mark"; builtin read "$@"; }; port_holder "$3"' \
+    check "$helper" "$here/stack.sh" "$port" "$dir/port-holder-read")
+  [[ ! -e $dir/port-holder-read ]] ||
+    { fail "port_holder read a table with bash's read, whose every row seeks the table back and the kernel makes it again"; return; }
   [[ $out == *"pid $listener ("*" $dir/port $want)"* ]] ||
     { fail "port_holder did not print the listener's command line escaped"; return; }
   [[ $out != *[$'\r\n\t\e']* && $out != *$'\xff'* ]] ||

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { unrealReader } from "./proc-root";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
@@ -35,7 +36,9 @@ const miseState = join(dir, "mise-state");
 // for each process the host has, so the row's time, held to the run's 60 s, was the host's process
 // count, and a process an earlier run of the proof left anywhere on the host failed the row. The
 // run starts no process those walks are to find before it stops, and no earlier run's process is
-// the row's, so its root is an empty directory of its own.
+// the row's, so its root holds one entry alone: an unreal pid whose command line only
+// refuse_leftovers reads (unrealReader), so a refuse_leftovers that walked the host's /proc again
+// fails the row rather than only slowing it.
 const proc = join(dir, "proc");
 // Where the stand-in `secrets` records that it was asked.
 const asked = join(dir, "secrets-asked");
@@ -154,6 +157,7 @@ printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
 test.skipIf(skip)(
   "the prerequisites reach both Apps' credentials and never ask the box's own secrets store",
   () => {
+    const walked = unrealReader(proc);
     const run = Bun.spawnSync(["bash", script], {
       env: {
         HOME: dir,
@@ -177,6 +181,10 @@ test.skipIf(skip)(
       timeout: 60_000,
     });
     const output = run.stdout.toString() + run.stderr.toString();
+    expect(
+      walked(),
+      `refuse_leftovers read no entry of the proc root it was given:\n${output}`
+    ).toBe(true);
     // read_app_logins passed, so every assertion below is about a run that resolved both App
     // credentials rather than one a stand-in stopped before them.
     expect(output).toContain(

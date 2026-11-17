@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { unrealReader } from "./proc-root";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
 // refuses any Bun but the one the repository's .bun-version pins. A devbox whose `bun` is another
@@ -143,7 +144,9 @@ const keyFile = join(dir, "model-key");
 // for each process the host has, so the row's time, held to the run's 60 s, was the host's process
 // count, and a process an earlier run of the proof left anywhere on the host made the first FAIL
 // line its own. The run starts no process those walks are to find before it stops, and no earlier
-// run's process is the row's, so its root is an empty directory of its own.
+// run's process is the row's, so its root holds one entry alone: an unreal pid whose command line
+// only refuse_leftovers reads (unrealReader), so a refuse_leftovers that walked the host's /proc
+// again fails the row rather than only slowing it.
 const proc = join(dir, "proc");
 
 // The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module
@@ -163,6 +166,7 @@ beforeAll(() => {
 test.skipIf(skip)(
   "a bun other than the pinned release is refused in prerequisites, naming the pin",
   () => {
+    const walked = unrealReader(proc);
     const run = Bun.spawnSync(["bash", script], {
       env: {
         HOME: dir,
@@ -185,6 +189,10 @@ test.skipIf(skip)(
       timeout: 60_000,
     });
     const output = run.stdout.toString() + run.stderr.toString();
+    expect(
+      walked(),
+      `refuse_leftovers read no entry of the proc root it was given:\n${output}`
+    ).toBe(true);
     const failLine = output.split("\n").find((line) => line.startsWith("FAIL ")) ?? "";
     expect(failLine).toMatch(/^FAIL prerequisites: /);
     expect(failLine).toContain(pinned);

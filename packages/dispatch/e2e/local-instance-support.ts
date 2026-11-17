@@ -257,7 +257,13 @@ export async function agentViewRefusal(
   socket.addEventListener("close", (event) =>
     settle(`the live socket closed first (${event.code} ${event.reason})`)
   );
-  socket.addEventListener("error", () => settle("the live socket could not be opened"));
+  // The runtime says why in the event: "Failed to connect" for a connection refused, "Expected 101
+  // status code: 404" for a server that answered the upgrade some other way. The refusal carries
+  // that, after Bun's "WebSocket connection to '<url>' failed: ", so the two are told apart.
+  socket.addEventListener("error", (event) => {
+    const said = event instanceof ErrorEvent ? event.message.replace(/^.* failed: /, "") : "";
+    settle(`the live socket could not be opened${said === "" ? "" : ` (${said})`}`);
+  });
   try {
     return await answered.promise;
   } finally {

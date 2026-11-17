@@ -1,3 +1,4 @@
+import { onTestFinished } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -69,4 +70,32 @@ export function unrealPid(root: string): string {
   const unreal = String(Number(readFileSync("/proc/sys/kernel/pid_max", "utf8")) + 1);
   mkdirSync(join(root, unreal));
   return unreal;
+}
+
+/** An entry of `root` at an unreal pid (`unrealPid`), in this process's pid namespace, whose
+ *  command line is a FIFO, and the answer to whether anything read it. A writer waits on the FIFO
+ *  and marks that it was read once a reader opens it, so a walk of `root` that reads each entry's
+ *  command line marks it, and a walk that went back to the host's /proc never opens it and leaves
+ *  no mark: the row fails rather than only slowing. The answer waits up to 2 s for the writer's
+ *  mark after the code under test returns. The writer is killed when the row ends. */
+export function unrealReader(root: string): () => boolean {
+  const unreal = join(root, unrealPid(root));
+  mkdirSync(join(unreal, "ns"));
+  symlinkSync("/proc/self/ns/pid", join(unreal, "ns", "pid"));
+  const read = `${unreal}.read`;
+  const made = Bun.spawnSync(["mkfifo", join(unreal, "cmdline")]);
+  if (made.exitCode !== 0) throw new Error(`mkfifo: ${made.stderr.toString()}`);
+  const writer = Bun.spawn(
+    ["sh", "-c", 'printf "unreal\\0" >"$1" && : >"$2"', "unreal", join(unreal, "cmdline"), read],
+    {
+      stdout: "ignore",
+      stderr: "ignore",
+    }
+  );
+  onTestFinished(() => writer.kill("SIGKILL"));
+  return () => {
+    const deadline = Date.now() + 2_000;
+    while (!existsSync(read) && Date.now() < deadline) Bun.sleepSync(50);
+    return existsSync(read);
+  };
 }

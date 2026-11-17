@@ -491,9 +491,30 @@ describe("agentViewRefusal", () => {
     async () => {
       // A port this row holds bound and never listens on (`refusingOrigin`), so the socket's
       // connection is refused, and no other process can bind it to answer the socket some other way.
+      // The refusal names the runtime's own reason, so a port another server took, which answers
+      // the upgrade with a status of its own (the row below), would fail this row.
       expect(await refusalFrom(refusingOrigin(), {}, SESSION)).toBe(
-        "the live socket could not be opened"
+        "the live socket could not be opened (Failed to connect)"
       );
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a server that answers the live socket's upgrade with a status of its own says which",
+    async () => {
+      const squatter = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () => new Response("not here", { status: 404 }),
+      });
+      try {
+        expect(await refusalFrom(squatter.url.origin, {}, SESSION)).toBe(
+          "the live socket could not be opened (Expected 101 status code: 404)"
+        );
+      } finally {
+        squatter.stop(true);
+      }
     },
     rowLimit("short")
   );
