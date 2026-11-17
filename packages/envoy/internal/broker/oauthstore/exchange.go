@@ -276,41 +276,187 @@ func (s *Store) ReserveSessions(ctx context.Context, reserved map[string]string)
 	return left, nil
 }
 
+// ErrPodSessionBoundToAnotherKey is what PodSessionRegistered's refusal (*PodSessionBoundError)
+// is: a live registration of the pod and session that is bound to a key other than the one the
+// exchange's proof presented.
+var ErrPodSessionBoundToAnotherKey = errors.New("the pod's registration for this session is bound to another key")
+
+// PodSessionBoundError is PodSessionRegistered's refusal of a key other than the one the pod's
+// live registration for the session is bound to. It is ErrPodSessionBoundToAnotherKey
+// (errors.Is), and Bound is the thumbprint of the key the registration is bound to, which the
+// exchange logs beside the one the refused trade proved.
+type PodSessionBoundError struct{ Bound string }
+
+func (e *PodSessionBoundError) Error() string {
+	return ErrPodSessionBoundToAnotherKey.Error() + ": " + e.Bound
+}
+
+// Unwrap is ErrPodSessionBoundToAnotherKey.
+func (e *PodSessionBoundError) Unwrap() error { return ErrPodSessionBoundToAnotherKey }
+
+// PodSessionRegistration is one pod's registration for one session name as the broker holds it
+// after a write (RegisterPodSession), and what that write did to it.
+type PodSessionRegistration struct {
+	// When the broker stops honouring it unless it is written again.
+	ExpiresAt time.Time
+	// The thumbprint of the key it is bound to; empty for one bound to the pod alone.
+	JKT string
+	// The generation of the write that last set it; 0 for a registrar that sends none.
+	Generation int64
+	// Whether the write set it: false for a write of a lower generation than the row's, which
+	// changed nothing.
+	Applied bool
+	// The thumbprint of the key the write replaced with another. Empty when the write created the
+	// row, was not applied, named no key, named the key the row held, or bound a row that was
+	// bound to the pod alone.
+	Replaced string
+}
+
 // RegisterPodSession records that the pod podUID may exchange under the session name session,
-// until PodSessionRetention from now, and answers when that registration runs out. A pod uid
-// already registered for the name has its registration extended rather than duplicated, so a
-// registrar that writes the same row each time a pod starts, or renews it while the pod runs,
-// keeps the pod writing and never shortens what another write left.
+// until PodSessionRetention from now, and answers the registration as it now stands, with whether
+// this write set it and the key it replaced. A pod uid already registered for the name has its
+// registration extended rather than duplicated, so a registrar that writes the same row each time
+// a pod starts, or renews it while the pod runs, keeps the pod writing and never shortens what
+// another write left.
 //
 // It is what separates two pods of one listed account, which the exchange reads as one principal:
 // the name belongs to the account, so nothing in the claim on the name can tell them apart, and
 // without this row either pod could mint a token naming the other's session. A registration says
 // only that this deployment started this pod under this name; who the name belongs to stays the
 // claim's answer (BindSession).
-func (s *Store) RegisterPodSession(ctx context.Context, podUID, session string) (time.Time, error) {
-	var expires time.Time
-	err := s.db(ctx).QueryRow(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at)
-		values ($1, $2, $3)
-		on conflict (pod_uid, session) do update set expires_at = greatest(oauth_pod_sessions.expires_at, excluded.expires_at)
-		returning expires_at`, podUID, session, time.Now().Add(PodSessionRetention)).Scan(&expires)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("register the pod's session name: %w", err)
+//
+// jkt, when set, binds the registration to the key the session's own role proves, which is what
+// separates the roles of one pod: they read one exchange token and are registered for one pod
+// uid, so only the key tells a role's trade from a sibling's (PodSessionRegistered). A write that
+// names a key replaces the one the row names, and one that names none keeps it, so a write
+// without a thumbprint never removes a binding while the row lives; once the row lapses and the
+// sweep deletes it, a later write stores what it names. Empty is a registration bound to the pod
+// alone, as a session watch registers a session pod's one session, which runs no sibling role.
+//
+// generation is the registrar's own order of its writes for this pod and session: a write sets
+// the expiry, the key and the generation only when its generation is at least the row's, and a
+// write of a lower one changes nothing and is answered the row as it stands. The Legion daemon
+// sends a role's launch generation, so a write its old incarnation sent, which the broker commits
+// only after the new incarnation's, cannot put the old key back for a renewal interval. A
+// registrar that sends none writes 0, as a session watch does, so its writes apply as before
+// against rows that are 0 too. A registrar's generation for one pod and session must never go
+// down: a lower one is not applied until the row has lapsed and the sweep has deleted it.
+//
+// The write is one transaction that holds the row from its read to its update
+// (writePodSession), so the key it answers it replaced is the key the row held when this write
+// changed it, and a write that waits on another reads the row as that one committed it. One
+// insert ... on conflict do update statement keeps the generation rule as well, but the key it
+// can read beside it is the statement's snapshot's, which a concurrent write's commit postdates:
+// two writes changing one row's key at once name the key both started from. The transaction is
+// its own and names read committed rather than taking default_transaction_isolation: two first
+// writes can both read no row, and the second to insert waits on the first's insert and then
+// reads that row in a statement of its own, which only read committed's snapshot per statement
+// sees. Under repeatable read that insert fails to serialize instead (SQLSTATE 40001), as the one
+// statement's update of a row committed after its snapshot does. So a ctx already carrying a
+// transaction, whose level and lifetime the write would not choose, is refused; no caller passes
+// one.
+func (s *Store) RegisterPodSession(ctx context.Context, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
+	if _, joined := TxFrom(ctx); joined {
+		return PodSessionRegistration{}, errors.New("register the pod's session name: the write opens a read-committed transaction of its own, and the context already carries one")
 	}
-	return expires, nil
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return PodSessionRegistration{}, fmt.Errorf("register the pod's session name: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err := s.writePodSession(WithTx(ctx, tx), podUID, session, jkt, generation)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		return PodSessionRegistration{}, fmt.Errorf("register the pod's session name: %w", err)
+	}
+	return stored, nil
+}
+
+// writePodSession is RegisterPodSession's write, in the transaction ctx carries. It locks the row
+// and reads it, inserts it when there is none, and otherwise applies the generation rule to the
+// row it locked and updates it. A row another write inserts after the read began is invisible to
+// that read, but the insert waits for that write to commit and then finds the row, which is read
+// again, locked, as that write left it.
+func (s *Store) writePodSession(ctx context.Context, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
+	held, found, err := s.lockPodSession(ctx, podUID, session)
+	if err != nil {
+		return PodSessionRegistration{}, err
+	}
+	expires := time.Now().Add(PodSessionRetention)
+	if !found {
+		stored := PodSessionRegistration{Applied: true}
+		err := s.db(ctx).QueryRow(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at, jkt, generation)
+			values ($1, $2, $3, nullif($4, ''), $5)
+			on conflict (pod_uid, session) do nothing
+			returning expires_at, coalesce(jkt, ''), generation`,
+			podUID, session, expires, jkt, generation).Scan(&stored.ExpiresAt, &stored.JKT, &stored.Generation)
+		switch {
+		case err == nil:
+			return stored, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return PodSessionRegistration{}, err
+		}
+		// Another write inserted the row after the read above began.
+		if held, found, err = s.lockPodSession(ctx, podUID, session); err != nil {
+			return PodSessionRegistration{}, err
+		}
+		if !found {
+			return PodSessionRegistration{}, errors.New("the row another write inserted was deleted before this write read it")
+		}
+	}
+	if generation < held.Generation {
+		// The row's generation is higher, so the write changes nothing: answer the row as it is.
+		return held, nil
+	}
+	stored := PodSessionRegistration{Applied: true}
+	err = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
+		set expires_at = greatest(expires_at, $3), jkt = coalesce(nullif($4, ''), jkt), generation = $5
+		where pod_uid = $1 and session = $2
+		returning expires_at, coalesce(jkt, ''), generation`,
+		podUID, session, expires, jkt, generation).Scan(&stored.ExpiresAt, &stored.JKT, &stored.Generation)
+	if err != nil {
+		return PodSessionRegistration{}, err
+	}
+	if held.JKT != "" && stored.JKT != held.JKT {
+		stored.Replaced = held.JKT
+	}
+	return stored, nil
+}
+
+// lockPodSession reads the pod's registration for session and locks it until the transaction ctx
+// carries ends, first waiting for any write that holds it and reading the row as that write
+// committed it; found is false when there is none.
+func (s *Store) lockPodSession(ctx context.Context, podUID, session string) (held PodSessionRegistration, found bool, err error) {
+	err = s.db(ctx).QueryRow(ctx, `select expires_at, coalesce(jkt, ''), generation from oauth_pod_sessions
+		where pod_uid = $1 and session = $2 for update`, podUID, session).Scan(&held.ExpiresAt, &held.JKT, &held.Generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PodSessionRegistration{}, false, nil
+	}
+	return held, err == nil, err
 }
 
 // PodSessionRegistered reports whether a registration still says the pod podUID may exchange
-// under session. It reads through s.db(ctx), so the exchange's own transaction asks it, and it
-// asks the cluster nothing: a pod that no longer runs goes on being registered until its row
-// runs out, exactly as its own token goes on verifying until its expiry.
-func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session string) (bool, error) {
-	var registered bool
-	err := s.db(ctx).QueryRow(ctx, `select exists (select 1 from oauth_pod_sessions
-		where pod_uid = $1 and session = $2 and expires_at > now())`, podUID, session).Scan(&registered)
-	if err != nil {
+// under session with a DPoP proof of the key whose thumbprint is jkt: true when a live row names
+// no key or names this one, false when no live row exists, and false with a *PodSessionBoundError
+// naming the row's key when the live row names another. It reads through s.db(ctx), so the
+// exchange's own transaction asks it, and it asks the cluster nothing: a pod that no longer runs
+// goes on being registered until its row runs out, exactly as its own token goes on verifying
+// until its expiry.
+func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt string) (bool, error) {
+	var bound string
+	err := s.db(ctx).QueryRow(ctx, `select coalesce(jkt, '') from oauth_pod_sessions
+		where pod_uid = $1 and session = $2 and expires_at > now()`, podUID, session).Scan(&bound)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
 		return false, fmt.Errorf("read the pod's session registration: %w", err)
+	case bound != "" && bound != jkt:
+		return false, &PodSessionBoundError{Bound: bound}
 	}
-	return registered, nil
+	return true, nil
 }
 
 // SetTokenExchangeCustomJWT remembers a subject token's jti until exp plus jtiRetentionMargin and

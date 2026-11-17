@@ -100,11 +100,13 @@ A refusal comes from the proxy, not from the service:
 - An HTTP error naming the rule that refused it: a TLS name or `Host` that is not the host the
   command asked for, a method or a path outside the entry's `allow`, a path with a `.` or `..`
   segment, an `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` header where the
-  entry lists methods, plain `http://` to a host an entry binds, or a private address.
+  entry lists methods, a `CONNECT` or an `h2c` upgrade inside the proxied connection, plain
+  `http://` to a host an entry binds, or a private address. gRPC clients work through the proxy,
+  and a gRPC refusal shows the same text in its error message.
 
-- `407` once the grant ends, on every call to any host. A WebSocket open at that moment is
-  closed with the grant. A tunnel to a host no entry binds carries no value, so it runs to its
-  idle limit instead.
+- `407` once the grant ends, on every call to any host. A call still running at that moment (a
+  WebSocket, a gRPC stream, a long poll) is ended with the grant. A tunnel to a host no entry binds
+  carries no value, so it runs to its idle limit instead.
 
 - `503` when the broker could not read the grant at all. The grant has not ended and the call
   can be made again.
@@ -280,9 +282,24 @@ On `UNKNOWN_SECRET` you stop, as above. You may tell the secret's owner how to f
 read the store (`gcloud auth login` against a broker on Google Cloud, an `AWS_PROFILE` against one
 on AWS).
 
-A write runs under whatever credential the environment gives the command, and the store's IAM
-decides whether it lands. On Google Cloud that is `CLOUDSDK_AUTH_ACCESS_TOKEN` when it is set, else
-the Application Default Credentials, else the gcloud login; on AWS, `--profile`, else `AWS_PROFILE`.
+A write runs under the credential of the first source the command finds, and the store's IAM
+decides whether it lands. On Google Cloud the order is `CLOUDSDK_AUTH_ACCESS_TOKEN`,
+`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+`CLOUDSDK_CORE_ACCOUNT`, the well-known credentials file, the active gcloud account and last the
+metadata server; on AWS it is the AWS SDK's own: access keys in `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then `AWS_PROFILE`, then
+`AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain. Every form prints the credential
+it uses (`agent-secrets secret <form>: using …`) before it calls the store, and a store refusal
+names it and how to choose another. A source that is present but broken stops the command; it
+never falls through to the machine's identity.
+An agent never chooses a gcloud configuration that holds a person's login: the call then runs as
+that person, so the person runs such a command in their own shell. Where the box's active gcloud
+configuration holds a person's login, the active gcloud account, which comes before the metadata
+server, is that person's as well. To write as the machine, name the machine's own gcloud login: set
+`CLOUDSDK_CORE_ACCOUNT` to the box's service account (on a Google VM `gcloud auth list` lists it),
+or `CLOUDSDK_ACTIVE_CONFIG_NAME` to the configuration that holds it. `CLOUDSDK_CORE_ACCOUNT`
+outranks the account of any configuration, so unset it before you choose a configuration. Or ask
+the person to run the command.
 `agent-secrets secret set NAME` replaces the value of a secret that exists. A new one is
 `agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human`. `--owner me` is
 the email of the person the credential names, and is refused where it names none, as a token

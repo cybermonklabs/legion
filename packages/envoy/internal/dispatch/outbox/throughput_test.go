@@ -443,7 +443,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
-	if _, err := reader.Subscribe(contracts.AgentSubject(throughputHolder), func(message *natsgo.Msg) {
+	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
 		id := envelopeEventID(t, message.Data)
 		rig.roleMu.Lock()
 		rig.role = append(rig.role, id)

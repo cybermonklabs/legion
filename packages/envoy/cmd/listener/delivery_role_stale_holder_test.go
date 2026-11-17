@@ -60,7 +60,7 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 		t.Fatalf("claim the role: %v", err)
 	}
 	forwards := make(chan *natsgo.Msg, 4)
-	received, err := harness.client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
+	received, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject(holder), func(message *natsgo.Msg) {
 		select {
 		case forwards <- message:
 		default:
@@ -131,7 +131,7 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 		holder = "ses_role_heartbeat"
 	)
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 	for _, tc := range []struct {
 		name          string
 		since         time.Duration

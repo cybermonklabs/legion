@@ -220,6 +220,9 @@ YAML
 #!/usr/bin/env bash
 judge_image=$REGISTRY@$NATS
 docker run --rm --init "\$judge_image" bash -c 'echo judged'
+# The shape IMAGE_FROM covers in the real rig.sh: its NATS server's image, which
+# scripts/e2e/lib/nats-image.sh sets.
+docker run -d --name rig-nats "\$nats_image" -js >/dev/null
 YAML
   cat > "$root/scripts/e2e/stage1-skeleton.sh" <<YAML
 #!/usr/bin/env bash

@@ -64,7 +64,7 @@ func (st *step) subscribeSessions() (*natsSessions, error) {
 	ns.relay = newRelaySessions(len(st.ids), len(ns.conns))
 	for i, id := range st.ids {
 		nc := ns.conns[i%len(ns.conns)]
-		if _, err := nc.Subscribe(bus.DeliverSubject(id), ns.relay.handler(ns, i, contracts.AgentSubject(id), st.nonce)); err != nil {
+		if _, err := nc.Subscribe(bus.DeliverSubject(id), ns.relay.handler(ns, i, contracts.LegacyAgentSubject(id), st.nonce)); err != nil {
 			return ns, err
 		}
 		ns.subs++

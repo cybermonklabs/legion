@@ -815,7 +815,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			}
 
 			deliveries := eventDeliveries(t, doc.database, "ask.edited", doc.askID)
-			if heard := slices.Contains(deliveries[0].Destinations, contracts.AgentSubject(asker.ID)); heard != write.askerHears {
+			if heard := slices.Contains(deliveries[0].Destinations, contracts.LegacyAgentSubject(asker.ID)); heard != write.askerHears {
 				t.Fatalf("the outbox published the move to %v; the asking session's topic among them = %t, want %t", deliveries[0].Destinations, heard, write.askerHears)
 			}
 		})

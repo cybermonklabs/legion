@@ -692,7 +692,8 @@ Either way the server logs the address it serves on once it serves, as `dispatch
 
 Set `DISPATCH_PPROF_PORT` to a port to serve the Go profiler (`net/http/pprof`) on `127.0.0.1:<port>`, on a mux of its own, apart from the server's routes.
 It binds the loopback address only, so nothing outside the pod reaches it; unset or empty, nothing listens.
-A value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
+`0` serves it on a port the kernel chooses, which the server logs as `dispatch: pprof listening addr=127.0.0.1:<port>`: a test harness asks for that, since a port it picked and let go of is any program's to take before the server binds it.
+Any other value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
 The profiler binds before anything connects, so a slow boot can be profiled too.
 The listener closes at once when the process is told to stop, cutting off a profile in flight, so it never delays the shutdown (and the shutdown's own drain cannot be profiled).
 A `gcp:Dispatch` deployment turns it on with the component's `pprofPort` input (`packages/envoy/infra/README.md`), which sets the variable on the `envoy-dispatch` container;
