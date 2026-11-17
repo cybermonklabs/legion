@@ -6160,6 +6160,101 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 	}
 }
 
+// A report whose send panics leaves what it carries for the next report: R1 has a recovered
+// fault and R3 a refused /proc read reach the architect, and report took both from the trimmer
+// once the bounded report existed, so a report that is then neither sent nor held must give them
+// back, as one whose merge with a held report panics does (replace). The case carries one fault
+// and one refused read of an earlier sweep that sent no report, makes the send of the next
+// sweep's report panic with no report held, and reads the report of the sweep after it, which
+// must carry the earlier fault, the send's own fault and the refused read. At c3874f11 it
+// carried the send's fault alone and no refused read.
+func TestAReportWhoseSendPanicsLeavesWhatItCarriedForTheNext(t *testing.T) {
+	const refused = "process 9: /proc/9/fd: permission denied"
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing and reports
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	set := *trimSettings()
+	ctx := context.Background()
+	tr.fault("a panic of an earlier interval", []byte("goroutine 1 [running]:\nan earlier stack"))
+	tr.carryRefused([]string{refused})
+
+	var sends atomic.Int32
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if sends.Add(1) == 1 {
+			panic("the connection fell over sending the report")
+		}
+		return f.send(report)
+	}
+	if _, ending := tr.tick(ctx, &set); ending != trimGoesOn {
+		t.Fatalf("the interval whose send panicked ended the trimmer (%v), want it passed over", ending)
+	}
+	if tr.held != nil || len(f.reports()) != 0 {
+		t.Fatalf("the trimmer holds %v and sent %d reports after a send that panicked, want neither", tr.held, len(f.reports()))
+	}
+
+	tr.pause = 0 // the pause after a sweep that freed nothing (tick), which would hold off the next sweep
+	tr.tick(ctx, &set)
+	sent := f.reports()
+	if len(sent) != 1 {
+		t.Fatalf("the trimmer sent %d reports from the sweep after the one whose send panicked, want one", len(sent))
+	}
+	report := sent[0]
+	if len(report.Faults)+report.FaultsOmitted != 2 || !strings.HasPrefix(report.Faults[0], "a panic of an earlier interval") {
+		t.Errorf("the report carries the faults %q and counts %d more, want the earlier fault and the send's own: the report that took the earlier one was neither sent nor held", report.Faults, report.FaultsOmitted)
+	}
+	if !slices.Equal(report.RefusedReads, []string{refused}) || report.RefusedReadsOmitted != 0 {
+		t.Errorf("the report names the refused reads %q and counts %d more, want the one of the earlier sweep", report.RefusedReads, report.RefusedReadsOmitted)
+	}
+}
+
+// A sweep whose size walk panics leaves its own refused /proc reads with the trimmer for the
+// next report: the comment on report says a panic in the walk leaves them there, and R3 has the
+// report name any /proc read the kernel refused. The case's /proc holds a process whose fd entry
+// is a file, which the reader refuses whoever it runs as, so the first sweep reports and deletes
+// nothing; its walk panics at the first target it measures. The next sweep reads a /proc it is
+// refused nothing in, and its report must name the first sweep's refusal. At c3874f11 report
+// walked before it carried the sweep's refusals, so the next report named none.
+func TestASweepWhoseWalkPanicsLeavesItsRefusedReadsForTheNextReport(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	refusing, pids := writeProcFixture(t, fixtureProcess{pid: 4242, fdIsFile: true})
+	tr.procRoot = refusing
+	set := *trimSettings()
+	ctx := context.Background()
+
+	measure := tr.measure
+	var walking atomic.Bool
+	walking.Store(true)
+	tr.measure = func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+		if walking.Load() {
+			panic("the walk fell over measuring a target")
+		}
+		return measure(ctx, dir, name, at)
+	}
+	if _, ending := tr.tick(ctx, &set); ending != trimGoesOn {
+		t.Fatalf("the interval whose walk panicked ended the trimmer (%v), want it passed over", ending)
+	}
+	if f.logged("recovered a panic") != 1 || len(f.reports()) != 0 {
+		t.Fatalf("the trimmer wrote %q and sent %d reports, want the walk's panic recovered and no report", f.linesWritten(), len(f.reports()))
+	}
+
+	walking.Store(false)
+	tr.procRoot = f.proc
+	tr.pause = 0 // the pause after a sweep that freed nothing (tick), which would hold off the next sweep
+	tr.tick(ctx, &set)
+	sent := f.reports()
+	if len(sent) != 1 {
+		t.Fatalf("the trimmer sent %d reports from the sweep after the one whose walk panicked, want one", len(sent))
+	}
+	named := strings.Join(sent[0].RefusedReads, "; ")
+	if !strings.Contains(named, strconv.Itoa(pids[0])) {
+		t.Errorf("the report names the refused reads %q and counts %d more, want the first sweep's refusal of process %d: its walk panicked before the report carried it", sent[0].RefusedReads, sent[0].RefusedReadsOmitted, pids[0])
+	}
+}
+
 // A report that replaces a held one is bounded twice — where it is made, and again with the held
 // report's faults and refused reads in it — and the pod's log says once what it leaves out, with
 // the counts of the report as it is held: a person counting those lines counts reports. The case
