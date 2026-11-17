@@ -1262,9 +1262,16 @@ it from the branch, and a request whose host moved to another session during the
 nothing), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
-that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache
-prefix byte for byte with no `cache_control` on the list; a list with nothing new staying after
-the first turn's prompt while later requests end with their own and cache through it; a `/btw` side turn and the handoff
+that never answers costing a request under one second, by the median of three readings; a route
+that answers 404 (no line); a change appending a second list while the first stays at its place,
+the cache prefix byte for byte, with no `cache_control` on either list; a list with nothing new
+staying after the first turn's prompt while later requests end with their own and cache through
+it; after a compaction, a new answer, an edit and two retractions each appending a list after the
+last message (the last retraction the "no item" list), and a 503 appending the failure line once,
+a second 503 and a recovery to an empty window nothing and the next list after the last message,
+each request beginning with every message of the one before it; a failed read whose cached list
+keeps the list sent where it went; a restart (`--resume`) whose first request rebuilds the list
+at its old place with its bytes; a `/btw` side turn and the handoff
 ending with their own prompts, with no list and no read; a remote compaction request ending at
 its cut, after a question and after a delivered message, and one that keeps no tail carrying no
 list (the stand-in model claims `supportsServerCompaction` and `bedrockMessagesApi`, which the
