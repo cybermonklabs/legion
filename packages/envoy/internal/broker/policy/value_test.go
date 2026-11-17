@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// undecodable is a stored value no kind's decoder reads: it is not JSON.
+// undecodable is a stored value no type's decoder reads: it is not JSON.
 const undecodable = "not json"
 
 // refusingReads is a secrets.Local whose GetSecretValue answers AccessDeniedException, as IAM
@@ -85,20 +85,20 @@ func refresh(t *testing.T, cur *policy.Current) {
 	}
 }
 
-// TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest: NewCurrent reads each kind
+// TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest: NewCurrent reads each type
 // secret's value before it answers, so the policy it answers already refuses a github-app secret
 // whose value does not decode, as value-malformed with its owner, in one first_load
-// RefusedMessage line and one broker_unservable_secrets series, while a kind secret whose value
-// decodes is served and a secret of no kind is never read. A reload, and a reread of either name,
+// RefusedMessage line and one broker_unservable_secrets series, while a type secret whose value
+// decodes is served and a secret of no type is never read. A reload, and a reread of either name,
 // read no value and write nothing, and the reread of the refused one answers its reason.
 //
 // The named revert: drop readValues' decode (take every read as decoded); the first load then
 // serves BAD_APP and this test fails.
 func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testing.T) {
 	store := &refusingReads{Local: secrets.NewLocal(
-		kindSecret("BAD_APP", policy.KindGitHubApp, undecodable),
-		kindSecret("GOOD_LOGIN", policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)),
-		policytest.Secret("PLAIN_KEY", kindOwner, policy.TierAgent, undecodable),
+		typeSecret("BAD_APP", policy.TypeGitHubApp, undecodable),
+		typeSecret("GOOD_LOGIN", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
+		policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, undecodable),
 	)}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
@@ -114,19 +114,19 @@ func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testi
 			t.Fatalf("the first load does not serve %s", name)
 		}
 	}
-	if got, want := gained(), refusedLine(bad, policy.ReasonValueMalformed, kindOwner, true, ""); got != want {
+	if got, want := gained(), refusedLine(bad, policy.ReasonValueMalformed, typeOwner, true, ""); got != want {
 		t.Fatalf("the first load logged:\n%s\nwant:\n%s", got, want)
 	}
-	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(bad, policy.ReasonValueMalformed, kindOwner); got != want {
+	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(bad, policy.ReasonValueMalformed, typeOwner); got != want {
 		t.Fatalf("broker_unservable_secrets reads\n%s\nwant\n%s", got, want)
 	}
 	if n := valueReads(t, registry); n != 2 {
-		t.Fatalf("the first load read %d values; want 2, one for each kind secret and none for PLAIN_KEY", n)
+		t.Fatalf("the first load read %d values; want 2, one for each type secret and none for PLAIN_KEY", n)
 	}
 
 	refresh(t, cur)
 	lk, err := cur.RefreshOne(context.Background(), "BAD_APP")
-	if err != nil || lk.Served || lk.Reason != policy.ReasonValueMalformed || lk.Owner != kindOwner {
+	if err != nil || lk.Served || lk.Reason != policy.ReasonValueMalformed || lk.Owner != typeOwner {
 		t.Fatalf("RefreshOne(BAD_APP) = %+v, %v; want refused as %s", lk, err, policy.ReasonValueMalformed)
 	}
 	if lk, err := cur.RefreshOne(context.Background(), "GOOD_LOGIN"); err != nil || !lk.Served {
@@ -140,17 +140,17 @@ func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testi
 	}
 }
 
-// TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead: the policy reads a kind secret's value
+// TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead: the policy reads a type secret's value
 // once for each version a load lists, never at each load: the boot reads it, two reloads and a
 // reread read nothing, a new value is read by the one load that first lists it, and the load
-// after reads nothing. A secret of no kind is never read, however its value changes. A new value
+// after reads nothing. A secret of no type is never read, however its value changes. A new value
 // moves no policy Version, so a value write ends no grant.
 //
 // The named revert: decode on every load (ignore the decoded key); the second load's read=value
 // count then fails this test.
-func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
-	login := kindSecret("LOGIN_KEY", policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
-	store := &refusingReads{Local: secrets.NewLocal(login, policytest.Secret("PLAIN_KEY", kindOwner, policy.TierAgent, "plain-v1"))}
+func TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead(t *testing.T) {
+	login := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
+	store := &refusingReads{Local: secrets.NewLocal(login, policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "plain-v1"))}
 	cur, registry, logged := valueCurrent(t, store)
 	version := cur.Get().Version
 
@@ -169,7 +169,7 @@ func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
 				}
 			}
 		}, 1},
-		{"a new value of the kind secret", func() {
+		{"a new value of the type secret", func() {
 			// The same fields with a trailing line feed: new bytes, so a new version, which the
 			// shape rule trims back to a value the decoder reads.
 			changed := login
@@ -178,8 +178,8 @@ func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
 			refresh(t, cur)
 		}, 2},
 		{"the load after it", func() { refresh(t, cur) }, 2},
-		{"a new value of the secret of no kind", func() {
-			store.Put(policytest.Secret("PLAIN_KEY", kindOwner, policy.TierAgent, "plain-v2"))
+		{"a new value of the secret of no type", func() {
+			store.Put(policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "plain-v2"))
 			refresh(t, cur)
 		}, 2},
 	} {
@@ -199,14 +199,14 @@ func TestANewVersionIsReadOnceAndASecretOfNoKindIsNeverRead(t *testing.T) {
 	}
 }
 
-// TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain: a retag changes what the value
-// is read as and leaves its version as it was, so the policy decodes the value again under the
-// kind and shape each retag lists: a shape retag reads it once more and still serves it, a kind
-// retag to github-app reads it once more and refuses the google-login value as value-malformed,
-// and the retag back serves it again, each with one line, the value's version the same throughout.
-func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
-	value := policytest.KindValue(policy.KindGoogleLogin)
-	login := kindSecret("RETAGGED_KEY", policy.KindGoogleLogin, value)
+// TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain: a retag of the type changes what the
+// value is read as and leaves its version as it was, so the policy decodes the value again under
+// the type each retag lists: a retag to github-app reads it once more and refuses the
+// google-login value as value-malformed, and the retag back reads it once more and serves it
+// again, each with one line, the value's version the same throughout.
+func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
+	value := policytest.TypeValue(policy.TypeGoogleLogin)
+	login := typeSecret("RETAGGED_KEY", policy.TypeGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(login)}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
@@ -214,13 +214,7 @@ func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T
 	if version == "" {
 		t.Fatal("the policy lists no version of RETAGGED_KEY's value")
 	}
-	shaped := login
-	shaped.Tags = map[string]string{policy.TagShape: policy.ShapeToken}
-	for key, tag := range login.Tags {
-		shaped.Tags[key] = tag
-	}
-	app := kindSecret("RETAGGED_KEY", policy.KindGitHubApp, value)
-	app.Tags[policy.TagShape] = policy.ShapeToken
+	app := typeSecret("RETAGGED_KEY", policy.TypeGitHubApp, value)
 
 	for _, step := range []struct {
 		name   string
@@ -229,9 +223,8 @@ func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T
 		served bool
 		lines  string
 	}{
-		{"a shape retag", shaped, 2, true, ""},
-		{"a kind retag to github-app", app, 3, false, refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, "")},
-		{"the kind retag back", shaped, 4, true, servableLine(id, policy.ReasonValueMalformed, kindOwner, "servable")},
+		{"a type retag to github-app", app, 2, false, refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, "")},
+		{"the type retag back", login, 3, true, servableLine(id, policy.ReasonValueMalformed, typeOwner, "servable")},
 	} {
 		store.Put(step.secret)
 		refresh(t, cur)
@@ -260,7 +253,7 @@ func TestARetagOfTheKindOrShapeOnTheSameVersionDecodesTheValueAgain(t *testing.T
 // The named revert: write the failure line on every failed read, not only the first of a run; the
 // second failing load then fails this test.
 func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
-	store := &refusingReads{Local: secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))}
+	store := &refusingReads{Local: secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id := policytest.ID("APP_KEY")
@@ -269,7 +262,7 @@ func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
 	}
 
 	store.refuse(true)
-	store.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+	store.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
 	var failed string
 	for load := 1; load <= 3; load++ {
 		refresh(t, cur)
@@ -292,7 +285,7 @@ func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
 
 	store.refuse(false)
 	refresh(t, cur)
-	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+version+"\n"+refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+version+"\n"+refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the load whose read succeeds logged:\n%s\nwant:\n%s", got, want)
 	}
 	refresh(t, cur)
@@ -312,7 +305,7 @@ func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
 // drops it, though that read fails too, writing ServableMessage. The load that reads that version
 // and finds it refused refuses the secret again.
 func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T) {
-	store := &refusingReads{Local: secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable)), refusing: true}
+	store := &refusingReads{Local: secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable)), refusing: true}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id := policytest.ID("APP_KEY")
@@ -323,19 +316,19 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 		t.Fatal("the first load could not read APP_KEY's value and does not serve it; a failed read marks nothing")
 	}
 
-	cur.RefuseValue(context.Background(), "APP_KEY", "a-version-not-listed", policy.KindGitHubApp, "")
+	cur.RefuseValue(context.Background(), "APP_KEY", "a-version-not-listed", policy.TypeGitHubApp)
 	if _, served := cur.Get().Secrets["APP_KEY"]; !served {
 		t.Fatal("a refusal at a version the policy does not list refused APP_KEY")
 	}
-	cur.RefuseValue(context.Background(), "APP_KEY", cur.Get().ValueVersion("APP_KEY"), policy.KindGitHubApp, "")
+	cur.RefuseValue(context.Background(), "APP_KEY", cur.Get().ValueVersion("APP_KEY"), policy.TypeGitHubApp)
 	if _, served := cur.Get().Secrets["APP_KEY"]; served {
 		t.Fatal("a mint's refusal at the listed version left APP_KEY served")
 	}
 	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the mint's refusal logged:\n%s\nwant:\n%s", got, want)
 	}
-	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(id, policy.ReasonValueMalformed, kindOwner); got != want {
+	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(id, policy.ReasonValueMalformed, typeOwner); got != want {
 		t.Fatalf("broker_unservable_secrets reads\n%s\nwant\n%s", got, want)
 	}
 
@@ -347,19 +340,19 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 		t.Fatalf("a load and a reread at the refused version, their reads still refused, logged:\n%s", got)
 	}
 
-	store.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable+" either"))
+	store.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable+" either"))
 	refresh(t, cur)
 	if _, served := cur.Get().Secrets["APP_KEY"]; !served {
 		t.Fatal("the load that lists a new version keeps the old version's refusal")
 	}
-	if got, want := gained(), servableLine(id, policy.ReasonValueMalformed, kindOwner, "servable"); got != want {
+	if got, want := gained(), servableLine(id, policy.ReasonValueMalformed, typeOwner, "servable"); got != want {
 		t.Fatalf("the load that lists a new version logged:\n%s\nwant:\n%s", got, want)
 	}
 
 	store.refuse(false)
 	refresh(t, cur)
 	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+cur.Get().ValueVersion("APP_KEY")+"\n"+refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+cur.Get().ValueVersion("APP_KEY")+"\n"+refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the load that reads the new version logged:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -369,7 +362,7 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 // same value stored again is read again by the load that lists it and refused again, and a new
 // value the decoder reads makes it servable.
 func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
-	store := &refusingReads{Local: secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))}
+	store := &refusingReads{Local: secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
 	id := policytest.ID("APP_KEY")
@@ -382,12 +375,12 @@ func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
 		lines  string
 		series string
 	}{
-		{"a delete", func() { store.Delete(id) }, 1, servableLine(id, policy.ReasonValueMalformed, kindOwner, "absent"), ""},
-		{"the same value stored again", func() { store.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable)) }, 2,
-			refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""), unservable(id, policy.ReasonValueMalformed, kindOwner)},
+		{"a delete", func() { store.Delete(id) }, 1, servableLine(id, policy.ReasonValueMalformed, typeOwner, "absent"), ""},
+		{"the same value stored again", func() { store.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable)) }, 2,
+			refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""), unservable(id, policy.ReasonValueMalformed, typeOwner)},
 		{"a value the decoder reads", func() {
-			store.Put(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
-		}, 3, servableLine(id, policy.ReasonValueMalformed, kindOwner, "servable"), ""},
+			store.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+		}, 3, servableLine(id, policy.ReasonValueMalformed, typeOwner, "servable"), ""},
 	} {
 		step.act()
 		refresh(t, cur)
@@ -431,23 +424,23 @@ func (b binaryValues) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 	return &secretsmanager.GetSecretValueOutput{Name: out.Name, ARN: out.ARN, SecretBinary: []byte(*out.SecretString)}, nil
 }
 
-// TestAValueThatIsNotTextIsRefusedAndReadOnce: a kind secret whose store answers a value that is
+// TestAValueThatIsNotTextIsRefusedAndReadOnce: a type secret whose store answers a value that is
 // not text (secrets.ErrValueNotText; here Secrets Manager's SecretBinary with no SecretString) is
 // the decoder's case, not a failed read, since no mint could use it: the first load refuses it
 // as value-malformed, in one first_load RefusedMessage line and one broker_unservable_secrets
 // series, and writes no ValueReadFailedMessage. A reload and a reread read the value no more and
 // write nothing.
 func TestAValueThatIsNotTextIsRefusedAndReadOnce(t *testing.T) {
-	local := secrets.NewLocal(kindSecret("BINARY_APP", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	local := secrets.NewLocal(typeSecret("BINARY_APP", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	cur, registry, logged := bootThrough(t, local, binaryValues{local})
 	gained := logChecker(logged)
 	id := policytest.ID("BINARY_APP")
 
 	refusedAs(t, cur.Get(), "BINARY_APP", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, kindOwner, true, ""); got != want {
+	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, true, ""); got != want {
 		t.Fatalf("the first load logged:\n%s\nwant:\n%s", got, want)
 	}
-	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(id, policy.ReasonValueMalformed, kindOwner); got != want {
+	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(id, policy.ReasonValueMalformed, typeOwner); got != want {
 		t.Fatalf("broker_unservable_secrets reads\n%s\nwant\n%s", got, want)
 	}
 	refresh(t, cur)
@@ -499,7 +492,7 @@ func (s *stalledRead) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 // no ValueReadFailedMessage, and the next load, which reads nothing since that value is decoded,
 // writes nothing either.
 func TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing(t *testing.T) {
-	local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	store := &stalledRead{Local: local}
 	cur, registry, logged := bootThrough(t, local, store)
 	gained := logChecker(logged)
@@ -508,7 +501,7 @@ func TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing(t *
 	}
 
 	// A new value that decodes, so a new version for both to read.
-	local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)+"\n"))
+	local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)+"\n"))
 	entered, release := store.stall()
 	reloaded := make(chan error, 1)
 	go func() { reloaded <- cur.Refresh(context.Background()) }()
@@ -599,7 +592,7 @@ func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.List
 // (fbaa5626); the reread then waits for the reload to let go, past its deadline, and this test
 // fails.
 func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
-	local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	store := &lockedOutRead{Local: local}
 	cur, registry, logged := bootThrough(t, local, store)
 	gained := logChecker(logged)
@@ -610,7 +603,7 @@ func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 
 	// A new version no decoder reads, which this pod has not decoded: the reread lists it and
 	// reads its value.
-	local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+	local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
 	readEntered, readRelease := store.armRead()
 	const deadline = 300 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
@@ -663,45 +656,48 @@ func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 		t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the reload's read of the same version again", n)
 	}
 	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the reload that read the version again logged:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 // TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing: a mint refuses the value under the
-// version, kind and shape its release decoded it as (RefuseValue), and a retag of the shape
-// leaves the version and makes another key, which the policy decodes afresh. So a refusal from a
-// mint that decoded under the key before the retag refuses nothing, nor does one naming another
-// kind, and one under the key listed now refuses the secret, with one RefusedMessage line.
+// version and type its release decoded it as (RefuseValue), and a retag of the type leaves the
+// version and makes another key, which the policy decodes afresh. So a refusal from a mint that
+// decoded under the type before the retag refuses nothing, nor does one naming another version,
+// and one under the key listed now refuses the secret, with one RefusedMessage line.
+//
+// The value names the fields of a google login and of an Azure login together, so one stored
+// value decodes under either type (secrets.ParseValue) and the retag between them leaves the
+// secret served: what is under test is the key a refusal is weighed against, not the decode.
 func TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing(t *testing.T) {
-	secret := kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp))
+	const value = `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"refresh","tenant_id":"tenant"}`
+	secret := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(secret)}
 	cur, _, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
-	id, version := policytest.ID("APP_KEY"), cur.Get().ValueVersion("APP_KEY")
-	shaped := secret
-	shaped.Tags = map[string]string{policy.TagShape: policy.ShapeToken}
-	for key, tag := range secret.Tags {
-		shaped.Tags[key] = tag
-	}
-	store.Put(shaped)
+	id, version := policytest.ID("LOGIN_KEY"), cur.Get().ValueVersion("LOGIN_KEY")
+	store.Put(typeSecret("LOGIN_KEY", policy.TypeAzureLogin, value))
 	refresh(t, cur)
-	if got := cur.Get().ValueVersion("APP_KEY"); got != version {
-		t.Fatalf("the shape retag moved the value's version from %q to %q", version, got)
+	if got := cur.Get().ValueVersion("LOGIN_KEY"); got != version {
+		t.Fatalf("the type retag moved the value's version from %q to %q", version, got)
+	}
+	if _, served := cur.Get().Secrets["LOGIN_KEY"]; !served {
+		t.Fatalf("the retagged secret is not served; refused %+v", cur.Get().Refused)
 	}
 
-	for _, stale := range []struct{ kind, shape string }{{policy.KindGitHubApp, ""}, {policy.KindGoogleLogin, policy.ShapeToken}} {
-		cur.RefuseValue(context.Background(), "APP_KEY", version, stale.kind, stale.shape)
-		if _, served := cur.Get().Secrets["APP_KEY"]; !served {
-			t.Fatalf("a mint's refusal at the listed version as %s under shape %q, a key the policy no longer lists, refused APP_KEY", stale.kind, stale.shape)
+	for _, stale := range []struct{ version, secretType string }{{version, policy.TypeGoogleLogin}, {"another-version", policy.TypeAzureLogin}} {
+		cur.RefuseValue(context.Background(), "LOGIN_KEY", stale.version, stale.secretType)
+		if _, served := cur.Get().Secrets["LOGIN_KEY"]; !served {
+			t.Fatalf("a mint's refusal at version %q as %s, a key the policy no longer lists, refused LOGIN_KEY", stale.version, stale.secretType)
 		}
 	}
 	if got := gained(); got != "" {
 		t.Fatalf("the retag and the refusals of keys it replaced logged:\n%s", got)
 	}
-	cur.RefuseValue(context.Background(), "APP_KEY", version, policy.KindGitHubApp, policy.ShapeToken)
-	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	cur.RefuseValue(context.Background(), "LOGIN_KEY", version, policy.TypeAzureLogin)
+	refusedAs(t, cur.Get(), "LOGIN_KEY", policy.ReasonValueMalformed)
+	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the mint's refusal under the listed key logged:\n%s\nwant:\n%s", got, want)
 	}
 }

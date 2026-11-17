@@ -9,6 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -21,6 +24,101 @@ func sleeper(t *testing.T) *exec.Cmd {
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	return cmd
+}
+
+// ompTree starts a session launcher with no session — a process whose kernel comm is `omp`, as a
+// real launcher's is: sh started through a symlink of that name — and n `sleep` children of it,
+// and returns the launcher's pid and the children's. It fails, rather than going on, when the
+// launcher's comm does not read `omp`: a test of the launcher check needs a launcher it accepts.
+func ompTree(t *testing.T, n int) (int, []int) {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(t.TempDir(), "omp")
+	if err := os.Symlink(sh, launcher); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(launcher, "-c", `i=0; while [ "$i" -lt "$1" ]; do sleep 30 & echo "$!"; i=$((i + 1)); done; wait`, "omp", strconv.Itoa(n))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); _ = cmd.Wait() })
+	lines := bufio.NewScanner(stdout)
+	children := make([]int, 0, n)
+	for len(children) < n && lines.Scan() {
+		pid, err := strconv.Atoi(strings.TrimSpace(lines.Text()))
+		if err != nil {
+			t.Fatalf("the launcher printed %q, want a child's pid", lines.Text())
+		}
+		children = append(children, pid)
+	}
+	if len(children) != n {
+		t.Fatalf("the launcher started %d children, want %d", len(children), n)
+	}
+	if comm, err := procComm(cmd.Process.Pid); err != nil || comm != "omp" {
+		t.Fatalf("the launcher's comm is %q (%v), want omp", comm, err)
+	}
+	return cmd.Process.Pid, children
+}
+
+// TestOpenAncestorPinsAStrictAncestorOfThePeer: the helper takes as a session root only a live,
+// strict ancestor of the calling process that this same user owns and that is a session
+// launcher (its comm is `omp`). The peer here is a child of a launcher; a sibling, the peer
+// itself, pid 1 and a pid that is not there are each refused, and so is an ancestor another login
+// owns — a `login` or `sudo` above this one would otherwise be pinnable as a session root by any
+// process under it — and an ancestor that is no launcher: this test process, above the
+// launcher, stands for a tmux server or a login shell, whose whole tree a caller would otherwise
+// make one session, every session started under it later included.
+func TestOpenAncestorPinsAStrictAncestorOfThePeer(t *testing.T) {
+	omp, children := ompTree(t, 1)
+	sibling := sleeper(t)
+	peer, err := PinPID(children[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+
+	root, err := openAncestor(peer, omp, procParent, processUID, procComm)
+	if err != nil {
+		t.Fatalf("the peer's launcher must be pinnable as its session root: %v", err)
+	}
+	if got := root.PID(); got != omp {
+		t.Fatalf("the pinned root is %d, want the launcher %d", got, omp)
+	}
+	root.Close()
+
+	for _, tc := range []struct {
+		name string
+		root int
+		uid  func(int) (uint32, error)
+	}{
+		{"a sibling", sibling.Process.Pid, processUID},
+		{"the peer itself", children[0], processUID},
+		{"pid 1", 1, processUID},
+		{"a pid that is not there", 1 << 22, processUID},
+		{"an ancestor another login owns", omp, func(pid int) (uint32, error) {
+			if pid == omp {
+				return 4242, nil
+			}
+			return processUID(pid)
+		}},
+		{"an ancestor that is no session launcher", os.Getpid(), processUID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := openAncestor(peer, tc.root, procParent, tc.uid, procComm)
+			if err == nil {
+				root.Close()
+				t.Fatalf("openAncestor(%s) must refuse", tc.name)
+			}
+		})
+	}
 }
 
 // TestDescendsFromRealProcesses: descendsFrom over /proc says a child descends from its parent and

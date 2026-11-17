@@ -9,8 +9,8 @@ var (
 	readList = [2]string{"read", "list"}
 	// readDescribe is one Store.Describe, the single-name read a LoadOne takes.
 	readDescribe = [2]string{"read", "describe"}
-	// readValue is one Store.Read of a kind secret's value, which Current makes once for each
-	// version, kind and shape it lists, to decode it.
+	// readValue is one Store.Read of a type secret's value, which Current makes once for each
+	// version and type it lists, to decode it.
 	readValue = [2]string{"read", "value"}
 )
 
@@ -22,7 +22,7 @@ var (
 // are counted too. NewUnservableSecrets is the other half, registered once that Current exists.
 func NewStoreReads(r *metrics.Registry) *metrics.Counter {
 	return r.NewCounter("broker_policy_store_reads_total",
-		"Calls the policy made to the secret store, by read: list for a whole-namespace load, describe for one secret's reread, value for one kind secret's value read at a version, kind or shape the pod had not decoded.")
+		"Calls the policy made to the secret store, by read: list for a whole-namespace load, describe for one secret's reread, value for one type secret's value read at a version or type the pod had not decoded.")
 }
 
 // NewUnservableSecrets registers broker_unservable_secrets on r, read from c's live policy
