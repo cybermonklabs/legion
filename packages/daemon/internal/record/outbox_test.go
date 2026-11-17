@@ -289,6 +289,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindClaimRelease:       "",
 		OutboxKindDesignGatesPublish: "",
 		OutboxKindMergeQueueRead:     "",
+		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
+		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
+		OutboxKindRoleHoldersPublish: "",
 	}
 	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
 		for _, kind := range LaneKinds(lane) {
