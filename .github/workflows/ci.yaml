@@ -567,6 +567,9 @@ jobs:
               # would refuse with (packages/daemon/internal/api): internal/dispatch/itemblocks
               # below, and the document parser under it, are in the daemon's build through it.
               - 'packages/envoy/dispatchbody/*'
+              # The read set a GitHub App token that reads a repository asks for, which
+              # internal/appauth's read lease and the broker's read-only narrowing both read.
+              - 'packages/envoy/githubread/*'
               # The airlock's rules, its decision and its header swap. Not the whole tree: lean/
               # holds the model, which airlock-lean alone reads, and testdata/ the fuzz seeds and
               # the mutant patches, which the airlock package's own tests read - the daemon
@@ -795,6 +798,9 @@ jobs:
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
+              # packages/envoy/githubread declares the read set the read lease asks for, which
+              # internal/appauth reads, in the envoy module so the broker reads the same set.
+              - 'packages/envoy/githubread/*'
               # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
               # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
               # was one package short of its own definition until this line. Every other filter
@@ -1003,6 +1009,7 @@ jobs:
               - *dispatch_server
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/githubread/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/testnatsimages/*'
@@ -2237,11 +2244,13 @@ jobs:
               # daemon-pane.go inside the daemon module in workspace mode.
               - 'packages/daemon/internal/**'
               # daemon-pane.go compiles the daemon module, which reaches these envoy packages:
-              # the migration identifier rule, the generated session timings the daemon reads
-              # through their one public package, and the Dispatch body check the close route and
-              # the merger's READY completion make with the server's own splitter
-              # (packages/envoy/dispatchbody, and the parser and contracts under it).
+              # the migration identifier rule, the read set the read lease asks for, the generated
+              # session timings the daemon reads through their one public package, and the
+              # Dispatch body check the close route and the merger's READY completion make with
+              # the server's own splitter (packages/envoy/dispatchbody, and the parser and
+              # contracts under it).
               - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/githubread/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -2529,6 +2538,8 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
+              # The read set the broker's read-only narrowing asks for (internal/broker/secrets).
+              - 'packages/envoy/githubread/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
               - 'packages/envoy/internal/broker/answer/*'
@@ -3529,6 +3540,7 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               - *go_workspace
+              - 'packages/envoy/githubread/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -3890,6 +3902,9 @@ jobs:
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
+              # packages/envoy/githubread declares the read set the read lease asks for, which
+              # internal/appauth reads, in the envoy module so the broker reads the same set.
+              - 'packages/envoy/githubread/*'
               # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
               # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
               # was one package short of its own definition until this line. Every other filter
@@ -3959,6 +3974,8 @@ jobs:
               - 'packages/envoy/cmd/agent-secrets/*'
               # cmd/broker/main_test.go:348 (sslrootcert).
               - 'packages/envoy/docker/rds-global-bundle.pem'
+              # The read set the broker's read-only narrowing asks for (internal/broker/secrets).
+              - 'packages/envoy/githubread/*'
               - 'packages/envoy/internal/broker/airlock/*'
               # cmd/broker/minters_test.go mints through the GitHub stand-in.
               - 'packages/envoy/internal/broker/airlock/airlocktest/*'
@@ -4095,6 +4112,7 @@ jobs:
               - 'packages/envoy/go.sum'
               - 'packages/envoy/agentloop/**'
               - 'packages/envoy/cmd/**'
+              - 'packages/envoy/githubread/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
               - 'packages/envoy/listenfd/**'
@@ -4241,6 +4259,7 @@ jobs:
               - 'packages/envoy/dispatchbody/**'
               - 'packages/envoy/docker/**'
               - 'packages/envoy/docs/**'
+              - 'packages/envoy/githubread/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
               - 'packages/envoy/listenfd/**'

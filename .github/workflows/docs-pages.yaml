@@ -125,6 +125,7 @@ on:
       - 'packages/daemon/internal/workspace/*'
       - 'packages/envoy/brokerclient/*'
       - 'packages/envoy/dispatchbody/*'
+      - 'packages/envoy/githubread/*'
       - 'packages/envoy/internal/brokerclient/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/*'
