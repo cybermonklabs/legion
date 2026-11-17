@@ -207,7 +207,8 @@ func SendWire`, 1)
 }
 
 // A payload string may reach its body's field through a variable, by value or by its address, as
-// the daemon's publisher and the broker's wake carry theirs; it is a payload all the same.
+// the daemon's publisher and the broker's wake carry theirs, and by an assignment to the field of a
+// body that is then sent; it is a payload all the same.
 func TestCheckIgnoresAPayloadCarriedThroughAVariable(t *testing.T) {
 	source := strings.Replace(sendFixture, `body, err := json.Marshal(sendBody{Message: "hello"})`,
 		`payload, err := json.Marshal(sendBody{Message: "hello"})
@@ -216,12 +217,89 @@ func TestCheckIgnoresAPayloadCarriedThroughAVariable(t *testing.T) {
 	}
 	text := string(payload)
 	detail := string(payload)
-	var outer wire.Body
+	outer := wire.Body{Message: text}
 	outer.Payload = string(payload)
-	_ = outer
-	body, err := json.Marshal(wire.Body{Message: "hello", Payload: text, Detail: &detail})`, 1)
+	outer.Detail = &detail
+	body, err := json.Marshal(outer)`, 1)
 	if findings := check(t, source, "fixture/fixture.post"); len(findings) != 0 {
 		t.Fatalf("findings = %v, want none for a payload carried through a variable", findings)
+	}
+}
+
+// The variable a marshal or a conversion is given to may be declared beforehand and assigned with
+// a plain =, which go/types records as a use of it: that assignment is the variable's own write,
+// not a use of what it holds.
+func TestCheckIgnoresAPayloadAssignedToADeclaredVariable(t *testing.T) {
+	source := strings.Replace(sendFixture, `body, err := json.Marshal(sendBody{Message: "hello"})`,
+		`var payload []byte
+	var err error
+	payload, err = json.Marshal(sendBody{Message: "hello"})
+	if err != nil {
+		return err
+	}
+	var text string
+	text = string(payload)
+	body, err := json.Marshal(wire.Body{Message: "hello", Payload: text})`, 1)
+	if findings := check(t, source, "fixture/fixture.post"); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none for a payload assigned to a declared variable", findings)
+	}
+}
+
+// A conversion given to one variable of several, by an assignment or a declaration of several
+// values, is held by that variable alone.
+func TestCheckIgnoresAPayloadHeldByOneOfSeveralVariables(t *testing.T) {
+	source := strings.Replace(sendFixture, `body, err := json.Marshal(sendBody{Message: "hello"})`,
+		`payload, err := json.Marshal(sendBody{Message: "hello"})
+	if err != nil {
+		return err
+	}
+	text, count := string(payload), 1
+	var detail, other = string(payload), 2
+	body, err := json.Marshal(wire.Body{Message: text, Payload: detail})
+	_ = count + other`, 1)
+	if findings := check(t, source, "fixture/fixture.post"); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none for a payload held by one of several variables", findings)
+	}
+}
+
+// MarshalIndent's result carried as a payload is exempt as Marshal's is.
+func TestCheckIgnoresAMarshalIndentPayload(t *testing.T) {
+	source := strings.Replace(sendFixture, `body, err := json.Marshal(sendBody{Message: "hello"})`,
+		`payload, err := json.MarshalIndent(sendBody{Message: "hello"}, "", "  ")
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(wire.Body{Message: "hello", Payload: string(payload)})`, 1)
+	if findings := check(t, source, "fixture/fixture.post"); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none for a MarshalIndent payload", findings)
+	}
+}
+
+// A string goes into a body's field only where that field is one of a wire type's: a map, a struct
+// of the client's own, or an anonymous struct the string is put in and read back out of before it
+// is sent carries the body past nothing.
+func TestCheckFindsABodySentThroughAValueOfItsOwn(t *testing.T) {
+	for name, carrier := range map[string]string{
+		"a map": `held := map[string]string{"body": string(body)}
+	return post(ctx, url, []byte(held["body"]))`,
+		"a struct of its own": `held := request{body: string(body)}
+	return post(ctx, url, []byte(held.body))`,
+		"an anonymous struct": `var held struct{ body string }
+	held.body = string(body)
+	return post(ctx, url, []byte(held.body))`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := strings.Replace(sendFixture, `return post(ctx, url, body)
+}
+
+func SendWire`, carrier+`
+}
+
+type request struct{ body string }
+
+func SendWire`, 1)
+			want(t, check(t, source, "fixture/fixture.post"), "encoding/json.Marshal", "fixture.sendBody")
+		})
 	}
 }
 

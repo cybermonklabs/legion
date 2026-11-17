@@ -73,9 +73,10 @@ var requestBuilders = map[string]bool{
 // value made from one, to json.Unmarshal's data or json.NewDecoder, such as a helper that decodes
 // the answer bytes it was handed. In a party call, each value given to encoding/json's Marshal,
 // MarshalIndent, Unmarshal, (*Decoder).Decode or (*Encoder).Encode is judged, but a Marshal or
-// MarshalIndent whose result is used only converted to a string that goes into a body's field is
-// not: that is a payload carried inside a body, not a body. The same string sent any other way, as
-// the request body itself among them, is judged.
+// MarshalIndent whose result is used only converted to a string that goes into a field of a wire
+// type's value is not: that is a payload carried inside a body, not a body. The same string sent
+// any other way, as the request body itself or through a map or a struct of the client's own, is
+// judged.
 //
 // A transport helper is a function of pkgs that hands one of its own parameters of type any to one
 // of those JSON calls, directly or through another transport helper. The argument a caller gives
@@ -375,7 +376,7 @@ func (a *analysis) read(f *function) {
 			f.party = true
 		}
 		if index, ok := jsonCalls[name]; ok && index < len(expr.Args) {
-			if (name != "encoding/json.Marshal" && name != "encoding/json.MarshalIndent") || !f.carriedAsString(expr) {
+			if (name != "encoding/json.Marshal" && name != "encoding/json.MarshalIndent") || !a.carriedAsString(f, expr) {
 				f.codec = append(f.codec, jsonUse{call: name, value: expr.Args[index]})
 			}
 		}
@@ -480,15 +481,15 @@ func (a *analysis) judge(t types.Type) (string, bool) {
 }
 
 // carriedAsString reports whether marshal, a json.Marshal or MarshalIndent call, is assigned to a
-// variable whose every use is a conversion to a string type that goes into a body's field
-// (intoField), directly or through a variable held for one (heldForField): a payload carried inside
-// a body.
-func (f *function) carriedAsString(marshal *ast.CallExpr) bool {
-	variable := f.assignedTo(marshal)
+// variable whose every use is a conversion to a string type that goes into a wire type's field
+// (intoWireField), directly or through a variable held for one (heldForWireField): a payload
+// carried inside a body.
+func (a *analysis) carriedAsString(f *function, marshal *ast.CallExpr) bool {
+	variable, target := f.assignedTo(marshal)
 	if variable == nil {
 		return false
 	}
-	return f.everyUse(variable, func(ident *ast.Ident) bool {
+	return f.everyUse(variable, target, func(ident *ast.Ident) bool {
 		conversion, ok := f.parents[ident].(*ast.CallExpr)
 		if !ok || len(conversion.Args) != 1 || conversion.Args[0] != ident {
 			return false
@@ -496,14 +497,15 @@ func (f *function) carriedAsString(marshal *ast.CallExpr) bool {
 		if tv, ok := f.pkg.info.Types[conversion.Fun]; !ok || !tv.IsType() || !isString(tv.Type) {
 			return false
 		}
-		return f.intoField(conversion) || f.heldForField(conversion)
+		return a.intoWireField(f, conversion) || a.heldForWireField(f, conversion)
 	})
 }
 
-// assignedTo is the variable an assignment or declaration of expr gives it to: the first of a
-// single value's left-hand sides (payload of `payload, err := json.Marshal(v)`), or the one
-// matching its place. It is nil for any other use of expr and for the blank identifier.
-func (f *function) assignedTo(expr ast.Expr) types.Object {
+// assignedTo is the variable an assignment or declaration of expr gives it to, and the identifier
+// that names it there: the first of a single value's left-hand sides (payload of `payload, err :=
+// json.Marshal(v)`), or the one matching its place among several values. It is nil for any other
+// use of expr and for the blank identifier.
+func (f *function) assignedTo(expr ast.Expr) (types.Object, *ast.Ident) {
 	var target *ast.Ident
 	switch parent := f.parents[expr].(type) {
 	case *ast.AssignStmt:
@@ -532,19 +534,21 @@ func (f *function) assignedTo(expr ast.Expr) types.Object {
 		}
 	}
 	if target == nil || target.Name == "_" {
-		return nil
+		return nil, nil
 	}
 	if object := f.pkg.info.Defs[target]; object != nil {
-		return object
+		return object, target
 	}
-	return f.pkg.info.Uses[target]
+	return f.pkg.info.Uses[target], target
 }
 
-// everyUse reports whether variable is used in f's body and every use passes ok.
-func (f *function) everyUse(variable types.Object, ok func(*ast.Ident) bool) bool {
+// everyUse reports whether variable is used in f's body and every use passes ok. target, the
+// identifier the assignment of interest names it by, is passed over: go/types records the left
+// side of a plain `=` among the uses, and that assignment is the variable's own write.
+func (f *function) everyUse(variable types.Object, target *ast.Ident, ok func(*ast.Ident) bool) bool {
 	uses, passed := 0, true
 	ast.Inspect(f.decl.Body, func(node ast.Node) bool {
-		if ident, isIdent := node.(*ast.Ident); isIdent && f.pkg.info.Uses[ident] == variable {
+		if ident, isIdent := node.(*ast.Ident); isIdent && ident != target && f.pkg.info.Uses[ident] == variable {
 			uses++
 			passed = passed && ok(ident)
 		}
@@ -553,41 +557,54 @@ func (f *function) everyUse(variable types.Object, ok func(*ast.Ident) bool) boo
 	return uses > 0 && passed
 }
 
-// intoField reports whether expr goes into a body's field: it is a composite literal's field value
-// (wire.Body{Payload: expr}), or the value assigned to a field (body.Payload = expr).
-func (f *function) intoField(expr ast.Expr) bool {
+// intoWireField reports whether expr goes into a field of a wire type's value: it is a composite
+// literal's field value whose literal is a wire type (wire.Body{Payload: expr}), or the value
+// assigned to a field of a wire-typed value (body.Payload = expr). A map, a struct of the client's
+// own and an anonymous struct are none, since nothing holds what such a value carries to the wire
+// package's types.
+func (a *analysis) intoWireField(f *function, expr ast.Expr) bool {
 	switch parent := f.parents[expr].(type) {
 	case *ast.KeyValueExpr:
-		_, literal := f.parents[parent].(*ast.CompositeLit)
-		return parent.Value == expr && literal
+		literal, ok := f.parents[parent].(*ast.CompositeLit)
+		return ok && parent.Value == expr && a.isWire(f.pkg.info.TypeOf(literal))
 	case *ast.AssignStmt:
 		if len(parent.Lhs) != len(parent.Rhs) {
 			return false
 		}
 		for i, rhs := range parent.Rhs {
 			if rhs == expr {
-				_, field := parent.Lhs[i].(*ast.SelectorExpr)
-				return field
+				field, ok := parent.Lhs[i].(*ast.SelectorExpr)
+				return ok && a.isWire(f.pkg.info.TypeOf(field.X))
 			}
 		}
 	}
 	return false
 }
 
-// heldForField reports whether expr is assigned to a variable every use of which goes into a
-// body's field, by value or as its address (wire.Body{Detail: &text}).
-func (f *function) heldForField(expr ast.Expr) bool {
-	variable := f.assignedTo(expr)
+// heldForWireField reports whether expr is assigned to a variable every use of which goes into a
+// wire type's field, by value or as its address (wire.Body{Detail: &text}).
+func (a *analysis) heldForWireField(f *function, expr ast.Expr) bool {
+	variable, target := f.assignedTo(expr)
 	if variable == nil {
 		return false
 	}
-	return f.everyUse(variable, func(ident *ast.Ident) bool {
-		if f.intoField(ident) {
+	return f.everyUse(variable, target, func(ident *ast.Ident) bool {
+		if a.intoWireField(f, ident) {
 			return true
 		}
 		address, ok := f.parents[ident].(*ast.UnaryExpr)
-		return ok && address.Op == token.AND && f.intoField(address)
+		return ok && address.Op == token.AND && a.intoWireField(f, address)
 	})
+}
+
+// isWire reports whether a value of type t passes judge: a type the wire package declares, through
+// one pointer, then one slice, then one pointer. A missing type, as a package name's is, is none.
+func (a *analysis) isWire(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := a.judge(t)
+	return ok
 }
 
 // calleeOf is the function call names, nil for a call of a function value or a conversion.
