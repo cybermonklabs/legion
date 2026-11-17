@@ -29,9 +29,6 @@ row	daemon-kubeconfig-name	legion-daemon-production	docs/solutions/**,docs/plans
 state	daemon-kubeconfig-name	D4	open
 row	gp2-storage-class	storage_class: *"?gp2	docs/solutions/**,docs/plans/**,docs/superpowers/**,packages/daemon/cmd/legion/main_test.go,packages/daemon/internal/config/kubernetes_test.go,packages/daemon/internal/daemon/kubernetes_test.go	fix
 state	gp2-storage-class	D4	open
-row	hawk-key-command	hawk-token	docs/solutions/**,docs/plans/**,docs/superpowers/**	fix
-state	hawk-key-command	D3b	open
-state	hawk-key-command	D4	open
 row	hawk-gateway-example	(?i)the hawk model gateway, keyed by	docs/solutions/**,docs/plans/**,docs/superpowers/**	fix
 state	hawk-gateway-example	D4	open
 row	box-login-fork	20261026-004924	docs/solutions/**,docs/plans/**,docs/superpowers/**,scripts/e2e/lib/install-plugin-profile.test.ts	fix
