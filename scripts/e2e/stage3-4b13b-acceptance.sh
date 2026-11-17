@@ -579,6 +579,13 @@ read_app_logins
 # The services serve on held ports (start_held, keep_port), which ACCEPT_ROOT's lib/rig.sh and its
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
+# The run provisions its own NATS server with the buckets a listener copies, which no listener
+# creates: it builds ACCEPT_ROOT's fixturebuckets command and runs it through ACCEPT_ROOT's
+# lib/rig.sh (provision_fixture_buckets), so a checkout from before that change has neither.
+declare -F provision_fixture_buckets >/dev/null ||
+  fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates provision_fixture_buckets: point ACCEPT_ROOT at a checkout that has it"
+[ -d "$root/packages/envoy/internal/testnats/cmd/fixturebuckets" ] ||
+  fail "ACCEPT_ROOT ($root) predates packages/envoy/internal/testnats/cmd/fixturebuckets: point ACCEPT_ROOT at a checkout that has it"
 real_gh=$(mise which gh) || fail "mise has no gh"
 # The real tmux comes after the real gh on the daemon's PATH: the tmux runtime runs tmux with the
 # pane allow-list alone, where a shimmed tmux, run from a directory under the operator's real
