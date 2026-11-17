@@ -203,7 +203,7 @@ func runSeed(args []string) error {
 				// A fixture provisions the bucket with the listener's 5 minutes first, and an
 				// existing bucket keeps its age, so -ttl sets it on the bucket there is: no
 				// listener runs yet on this fixture's server.
-				_, err = bus.SetKeyValueMaxAge(js, config.Bucket, *ttl)
+				err = setFixtureMaxAge(js, config.Bucket, *ttl)
 			}
 		} else {
 			_, err = js.KeyValue(config.Bucket)
@@ -217,6 +217,24 @@ func runSeed(args []string) error {
 			return fmt.Errorf("seed %s: %w", config.Bucket, err)
 		}
 		fmt.Printf("seeded %d records into %s in %s\n", n, config.Bucket, time.Since(started).Round(time.Millisecond))
+	}
+	return nil
+}
+
+// setFixtureMaxAge sets the age of bucket, on a fixture's server, to maxAge, lowering its
+// duplicates window with it where the window is longer: JetStream refuses a stream whose
+// duplicates window exceeds its age, and a bucket provisioned with the listener's 5 minutes keeps
+// the 2-minute window that age gave it.
+func setFixtureMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Duration) error {
+	info, err := js.StreamInfo("KV_" + bucket)
+	if err != nil {
+		return fmt.Errorf("read KV_%s: %w", bucket, err)
+	}
+	config := info.Config
+	config.MaxAge = maxAge
+	config.Duplicates = min(config.Duplicates, maxAge)
+	if _, err := js.UpdateStream(&config); err != nil {
+		return fmt.Errorf("set KV_%s max age to %s: %w", bucket, maxAge, err)
 	}
 	return nil
 }
