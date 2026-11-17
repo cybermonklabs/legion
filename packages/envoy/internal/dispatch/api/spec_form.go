@@ -249,9 +249,9 @@ type specFormDocument struct {
 	unread     []specFormUnread
 	unreadable *specFormFinding
 
-	// nodes and definitions are what texts counts (textsRead), once judged.
-	nodes       []specFormText
-	definitions []specFormDefinition
+	// extracted is the reading that texts counts, kept for the read route's nodes and
+	// definitions (textsRead), once judged.
+	extracted specform.Extracted
 }
 
 // specFormResult is the judgment of the documents specFormOf named, in their order.
@@ -581,7 +581,7 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 		document.unread = approved.unreadOf(j.skip)
 	}
 	document.texts = extracted.Counts
-	document.nodes, document.definitions = textsRead(extracted)
+	document.extracted = extracted
 	document.findings = []specFormFinding{}
 	if document.unreadable != nil {
 		document.findings = append(document.findings, *document.unreadable)

@@ -2,12 +2,6 @@ package api
 
 import "github.com/sjawhar/envoy/internal/dispatch/specform"
 
-// The texts that the read route names (GET /api/v1/artifacts/{id}/spec-form): each text of the
-// read version by its node, and each term that the version itself defines. They come from the one
-// reading that its judgment made (specFormJudge.judge), so a reader of the answer, such as the
-// reviewer of a change request, takes the texts from Dispatch and reads no second copy of the
-// rules of the form.
-
 // specFormText is one text that a judgment read: its kind and its node, as a finding names a text.
 type specFormText struct {
 	Kind specform.Kind `json:"kind"`
@@ -22,10 +16,11 @@ type specFormDefinition struct {
 	Definition string `json:"definition"`
 }
 
-// textsRead is what extracted holds, as texts counts it by kind (specform.Extracted.Counts): each
-// text by its kind and its node, in the order of the document, and each definition under Terms,
-// in the order of the document. A line of the term-line form outside Terms adds no term and no
-// count, so it is neither.
+// textsRead is each text of extracted by its kind and its node, and each definition under Terms,
+// each in the order of the document: what texts counts by kind (specform.Extracted.Counts). A line
+// of the term-line form outside Terms adds no term and no count, so it is neither. The read route
+// answers them from the one reading that judged the version, so a reader of the answer, such as
+// the reviewer of a change request, reads no second copy of the rules of the form.
 func textsRead(extracted specform.Extracted) ([]specFormText, []specFormDefinition) {
 	nodes := []specFormText{}
 	for _, text := range extracted.Texts {

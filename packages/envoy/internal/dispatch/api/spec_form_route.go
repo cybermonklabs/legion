@@ -55,6 +55,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	document := result.documents[0]
+	nodes, definitions := textsRead(document.extracted)
 	plays := ""
 	switch {
 	case isSpecDocument(artifact):
@@ -71,8 +72,8 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		Plays:           plays,
 		Root:            document.root,
 		Texts:           document.texts,
-		Nodes:           document.nodes,
-		Definitions:     document.definitions,
+		Nodes:           nodes,
+		Definitions:     definitions,
 		Findings:        document.findings,
 		FindingsTotal:   len(document.findings),
 		Terms:           document.terms,
