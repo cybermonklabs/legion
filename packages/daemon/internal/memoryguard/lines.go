@@ -21,12 +21,15 @@ import (
 // stopped lines left out since the one before it (stopRise).
 //
 // A process the guard cannot read is one whose stat, exe, ns/pid or smaps did not read (a scan's
-// unread), or one the kill failed on: the guard never ends it, since it cannot tell what it is or
-// rank it. The stoppedLine's unread is the sum of their smaps sizes where each reads, and its last
-// field, unread_processes, names each of them in pid order, comma-separated: `<pid>` where its
-// smaps does not read, `<pid>:<bytes>` where it does, and `none` where there is none (INFRA-3531
-// R3 of spec version 29). It comes after every field the line carried before it, so a reader of
-// those fields reads them as it did.
+// unread; a missing exe or ns/pid of a process that has not ended among them), or one the kill
+// failed on: the guard never ends it, since it cannot tell what it is or rank it. The
+// stoppedLine's last field, unread_processes, names each of them in pid order, comma-separated:
+// `<pid>:<bytes>` for one whose stat reads a state other than Z and whose smaps reads, and `<pid>`
+// for every other, whose smaps does not read, whose stat did not read, or whose stat reads Z (a
+// zombie leader's smaps reads 0 under gVisor while a live thread holds the process's memory, and
+// `<pid>:0` would read as a size); `none` where there is none (INFRA-3531 R3 of spec versions 29
+// and 30). Its unread is the sum of the sizes that field names. The field comes after every field
+// the line carried before it, so a reader of those fields reads them as it did.
 //
 // The sizes the guard reads at each reading in the band below the mark and after a kill write no
 // line: they decide the order of the next kill (rank), whose endedLine names the process it ended,

@@ -945,7 +945,7 @@ func (g *Guard) startedSince(deadline time.Time) []candidate {
 		}
 		p, err := readProcess(g.proc, pid, cmdline)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExited) {
+			if p == nil && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExited)) {
 				continue
 			}
 			t.unread[pid] = err
@@ -1577,13 +1577,17 @@ func (g *Guard) logUnread(t *Table) {
 // below the mark, and keeps none (forgetSizes).
 //
 // The line names each process the assessment counted unread, by its pid and, where its smaps
-// reads, its size there (unread_processes, INFRA-3531 R3 of spec version 29), every pid of
+// reads, its size there (unread_processes, INFRA-3531 R3 of spec versions 29 and 30), every pid of
 // a.table.unread, those whose stat could not be read among them, in pid order: a process the guard
 // could not read is one it never ends (assess), and the line says which they are and what each
-// holds. Under gVisor at 8f4ff73f such a process was one whose main thread had exited while another
-// thread held its memory (exe and ns/pid EACCES, smaps with no Anonymous), a non-dumpable process in
-// the container's own user namespace (exe and smaps EACCES), and a process being killed, whose exe
-// read EACCES for a few milliseconds.
+// holds. A process whose stat reads Z, or whose stat did not read, is named by its pid alone, and
+// its smaps is neither read nor counted in unread: a zombie leader's smaps reads 0 under gVisor
+// while a live thread holds the process's memory, and `<pid>:0` would read as a size, and nothing
+// counts that memory by the leader's smaps anyway. Under gVisor at 8f4ff73f such a process was one
+// whose main thread had exited while another thread held its memory (stat Z with two threads, exe
+// and ns/pid EACCES, smaps with no Anonymous), a non-dumpable process in the container's own user
+// namespace (exe and smaps EACCES), and a process being killed, whose exe read EACCES for a few
+// milliseconds.
 //
 // A stop that repeats, as a reading that holds near the mark goes below it and back above it,
 // writes its line at most once in each stoppedEvery by the guard's clock: each stop in between is
@@ -1621,6 +1625,9 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 			named = append(named, ',')
 		}
 		named = strconv.AppendInt(named, int64(pid), 10)
+		if p, listed := a.table.byPID[pid]; !listed || p.state == 'Z' {
+			continue
+		}
 		if size, err := g.size(pid, nil); err == nil {
 			unread += size
 			named = strconv.AppendUint(append(named, ':'), size, 10)

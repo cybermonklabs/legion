@@ -108,6 +108,9 @@ type fakeProcess struct {
 	resident uint64
 	// unreadableExe makes exe a plain file, whose readlink fails as an unreadable link does.
 	unreadableExe bool
+	// noExe leaves exe out, whose readlink fails with ENOENT, as the exited leader of a process
+	// whose other threads run answers on Linux, its memory map cleared.
+	noExe bool
 	// unreadableSmaps makes smaps a directory, whose read fails as a smaps the guard may not
 	// read does.
 	unreadableSmaps bool
@@ -189,7 +192,10 @@ func (p *fakePod) write(fp fakeProcess) {
 	for _, link := range []struct{ name, target string }{{"exe", fp.exe}, {filepath.Join("ns", "pid"), fp.ns}} {
 		path := filepath.Join(dir, link.name)
 		_ = os.Remove(path)
-		if link.name == "exe" && fp.unreadableExe {
+		switch {
+		case link.name == "exe" && fp.noExe:
+			continue
+		case link.name == "exe" && fp.unreadableExe:
 			p.writeWhole(path, "")
 			continue
 		}
@@ -3667,6 +3673,73 @@ func TestMemoryGuardNamesInItsStoppedLineEachProcessItCouldNotReadAndEndsNone(t 
 		3500*mib, endable, 3*gib, unread, int64(3500*mib)-int64(endable+3*gib+unread), podLimit, unread)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A live process whose exe is missing counts unread, is never ended, and the stopped line names it
+// (INFRA-3531 plan version 31): the scan asks whether the process has ended since its stat was read
+// before it takes a missing exe for its end. Pid 970's main thread has exited while another thread
+// holds its memory: its stat reads Z with two threads, its exe is missing, as Linux answers for such
+// a leader, and its smaps reads no Anonymous, as gVisor's does. Pid 971 runs and its exe is missing;
+// its smaps reads 1 GiB. Pid 972, 600 MiB, may be ended. At the mark the guard ends pid 972, though
+// pid 971 is larger, and logs an unread line for each of the other two. At the next rise nothing it
+// may end is left, and its stopped line names pid 970 by its pid alone, a Z whose smaps would read
+// as a size of 0 (INFRA-3531 R3 of spec version 30), and pid 971 with its size.
+func TestMemoryGuardCountsUnreadAndNeverEndsALiveProcessWhoseExeIsMissing(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(2*gib),
+		fakeProcess{pid: 970, ppid: 100, args: []string{"python3", "threads.py"}, zombie: true, threads: 2, noExe: true},
+		fakeProcess{pid: 971, ppid: 100, args: []string{"python3", "running.py"}, anon: gib, noExe: true},
+		fakeProcess{pid: 972, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 600*mib)
+	h.run()
+	h.requireKilled(972)
+	unread := h.log.with("unread")
+	if len(unread) != 2 || !strings.HasPrefix(unread[0], "launcher: memory guard: unread pid=970 reason=read the exe: ") ||
+		!strings.HasPrefix(unread[1], "launcher: memory guard: unread pid=971 reason=read the exe: ") {
+		t.Fatalf("the unread lines are %q, want one for pid 970 and one for pid 971", unread)
+	}
+
+	h.tick()
+	pod.setAnon(3700 * mib)
+	h.tick()
+	h.requireKilled(972)
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0 unread_processes=970,971:%d",
+		3700*mib, 2*gib, gib, 3700*mib-3*gib, podLimit, gib)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A zombie with no thread left holds no memory, and a missing exe of it leaves it out of the scan as
+// before: pid 980's stat reads Z with one thread and its exe is missing. The guard ends pid 981,
+// logs no unread line, and the stopped line of the next rise names no process it could not read.
+func TestMemoryGuardLeavesOutAZombieWithNoThreadLeftWhoseExeIsMissing(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(2*gib),
+		fakeProcess{pid: 980, ppid: 100, args: []string{"python3", "done.py"}, anon: gib, zombie: true, threads: 1, noExe: true},
+		fakeProcess{pid: 981, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 600*mib)
+	h.run()
+	h.requireKilled(981)
+	h.tick()
+	pod.setAnon(3700 * mib)
+	h.tick()
+	h.requireKilled(981)
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the unread lines are %q, want none", unread)
+	}
+	if stopped := h.log.with("stopped"); len(stopped) != 1 || !strings.HasSuffix(stopped[0], " unread=0 unheld="+strconv.FormatUint(3700*mib-2*gib, 10)+
+		" limit="+strconv.FormatUint(podLimit, 10)+" left_out=0 unread_processes=none") {
+		t.Fatalf("the stopped lines are %q, want one naming no process it could not read", stopped)
 	}
 }
 
