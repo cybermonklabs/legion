@@ -205,6 +205,12 @@ fingerprints; the tester re-runs the bare gates only and the class search of eve
 round's findings at the new head; the reviewer approves the new head by SHA, or continues its
 round if it had not approved; the daemon carries the issue through your acceptance and retro to
 the merger's merge.
+After a forward merge whose fingerprint is unchanged, the implementer records again at the merge
+head only the checks whose files the merge changed.
+After a forward merge whose fingerprint is unchanged, the implementer and the tester run the
+class search only over the files the merge changed.
+A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at
+the merge head, and the class search runs over the whole head.
 
 ## A review thread GitHub will not resolve
 

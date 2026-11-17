@@ -182,6 +182,10 @@ as the fingerprint decides (*The reviewer*, below, and
   that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
+  After a forward merge whose fingerprint is unchanged, the implementer records again at the
+  merge head only the checks whose files the merge changed.
+  After a forward merge whose fingerprint is unchanged, a check whose files the merge did not
+  change needs no new implementer pass at the merge head.
   Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2` exits 0 for the
   merge commit `<sha>` (its parents merge with no conflict), and its forward-merge comment names
   no reason *Reintegrating the base* allows

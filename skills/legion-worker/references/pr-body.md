@@ -203,7 +203,9 @@ and decides there, the only gate on such an issue.
   with `implementerProof.verdict: "rejected"`, complete the phase with
   `verdict: "fail"`, and the daemon returns the issue to the implementer — the agent that developed the change owns
   proving it (a rejected verdict, or `failed > 0`, always comes with the failure recorded in
-  `failures`). A check whose `run` is a whole test suite is the exception: its words are wrong, so
+  `failures`). After a forward merge whose fingerprint is unchanged, a check whose files the merge
+  did not change needs no new implementer pass at the merge head. A check whose `run` is a whole
+  test suite is an exception too: its words are wrong, so
   while the architect rewrites it, it fails no round, and the tester names it in
   `implementerProof.how` and sends it to the architect. Otherwise record your own result for each
   `before_merge` check before you complete,
@@ -222,7 +224,11 @@ and decides there, the only gate on such an issue.
   and at the new head. Equal: re-run only the
   bare gates — the repository's CI green at the new head and its smoke check — and record each
   check with no `ci_check` again at the new head, its `--observed` ending
-  `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`. A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
+  `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`.
+  After a forward merge whose fingerprint is unchanged, the implementer and the tester run the
+  class search only over the files the merge changed (*Reintegrating the base* in
+  `skill://legion-worker/references/conflicts-and-rewrites.md` says which files those are).
+  A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
   real-surface verification is not repeated, except in a parent's last round, which the architect
   or the implementer's forward-merge comment names to you: then run a full test round. Different:
   a full test round. Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`

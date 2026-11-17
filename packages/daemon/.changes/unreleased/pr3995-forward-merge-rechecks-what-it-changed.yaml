@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  After a forward merge whose fingerprint is unchanged, the implementer's role prompt records
+  again only the checks whose files the merge changed, and the implementer's and the tester's
+  prompts run the class search only over those files. The tester's and the reviewer's prompts
+  need no new implementer pass for a check whose files the merge did not change. Before, the
+  implementer ran every check again and both roles searched the whole head. A changed fingerprint
+  keeps that rule.

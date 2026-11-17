@@ -33,3 +33,12 @@ body: |-
   a needed child's merge. Otherwise the architect sends the issue back to testing for a full round
   with no merge. An approval request's `--summary` ends with the measurements and test results
   the design rests on, in place of what the reviews do not show.
+
+  After a forward merge whose fingerprint is unchanged, the implementer in `legion-worker` records
+  again only the checks whose files the merge changed, and reads each `ci_check` check again from
+  its CI run. The implementer and the tester run the class search only over the files the merge
+  changed. Before, the implementer recorded every check again and searched the whole head, and a
+  changed fingerprint still does both. The implementer takes the fingerprint at the merge head
+  before it pushes the merge. The tester, the reviewer and `legion-retro` need no new implementer
+  pass for a check whose files the merge did not change, and `legion-architect` says the same
+  rule in "A conflicting head".

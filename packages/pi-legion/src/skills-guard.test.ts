@@ -442,6 +442,64 @@ test("the forward-merge re-check searches the new head for each earlier finding'
       "packages/daemon/internal/prompts/roles/tester.md",
     ]
   );
+  // After a forward merge whose fingerprint is unchanged, the implementer records again only the
+  // checks whose files the merge changed and the class search covers only those files; a changed
+  // fingerprint keeps the full rule (dispatch://INFRA-175). Each sentence is one wording, held
+  // once in every file that states it.
+  countedOncePerFile(
+    "After a forward merge whose fingerprint is unchanged, the implementer records again at the merge head only the checks whose files the merge changed.",
+    [
+      "skills/legion-worker/references/conflicts-and-rewrites.md",
+      "skills/legion-worker/references/merge-gate.md",
+      "skills/legion-architect/references/acceptance.md",
+      "packages/daemon/internal/prompts/roles/core/implementer.md",
+    ]
+  );
+  countedOncePerFile(
+    "After a forward merge whose fingerprint is unchanged, the implementer and the tester run the class search only over the files the merge changed",
+    [
+      "skills/legion-worker/references/conflicts-and-rewrites.md",
+      "skills/legion-worker/references/pr-body.md",
+      "skills/legion-architect/references/acceptance.md",
+      "packages/daemon/internal/prompts/roles/core/implementer.md",
+      "packages/daemon/internal/prompts/roles/core/tester.md",
+    ]
+  );
+  countedOncePerFile(
+    "A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at the merge head, and the class search runs over the whole head.",
+    [
+      "skills/legion-worker/references/conflicts-and-rewrites.md",
+      "skills/legion-architect/references/acceptance.md",
+      "packages/daemon/internal/prompts/roles/core/implementer.md",
+    ]
+  );
+  countedOncePerFile(
+    "The files the merge changed are the files whose content at the merge head differs from the tip before it (`git diff --name-only <old tip> <merge head>`): what the base brought in, and the resolution.",
+    [
+      "skills/legion-worker/references/conflicts-and-rewrites.md",
+      "packages/daemon/internal/prompts/roles/core/implementer.md",
+      "packages/daemon/internal/prompts/roles/core/tester.md",
+    ]
+  );
+  countedOncePerFile(
+    "Those checks run again even with no text conflict, because a clean merge can change a function's signature under the branch's own callers.",
+    [
+      "skills/legion-worker/references/conflicts-and-rewrites.md",
+      "packages/daemon/internal/prompts/roles/core/implementer.md",
+    ]
+  );
+  // The tester, the reviewer and retro read the passes at the merge head, so each excepts the
+  // checks the implementer did not record again.
+  countedOncePerFile(
+    "After a forward merge whose fingerprint is unchanged, a check whose files the merge did not change needs no new implementer pass at the merge head.",
+    [
+      "skills/legion-worker/references/pr-body.md",
+      "skills/legion-worker/references/merge-gate.md",
+      "skills/legion-retro/SKILL.md",
+      "packages/daemon/internal/prompts/roles/tester.md",
+      "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    ]
+  );
 });
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
@@ -624,9 +682,7 @@ test("a derived result satisfies the passages that judge or record a check's evi
   );
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run)"
-  );
+  ).toContain("A `ci_check` check is read again from its CI run at the merge head.");
 });
 
 // The architect writes a check as `ci_check` where a CI job on an ordinary pull request already

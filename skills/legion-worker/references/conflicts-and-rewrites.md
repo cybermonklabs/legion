@@ -22,22 +22,35 @@ Every path it cites is in cybermonklabs/legion.
   read `gh pr view <n> -R <owner>/<repo> --json mergeable,mergeStateStatus` and quote it in the
   forward-merge comment below. `UNKNOWN` is no conflict. That comment also names the condition
   above that the merge meets. A single failed CI job is re-run on its
-  own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward merge, build the branch and
-  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge can change a
-  function's signature under the branch's own callers. Before you race another tree's pull request on
+  own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward
+  merge, build the branch. Before you race another tree's pull request on
   shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
   merge once, after it. A forward merge that leaves the branch's diff unchanged is a
   confirmation, not a new round (see *The unchanged-diff check* below). The check compares the
   pull request's own lines file by file: a changed file sends the head through the tester again,
-  and your comment names it. Before merging, record
-  the fingerprint at the current tip; after pushing the merged branch, record it at the new
-  tip; post one PR comment (Legion footer):
+  and your comment names it. Before merging, record the fingerprint at the current tip. Before
+  you push the merge, record it at the merge head. After the push, post one PR comment (Legion
+  footer):
   `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`.
   The fingerprint answers one question only: whether the branch's own diff changed. It cannot
   show an instance the merge brought in from the base, so before you push the merge search its
-  head for the class of every finding of every earlier review round and record each search
-  beside the fingerprints.
-  In a parent's last round, end that comment with `parent's last round: full test round`, the line
+  head for the class of every finding of every earlier review round (the class search) and
+  record each search beside the fingerprints.
+  After a forward merge whose fingerprint is unchanged, the implementer records again at the
+  merge head only the checks whose files the merge changed.
+  The files the merge changed are the files whose content at the merge head differs from the tip
+  before it (`git diff --name-only <old tip> <merge head>`): what the base brought in, and the
+  resolution.
+  A check whose files the merge changed is a check whose `run` builds, tests or drives code in one
+  of those files.
+  Those checks run again even with no text conflict, because a clean merge can change a
+  function's signature under the branch's own callers.
+  After a forward merge whose fingerprint is unchanged, the implementer and the tester run the
+  class search only over the files the merge changed.
+  A `ci_check` check is read again from its CI run at the merge head.
+  A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at
+  the merge head, and the class search runs over the whole head.
+  In a parent's last round, end the forward-merge comment with `parent's last round: full test round`, the line
   the tester reads for a full round (`skill://legion-architect/references/acceptance.md`,
   "The last round").
   On the tmux runtime, where issue workspaces are still jj workspaces of one shared clone,
