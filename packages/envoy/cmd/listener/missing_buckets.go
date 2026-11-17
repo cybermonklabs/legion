@@ -50,7 +50,7 @@ const (
 	// knownBucketCheckTimeout is the read of the known-session bucket's stream: a user whose grant
 	// predates that bucket gets no answer at all, only the server's refusal, which nats.go does not
 	// hand the request, and a start must not wait bucketCheckTimeout on it (awaitCopiedBuckets lets
-	// that bucket's failed read through).
+	// that bucket's refused read through).
 	knownBucketCheckTimeout = time.Second
 )
 
