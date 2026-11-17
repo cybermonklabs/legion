@@ -81,6 +81,11 @@ func operatorEnvironment(name string) (string, bool) {
 	return os.LookupEnv(name)
 }
 
+// InboxPrefix is the prefix the command's reply inboxes take (bus.WithInboxPrefix), so the
+// deployment's buckets user is granted subscribe on InboxPrefix.> alone: a user granted _INBOX.>
+// would receive every other client's replies, a session's push deliveries among them.
+const InboxPrefix = "_INBOX_envoy_buckets"
+
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]
 
   create     create every copied bucket that is missing (or each --bucket), once no writer runs
@@ -173,7 +178,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	f.run, f.http = run, client
 	f.dispatch = slices.Contains(buckets, bus.CIStateBucket)
 
-	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment))
+	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment), bus.WithInboxPrefix(InboxPrefix))
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", natsURL, err)
 		return 1

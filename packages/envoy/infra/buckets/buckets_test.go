@@ -18,6 +18,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -286,6 +287,41 @@ func TestTheCommandReachesAServerOnAnotherMachine(t *testing.T) {
 	code, stdout, stderr := runCommand(t, w, nil, "check", "--nats", remote, "--host", "box-1")
 	if code != 1 || strings.Contains(stderr, bus.ErrRemoteNATS.Error()) || !strings.Contains(stderr, "connect to "+remote) {
 		t.Fatalf("check against a server on another machine = %d, want a connect attempt, not the remote refusal\n%s%s", code, stdout, stderr)
+	}
+}
+
+// The command takes its replies under its own inbox prefix (InboxPrefix), so a NATS user granted
+// subscribe on _INBOX_envoy_buckets.> alone - the deployment's buckets user - can run it: here it
+// creates a bucket through that user. The control is the same user on a connection with nats.go's
+// default _INBOX prefix, which gets no JetStream answer: the grant bites. At 7b262c2e0a the
+// command used the default prefix and failed as the control does.
+func TestAUserGrantedOnlyTheCommandsInboxRunsIt(t *testing.T) {
+	user, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatalf("create a user: %v", err)
+	}
+	seed, _ := user.Seed()
+	public, _ := user.PublicKey()
+	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, InboxPrefix+".>"), []string{"-js"}, false)
+	t.Setenv("NATS_NKEY_SEED", string(seed))
+
+	control, err := testnats.ConnectSeed(t, uri, string(seed))
+	if err != nil {
+		t.Fatalf("control: connect as the user: %v", err)
+	}
+	defer control.Close()
+	controlJS, err := control.JetStream(natsgo.MaxWait(2 * time.Second))
+	if err != nil {
+		t.Fatalf("control: jetstream: %v", err)
+	}
+	if _, err := controlJS.AccountInfo(); err == nil {
+		t.Fatal("control: the user got a JetStream answer on the default _INBOX prefix, so its grant does not restrict replies")
+	}
+
+	w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+	code, stdout, stderr := runCommand(t, w, nil, "create", "--nats", uri, "--bucket", bus.SessionBucket, "--host", "box-1")
+	if code != 0 || !strings.Contains(stdout, "created "+bus.SessionBucket) {
+		t.Fatalf("create as a user granted only %s.> = %d\n%s%s", InboxPrefix, code, stdout, stderr)
 	}
 }
 
