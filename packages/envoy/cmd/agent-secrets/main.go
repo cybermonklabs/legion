@@ -391,7 +391,9 @@ func cmdGroup(group string, args []string, stdout, stderr io.Writer) int {
 	case "grant revoke":
 		return cmdGrantRevoke(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "agent-secrets %s: unknown form %q; the forms are %s\n", group, args[0], strings.Join(verbs, ", "))
+	// The argument is not printed: a word that is no form is where a credential pasted in the
+	// wrong place lands.
+	fmt.Fprintf(stderr, "agent-secrets %s: unknown form (not printed); the forms are %s\n", group, strings.Join(verbs, ", "))
 	return exitUsageError
 }
 

@@ -852,3 +852,31 @@ func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
 		}
 	}
 }
+
+// TestAnUnknownFormIsNotPrinted: a group of forms - machine, grant, secret - refuses a form it does
+// not have naming the forms it has, never the argument, which is where a credential pasted in the
+// wrong place lands. A group given no form still says one is required (the control).
+func TestAnUnknownFormIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw-form-2a5c70"
+	for _, row := range []struct{ group, forms string }{
+		{"machine", "login, login-status, list, revoke"},
+		{"grant", "list, revoke"},
+		{"secret", "list, show, create, set, retag, delete, restore"},
+	} {
+		t.Run(row.group, func(t *testing.T) {
+			useBareEnvironment(t)
+			stdout, stderr, code := runIn(row.group, secret)
+			if code != exitUsageError {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
+			}
+			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"agent-secrets " + row.group + ": unknown form (not printed); the forms are " + row.forms})
+		})
+		t.Run("control: "+row.group+" with no form", func(t *testing.T) {
+			useBareEnvironment(t)
+			_, stderr, code := runIn(row.group)
+			if code != exitUsageError || !strings.Contains(stderr, "agent-secrets "+row.group+": a form is required: "+row.forms) {
+				t.Fatalf("exit %d, stderr %q; want %d naming the forms", code, stderr, exitUsageError)
+			}
+		})
+	}
+}

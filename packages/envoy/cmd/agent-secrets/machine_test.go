@@ -19,9 +19,9 @@ func TestMachineAndGrantUsage(t *testing.T) {
 		want string
 	}{
 		{[]string{"machine"}, "agent-secrets machine: a form is required: login, login-status, list, revoke\n"},
-		{[]string{"machine", "logout"}, "agent-secrets machine: unknown form \"logout\"; the forms are login, login-status, list, revoke\n"},
+		{[]string{"machine", "hunter2pw-logout"}, "agent-secrets machine: unknown form (not printed); the forms are login, login-status, list, revoke\n"},
 		{[]string{"grant"}, "agent-secrets grant: a form is required: list, revoke\n"},
-		{[]string{"grant", "show"}, "agent-secrets grant: unknown form \"show\"; the forms are list, revoke\n"},
+		{[]string{"grant", "hunter2pw-show"}, "agent-secrets grant: unknown form (not printed); the forms are list, revoke\n"},
 		{[]string{"machine", "revoke"}, "agent-secrets machine revoke: exactly one CREDENTIAL_ID is required\n"},
 		{[]string{"machine", "revoke", "a", "b"}, "agent-secrets machine revoke: exactly one CREDENTIAL_ID is required\n"},
 		{[]string{"grant", "revoke"}, "agent-secrets grant revoke: exactly one GRANT_ID is required\n"},

@@ -125,7 +125,8 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 			return form.run(args[1:], stdout, stderr)
 		}
 	}
-	fmt.Fprintf(stderr, "agent-secrets secret: unknown form %q; the forms are %s\n", args[0], secretFormNames())
+	// The argument is not printed, as cmdGroup's is not.
+	fmt.Fprintf(stderr, "agent-secrets secret: unknown form (not printed); the forms are %s\n", secretFormNames())
 	return exitUsageError
 }
 
