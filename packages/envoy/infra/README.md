@@ -2678,9 +2678,10 @@ Legion stall notice, whose sender waits the seconds and sends it again, at most 
 A counted message costs one when the listener stores it, may have stored it (a role send's `504`)
 or reports a wake for it. A refusal before any store or wake report, such as a `400`, `403`, `413`
 or `503`, costs nothing. A repeat the listener recognises costs nothing too: the stream's
-`duplicate` answer, or a repeat of a role message kept for the role's next holder. A repeat that
-finds the count at 0 is refused as a new message is. The listener's own two settings are on the
-documentation site's
+`duplicate` answer, a repeat of a role message kept for the role's next holder, and a repeat of a
+role forward the route made in the last 10 minutes. So does an echo, a role message from the
+session that holds the role. A repeat that finds the count at 0 is refused as a new message is.
+The listener's own two settings are on the documentation site's
 [Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
 
 ## NATS seeds

@@ -442,10 +442,11 @@ after <seconds> seconds.` with the values filled in. The request's log line has 
 A counted message costs one when the listener stores it, may have stored it (a role send's `504`)
 or reports a wake for it. A refusal before any store or wake report, such as a `400`, `403`, `413`
 or `503`, costs nothing. A repeat the listener recognises costs nothing too: the stream's
-`duplicate` answer, or a repeat of a role message kept for the role's next holder. A repeat that
-finds the count at 0 is refused as a new message is. The clients show the sentence and do not send
-the message again by themselves, except the Legion stall notice, whose sender waits the seconds
-and sends it again at most 3 times
+`duplicate` answer, a repeat of a role message kept for the role's next holder, and a repeat of a
+role forward the route made in the last 10 minutes. So does an echo, a role message from the
+session that holds the role. A repeat that finds the count at 0 is refused as a new message is.
+The clients show the sentence and do not send the message again by themselves, except the Legion
+stall notice, whose sender waits the seconds and sends it again at most 3 times
 ([The listener's sender limit](../README.md#the-listeners-sender-limit)).
 
 ## What the hub's VM runs
