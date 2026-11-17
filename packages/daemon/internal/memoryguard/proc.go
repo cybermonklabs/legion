@@ -126,6 +126,12 @@ func scan(proc string) (*Table, error) {
 			t.byPID[pid] = p
 		}
 	}
+	t.linkChildren()
+	return t, nil
+}
+
+// linkChildren indexes each process of t under its parent, oldest first by start time.
+func (t *Table) linkChildren() {
 	for _, p := range t.byPID {
 		t.children[p.PPID] = append(t.children[p.PPID], p)
 	}
@@ -134,7 +140,6 @@ func scan(proc string) (*Table, error) {
 			return cmp.Or(cmp.Compare(a.StartTime, b.StartTime), cmp.Compare(a.PID, b.PID))
 		})
 	}
-	return t, nil
 }
 
 // errExited is a process whose stat reads it exited (exited), at the scan's first read of it or

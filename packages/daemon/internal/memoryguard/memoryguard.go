@@ -15,19 +15,25 @@
 // At or above the act share of the limit (the mark), the guard acts on the processes it may end,
 // by the sizes it reads of those alone, where their sizes sum to at least the floor share of the
 // limit: it sends SIGKILL through a pidfd to the first of them in its order of ends, then takes
-// a reading at each interval. The order (rank, INFRA-3531 R1 of spec version 26) is the most grown
+// a reading at each interval. The order (rank, INFRA-3531 R1 of spec version 27) is the most grown
 // first: a process's growth is its size at this read less its size at its oldest read within the
 // last growthWindow (300 ms), and growth under growthNoise (1 MiB) is none. Of those that did not
-// grow over the window, the most grown since the previous kill of the rise follow, by growth since
-// that kill as grownSinceKill measures it, also from growthNoise; before a rise's first kill no
-// process has any. Those that grew by neither follow, largest first, so where none grew the largest
-// ends first. The middle tier is there because a throttled pod reads 170 to over 300 ms apart, so
-// the window can hold one read of each process: in the latepool and sharedpool probes under gVisor
-// (INFRA-3531 T17) the guard went on after a kill by ending the largest, a sleeping fork, while
-// the growers lived. Under gVisor each forked process reports the pages it shares with its parent
-// as its own, and no smaps field tells them apart, so the largest can be a sleeping fork whose end
-// frees nothing while another process fills the pod; for the same reason a process with no earlier
-// read in the window, a fresh fork among them, counts as not grown.
+// grow over the window, those started since the reading before follow, the largest first: a
+// process the guard did not read at that reading has no earlier read to grow from, and can be a
+// runaway that began between two readings (fresh). The most grown since the previous kill of the
+// rise follow, by growth since that kill as grownSinceKill measures it, also from growthNoise;
+// before a rise's first kill no process has any. Those that grew by none of these follow, largest
+// first, so where none grew and none is new the largest ends first. The fresh tier is there
+// because this issue's tester measured, at e3a1923c, the latepool probe at 4 GiB (six growers
+// starting together while a parent and three sleeping forks of a shared block held the pod at 84%)
+// end a sleeping fork first in 7 of 7 runs, the closest run 2.4 MiB from the kernel's kill point.
+// The tier of growth since the kill is there because a throttled pod reads 170 to over 300 ms
+// apart, so the window can hold one read of each process: in the latepool and sharedpool probes
+// under gVisor (INFRA-3531 T17) the guard went on after a kill by ending the largest, a sleeping
+// fork, while the growers lived. Under gVisor each forked process reports the pages it shares with
+// its parent as its own, and no smaps field tells them apart, so the largest can be a sleeping fork
+// whose end frees nothing while another process fills the pod; for the same reason a process with
+// no earlier read in the window, a fresh fork among them, counts as not grown.
 //
 // So that it knows what grew when the reading reaches the mark, an armed guard reads those sizes
 // at each interval already in the band, the bandPercent (10%) of the limit below the mark, keeps
@@ -59,21 +65,25 @@
 // reading at the mark by its clock, the first of them always and none after the read in hand once
 // that has passed, and those it has not read keep their held sizes: at 9d6d24df,
 // `4g-latepool-lmnt5`'s six growers each had one band read, and reading all six again under the
-// pod's CPU throttle put the first kill 100.68 ms after the reading at the mark. So the first kill
-// comes within one interval of the reading reaching the mark, also where the pod's CPU is
-// throttled (INFRA-3531 R1 of spec version 25, T16): under gVisor, with six growers faulting their
-// pages in, the host throttles the whole pod by its CFS quota, so a band reading that costs about
-// 2 ms of work took 80 to 270 ms of wall time, and a read of a growing process's /proc files at
-// times waits on its memory locks. This issue's tester measured 194 ms from the reading at the mark
-// to the first kill, where R1 asks for one interval (100 ms), with a mark reading that read every
-// size again; deciding on the band's reads brought 9 of 9 runs in 19 builds Jobs to 1.3 to 71.8
-// ms. The guard assesses the reading at the mark and acts on it as on any later reading where
-// nothing is held (the reading crossed the whole band within one interval, or the reading before
-// was not an armed guard's in the band), where the held first has exited or its pid names another
-// process (its start time changed), or where the held sizes, or the sizes once read again, are
-// under the floor or name no process: it never gives a rise up on held sizes alone. Below the band,
-// while it is off and once it has given a rise up, it reads no size and keeps none: a pod that sits
-// below its band pays for nothing but its readings.
+// pod's CPU throttle put the first kill 100.68 ms after the reading at the mark. Where those reads
+// show no growth either, it lists the processes once and reads those started since the band's last
+// reading, which no held read names, classifies them with the band's, reads the smaps of those it
+// may end within the same budget, the newest first, and ranks them with the held processes, so the
+// largest of them ends before the largest held one (startedSince): the six latepool growers above
+// started there. So the first kill comes within one interval of the reading reaching the mark,
+// also where the pod's CPU is throttled (INFRA-3531 R1 of spec version 25, T16): under gVisor, with
+// six growers faulting their pages in, the host throttles the whole pod by its CFS quota, so a band
+// reading that costs about 2 ms of work took 80 to 270 ms of wall time, and a read of a growing
+// process's /proc files at times waits on its memory locks. This issue's tester measured 194 ms
+// from the reading at the mark to the first kill, where R1 asks for one interval (100 ms), with a
+// mark reading that read every size again; deciding on the band's reads brought 9 of 9 runs in 19
+// builds Jobs to 1.3 to 71.8 ms. The guard assesses the reading at the mark and acts on it as on
+// any later reading where nothing is held (the reading crossed the whole band within one interval,
+// or the reading before was not an armed guard's in the band), where the held first has exited or
+// its pid names another process (its start time changed), or where the held sizes, or the sizes
+// once read again, are under the floor or name no process: it never gives a rise up on held sizes
+// alone. Below the band, while it is off and once it has given a rise up, it reads no size and
+// keeps none: a pod that sits below its band pays for nothing but its readings.
 //
 // After a kill the guard reads the sizes at each interval too, and waits only while the killed
 // process has not exited (its Handle's Exited), and no longer than the wait (INFRA-3531 R1 of spec
@@ -470,6 +480,10 @@ type Guard struct {
 	// has decided on them, so they are never of a reading older than the one before and never
 	// held across a kill; forgetSizes drops them with the reads.
 	held []candidate
+	// heldTable is the table of the assessment held is of, the band's last reading's: the
+	// processes by pid and start time that the reading at the mark tells a process started since
+	// then from (startedSince). It is held and dropped with held.
+	heldTable *Table
 	// stays are, by process, its reads at the armed guard's readings in the band of this stay in
 	// the band (keepStays): how many, and whether it grew between two of them, which say whether
 	// the reading at the mark reads its smaps again (rereadHeld). A stay starts at the first armed
@@ -759,7 +773,7 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 	}
 	if reading >= mark && g.held != nil {
 		sent := g.endHeld(now, s, reading, limit)
-		g.held = nil
+		g.held, g.heldTable = nil, nil
 		if sent {
 			// The kill is sent: this reading's sizes are the sizes as of it, and the window's
 			// newest reads.
@@ -776,7 +790,7 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 	switch {
 	case !ok:
 	case reading < mark:
-		g.held = a.endable
+		g.held, g.heldTable = a.endable, a.table
 		g.keepStays(now, a.endable)
 	default:
 		g.act(now, s, reading, limit, &a)
@@ -787,8 +801,9 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 // in the band, found the guard may end, at the reading taken at now, the first at or above the
 // mark, and answers whether it sent the kill. It scans no process table and reads no descriptor
 // before the kill (sendKill). The order is the order of ends (rank) at now, by each process's
-// growth over its held reads (orderHeld). Where one of them has grown, it decides on the held reads
-// alone and reads no smaps before the kill.
+// growth over its held reads (orderHeld); a held process is not one started since the reading
+// before, since the band's last reading read it. Where one of them has grown, it decides on the
+// held reads alone and reads no smaps before the kill.
 //
 // Where none of them has grown by the held reads, it reads again first the smaps of those that
 // grew between two of their reads in the band of this stay, or have a single one, and decides on
@@ -800,20 +815,37 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 // mark, so the held order showed no growth and put the largest first, a fork whose end frees
 // nothing; the sharedpool and latepool probes lost a sleeper at the first kill of each rise the
 // same way, their band readings spread 170 to 210 ms apart by the throttle and one held read left
-// in the window. Where nothing grew at all, the reads again still put the largest first.
+// in the window.
 //
-// The floor is read on the held sizes, and again on the sizes once read again. It sends no kill
-// where they are under the floor or name no process, or where the first has exited, its pid names
-// another process or its kill fails, and decide then assesses the reading and acts on it: what
-// the band held never gives a rise up.
+// Where those reads show no growth either, it looks for the processes it may end that started
+// since the band's last reading (startedSince), which no held read names, and ranks them with the
+// held processes: the largest of them comes before the largest held process (INFRA-3531 R1 of
+// spec version 27). This issue's tester measured, at e3a1923c, the latepool probe at 4 GiB, six
+// growers starting together between the band's last reading and the mark while a parent and three
+// sleeping forks of a shared block held the pod at 84%, end a sleeping fork first in 7 of 7 runs,
+// the closest run 2.4 MiB from the kernel's kill point. Where none started, the largest held
+// process is first, as where nothing grew at all.
+//
+// The reads again and the reads of the processes started since share half the interval from now
+// by the guard's clock, each reading one process at least. The floor is read on the held sizes,
+// and again on the sizes once read again. It sends no kill where they are under the floor or name
+// no process, or where the first has exited, its pid names another process or its kill fails, and
+// decide then assesses the reading and acts on it: what the band held never gives a rise up.
 func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	floor := share(limit, s.FloorPercent)
 	grew, heldBytes := g.orderHeld(now)
 	if len(g.held) == 0 || heldBytes < floor {
 		return false
 	}
-	if !grew && (g.rereadHeld(now, s.Interval/2) < floor || len(g.held) == 0) {
-		return false
+	if !grew {
+		deadline := now.Add(s.Interval / 2)
+		readBytes, grewSince := g.rereadHeld(now, deadline)
+		if readBytes < floor || len(g.held) == 0 {
+			return false
+		}
+		if !grewSince {
+			g.held = append(g.held, g.startedSince(deadline)...)
+		}
 	}
 	rank(g.held)
 	return g.sendKill(now, s, reading, limit, g.held[0])
@@ -824,7 +856,8 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 // growth is its newest held read, the size it is held at, less its oldest held read within
 // growthWindow before now, growthNoise or more, so a read the window held at the band's last
 // reading and no longer holds at now counts for nothing, and a step older than the window is no
-// growth; a process with no earlier read in the window has not grown.
+// growth; a process with no earlier read in the window has not grown. No held process is fresh:
+// the band's last reading, the reading before this one, read each of them.
 //
 // Where that window holds two held reads of no held process, while the window that ends at the
 // newest held read, the band's own last window, holds two of at least one, the growth is measured
@@ -855,10 +888,97 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 			end = reads[len(reads)-1].at
 		}
 		c.growth = growthOver(reads[windowStart(reads, end):], c.size)
+		c.fresh = false
 		grew = grew || c.growth > 0
 		heldBytes += c.size
 	}
 	return grew, heldBytes
+}
+
+// startedSince is the processes the guard may end that started since the band's last reading,
+// whose table the guard holds with the held processes (heldTable), each at its smaps size and
+// fresh, the newest first. It lists the processes once: a pid that table does not hold, or holds
+// with another start time (one that took the pid since), is a process started since, whose stat,
+// exe, ns/pid and arguments it reads as a scan does (readProcess); a pid it holds with the same
+// start time it reads nothing more of. It asks the classifier about the table of the band's
+// processes still listed and the ones started since, so a process started since is protected or
+// may be ended by the same rules as any, an Oh My Pi helper started under the agent among them.
+// It reads the smaps of those it may end alone, the newest first, the first however much of the
+// budget, to deadline by the guard's clock, has passed, and once deadline has passed it stops
+// after the read in hand; it reads no descriptor, and one whose smaps it cannot read is left out.
+// It answers none where none started, and asks the classifier nothing then.
+func (g *Guard) startedSince(deadline time.Time) []candidate {
+	band := g.heldTable
+	if band == nil {
+		return nil
+	}
+	entries, err := os.ReadDir(g.proc)
+	if err != nil {
+		return nil
+	}
+	t := &Table{proc: g.proc, byPID: make(map[int]*Process, len(band.byPID)), children: map[int][]*Process{}, unread: map[int]error{}}
+	var started []*Process
+	var cmdline []byte
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if p, held := band.byPID[pid]; held {
+			start, err := readStartTime(g.proc, pid)
+			if err != nil {
+				continue
+			}
+			if start == p.StartTime {
+				t.byPID[pid] = p
+				if reason, unread := band.unread[pid]; unread {
+					t.unread[pid] = reason
+				}
+				continue
+			}
+		}
+		if cmdline == nil {
+			cmdline = make([]byte, classifierArgsBytes)
+		}
+		p, err := readProcess(g.proc, pid, cmdline)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExited) {
+				continue
+			}
+			t.unread[pid] = err
+		}
+		if p != nil {
+			t.byPID[pid] = p
+			started = append(started, p)
+		}
+	}
+	if len(started) == 0 {
+		return nil
+	}
+	t.linkChildren()
+	g.applyKillFailures(t)
+	classes := g.classes(t)
+	slices.SortFunc(started, func(x, y *Process) int {
+		return cmp.Or(cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
+	})
+	defer g.releaseSmaps()
+	var fresh []candidate
+	read := false
+	for _, p := range started {
+		if _, unread := t.unread[p.PID]; unread || p.PID == g.self || classes[p.PID].Protected {
+			continue
+		}
+		if read && !g.clock.Now().Before(deadline) {
+			break
+		}
+		read = true
+		size, err := g.size(p.PID, nil)
+		if err != nil {
+			continue
+		}
+		fresh = append(fresh, candidate{Process: p, role: classes[p.PID].Role, size: size, fresh: true})
+	}
+	return fresh
 }
 
 // rereadHeld reads again, at the reading taken at now, the smaps of the held processes that grew
@@ -867,26 +987,27 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 // reads no descriptor. Each one it reads has as its size its smaps size now and the memfds it holds
 // by a descriptor alone at what the band's assessment counted for them (descriptorBytes), kept as
 // its read at now (keepSize), which sets its growth at now. Every other held process keeps its
-// held size and no growth. It answers the held processes' sum. A process with one read in the band
-// started between the band's last two readings, and may be a grower the band has not yet seen grow:
-// in T17's `4g-latepool-dmq44` and `4g-latepool-mgzv9` the growers had one band read each, and
-// reading them again kept a grower the first ended. A process with two reads or more that never
-// grew between them is not read again, since a sleeping fork's read changes no answer, and so a
-// process flat through the whole band that grows only at the mark is not ended first for that. A
-// held process whose smaps it cannot read, gone or not, it leaves out of the held processes, and
-// so out of this decision; the assessment of the reading that follows reads it again.
+// held size and no growth. It answers the held processes' sum and whether one it read grew. A
+// process with one read in the band started between the band's last two readings, and may be a
+// grower the band has not yet seen grow: in T17's `4g-latepool-dmq44` and `4g-latepool-mgzv9` the
+// growers had one band read each, and reading them again kept a grower the first ended. A process
+// with two reads or more that never grew between them is not read again, since a sleeping fork's
+// read changes no answer, and so a process flat through the whole band that grows only at the mark
+// is not ended first for that. A held process whose smaps it cannot read, gone or not, it leaves
+// out of the held processes, and so out of this decision; the assessment of the reading that
+// follows reads it again.
 //
 // It reads them one at a time, in a fixed order (rereadOrder): first those that grew in the band,
 // the most grown across the stay first, then those with a single band read, the smallest held
-// first, the newest by start time first among equals. It reads them for budget from now by the
-// guard's clock, which it reads between two smaps reads and at no other time: it reads the first
-// however much of the budget the reading at the mark itself took, and once the budget has passed
-// it stops after the read in hand. Those it has not read keep their held sizes and no growth, so
-// the decision is made on what it read. At 9d6d24df, `4g-latepool-lmnt5` sent its first kill
-// 100.68 ms after the reading at the mark, past one interval: its six growers had one band read
-// each, and the guard read all six growing processes' smaps again before the kill under the pod's
-// CPU throttle. endHeld gives it half the interval.
-func (g *Guard) rereadHeld(now time.Time, budget time.Duration) uint64 {
+// first, the newest by start time first among equals. It reads them to deadline by the guard's
+// clock, which it reads between two smaps reads and at no other time: it reads the first however
+// much of the budget the reading at the mark itself took, and once deadline has passed it stops
+// after the read in hand. Those it has not read keep their held sizes and no growth, so the
+// decision is made on what it read. At 9d6d24df, `4g-latepool-lmnt5` sent its first kill 100.68 ms
+// after the reading at the mark, past one interval: its six growers had one band read each, and the
+// guard read all six growing processes' smaps again before the kill under the pod's CPU throttle.
+// endHeld gives it half the interval.
+func (g *Guard) rereadHeld(now, deadline time.Time) (total uint64, grew bool) {
 	defer g.releaseSmaps()
 	slices.SortFunc(g.held, func(x, y candidate) int {
 		xTier, xKey := g.rereadOrder(x)
@@ -898,9 +1019,7 @@ func (g *Guard) rereadHeld(now time.Time, budget time.Duration) uint64 {
 		return cmp.Or(cmp.Compare(xTier, yTier), byKey,
 			cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
 	})
-	deadline := now.Add(budget)
 	kept := g.held[:0]
-	var total uint64
 	read, passed := false, false
 	for _, c := range g.held {
 		if tier, _ := g.rereadOrder(c); !passed && tier < notReread {
@@ -912,14 +1031,14 @@ func (g *Guard) rereadHeld(now time.Time, budget time.Duration) uint64 {
 					continue
 				}
 				c.size = size + c.descriptorBytes
-				g.keepSize(now, &c)
+				grew = g.keepSize(now, &c) || grew
 			}
 		}
 		total += c.size
 		kept = append(kept, c)
 	}
 	g.held = kept
-	return total
+	return total, grew
 }
 
 // The tiers of the held processes' reads again at the mark (rereadOrder), in the order the guard
@@ -1142,15 +1261,19 @@ func (g *Guard) applyKillFailures(t *Table) {
 // process the guard may end. growth is how much its size grew over the window (keepSizes, and for
 // a held process at the reading at the mark, endHeld), 0 for one that grew by less than
 // growthNoise or has no earlier read in the window, and for every process a scan for the hourly
-// line reads. sinceKill is how much it grew since the previous kill of the rise (grownSinceKill),
-// 0 under growthNoise and wherever no kill of the rise has been made. descriptorBytes is the part
-// of size that the memfds it holds by a descriptor alone make up (addHeldMemfds), which a read of
-// its smaps again at the mark adds as it was counted (rereadHeld).
+// line reads. fresh is whether the guard did not read it at the reading before (keepSize), one
+// that started since then, as every process is where that reading read no size; a held process at
+// the reading at the mark is not (orderHeld), and one the mark finds started since the band's last
+// reading is (startedSince). sinceKill is how much it grew since the previous kill of the rise
+// (grownSinceKill), 0 under growthNoise and wherever no kill of the rise has been made.
+// descriptorBytes is the part of size that the memfds it holds by a descriptor alone make up
+// (addHeldMemfds), which a read of its smaps again at the mark adds as it was counted (rereadHeld).
 type candidate struct {
 	*Process
 	role            string
 	size            uint64
 	growth          uint64
+	fresh           bool
 	sinceKill       uint64
 	descriptorBytes uint64
 }
@@ -1217,10 +1340,10 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	// gVisor both print the line.
 	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
 	addHeldMemfds(a.endable, g.proc, g.memfdLink, g.memfds, shmem)
-	// addHeldMemfds ranked them by size alone, the order where none grew.
-	if g.keepSizes(now, a.endable) {
-		rank(a.endable)
-	}
+	// addHeldMemfds ranked them by size alone; keepSizes sets the growth and the freshness rank
+	// orders by first.
+	g.keepSizes(now, a.endable)
+	rank(a.endable)
 	for _, c := range a.endable {
 		a.endableBytes += c.size
 	}
@@ -1228,25 +1351,21 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	return a, nil
 }
 
-// keepSizes keeps the size of each of cs as read at now, and sets each one's growth (keepSize). The
-// reads of each process cs does not hold, one that has ended, whose pid another process took (a
-// read is kept by pid and start time) or that the guard may no longer end, are dropped, so the
-// reads kept are bounded by the processes the guard may end and the readings one window holds. It
-// answers whether any of cs grew. Each process's reads keep their storage from one reading to the
-// next, so the reads of a process the guard has read before allocate nothing.
-func (g *Guard) keepSizes(now time.Time, cs []candidate) bool {
-	grew := false
+// keepSizes keeps the size of each of cs as read at now, and sets each one's growth and freshness
+// (keepSize). The reads of each process cs does not hold, one that has ended, whose pid another
+// process took (a read is kept by pid and start time) or that the guard may no longer end, are
+// dropped, so the reads kept are bounded by the processes the guard may end and the readings one
+// window holds. Each process's reads keep their storage from one reading to the next, so the
+// reads of a process the guard has read before allocate nothing.
+func (g *Guard) keepSizes(now time.Time, cs []candidate) {
 	for i := range cs {
-		if g.keepSize(now, &cs[i]) {
-			grew = true
-		}
+		g.keepSize(now, &cs[i])
 	}
 	for key, reads := range g.sizes {
 		if !reads[len(reads)-1].at.Equal(now) {
 			delete(g.sizes, key)
 		}
 	}
-	return grew
 }
 
 // keepSize keeps c's size as read at now, sets c's growth, its size less its size at its oldest
@@ -1254,10 +1373,14 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate) bool {
 // it grew. A read older than the window counts for nothing and is dropped. A read already kept at
 // now, the held processes' read at the mark (rereadHeld) where the assessment of that reading
 // follows it, is replaced: a process has one read at each reading. A process with no earlier read
-// in the window has not grown: a fresh fork reads its parent's shared pages as its own.
+// in the window has not grown: a fresh fork reads its parent's shared pages as its own. It sets
+// c's fresh where no read of c is kept, where the guard did not read it at the reading before:
+// the reads of each process are dropped at a reading that does not read it (keepSizes), and all
+// of them wherever the guard reads none (forgetSizes).
 func (g *Guard) keepSize(now time.Time, c *candidate) bool {
 	key := procKey{pid: c.PID, start: c.StartTime}
-	reads := g.sizes[key]
+	reads, known := g.sizes[key]
+	c.fresh = !known
 	reads = reads[:copy(reads, reads[windowStart(reads, now):])]
 	if n := len(reads); n > 0 && reads[n-1].at.Equal(now) {
 		reads = reads[:n-1]
@@ -1321,7 +1444,7 @@ func growthOver(reads []sizeRead, size uint64) uint64 {
 func (g *Guard) forgetSizes() {
 	clear(g.sizes)
 	clear(g.stays)
-	g.held = nil
+	g.held, g.heldTable = nil, nil
 }
 
 // keepKillSizes keeps the size of each of cs, the processes of the assessment of the reading a
@@ -1386,22 +1509,38 @@ func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool, 
 	rank(cs)
 }
 
-// rank sorts cs in the guard's order of ends (INFRA-3531 R1 of spec version 26): the most grown
-// over the window first (growth); then, of those that did not grow over the window, the most grown
-// since the previous kill of the rise (sinceKill, set at each reading after a kill by
-// grownSinceKill, and none before a rise's first kill); then, of those that grew by neither, the
-// largest first; and the newest first among equal sizes: of a parent and the child it forked,
-// which read the same, the child is the one that was started for the work. Where none of cs grew,
-// the largest is first. The middle tier is there because a throttled pod's readings come 170 to
-// over 300 ms apart, so the window can hold one read of each process and show no growth at all:
-// in the latepool and sharedpool probes under gVisor (INFRA-3531 T17), the guard then went on
-// after a kill by ending the largest, a sleeping fork whose end frees nothing, while the growers
-// lived. Growth since the kill still shows who grew.
+// rank sorts cs in the guard's order of ends (INFRA-3531 R1 of spec version 27): the most grown
+// over the window first (growth); then, of those that did not grow over the window, those started
+// since the reading before (fresh), the largest first; then the most grown since the previous kill
+// of the rise (sinceKill, set at each reading after a kill by grownSinceKill, and none before a
+// rise's first kill); then, of those that grew by none of these, the largest first; and the newest
+// first among equal sizes: of a parent and the child it forked, which read the same, the child is
+// the one that was started for the work. Where none of cs grew or is fresh, the largest is first,
+// and where all of them are fresh, as where the reading before read no size, the order is by size.
+//
+// The fresh tier is there because a runaway can begin between two readings, and then has no
+// earlier read to grow from: this issue's tester measured, at e3a1923c, the latepool probe at 4 GiB
+// (six growers starting together while a parent and three sleeping forks of a shared block held
+// the pod at 84%) end a sleeping fork first in 7 of 7 runs, the closest run 2.4 MiB from the
+// kernel's kill point. The tier of growth since the kill is there because a throttled pod's
+// readings come 170 to over 300 ms apart, so the window can hold one read of each process and
+// show no growth at all: in the latepool and sharedpool probes under gVisor (INFRA-3531 T17), the
+// guard then went on after a kill by ending the largest, a sleeping fork whose end frees nothing,
+// while the growers lived. Growth since the kill still shows who grew.
 func rank(cs []candidate) {
 	slices.SortFunc(cs, func(x, y candidate) int {
-		return cmp.Or(cmp.Compare(y.growth, x.growth), cmp.Compare(y.sinceKill, x.sinceKill),
-			cmp.Compare(y.size, x.size), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
+		return cmp.Or(cmp.Compare(y.growth, x.growth), cmp.Compare(ordinal(y.fresh), ordinal(x.fresh)),
+			cmp.Compare(y.sinceKill, x.sinceKill), cmp.Compare(y.size, x.size),
+			cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
 	})
+}
+
+// ordinal is b as a number that orders true after false.
+func ordinal(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // logUnread logs each unread process once for as long as its pid lives. A process the kill failed

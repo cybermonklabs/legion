@@ -2006,6 +2006,47 @@ func TestControllerPodMemoryGuardOrdersByTheBandsLastWindowWhereItsReadingsCome2
 	}
 }
 
+// The latepool shape in the controller's tree (INFRA-3531 R1 of spec version 27): the shell
+// command Oh My Pi ran has started a Python pool before the band, whose parent holds a block of 1.5
+// GiB and whose three forked workers sleep through the band's three readings, each reporting the
+// block as its own. A grower the command starts between the band's last reading and the mark is in
+// no held read, and nothing held grew: the guard finds it as started since the band's last reading,
+// and ends it at the first reading at the mark, at its 64 MiB, and not a worker.
+func TestControllerPodMemoryGuardEndsAGrowerStartedSinceTheBandsLastReadingBeforeTheSleepingWorkers(t *testing.T) {
+	const pool, block, grower = 1700, 1536 * guardMiB, 1710
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+	for i := range 4 {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+	}
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, reading := range []uint64{3300, 3320, 3340} {
+		pod.setAnon(reading * guardMiB)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	pod.add(guardProcess{pid: grower, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 64 * guardMiB})
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{grower}) {
+		t.Fatalf("at the mark the guard killed %v, want the grower %d started since the band's last reading and no worker; its log:\n%s",
+			kills, grower, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, 64*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
 // After a kill in the controller's tree, the next in the order is the one that grew the most since
 // that kill where nothing grew over the window (INFRA-3531 R1 of spec version 26): readings more
 // than the window apart, as a throttled pod's come, leave one read of each process in the window.
