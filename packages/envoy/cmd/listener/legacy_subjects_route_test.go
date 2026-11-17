@@ -306,6 +306,10 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}
+	// The registry's watchers stop when the test ends, before the rig's client closes (cleanups run
+	// last-registered first): left running on a closed client, they read again every 5 s until the
+	// test binary exits.
+	t.Cleanup(counting.StopWatch)
 	rig.deps.consumers.storedFilterWrite(context.Background(), counting, sessionID, "the test's write")
 	if got := counter.counted(); !slices.Equal(got, []string{"interest"}) {
 		t.Fatalf("a write of the stored row's filter counted %q, want one interest", got)
