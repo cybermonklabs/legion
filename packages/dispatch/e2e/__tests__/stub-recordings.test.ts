@@ -429,10 +429,14 @@ describe("every committed recording answers the display tree of every stored tex
 
   // A branch that read no event would hold no recording to anything, however well the refs
   // above are named. The rows above run in random order, and this row may run before any of
-  // them or alone, under a `-t` filter that leaves them out. So it reads every recording itself
-  // and counts the events that it read, rather than adding up what the rows above counted.
+  // them or alone, under a `-t` filter that leaves them out. So it reads the recordings itself,
+  // in their sorted order, until one yields an event, whatever ran before it.
   test("the rows above read the events the recordings answer", () => {
-    const checkedEvents = files.reduce((sum, file) => sum + checkTrees(file), 0);
+    let checkedEvents = 0;
+    for (const file of files) {
+      checkedEvents += checkTrees(file);
+      if (checkedEvents > 0) break;
+    }
     expect(checkedEvents).toBeGreaterThan(0);
   });
 });

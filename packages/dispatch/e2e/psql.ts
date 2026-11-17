@@ -120,6 +120,10 @@ type Session = { child: ChildProcessWithoutNullStreams; out: MarkedStream; error
  *  a connection and a teardown — about 400 ms of `resetDatabase`'s 441 — for statements that take
  *  single-digit milliseconds on an open connection. */
 let session: Session | null = null;
+// Kills the current psql as this process exits. It is one handler for the process, not one per
+// start: `resetSession` makes the next call start psql again, and a handler per start would pile
+// up over a file's reruns.
+process.once("exit", () => session?.child.kill());
 
 function startSession(): Session {
   // No ON_ERROR_STOP: it makes psql exit on the first error, which would take the connection with
@@ -152,13 +156,12 @@ function startSession(): Session {
   // A Playwright worker ends when its event loop empties, and a piped child holds the loop open
   // through its own handle and its three pipes. Unref'ed, none of them keeps a finished worker
   // alive; psql then reads EOF on the stdin this process leaves behind and exits by itself, and
-  // the kill below closes it at once rather than on the next read.
+  // the exit handler beside `session` kills it at once rather than on the next read.
   child.unref();
   for (const pipe of [child.stdin, child.stdout, child.stderr]) {
     // The pipes are net sockets, whose stream types do not say so.
     if ("unref" in pipe && typeof pipe.unref === "function") pipe.unref();
   }
-  process.once("exit", () => session?.child.kill());
   return started;
 }
 

@@ -1677,8 +1677,8 @@ bun run check:classes
 bun run typecheck
 bun run lint
 bun run test
-bun run test:harness
-bun run test:repeat
+bun run test:harness e2e/__tests__
+bun run test:repeat --lane <web|harness> --out <dir>
 bun run dispatch:local
 ```
 
@@ -1715,8 +1715,9 @@ A row is never pinned to an order or skipped to make it pass.
 It is fixed at its cause.
 Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
 from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
-`bun run test:repeat --lane <web|harness> --reruns 20 [--seed <n>] --out <dir>` runs one lane
-repeatedly (`--rerun-each`) and writes a report of the rows that failed.
+`bun run test:repeat --lane <web|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs one lane
+with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes a report
+of the rows that failed.
 `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly.
 
 Every request a unit test makes is answered by something the test set up or it fails that test,

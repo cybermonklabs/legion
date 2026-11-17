@@ -6,16 +6,8 @@
 # directory. It does not reach a `bun test` started from the repository root or from a
 # subdirectory of this package.
 #
-# Each lane prints its own ` --seed=<n>` in its summary. To reproduce a failure, run its file
-# alone with that seed:
-#   bun run test:web web/src/<file> --seed=<n>
-#   bun run test:harness e2e/__tests__/<file> --seed=<n>
-# Add `--rerun-each=<k>` for a row that first failed on run k, which the report of
-# `bun run test:repeat` names. This works because the order of the tests in a file depends only
-# on the seed and on that file, not on the other files of the run.
-# A `--seed` on the command line takes the place of the random seed this file gives.
-# Nothing turns random order off once this file sets it: `--randomize=false` is refused, and
-# `--no-randomize` still shuffles.
+# Each lane prints its own ` --seed=<n>` in its summary. A failure is reproduced with its file
+# alone and that seed, as packages/dispatch/AGENTS.md ("## Commands") says.
 #
 # This file holds no preload. Commit b7a20b11c4 (pull request #2884) deleted an earlier
 # packages/dispatch/bunfig.toml so that the e2e lane loads no preload.

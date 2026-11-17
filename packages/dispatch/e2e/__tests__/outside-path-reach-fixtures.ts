@@ -24,7 +24,14 @@
 
 import { test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,7 +63,6 @@ export interface Run {
   code: number;
   stdout: string;
   stderr: string;
-  seconds: number;
 }
 
 /** The line the script prints for one target, or for the origin's positive control. */
@@ -259,7 +265,6 @@ export function reachFixtures() {
       mkdirSync(home);
       writeFileSync(join(home, ".curlrc"), options.curlrc);
     }
-    const started = performance.now();
     const argv =
       options.stdin === undefined
         ? [options.shell ?? bash, script]
@@ -294,7 +299,7 @@ export function reachFixtures() {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    return { code, stdout, stderr, seconds: (performance.now() - started) / 1000 };
+    return { code, stdout, stderr };
   }
 
   /** A target file holding `lines`, under the run's scratch directory. */
@@ -348,10 +353,12 @@ export function reachFixtures() {
   function pathPacing(answers: string, log: string): string {
     const path = pathWithCurl(answers);
     const sleep = join(path, "sleep");
-    unlinkSync(sleep); // the host's sleep by a symlink, which a write would follow
+    // The host's sleep by a symlink, which a write would follow: its path goes into the wrapper.
+    const hostSleep = readlinkSync(sleep);
+    unlinkSync(sleep);
     writeFileSync(
       sleep,
-      `#!${bash}\n${hostTool("sleep") ?? "sleep"} "$@"\nstatus=$?\necho "slept $*" >>${log}\nexit "$status"\n`,
+      `#!${bash}\n${hostSleep} "$@"\nstatus=$?\necho "slept $*" >>${log}\nexit "$status"\n`,
       { mode: 0o755 }
     );
     return path;

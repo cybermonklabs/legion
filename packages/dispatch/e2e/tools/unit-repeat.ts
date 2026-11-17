@@ -13,8 +13,9 @@
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
- *  Actions the tool prints one `::error` per failing row, one `::error` per failure that belongs
- *  to no row, and one `::notice` with the totals.
+ *  Actions the tool prints one `::error` per failure that belongs to no row, then one per failing
+ *  row, and then one `::notice` with the totals. GitHub keeps at most 10 errors a step, so when
+ *  there are more, the tenth error says how many more failures report.md lists.
  *
  *  While Bun runs, the tool reads MemTotal and MemAvailable from /proc/meminfo, once at the start
  *  and then every 5 s. The report gives MemTotal, the lowest MemAvailable, and the difference,
@@ -66,10 +67,17 @@ interface LaneScript {
   readonly target: string;
 }
 
-export const lanes: Readonly<Record<Lane, LaneScript>> = {
+const lanes: Readonly<Record<Lane, LaneScript>> = {
   web: { script: "test:web", target: "web/src" },
   harness: { script: "test:harness", target: "e2e/__tests__" },
 };
+
+const laneNames = Object.keys(lanes);
+
+/** Whether `text` is the name of a lane. */
+function isLane(text: string): text is Lane {
+  return Object.hasOwn(lanes, text);
+}
 
 /** This package's directory. Both lanes run from it. */
 const packageDirectory = fileURLToPath(new URL("../..", import.meta.url));
@@ -81,13 +89,22 @@ const DEFAULT_RERUNS = 20;
 const MESSAGE_LIMIT = 500;
 /** How many lines of bun.log the report shows when a failure belongs to no row. */
 const LOG_TAIL_LINES = 40;
+/** The most `::error` annotations GitHub keeps for one step. GitHub's REST "Check runs" page says:
+ *  "GitHub Actions are limited to 10 warning annotations and 10 error annotations per step". */
+const ERROR_LIMIT = 10;
 /** How often the tool reads /proc/meminfo while Bun runs. */
 const MEMORY_SAMPLE_MS = 5_000;
 
-export const usage =
-  "usage: bun run test:repeat --lane <web|harness> [--reruns <k>] [--seed <n>] --out <dir>\n" +
-  "  --lane <web|harness>  web runs `bun run test:web web/src`;\n" +
-  "                        harness runs `bun run test:harness e2e/__tests__`\n" +
+/** The value `--lane` takes, as the usage writes it: `<web|harness>`. */
+const laneChoice = `<${laneNames.join("|")}>`;
+
+const usage =
+  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] --out <dir>\n` +
+  `  --lane ${laneChoice}  ` +
+  Object.entries(lanes)
+    .map(([lane, { script, target }]) => `${lane} runs \`bun run ${script} ${target}\``)
+    .join(";\n                        ") +
+  "\n" +
   `  --reruns <k>          how many times Bun runs each test, at least 1 (default ${DEFAULT_RERUNS})\n` +
   `  --seed <n>            the seed of Bun's random order, from 0 to ${MAX_SEED}\n` +
   "                        (default: a random one)\n" +
@@ -106,7 +123,7 @@ export interface RepeatOptions {
 export type Parsed = { readonly options: RepeatOptions } | { readonly problem: string };
 
 /** A random seed from the whole range Bun accepts. */
-export function randomSeed(): number {
+function randomSeed(): number {
   return crypto.getRandomValues(new Uint32Array(1))[0];
 }
 
@@ -140,8 +157,8 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
   }
   const { lane, out } = values;
   if (lane === undefined) return { problem: "--lane is missing" };
-  if (lane !== "web" && lane !== "harness") {
-    return { problem: `--lane is web or harness, not ${JSON.stringify(lane)}` };
+  if (!isLane(lane)) {
+    return { problem: `--lane is ${laneNames.join(" or ")}, not ${JSON.stringify(lane)}` };
   }
   if (out === undefined || out === "") return { problem: "--out is missing" };
   const reruns = wholeNumber(values.reruns ?? String(DEFAULT_RERUNS));
@@ -268,7 +285,7 @@ interface OpenTestcase {
 
 /** The files and testcases of a junit file Bun 1.4.4 wrote. It throws on anything else: a tag in
  *  a place Bun puts none, a tag left open, or a file with no `<testsuites>`. */
-export function readJunit(xml: string): Junit {
+function readJunit(xml: string): Junit {
   const files = new Set<string>();
   const testcases: Testcase[] = [];
   const open: string[] = [];
@@ -365,7 +382,7 @@ export function junitAt(path: string): JunitText {
 /** What one run of a lane left behind. */
 export interface LaneRun {
   readonly lane: Lane;
-  /** What the lane tested: its directory, or a narrower path. */
+  /** What the lane tested: its directory, or the narrower path a smoke run gives `runLane`. */
   readonly target: string;
   readonly seed: number;
   readonly reruns: number;
@@ -376,7 +393,7 @@ export interface LaneRun {
   readonly junit: JunitText;
   /** Bun's whole stdout and stderr, as bun.log holds them. */
   readonly log: string;
-  /** The variables GitHub Actions sets. `main` passes its own environment. */
+  /** The variables GitHub Actions sets. `runLane` passes `process.env`. */
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** The readings of /proc/meminfo taken while Bun ran. It is empty where none could be read. */
   readonly memory: readonly MemorySample[];
@@ -495,10 +512,19 @@ function perRun(total: number, reruns: number): number {
   return Math.round((total / reruns) * 100) / 100;
 }
 
-/** The number of errors outside any test that Bun's summary counts, from its ` N error` line. */
+/** The number of errors outside any test that Bun's summary counts, from its last ` N error`
+ *  line. */
 function bunErrors(log: string): number {
-  const counts = [...log.matchAll(/^ (\d+) errors?$/gm)];
-  return counts.length === 0 ? 0 : Number(counts[counts.length - 1][1]);
+  let count = 0;
+  for (const [, errors] of log.matchAll(/^ (\d+) errors?$/gm)) count = Number(errors);
+  return count;
+}
+
+/** The last `count` lines of `text`, without the empty one after a final newline. */
+function lastLines(text: string, count: number): string[] {
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines.slice(-count);
 }
 
 /** The most memory in use that the readings saw: MemTotal minus the lowest MemAvailable, in MiB.
@@ -605,13 +631,6 @@ export function summarise(run: LaneRun): Report {
     });
   }
 
-  const logLines = run.log.split("\n");
-  if (logLines.at(-1) === "") logLines.pop();
-  const failed =
-    failingRows.length > 0 ||
-    run.exitCode !== 0 ||
-    junit.testcases.length === 0 ||
-    rowless.length > 0;
   return {
     github: githubRun(run.environment),
     lane: run.lane,
@@ -628,9 +647,11 @@ export function summarise(run: LaneRun): Report {
     testcases,
     failingRows,
     rowlessFailures: rowless,
-    bunLogTail: rowless.length === 0 ? [] : logLines.slice(-LOG_TAIL_LINES),
+    bunLogTail: rowless.length === 0 ? [] : lastLines(run.log, LOG_TAIL_LINES),
     machineMemory: machineMemory(run.memory),
-    exitCode: failed ? 1 : 0,
+    // A non-zero exit of Bun leaves a failing row or a `bun-exit` failure, and a run with no
+    // testcase leaves a `junit-unreadable` or a `no-testcase` one, so these two hold every failure.
+    exitCode: failingRows.length > 0 || rowless.length > 0 ? 1 : 0,
   };
 }
 
@@ -665,6 +686,13 @@ function oneRunText(report: Report): string {
 function testcasesText(report: Report): string {
   const { passed, failed, skipped } = report.testcases;
   return `${passed} passed, ${failed} failed and ${skipped} skipped testcases`;
+}
+
+function failuresText(report: Report): string {
+  return (
+    `${counted(report.failingRows.length, "row")} failed. ` +
+    `${counted(report.rowlessFailures.length, "failure belongs", "failures belong")} to no row.`
+  );
 }
 
 function memoryText(memory: MachineMemory | null): string {
@@ -758,10 +786,19 @@ function workflowCommand(
   return `::${command} ${list}::${escapeData(message)}`;
 }
 
-/** The GitHub Actions annotations of the report: one `::error` per failing row, one per failure
- *  that belongs to no row, and one `::notice` with the totals. */
+/** The GitHub Actions annotations of the report: one `::error` per failure that belongs to no
+ *  row, then one per failing row, and one `::notice` with the totals. GitHub keeps ERROR_LIMIT
+ *  errors a step. So where there are more, the last of the ERROR_LIMIT errors takes the place of
+ *  the rest and says how many more failures report.md lists. */
 export function annotations(report: Report): string[] {
-  const lines = report.failingRows.map((row) =>
+  const rowless = report.rowlessFailures.map((failure) =>
+    workflowCommand(
+      "error",
+      { title: "Failure outside any test" },
+      `${failure.text} (seed ${report.seed})`
+    )
+  );
+  const rows = report.failingRows.map((row) =>
     workflowCommand(
       "error",
       {
@@ -771,12 +808,25 @@ export function annotations(report: Report): string[] {
       `${row.name} failed ${row.fails}/${row.runs} runs (seed ${report.seed}): ${row.message}`
     )
   );
-  for (const failure of report.rowlessFailures) {
+  const lines = [...rowless, ...rows];
+  if (lines.length > ERROR_LIMIT) {
+    const shown = ERROR_LIMIT - 1;
+    const rowlessLeft = Math.max(0, rowless.length - shown);
+    const rowsLeft = lines.length - shown - rowlessLeft;
+    const left: string[] = [];
+    if (rowlessLeft > 0) {
+      left.push(
+        `${counted(rowlessLeft, "more failure that belongs", "more failures that belong")} to no row`
+      );
+    }
+    if (rowsLeft > 0) left.push(counted(rowsLeft, "more failing row"));
+    lines.length = shown;
     lines.push(
       workflowCommand(
         "error",
-        { title: "Failure outside any test" },
-        `${failure.text} (seed ${report.seed})`
+        { title: "More failures in report.md" },
+        `report.md lists ${left.join(" and ")}: GitHub keeps ${ERROR_LIMIT} errors a step ` +
+          `(seed ${report.seed}).`
       )
     );
   }
@@ -786,10 +836,8 @@ export function annotations(report: Report): string[] {
       { title: `Repeated unit tests: ${report.lane} lane` },
       `Seed ${report.seed}, ${report.reruns} reruns, ${report.wallSeconds.toFixed(1)} s. ` +
         `One run: ${oneRunText(report)}. All runs: ${testcasesText(report)}. ` +
-        `${counted(report.failingRows.length, "row")} failed. ` +
-        `${counted(report.rowlessFailures.length, "failure belongs", "failures belong")} to no ` +
-        `row. Machine memory, which counts every process and not Bun's alone: ` +
-        `${memoryText(report.machineMemory)}.`
+        `${failuresText(report)} Machine memory, which counts every process and not Bun's ` +
+        `alone: ${memoryText(report.machineMemory)}.`
     )
   );
   return lines;
@@ -830,8 +878,9 @@ function readMeminfo(): MemorySample | undefined {
   return { memTotalKiB: Number(total[1]), memAvailableKiB: Number(available[1]) };
 }
 
-/** Runs the lane once with `options` and writes its report. `target` is the path the lane tests,
- *  its whole directory unless a caller names a narrower one. Answers the exit status. */
+/** Runs the lane once with `options` and writes its report. Answers the exit status. `target` is
+ *  the path the lane tests, its whole directory unless a caller names a narrower one: that is how
+ *  a smoke run drives the real path over one file, in a pod where a whole lane may not run. */
 export async function runLane(
   options: RepeatOptions,
   target: string = lanes[options.lane].target
@@ -900,9 +949,8 @@ export async function runLane(
     for (const line of annotations(report)) console.log(line);
   }
   console.log(
-    `${counted(report.failingRows.length, "row")} failed. ` +
-      `${counted(report.rowlessFailures.length, "failure belongs", "failures belong")} to no ` +
-      `row. Wall time ${report.wallSeconds.toFixed(1)} s. The report: ${join(out, "report.md")}`
+    `${failuresText(report)} Wall time ${report.wallSeconds.toFixed(1)} s. ` +
+      `The report: ${join(out, "report.md")}`
   );
   return report.exitCode;
 }

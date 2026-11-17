@@ -26,6 +26,7 @@ import {
   type LaneRun,
   markdown,
   parseArguments,
+  type Report,
   type RowlessKind,
   summarise,
 } from "../tools/unit-repeat";
@@ -254,10 +255,7 @@ test(
     expect(run.exitCode).not.toBe(0);
     const report = summarise(run);
     expect(report.failingRows).toEqual([]);
-    expect(report.rowlessFailures.map((failure) => failure.kind)).toEqual([
-      "bun-exit",
-      "bun-errors",
-    ]);
+    expect(kinds(run)).toEqual(["bun-exit", "bun-errors"]);
     expect(report.bunLogTail.join("\n")).toContain("the file fails to load");
     expect(report.exitCode).toBe(1);
     const errors = annotations(report).filter((line) => line.startsWith("::error "));
@@ -322,6 +320,41 @@ test(
         `fails on two lines failed 1/1 runs (seed ${SEED}): first line%0Asecond line, 100%25 sure`
     );
     expect(annotations(report).every((line) => !line.includes("\n"))).toBe(true);
+  },
+  rowLimit("short")
+);
+
+test(
+  "past GitHub's 10 errors a step, the failure outside any test comes first and the last error counts the rows left out",
+  async () => {
+    // The lie: GitHub keeps 10 error annotations a step and drops the rest with no word. A
+    // failure outside any test printed after the rows is dropped with them, and the rows past the
+    // tenth error vanish from the run's page.
+    const run = await laneRun({ "steady.test.ts": passes }, 1);
+    const report: Report = {
+      ...summarise(run),
+      failingRows: Array.from({ length: 12 }, (_, index) => ({
+        file: "broken.test.ts",
+        name: `row ${index + 1}`,
+        fails: 1,
+        runs: 1,
+        firstFailedRun: 1,
+        message: "broken",
+        reproduce: `bun run test:harness broken.test.ts --seed=${SEED}`,
+      })),
+      rowlessFailures: [{ kind: "bun-errors", text: "Bun counted 1 error outside any test." }],
+    };
+    expect(annotations(report)).toEqual([
+      `::error title=Failure outside any test::Bun counted 1 error outside any test. (seed ${SEED})`,
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map(
+        (count) =>
+          "::error file=packages/dispatch/broken.test.ts,title=Failing unit test::" +
+          `row ${count} failed 1/1 runs (seed ${SEED}): broken`
+      ),
+      "::error title=More failures in report.md::" +
+        `report.md lists 4 more failing rows: GitHub keeps 10 errors a step (seed ${SEED}).`,
+      expect.stringMatching(/^::notice /),
+    ]);
   },
   rowLimit("short")
 );

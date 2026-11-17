@@ -67,11 +67,14 @@ if (blackholeSkip !== null) console.warn(`Skipped the blackholed rows: ${blackho
 
 describe.concurrent("outside-path-reach.sh", () => {
   // A dropped address must not hold a probe past curl's own timeouts: one that did would hold its
-  // round into the next, and the last round's into the end of the run. The row reads that from the
-  // order of the run's own events, not from a clock this host's load moves: the fake curl writes
-  // `probe` to a log as it starts a probe of the blackholed address and `ended` once that probe is
-  // over, and the `sleep` first on PATH writes `slept 6` once the sleep between two rounds is over.
-  // Each probe of the address ends before the next round starts, and the last before the run ends.
+  // round into the next, and the last round's into the end of the run. The row reads the run's
+  // order, not its duration: the fake curl writes `probe` to a log as it starts a probe of the
+  // blackholed address and `ended` once that probe is over, and the `sleep` first on PATH writes
+  // `slept 6` once the sleep between two rounds is over. The script starts a round's probes in
+  // the background and then sleeps 6 s before the next round. So a probe's `ended` comes before
+  // `slept 6` only because curl's 3 s connect timeout ends the probe before that sleep is over.
+  // The row's margin is the 3 s between the two. Each probe of the address ends before the next
+  // round starts, and the last before the run ends.
   row(withoutTools || blackholeSkip !== null)(
     "reads a blackholed address as unreachable and passes, each probe of it ending within its own round",
     async () => {
