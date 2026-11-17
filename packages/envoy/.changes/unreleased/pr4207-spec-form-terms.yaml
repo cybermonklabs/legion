@@ -13,7 +13,8 @@ body: |-
   from the events of the issues, which each release writes for each move. So a move into the root,
   or inside it, changes no definition that the list holds, whichever release made the move. The
   read of the other document names the listed one. When the document that the list keeps a term
-  from leaves the root, the list holds the definition that joined next. Dispatch compares the names
+  from leaves the root, the list holds the definition that joined next. The name of a term is its
+  bold text as the page shows it, so code font makes no second name. Dispatch compares the names
   of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run
   of spaces as one space. After that form, a name holds only the letters a to z, the digits 0 to 9,
   spaces and hyphens. It holds at least one letter or digit. A name with another character, or with

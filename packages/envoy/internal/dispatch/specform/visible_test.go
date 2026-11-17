@@ -300,3 +300,132 @@ func TestOtherProseOfADocumentIsNoTextOfTheSpec(t *testing.T) {
 		}
 	}
 }
+
+// The reference rules judge the words exactly as the page shows them, with no mark of code font,
+// while the rules of a sentence and the port of ste-lint keep code font: a name or the address of a
+// record that code font splits is the name or the address that the person reads. A name or an
+// address wholly in code font is refused too: code font is the way to write a name of code, and
+// the page shows the person's name or the record's address all the same.
+func TestTheReferenceRulesJudgeTheWordsThatThePageShows(t *testing.T) {
+	rows := []judgedRow{
+		{"one part of a name in code font", requirement("one", "Dispatch asks `Ada` Lovelace."),
+			[]string{"statement one person"}, "one", KindStatement, "Dispatch asks `Ada` Lovelace."},
+		{"both parts of a name in code font", requirement("both", "Dispatch asks `Ada` `Lovelace`."),
+			[]string{"statement both person"}, "both", KindStatement, "Dispatch asks `Ada` `Lovelace`."},
+		{"the middle of a name in code font", requirement("middle", "Dispatch asks A`da Love`lace."),
+			[]string{"statement middle person"}, "middle", KindStatement, "Dispatch asks A`da Love`lace."},
+		{"the address of a record split by code font", requirement("record", "Dispatch keeps `dispatch://AC`ME-12."),
+			[]string{"statement record dispatch-link"}, "record", KindStatement, "Dispatch keeps `dispatch://AC`ME-12."},
+		{"a name wholly in code font", requirement("whole", "Dispatch asks `Ada Lovelace`."),
+			[]string{"statement whole person"}, "whole", KindStatement, "Dispatch asks `Ada Lovelace`."},
+		{"the address of a record wholly in code font", requirement("whole-record", "Dispatch keeps `dispatch://ACME-12`."),
+			[]string{"statement whole-record dispatch-link"}, "whole-record", KindStatement, "Dispatch keeps `dispatch://ACME-12`."},
+		// R50 reads the name of a term as the page shows it, so code font makes no second name.
+		{"a name in a term line split by code font", "## Terms\n\n- **`Ada` Lovelace**: One owner of a `request` of `Ada` Lovelace.\n",
+			[]string{"term Ada Lovelace person", "definition Ada Lovelace person"}, "Ada Lovelace", KindDefinition, "One owner of a `request` of `Ada` Lovelace."},
+		{"the control: the rules of a sentence keep code font", requirement("config", "Dispatch reads the file `Web.Config` at boot."),
+			nil, "config", KindStatement, "Dispatch reads the file `Web.Config` at boot."},
+	}
+	requireJudged(t, rows)
+	shown := map[string]string{
+		"one": "Dispatch asks Ada Lovelace.", "both": "Dispatch asks Ada Lovelace.", "middle": "Dispatch asks Ada Lovelace.",
+		"record": "Dispatch keeps dispatch://ACME-12.", "whole": "Dispatch asks Ada Lovelace.",
+		"whole-record": "Dispatch keeps dispatch://ACME-12.", "config": "Dispatch reads the file Web.Config at boot.",
+	}
+	for _, row := range rows {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, row.markdown))
+		if err != nil {
+			t.Fatalf("%s: %v", row.name, err)
+		}
+		for _, text := range extracted.Texts {
+			if want, ok := shown[text.Node]; ok && text.Held.Shown != want {
+				t.Errorf("%s: the page shows %q, and the reference rules read %q", row.name, want, text.Held.Shown)
+			}
+		}
+		for _, term := range extracted.Terms {
+			if term.NameHeld.Shown != "Ada Lovelace" || term.DefinitionHeld.Shown != "One owner of a request of Ada Lovelace." {
+				t.Errorf("%s: the reference rules read the name %q and the definition %q, want the words that the page shows",
+					row.name, term.NameHeld.Shown, term.DefinitionHeld.Shown)
+			}
+		}
+	}
+}
+
+// The address of a pull request has a host of its own: github.com in any case, or its www
+// subdomain, which no letter, digit, dot or hyphen comes before, so github.com that ends another
+// host names no pull request. A scheme and the address of a record of Dispatch have no case either.
+func TestTheAddressOfAPullRequestHasAHostOfItsOwn(t *testing.T) {
+	for _, test := range []struct {
+		address string
+		named   []string
+	}{
+		{"github.com/o/r/pull/1", []string{"github.com/o/r/pull/1"}},
+		{"https://github.com/o/r/pull/1", []string{"github.com/o/r/pull/1"}},
+		{"https://GITHUB.COM/o/r/pull/1", []string{"GITHUB.COM/o/r/pull/1"}},
+		{"HTTPS://GitHub.com/o/r/pull/1", []string{"GitHub.com/o/r/pull/1"}},
+		{"https://www.github.com/o/r/pull/1", []string{"www.github.com/o/r/pull/1"}},
+		{"notgithub.com/o/r/pull/1", nil},
+		{"https://notgithub.com/o/r/pull/1", nil},
+		{"github.com.example/o/r/pull/1", nil},
+		{"https://evil-github.com/o/r/pull/1", nil},
+		{"https://example.com/github.com/o/r/pull/1", []string{"github.com/o/r/pull/1"}},
+	} {
+		var want []Finding
+		text := Text{Node: "planted", Kind: KindStatement, Body: "Legion lands the change.", Where: where, Held: Held{Addresses: []string{test.address}}}
+		for _, match := range test.named {
+			want = append(want, finding(text, rulePullRequest, pullRequestNamed(match)))
+		}
+		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+			t.Errorf("the address %q: got %#v, want %#v", test.address, got, want)
+		}
+	}
+	requireJudged(t, []judgedRow{
+		{"the address of a pull request in capitals", requirement("pr", "Dispatch shows [the change](https://GITHUB.COM/acme/repo/pull/12)."),
+			[]string{"statement pr pull-request"}, "pr", KindStatement, "Dispatch shows the change."},
+		{"the address of a pull request in capitals in the words", requirement("words", "Legion lands HTTPS://GitHub.com/acme/repo/pull/12 now."),
+			[]string{"statement words pull-request"}, "", "", ""},
+		{"the control: a host that ends in github.com", requirement("other", "Dispatch shows [the change](https://notgithub.com/acme/repo/pull/12)."),
+			nil, "other", KindStatement, "Dispatch shows the change."},
+		{"a scheme of Dispatch in capitals", requirement("scheme", "Dispatch keeps [the issue](DISPATCH://ACME-12)."),
+			[]string{"statement scheme dispatch-link"}, "", "", ""},
+		{"the address of the server in capitals", requirement("server", "Dispatch keeps [the ask](HTTPS://DISPATCH.EXAMPLE.COM/issues/ACME-3)."),
+			[]string{"statement server dispatch-link"}, "", "", ""},
+		{"an email address in capitals", requirement("mail", "Dispatch mails [the owner](MAILTO:ADA.LOVELACE@EXAMPLE.COM)."),
+			[]string{"statement mail person"}, "", "", ""},
+	})
+}
+
+// A definition can stand wholly in its footnote: the footnote is part of the definition before the
+// line is read as a term line, and its words are judged as the definition.
+func TestADefinitionCanStandWhollyInItsFootnote(t *testing.T) {
+	requireJudged(t, []judgedRow{
+		{"a definition wholly in its footnote", "## Terms\n\n- **lease**: [^a]\n\n[^a]: One record of a claim.\n",
+			nil, "lease", KindDefinition, "One record of a claim."},
+		{"a definition wholly in its footnote breaks a rule", "## Terms\n\n- **lease**: [^a]\n\n[^a]: Dispatch performs a validation of each upload.\n",
+			[]string{"definition lease ste100-nominalization"}, "lease", KindDefinition, "Dispatch performs a validation of each upload."},
+		{"the control: a term with no definition", "## Terms\n\n- **lease**:\n",
+			[]string{`line "lease:" term-line`}, "", "", ""},
+	})
+}
+
+// An address that the words show, such as https://example.com/Web.Config, is one word for the
+// rules of a sentence, as the address of a link is no text of a sentence: no stop in it breaks
+// the rule stop-no-space, and a stop after it still ends the sentence.
+func TestABareAddressIsOneWordForTheRulesOfASentence(t *testing.T) {
+	requireJudged(t, []judgedRow{
+		{"an address in a sentence", requirement("url", "Dispatch opens https://example.com/Web.Config."),
+			nil, "url", KindStatement, "Dispatch opens https://example.com/Web.Config."},
+		{"an address at the end of a sentence", requirement("end", "Dispatch opens https://example.com/Web.Config. Dispatch shows it."),
+			nil, "end", KindStatement, "Dispatch opens https://example.com/Web.Config. Dispatch shows it."},
+		{"a stop after an address ends a sentence", requirement("three", "Dispatch opens https://example.com/Web.Config. Dispatch shows it. Dispatch keeps it."),
+			[]string{"statement three sentences"}, "", "", ""},
+		{"an address in brackets", requirement("brackets", "Dispatch opens the record (https://example.com/Web.Config)."),
+			nil, "brackets", KindStatement, "Dispatch opens the record (https://example.com/Web.Config)."},
+		{"an address with a query string", requirement("query", "Dispatch opens https://example.com/Web.Config?view=Raw.Text&Page=Two."),
+			nil, "query", KindStatement, "Dispatch opens https://example.com/Web.Config?view=Raw.Text&Page=Two."},
+		{"an address that starts with www", requirement("www", "Dispatch opens www.example.com/Web.Config."),
+			nil, "www", KindStatement, "Dispatch opens www.example.com/Web.Config."},
+		{"the control: a stop between two words", requirement("joined", "Dispatch keeps each comment.Dispatch shows it."),
+			[]string{"statement joined stop-no-space"}, "", "", ""},
+	})
+}

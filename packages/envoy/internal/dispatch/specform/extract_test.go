@@ -64,12 +64,21 @@ func TestExtractReadsEachFormOfText(t *testing.T) {
 		{Node: "dispatch-inbox", Kind: KindPurpose, Body: "It shows a person what waits on that person.", Where: fixtureWhere},
 		{Node: "stray", Kind: KindTermLine, Body: "This line is no term.", Where: fixtureWhere},
 	}
+	// No text of the fixture holds code font, so the page shows each one as its body. The run and
+	// the negative_control of a check are attributes, which a text holds as they are written.
+	for index, text := range want {
+		if text.Kind != KindProcedure && text.Kind != KindFailingExample {
+			want[index].Held.Shown = text.Body
+		}
+	}
 	if !reflect.DeepEqual(got.Texts, want) {
 		t.Errorf("Texts =\n%#v\nwant\n%#v", got.Texts, want)
 	}
 	terms := []Term{
-		{Name: "session", Definition: "One conversation of an agent.", Where: fixtureWhere},
-		{Name: "work unit", Definition: "One piece of work that one owner runs.", Where: fixtureWhere},
+		{Name: "session", Definition: "One conversation of an agent.", Where: fixtureWhere,
+			NameHeld: Held{Shown: "session"}, DefinitionHeld: Held{Shown: "One conversation of an agent."}},
+		{Name: "work unit", Definition: "One piece of work that one owner runs.", Where: fixtureWhere,
+			NameHeld: Held{Shown: "work unit"}, DefinitionHeld: Held{Shown: "One piece of work that one owner runs."}},
 	}
 	if !reflect.DeepEqual(got.Terms, terms) {
 		t.Errorf("Terms = %#v, want %#v", got.Terms, terms)
@@ -227,8 +236,10 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 		t.Errorf("Texts =\n%#v\nwant\n%#v", got.Texts, []Text{prose, drift})
 	}
 	terms := []Term{
-		{Name: "lease", Definition: "The right of one session to one work unit for a time.", Where: where},
-		{Name: "session", Definition: "One conversation of an agent.", Where: where},
+		{Name: "lease", Definition: "The right of one session to one work unit for a time.", Where: where,
+			NameHeld: Held{Shown: "lease"}, DefinitionHeld: Held{Shown: "The right of one session to one work unit for a time."}},
+		{Name: "session", Definition: "One conversation of an agent.", Where: where,
+			NameHeld: Held{Shown: "session"}, DefinitionHeld: Held{Shown: "One conversation of an agent."}},
 	}
 	if !reflect.DeepEqual(got.Terms, terms) {
 		t.Errorf("Terms = %#v, want %#v", got.Terms, terms)
@@ -282,7 +293,7 @@ func TestATermsHeadingInAnotherFormIsAFinding(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := Text{Node: fmt.Sprintf("%q", c.reads), Kind: KindHeading, Body: c.reads, Where: where}
-		line := Text{Node: "heartbeat", Kind: KindTermLine, Body: "A pulse of a pump.", Where: where}
+		line := Text{Node: "heartbeat", Kind: KindTermLine, Body: "A pulse of a pump.", Where: where, Held: Held{Shown: "A pulse of a pump."}}
 		if !reflect.DeepEqual(got.Texts, []Text{text, line}) || len(got.Terms) != 0 || got.Counts[KindHeading] != 1 {
 			t.Errorf("under %q: Texts = %#v, Terms = %#v, Counts = %v; want the heading text, the term_line text and no term", c.heading, got.Texts, got.Terms, got.Counts)
 			continue
@@ -313,7 +324,7 @@ func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTerms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []Term{{Name: "heartbeat", Definition: "A pulse of a pump.", Where: where}}
+		want := []Term{{Name: "heartbeat", Definition: "A pulse of a pump.", Where: where, NameHeld: Held{Shown: "heartbeat"}, DefinitionHeld: Held{Shown: "A pulse of a pump."}}}
 		if !reflect.DeepEqual(got.Terms, want) || len(got.Texts) != 0 || got.Counts[KindHeading] != 0 {
 			t.Errorf("under %q: Terms = %#v, Texts = %#v, Counts = %v; want the term heartbeat and no text", heading, got.Terms, got.Texts, got.Counts)
 		}

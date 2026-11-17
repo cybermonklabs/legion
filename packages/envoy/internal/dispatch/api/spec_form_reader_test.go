@@ -191,14 +191,17 @@ var formContainers = []struct {
 // the set of statements that the form judges, and the set of checks that the results read lists is
 // the set of claims that the form judges. Each document also holds a block at the top level, which
 // both read, so an empty set on both sides cannot pass for a match; in a code fence or a table cell
-// the block is no block for both. Each block holds a link, and the text that the form judges, its
-// excerpt, is the text that the page shows: the words of the block in the tree that the page is
-// drawn from (pmdoc.ReadForDisplay), as the application reads them (pmdoc.TextContent). The address
-// is no part of it, and it breaks no rule as words: a stop in it, or a number sign.
+// the block is no block for both. Each block holds a link and code font. The words that the
+// reference rules judge are the text that the page shows: the words of the block in the tree that
+// the page is drawn from (pmdoc.ReadForDisplay), as the application reads them (pmdoc.TextContent).
+// The words that the rules of a sentence judge, a finding's excerpt, are that text with its code in
+// code font. The address is no part of either, and it breaks no rule as words: a stop in it, or a
+// number sign. Code font hides no number sign from the reference rules (the claim's one finding),
+// and a stop in code font breaks no rule of a sentence (the statement's one finding).
 func TestTheFormJudgesEachBlockThatTheApplicationLists(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	const statement = "Dispatch keeps each [record](https://example.com/Web.Config). Dispatch reads each record. Dispatch shows each record."
-	const claim = "Legion merges each [change](https://example.com/guide#12), as #12 says."
+	const statement = "Dispatch keeps each [record](https://example.com/Web.Config) in `Web.Config`. Dispatch reads each record. Dispatch shows each record."
+	const claim = "Legion merges each [change](https://example.com/guide#12), as `#`12 says."
 	if len(formContainers) < 20 {
 		t.Fatalf("%d places, want at least 20", len(formContainers))
 	}
@@ -246,8 +249,17 @@ func TestTheFormJudgesEachBlockThatTheApplicationLists(t *testing.T) {
 			for _, read := range []specFormRead{specRead, checksRead} {
 				markdown := versionText(t, tree.database, read.ArtifactID, read.Version)
 				for _, finding := range read.Findings {
-					if shown := pageText(markdown, finding.Node); finding.Excerpt != shown {
-						t.Errorf("%s: the form judges %q, and the page shows %q", finding.Node, finding.Excerpt, shown)
+					if shown := pageText(markdown, finding.Node); strings.ReplaceAll(finding.Excerpt, "`", "") != shown || !strings.Contains(finding.Excerpt, "`") {
+						t.Errorf("%s: the rules of a sentence judge %q, and the page shows %q with its code in code font", finding.Node, finding.Excerpt, shown)
+					}
+				}
+				extracted, err := specform.ExtractDocument(read.Name, read.Version, markdown)
+				if err != nil {
+					t.Fatalf("read %s version %d: %v", read.Name, read.Version, err)
+				}
+				for _, text := range extracted.Texts {
+					if shown := pageText(markdown, text.Node); text.Held.Shown != shown {
+						t.Errorf("%s: the reference rules judge %q, and the page shows %q", text.Node, text.Held.Shown, shown)
 					}
 				}
 			}

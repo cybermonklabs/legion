@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -77,17 +79,100 @@ func TestTheRequestJudgesNoOtherProse(t *testing.T) {
 	})
 }
 
+// The red team's inputs of this round, through the approval request route: a name or the address
+// of a record that code font splits is refused as the page shows it, and so is one wholly in code
+// font; a definition wholly in its footnote opens; an address that the words show is one word of a
+// sentence; the address of a pull request whose host is in capitals is refused.
+func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireFormRows(t, tree, []formRow{
+		{name: "one part of a name in code font", spec: formRequirement("code-one", "Dispatch asks `Ada` Lovelace."),
+			want: []string{"statement code-one person"}},
+		{name: "both parts of a name in code font", spec: formRequirement("code-both", "Dispatch asks `Ada` `Lovelace`."),
+			want: []string{"statement code-both person"}},
+		{name: "the middle of a name in code font", spec: formRequirement("code-middle", "Dispatch asks A`da Love`lace."),
+			want: []string{"statement code-middle person"}},
+		{name: "the address of a record split by code font", spec: formRequirement("code-record", "Dispatch keeps `dispatch://AC`ME-12."),
+			want: []string{"statement code-record dispatch-link"}},
+		{name: "a name wholly in code font", spec: formRequirement("code-name", "Dispatch asks `Ada Lovelace`."),
+			want: []string{"statement code-name person"}},
+		{name: "a definition wholly in its footnote", spec: "## Terms\n\n- **lease**: [^a]\n\n[^a]: One record of a claim.\n",
+			reads: specform.KindDefinition},
+		{name: "an address in a sentence", spec: formRequirement("url", "Dispatch opens https://example.com/Web.Config."),
+			reads: specform.KindStatement},
+		{name: "an address at the end of a sentence", spec: formRequirement("url-end", "Dispatch opens https://example.com/Web.Config. Dispatch shows it."),
+			reads: specform.KindStatement},
+		{name: "an address in brackets", spec: formRequirement("url-brackets", "Dispatch opens the record (https://example.com/Web.Config)."),
+			reads: specform.KindStatement},
+		{name: "an address with a query string", spec: formRequirement("url-query", "Dispatch opens https://example.com/Web.Config?view=Raw.Text."),
+			reads: specform.KindStatement},
+		{name: "the address of a pull request whose host is in capitals", spec: formRequirement("pr", "Dispatch shows [the change](https://GITHUB.COM/acme/repo/pull/12)."),
+			want: []string{"statement pr pull-request"}},
+		{name: "the control: a host that ends in github.com", spec: formRequirement("other-host", "Dispatch shows [the change](https://notgithub.com/acme/repo/pull/12)."),
+			reads: specform.KindStatement},
+	})
+}
+
 // unreadableMarkdown is markdown that today's parser refuses, as a version that an earlier release
 // stored outside the schema.
 const unreadableMarkdown = "<div>\nblock HTML\n</div>\n"
 
-// storeUnreadableVersion writes unreadableMarkdown over version of the document, as only an edit
-// of the database can: no route stores it.
+// storeUnreadableVersion writes unreadableMarkdown over version of the document by SQL. A browser
+// edit can store such a version too (TestABrowserEditCanStoreAVersionThatDispatchCannotRead), and
+// SQL puts one at any version with no document socket.
 func storeUnreadableVersion(t *testing.T, database *store.Store, artifactID string, version int) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`,
 		artifactID, version, unreadableMarkdown); err != nil {
 		t.Fatalf("store an unreadable version: %v", err)
+	}
+}
+
+// A browser edit through the document socket can store a version that the parser refuses:
+// settlement stores the editor's tree as it renders it, and reads nothing back. Here the editor
+// moves the text of a callout in a list item into a footnote definition in the callout. The
+// request and the person's approval of that version are refused with the finding unreadable,
+// which names the version and the way out, and the read route says that the approval is refused.
+func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{specRoots: "ACME-1", documentSocket: true})
+	tree := seedSpecFormTree(t, handler, database, deps)
+	issue := createFormIssue(t, tree.handler, tree.root, "A spec that a browser edits", "# Spec\n\n"+
+		formRequirement("clean", "Dispatch shows each record.")+"\n- Lead.\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  Gone.\n  :::\n")
+	peer := connectBrowserPeer(t, deps.Docs.(*docs.Service), issue.PrimaryArtifactID)
+	peer.edit(t, func(tree *pmdoc.Node) error {
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+			if node.Type != "callout" {
+				return true
+			}
+			node.Children = []*pmdoc.Node{{Type: "footnote_definition", Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: "moved", "label": "n"}, Children: node.Children}}
+			return false
+		})
+		return nil
+	})
+	// The last peer's settlement is done when the server lets its connection go.
+	peer.closeAndWait(t)
+	if _, err := pmdoc.ParseRendering(versionText(t, database, issue.PrimaryArtifactID, 2)); err == nil {
+		t.Fatal("the browser edit stored a version 2 that the parser reads; the test needs one that it refuses")
+	}
+	const finding = "- document spec.md in spec.md version 2: Dispatch cannot read this version ("
+	const wayOut = "so it cannot judge its texts. Write a new version of the document."
+	for _, test := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+	}{
+		{"the request", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)},
+		{"the person's approval", reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "approved", "")},
+	} {
+		body := decodeBody[map[string]any](t, test.response)
+		message, _ := body["error"].(string)
+		if test.response.Code != http.StatusConflict || body["code"] != "SPEC_FORM" || !strings.Contains(message, finding) || !strings.Contains(message, wayOut) {
+			t.Errorf("%s: status=%d body=%s, want 409 SPEC_FORM with %q and %q", test.name, test.response.Code, test.response.Body.String(), finding, wayOut)
+		}
+	}
+	read := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/spec-form", nil, "alice")
+	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || body["version"] != float64(2) || body["refuses_approval"] != true ||
+		!strings.Contains(read.Body.String(), `"rule":"unreadable"`) {
+		t.Errorf("the read route: status=%d body=%s, want 200 for version 2, refuses_approval and the rule unreadable", read.Code, read.Body.String())
 	}
 }
 

@@ -42,9 +42,9 @@ var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".
 type Rule string
 
-// Text is one text of The Spec: the words that a person reads (Body), and what its node holds
-// that the person does not read as its words (Held). Where is "<file>:<line>" or "<document>
-// version <n>".
+// Text is one text of The Spec: the words that a person reads, with code in code font (Body), and
+// what its node holds beside them (Held). The rules of a sentence and the port of ste-lint read the
+// Body, since ste-lint reads code font. Where is "<file>:<line>" or "<document> version <n>".
 type Text struct {
 	Node  string
 	Kind  Kind
@@ -53,11 +53,13 @@ type Text struct {
 	Held  Held
 }
 
-// Held is what a text holds beside the words that a person reads: the address and the title of
-// each of its links and images. Only the reference rules read it: each address as an address, and
-// each title as words.
+// Held is what the reference rules read of a text: the words exactly as the page shows them, with
+// no mark of code font (Shown), and the address and the title of each of its links and images. The
+// reference rules read the shown words and each title as words, and each address as an address. A
+// text that a caller writes with no Shown is shown as its Body.
 type Held struct {
 	Addresses, Titles []string
+	Shown             string
 }
 
 // with is held and each address and title of more that held does not hold yet.

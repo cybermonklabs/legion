@@ -64,10 +64,12 @@ var (
 	// digits, the word "number" and digits, an incident's key or date, and a pull request's
 	// <owner>/<repo>#<digits>. A bare number after the words is a count, such as "each pull request
 	// 10 minutes after", and names nothing. pullRequestAddress is the address of a pull request,
-	// the one form of a name that an address holds.
+	// the one form of a name that an address holds (its group 1): its host is github.com or
+	// www.github.com in any case, as a host has no case, at the start of the text or after a
+	// character that no host holds, so github.com at the end of another host names nothing.
 	incident           = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
 	pullRequestName    = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|#\d+`)
-	pullRequestAddress = regexp.MustCompile(`github\.com/[\w.-]+/[\w.-]+/pull/\d+`)
+	pullRequestAddress = regexp.MustCompile(`(?:^|[^\w.-])((?i:(?:www\.)?github\.com)/[\w.-]+/[\w.-]+/pull/\d+)`)
 	// email is an e-mail address: its domain's last label is letters, so a version after an at
 	// sign, as in "checker@v1.2.3", is no address.
 	email  = regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)
@@ -87,11 +89,12 @@ type broken struct {
 }
 
 // breaks is each rule of R49 that text breaks, once for each detail: the form rules for the
-// kinds that are prose of The Spec, then the four reference rules for every kind, on the words of
-// the text, on each title it holds, as words, and on each address it holds, as an address. A line
-// under Terms that is no term line (Kind line) breaks the one rule term-line, and a heading that
-// reads as Terms in another form (Kind heading) the one rule terms-heading, and no other. people
-// is the name of each signed-in person (peopleNames).
+// kinds that are prose of The Spec, on the words with code in code font (Body), then the four
+// reference rules for every kind, on the words exactly as the page shows them (Held.Shown), on
+// each title it holds, as words, and on each address it holds, as an address. A line under Terms
+// that is no term line (Kind line) breaks the one rule term-line, and a heading that reads as
+// Terms in another form (Kind heading) the one rule terms-heading, and no other. people is the
+// name of each signed-in person (peopleNames).
 func breaks(c Context, people [][]string, text Text) []broken {
 	switch text.Kind {
 	case KindLine:
@@ -99,12 +102,15 @@ func breaks(c Context, people [][]string, text Text) []broken {
 	case KindHeading:
 		return []broken{{ruleTermsHeading, termsHeadingDetail}}
 	}
-	line := oneLine(text.Body)
 	var found []broken
 	if text.Kind != KindFailingExample && text.Kind != KindName && text.Kind != KindTerm {
-		found = append(found, formBreaks(text.Kind, line)...)
+		found = append(found, formBreaks(text.Kind, oneLine(text.Body))...)
 	}
-	found = append(found, referenceBreaks(c, people, line, false)...)
+	shown := text.Held.Shown
+	if shown == "" {
+		shown = text.Body
+	}
+	found = append(found, referenceBreaks(c, people, oneLine(shown), false)...)
 	for _, title := range text.Held.Titles {
 		found = append(found, referenceBreaks(c, people, oneLine(title), false)...)
 	}
@@ -199,8 +205,8 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 		}
 	}
 	var pullRequests []span
-	for _, match := range pullRequestAddress.FindAllStringIndex(line, -1) {
-		pullRequests = append(pullRequests, span{start: match[0], end: match[1]})
+	for _, match := range pullRequestAddress.FindAllStringSubmatchIndex(line, -1) {
+		pullRequests = append(pullRequests, span{start: match[2], end: match[3]})
 	}
 	if !address {
 		for _, match := range pullRequestName.FindAllStringIndex(line, -1) {

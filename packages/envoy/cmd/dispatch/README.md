@@ -4728,9 +4728,13 @@ The reviewer of R25 reads each text for what these rules cannot refuse.
   A block in a code block or in a table cell is no block.
   Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
   A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule.
-  The rules of links, of the names of records and of people also read each address and title of a link or an image.
+  The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
+  The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
+  So code font hides no name or link, also when it holds the whole name or a part of it.
+  These rules also read each address and title of a link or an image.
   An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
   A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
+  A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
   A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
 
 - How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
@@ -4743,6 +4747,8 @@ The reviewer of R25 reads each text for what these rules cannot refuse.
   Nothing in code font ends a sentence.
   A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
   Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+  An address that the words show, such as `https://example.com/Web.Config`, is one word, so no stop in it breaks this rule.
+  A stop after the address ends the sentence.
   A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
   `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
   Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
@@ -4755,6 +4761,7 @@ The reviewer of R25 reads each text for what these rules cannot refuse.
 A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
 - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
+  The host of that address is `github.com` or `www.github.com` in any case, and a host that only ends in `github.com` is another host.
   `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
   A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
   So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
@@ -4799,6 +4806,7 @@ This refusal helps an honest writer, and it has a limit.
 Dispatch refuses no such line while no definition defines its name, and it cannot see a later request.
 So a later definition of that name under `Terms` is approved, and the document with the line is refused at its next request.
 No program refuses a definition in prose, so the reviewer reads each statement for a term that it uses with another meaning.
+The name of a term is its bold text as the page shows it, so code font makes no second name: `` `lease` `` and `lease` are one term.
 After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
 It holds at least one letter or digit.
 A name with another character, or with no letter and no digit, breaks the form (rule `term-name`).
@@ -4806,8 +4814,12 @@ The finding names each such character with its code point.
 So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>`, `limit's wait` and an empty name.
 A full-width letter or a ligature folds to its plain letters.
 
-- When Dispatch cannot read a version: an earlier release can store a version that today's parser refuses, and no route stores one now.
+- When Dispatch cannot read a version: a browser edit through the socket of a document can store a version that today's parser refuses.
+  An earlier release can store one too.
+  Settlement stores the markdown of the editor's tree, and it does not read that markdown back.
+  An example is a footnote that the editor moves into a callout in a list item.
   A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
+  So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding and its way out.
   Another approved document under the root whose latest approved version Dispatch cannot read refuses nothing.
   Each answer names it in `unread`, one line for each.
   A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
@@ -4815,6 +4827,9 @@ A full-width letter or a ligature folds to its plain letters.
   No rule compares the texts of that version, so its component names are no nouns of the system.
   Its terms are no part of the list either, and its line in `unread` says that the list can lack them.
   The way out of both is a new version of that document, and for the approved document its approval.
+  Under a root, Dispatch refuses the approval of such a version.
+  So such an approved version comes from an approval outside a root or from an earlier release.
+  The page shows the `unread` lines only in a refusal, because the header and the cards of a request do not read the form.
   When two such approved documents hold definitions, each one refuses the new version of the other that holds a definition.
   So write the new version of one of them first with no definition, and the finding says so.
   When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.

@@ -27,8 +27,8 @@ var (
 	componentHeading = regexp.MustCompile("^(.+?) \\((?:component|interface) `([^`]+)`\\)$")
 	purposeLine      = regexp.MustCompile(`^Purpose of ([^\s:]+): (.+)$`)
 	// definitionTail is what follows the bold term of a term line ("- **<term>**: <definition>"):
-	// a colon, one space and the definition.
-	definitionTail = regexp.MustCompile(`^: (.+)$`)
+	// a colon, one space and the definition, which can stand wholly in its footnote.
+	definitionTail = regexp.MustCompile(`^: (.*)$`)
 )
 
 // extraction is ExtractDocument's state: what it read, the bodies each node and kind had, the
@@ -92,8 +92,11 @@ func (e *UnreadableError) Finding() Finding {
 // a text of The Spec wherever the application reads one, also in a block quote, a list item or a
 // callout, and nothing in code is. Each text is the text that a person reads (inline): a link is
 // its words, an image its alternative text, a character reference its character and a hard break
-// a space, and code keeps its code font. Each address and title of its links and images is held
-// beside the words (Held), and the footnote that it refers to is part of it.
+// a space. Its Body keeps code in code font, for the rules of a sentence and ste-lint, and its
+// Held.Shown is the same words exactly as the page shows them, for the reference rules. Each
+// address and title of its links and images is held beside the words (Held), and the footnote that
+// it refers to is part of it. The run and the negative_control of a check are attributes, which a
+// text holds as they are written.
 //
 // The texts are each requirement block (a statement, of its paragraphs), each entry line of the
 // how-to (a statement, of its bold text), each check block (a claim of its paragraphs, a procedure
@@ -211,7 +214,7 @@ func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 	if component == nil {
 		return
 	}
-	heading.words = component[1]
+	heading = heading.part(0, len(heading.words)-len(component[1]))
 	name, held := e.text(heading)
 	e.add(component[2], KindName, name, held)
 	if len(after) > 0 && after[0].Type == "paragraph" {
@@ -226,7 +229,7 @@ func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 func (e *extraction) paragraph(node *pmdoc.Node) {
 	paragraph := e.read(node.Children)
 	if match := purposeLine.FindStringSubmatch(paragraph.words); match != nil {
-		paragraph.words = match[2]
+		paragraph = paragraph.part(len(paragraph.words)-len(match[2]), 0)
 		body, held := e.text(paragraph)
 		e.add(match[1], KindPurpose, body, held)
 		return
@@ -256,8 +259,10 @@ func (e *extraction) listItem(node *pmdoc.Node, list string) {
 // itemLine reads the first paragraph of a list item of list: bold text, its id in code font and
 // " · under:" are an entry line, a statement of the bold text. Bold text, ": " and a definition in
 // an item of a bullet list are a term line: under a heading Terms a term, and elsewhere a text of
-// Kind term_line (termLineElsewhere). Under a heading Terms any other item is a line. A footnote
-// of a term line is part of its definition.
+// Kind term_line (termLineElsewhere). Under a heading Terms any other item is a line. The name of a
+// term is its bold text as the page shows it, so code font makes no second name of a term (R50). A
+// footnote of a term line is part of its definition before the line is read, so a definition can
+// stand wholly in its footnote.
 func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	lead, rest := strongLead(paragraph.Children)
 	strong, after := e.read(lead), e.inline(rest)
@@ -270,13 +275,17 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	}
 	if strong.words != "" && list == "bullet_list" {
 		if match := definitionTail.FindStringSubmatch(after.words); match != nil {
-			if words := strings.TrimSpace(match[1]); words != "" {
-				definition, held, footnotes := e.noted(reading{words: words, notes: append(slices.Clip(strong.notes), after.notes...), held: after.held})
+			tail := after.part(len(after.words)-len(match[1]), 0)
+			tail.words, tail.shown = strings.TrimSpace(tail.words), strings.TrimSpace(tail.shown)
+			tail.notes = append(slices.Clip(strong.notes), after.notes...)
+			if definition, held, footnotes := e.noted(tail); definition != "" {
 				if e.termsLevel == 0 {
-					e.termLineElsewhere(strong.words, definition, held)
+					e.termLineElsewhere(strong.shown, definition, held)
 					return
 				}
-				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where, NameHeld: strong.held, DefinitionHeld: held, Footnotes: footnotes})
+				nameHeld := strong.held
+				nameHeld.Shown = strong.shown
+				e.out.Terms = append(e.out.Terms, Term{Name: strong.shown, Definition: definition, Where: e.where, NameHeld: nameHeld, DefinitionHeld: held, Footnotes: footnotes})
 				e.out.Counts[KindDefinition]++
 				return
 			}
@@ -383,32 +392,47 @@ func strongLead(nodes []*pmdoc.Node) (lead, rest []*pmdoc.Node) {
 	return nodes[:end], nodes[end:]
 }
 
-// reading is inline content as a person reads it: its words, the key of each footnote that it
-// refers to, in order, and what it holds beside its words.
+// reading is inline content as a person reads it: its words, with code in code font, the same
+// words exactly as the page shows them (shown), the key of each footnote that it refers to, in
+// order, and what it holds beside its words.
 type reading struct {
-	words string
-	notes []string
-	held  Held
+	words, shown string
+	notes        []string
+	held         Held
 }
 
-// joined is readings read one after the other, their words parted by sep.
+// part is r cut to its words after the first before bytes and before the last after bytes. Its
+// shown words lose the same ends without their marks of code font. That is exact for the ends that
+// the forms of a text cut, whose code is an id in code font, and an end that it does not fit
+// leaves the shown words whole, so the reference rules read more and never less.
+func (r reading) part(before, after int) reading {
+	cutBefore := strings.ReplaceAll(r.words[:before], "`", "")
+	cutAfter := strings.ReplaceAll(r.words[len(r.words)-after:], "`", "")
+	r.words = r.words[before : len(r.words)-after]
+	r.shown = strings.TrimSuffix(strings.TrimPrefix(r.shown, cutBefore), cutAfter)
+	return r
+}
+
+// joined is readings read one after the other, their words parted by sep, and so are their shown
+// words.
 func joined(sep string, readings []reading) reading {
 	var out reading
-	var words []string
+	var words, shown []string
 	for _, each := range readings {
 		if each.words != "" {
-			words = append(words, each.words)
+			words, shown = append(words, each.words), append(shown, each.shown)
 		}
 		out.notes = append(out.notes, each.notes...)
 		out.held = out.held.with(each.held)
 	}
-	out.words = strings.Join(words, sep)
+	out.words, out.shown = strings.Join(words, sep), strings.Join(shown, sep)
 	return out
 }
 
 // text is the body of a text of readings, the words of each on a line, then the words of each
 // footnote that they refer to, once and in the order of the first reference, also a footnote
-// that a footnote refers to, and everything they hold.
+// that a footnote refers to, and everything they hold, with the same lines as the page shows them
+// (Held.Shown).
 func (e *extraction) text(readings ...reading) (string, Held) {
 	body, held, _ := e.noted(readings...)
 	return body, held
@@ -417,9 +441,9 @@ func (e *extraction) text(readings ...reading) (string, Held) {
 // noted is text, and how many footnotes gave words to the body.
 func (e *extraction) noted(readings ...reading) (string, Held, int) {
 	out := joined("\n", readings)
-	var lines []string
+	var lines, shown []string
 	if out.words != "" {
-		lines = append(lines, out.words)
+		lines, shown = append(lines, out.words), append(shown, out.shown)
 	}
 	footnotes := 0
 	seen := map[string]bool{}
@@ -432,12 +456,13 @@ func (e *extraction) noted(readings ...reading) (string, Held, int) {
 		seen[key] = true
 		note := e.note(key)
 		if note.words != "" {
-			lines = append(lines, note.words)
+			lines, shown = append(lines, note.words), append(shown, note.shown)
 			footnotes++
 		}
 		out.notes = append(out.notes, note.notes...)
 		out.held = out.held.with(note.held)
 	}
+	out.held.Shown = strings.Join(shown, "\n")
 	return strings.Join(lines, "\n"), out.held, footnotes
 }
 
@@ -465,19 +490,23 @@ func (e *extraction) note(key string) reading {
 // its words.
 func (e *extraction) read(nodes []*pmdoc.Node) reading {
 	out := e.inline(nodes)
-	out.words = strings.TrimSpace(out.words)
+	out.words, out.shown = strings.TrimSpace(out.words), strings.TrimSpace(out.shown)
 	return out
 }
 
 // inline is inline content as a person reads it. Its words are each run's characters, which
 // already hold the character a reference names and no backslash of an escape, a link's words
 // without its address, an image's alternative text, a hard break as a space (a soft one is a
-// space in the tree), and code in code font, as ste-lint reads code. A footnote reference is no
-// word: the footnote is part of the text (note). It holds the address and the title of each link
-// and image.
+// space in the tree), and code in code font, as ste-lint reads code. Its shown words are the same
+// with code as its characters alone, as the page shows them. A footnote reference is no word: the
+// footnote is part of the text (note). It holds the address and the title of each link and image.
 func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 	var out reading
-	var words strings.Builder
+	var words, shown strings.Builder
+	write := func(text string) {
+		words.WriteString(text)
+		shown.WriteString(text)
+	}
 	for index := 0; index < len(nodes); {
 		node := nodes[index]
 		if node.Type == "text" && hasMark(node, "inlineCode") {
@@ -487,30 +516,31 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 				out.held = linkHeld(out.held, nodes[index])
 			}
 			words.WriteString(codeSpan(code.String()))
+			shown.WriteString(code.String())
 			continue
 		}
 		out.held = linkHeld(out.held, node)
 		switch node.Type {
 		case "text":
-			words.WriteString(node.Text)
+			write(node.Text)
 		case "hardbreak":
-			words.WriteByte(' ')
+			write(" ")
 		case "image":
 			alt, _ := node.Attrs["alt"].(string)
 			src, _ := node.Attrs["src"].(string)
 			title, _ := node.Attrs["title"].(string)
-			words.WriteString(alt)
+			write(alt)
 			out.held = out.held.withAddress(src).withTitle(title)
 		case "footnote_reference":
 			label, _ := node.Attrs["label"].(string)
 			out.notes = append(out.notes, pmdoc.FootnoteLabelKey(label))
 		case "html":
 			value, _ := node.Attrs["value"].(string)
-			words.WriteString(value)
+			write(value)
 		}
 		index++
 	}
-	out.words = words.String()
+	out.words, out.shown = words.String(), shown.String()
 	return out
 }
 

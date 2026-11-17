@@ -26,6 +26,10 @@ const openingMarks = "\"'\u201c\u2018(["
 // initialism is a word of single letters, each with its stop, such as "U.S." or "e.g.".
 var initialism = regexp.MustCompile(`^(?:\pL\.){2,}$`)
 
+// addressStart is the start of an address that the words show: a scheme and "//", or "www.", as
+// in "https://example.com/Web.Config" or "www.example.com/Web.Config".
+var addressStart = regexp.MustCompile(`(?i)^(?:[a-z][a-z0-9+.-]*://|www\.)`)
+
 // sentencesOf is each sentence of line, as its words, that a rule of the form counts. It is the
 // one place that says where a sentence ends: after a word that ends in ".", "!" or "?" and then
 // any closing marks (endsSentence), since white space or the end of the line follows each word.
@@ -60,16 +64,23 @@ func sentencesOf(line string) [][]string {
 // letter or a digit, which an upper-case letter follows with no space, after any closing marks,
 // such as "Web.Config" or "comment.Dispatch". Such a stop ends no sentence: the writer puts a
 // space after it, or puts the name in code font. An initialism holds none, and nor does ".NET".
+// An address that the words show holds none either: it is one word, as the address of a link is
+// no text of a sentence, and only its last stop can end the sentence (endsSentence).
 func stopsWithNoSpace(line string) []string {
 	var found []string
 	for _, words := range ste.Words(line) {
 		for _, word := range words {
-			if joinedStop(word) {
+			if !isAddress(word) && joinedStop(word) {
 				found = append(found, word)
 			}
 		}
 	}
 	return found
+}
+
+// isAddress reports whether word, without the marks that open it, is an address (addressStart).
+func isAddress(word string) bool {
+	return addressStart.MatchString(strings.TrimLeft(word, openingMarks))
 }
 
 // stopNoSpaceDetail is the detail of the rule stop-no-space for word: the place, and the two ways

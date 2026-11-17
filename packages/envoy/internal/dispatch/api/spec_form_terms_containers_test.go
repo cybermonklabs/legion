@@ -340,8 +340,9 @@ func TestTheWayOutOfTwoUnreadableDocumentsIsAVersionWithNoDefinition(t *testing.
 // The candidate inputs of the second reader of this rule that no row above pins, each as its spec,
 // through the approval request route, with session in the list from the root's terms.md. A second
 // definition is refused wherever a person reads it as one: in a block quote or a callout under no
-// heading Terms as a term line, under a heading Terms of a footnote, and under another case or a
-// link of the name. A name in code font or with a Cyrillic letter breaks term-name. A table, and
+// heading Terms as a term line, under a heading Terms of a footnote, under another case or a link
+// of the name, and in code font, since a name is the name as the page shows it. A name with a
+// Cyrillic letter breaks term-name. A table, and
 // code that shows a heading Terms, hold no definition. The honest controls: a first definition
 // under a heading Terms in bold opens, and a definition whose footnote gives a source has two
 // sentences, with a finding that names the footnote.
@@ -369,8 +370,8 @@ func TestEachCandidateInputOfTheSecondReaderOnTheRoute(t *testing.T) {
 			want: []string{"definition Session term-second-definition"}},
 		{name: "a linked name", markdown: "# Spec\n\n## Terms\n\n- **[session](https://example.com/session)**: One saved process.\n",
 			want: []string{"definition session term-second-definition"}},
-		{name: "a code-font name", markdown: "# Spec\n\n## Terms\n\n- **`session`**: One saved process.\n",
-			want: []string{"definition `session` term-name"}},
+		{name: "a code-font name: the name as the page shows it, so one name with session", markdown: "# Spec\n\n## Terms\n\n- **`session`**: One saved process.\n",
+			want: []string{"definition session term-second-definition"}},
 		{name: "a visually similar name", markdown: "# Spec\n\n## Terms\n\n- **sessi\u043en**: One saved process.\n",
 			want: []string{"definition sessi\u043en term-name"}},
 		{name: "the honest control: a first definition under a bold heading Terms", markdown: "# Spec\n\n## **Terms**\n\n- **zephyr**: One warm wind.\n",
