@@ -147,6 +147,8 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     await askComposer.locator('button[type="submit"]').click();
     const askCard = needsYouCards(alicePage).filter({ hasText: "Why fox?" });
     await expect(askCard).toBeVisible();
+    // A needs-you card carries `data-margin-item` beside its section (`CommentsTab.tsx`), so
+    // this read of the card the wait above saw is never null; the check only narrows the type.
     const askId = await askCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("The selection-bar ask has no margin id.");
@@ -657,6 +659,8 @@ test("margin ask composer sends option choices that the inbox records as a selec
     // Read once the card has drawn with the id of the ask it holds, so the poll below asks the
     // server about the ask this card shows.
     await expect(createdCard).toHaveAttribute("data-margin-item", /./);
+    // The assertion above waited for a non-empty `data-margin-item`, so this read is never null
+    // and the check below only narrows the type.
     const askId = await createdCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("The created ask has no margin id.");

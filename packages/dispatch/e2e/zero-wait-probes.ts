@@ -13,7 +13,8 @@
  * and skipped opening the rail. The two are told apart by one thing only - whether the writer
  * said which it is - and this module is that rule's machine check.
  * `e2e/__tests__/zero-wait-probes.test.ts` is what runs it over the suite, and
- * `e2e/__tests__/zero-wait-loops.test.ts` holds it to the loops.
+ * `e2e/__tests__/zero-wait-loops.test.ts` and `e2e/__tests__/zero-wait-cases.test.ts` hold it to
+ * the loops and to a `switch`'s cases.
  *
  * THE RULE. A probe whose answer decides a path reads a state the page has settled on, or carries
  * a reason. The settled read is `settledState` of `e2e/settled.ts`: it reads its probes inside one
@@ -42,38 +43,73 @@
  * spec calls it: a spec's `if (await menuShows(page))` branches on the `isVisible` that a
  * helper's `menuShows` returns.
  *
- * WHAT DECIDES A PATH. From the probe the scan climbs through `await`, parentheses, `!`, the
- * comparisons `===`, `!==`, `==`, `!=`, `<`, `>`, `<=` and `>=`, and the logical `&&`, `||` and
- * `??`, and stops at the first condition of the kinds below that it reaches. The probe decides a
- * path when what the climb reaches is:
+ * WHAT DECIDES A PATH. The positions below are the places TypeScript's grammar gives a value to
+ * decide what runs next, and `conditionKind` enumerates them by the `SyntaxKind` of the node that
+ * holds the value, so a reader checks them against the grammar in one place. The list is the
+ * grammar's, not the forms found so far. A probe decides a path where its answer stands in one of
+ * them, in place or by the climb below, or is bound to a name that one of them reads later. Each
+ * is named in brackets as `DecidingProbe.position` names it:
  *
- * - the condition of an `if`, a `?:`, a `while`, a `do...while` or a `for`, so a loop bound such
- *   as `index < (await rows.count())` is reached by the same climb. An `if` whose only branch is a
- *   `throw`, with no `else`, is no decision: it picks no path but fails the row, as an assertion
- *   does;
- * - the iterable of a `for...of`, whose answer decides how many turns the loop runs: `for (const
- *   row of await rows.all())`, read before the page has drawn the rows, runs no turn, and a row
- *   whose assertions stand inside the loop passes without one of them run;
- * - the discriminant of a `switch`, whose answer picks the case that runs;
- * - the left operand of an `&&`, an `||` or a `??` whose own value is thrown away: the whole of
- *   an expression statement, read through parentheses, `await` and `void`, or the right operand
- *   of another such operator. A statement like that runs only for what it does, so its operator
- *   is a branch: `(await menu.isVisible()) && (await menu.click())` clicks or not on one
- *   instant's answer. In a chain `a && b && c` every operand but the last decides whether the
- *   rest runs. The last operand decides nothing, and an operator whose value is kept, as in
- *   `const label = (await menu.textContent()) ?? "none"`, is a value the climb hands on;
- * - the first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`, which decides
- *   how the row runs, where that argument is no string, template or function;
- * - the whole value bound to a plain name, by the initializer of a `const` or a `let` or by a
- *   plain `=`, where a later condition of any kind above refers to the name, in the same function
- *   as the binding: `const shown = await menu.textContent()` read by `shown === "Menu" ? ... :
- *   ...` below it, `const items = await rows.all()` walked by `for (const item of items)` below
- *   it, or `shown = await menu.isVisible()` read by `if (shown)` below it. The condition of a
- *   `while` or a `for` whose body holds the assignment counts as later too, though it stands
- *   above it, because the loop tests it again after the body has run.
+ * - the condition of an `if`, a `?:`, a `while`, a `do...while` or a `for` [`if`, `ternary`,
+ *   `while`, `do-while`, `for`]. An `if` whose only branch is a `throw` is one too: a zero-wait
+ *   read that throws fails the row on one instant's answer, the same flake as a wrong branch;
+ * - the iterable of a `for...of` and the object of a `for...in` [`for-of`, `for-in`], whose answer
+ *   decides how many turns the loop runs: `for (const row of await rows.all())`, read before the
+ *   page has drawn the rows, runs no turn, and a row whose assertions stand inside the loop passes
+ *   without one of them run;
+ * - the discriminant of a `switch` and the expression of each of its `case`s [`switch`, `case`],
+ *   which pick the case that runs;
+ * - the left operand of an `&&`, an `||` or a `??` whose right operand runs code [`&&`, `||`,
+ *   `??`], whatever the operator's own value goes on to - a statement, a `return`, an arrow's body
+ *   or an argument - since the left operand decides whether the right one runs:
+ *   `(await menu.isVisible()) && (await menu.click())` clicks or not on one instant's answer. An
+ *   operand runs code where it holds, outside any function or class written in it, a call, a
+ *   `new`, an `await`, a tagged template, a `delete`, a `++` or `--`, a `yield` or an assignment.
+ *   A right operand of literals, names and property reads runs nothing and only picks a value, as
+ *   in `(await head.getAttribute("href")) ?? ""`, so there the climb carries the value on;
+ * - the target of an `&&=`, an `||=` or a `??=` [`&&=`, `||=`, `??=`], whose value decides whether
+ *   the right side runs. No probe call can stand there, but a name bound to an answer can, as in
+ *   `shown ||= await menu.click()`;
+ * - what an optional chain reads with `?.` where the rest of the chain runs code [`?.`]: a call
+ *   anywhere in it, or code in an element access's key, as in
+ *   `(await menu.getAttribute("href"))?.startsWith("/")`;
+ * - the source of a destructuring whose pattern holds a default that runs code [`default`]: in
+ *   `const [first = fallback()] = await rows.all()` a missing element decides whether the default
+ *   runs;
+ * - the first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail` [`test.skip` and
+ *   its kin], where it is no string, template or function. No grammar names it: Playwright's API
+ *   decides by it how the row runs.
  *
- * Anything else decides no path of this rule's: a probe returned, stored as data, or handed to
- * `expect(...)`, which asserts what the row reads rather than branching on it.
+ * The climb goes up from the probe while the parent's value is computed from the node below it,
+ * and stops at the first position it reaches: through `await`, parentheses, `as`, `satisfies`,
+ * `<T>`, a non-null `!`, the unary `!`, `-`, `+` and `~`, `typeof`, either operand of a binary
+ * operator but the comma and the assignments, the right operand of a comma or of an assignment,
+ * whose value the whole expression takes, either branch of a `?:`, a template literal the answer
+ * is written into, and a property or an element read on the answer, as in
+ * `(await rows.all()).length` or `(await rows.allTextContents())[0]`, where that read is not
+ * called. A method called on the answer passes it into a function, the first of WHAT IT DOES NOT
+ * SEE. `carrier` enumerates these by `SyntaxKind` as `conditionKind` does the positions.
+ *
+ * A name is bound to the answer where the climb reaches the initializer of a declaration
+ * (`const`, `let`, `var` or `using`) of a plain name or of a pattern, every name in the pattern
+ * counting, as in `const [first] = await rows.all()` or `const { length } = await rows.all()`; a
+ * parameter's default, as in `async function open(menu: Locator, shown = menu.isVisible())`; a
+ * pattern element's default; or the right side of an assignment of any operator (`=`, `+=`, `&&=`,
+ * `||=`, `??=` and the rest) to a name or to an array or object pattern. A target that is a
+ * property or an element binds no name. A position reads the name later where it stands:
+ *
+ * - in the binding's function, written after the binding; or, for an assignment, in a part of a
+ *   loop of that function that runs on every turn - its condition, a `for`'s update, its body -
+ *   where that part or another of the same loop holds the assignment, since a later turn reads
+ *   what an earlier one assigned. The function of an assignment is the outermost one around it
+ *   that declares the name, or the file where the file does or no function does, so a closure
+ *   that assigns a name of the function around it is read against that function;
+ * - in a function nested inside the binding's, wherever it is written, since a closure runs after
+ *   the binding.
+ *
+ * Such a probe's position is written `const shown -> ternary@42`: how the name is bound (`const`,
+ * `let`, `var`, `using`, `param`, `default`, or the assignment's operator), the names read, and
+ * the kind and the line of each position that reads one.
  *
  * WHAT IS SKIPPED. A probe inside a function literal that something else calls at a moment of its
  * own, because its answer is not taken at an instant the row picked:
@@ -97,37 +133,43 @@
  * `x.isVisible(...)`, a locator or another object, is asked for its reason rather than skipped. No
  * type checker is needed for that, so the scan parses files and builds no program.
  *
- * What it does NOT see. Each of these but the last is a probe that decides a path and passes
- * unread:
+ * WHAT IT DOES NOT SEE. Three kinds of data flow, which a syntactic check cannot follow: each
+ * needs to know what a function does with a value, or where a value is read again under another
+ * name. A probe whose answer reaches a position only through one of them passes unread, and a
+ * pass here is a claim about everything else:
  *
- * - a probe reached through a name it does not know: a method destructured off a locator,
- *   `const { isVisible } = menu`, or a member written in brackets, `menu["isVisible"]()`, or any
- *   other computed property;
- * - an alias: a name bound to a probe or a wrapper rather than to its answer, `const shows =
- *   menuShows` or `const visible = menu.isVisible.bind(menu)`;
- * - a wrapper that returns a probe through a variable - `const shown = await menu.isVisible();
- *   return shown;` - and a wrapper that is a method, a `let` or a `var`, or that returns a call
- *   of another wrapper, since a call of a wrapper is a probe for judging and not for collecting;
- * - an answer that leaves the climb: `Boolean(await menu.isVisible())`, `(await rows.count()) - 1`,
- *   `(await rows.all()).slice(1)` walked by a `for...of`, an answer passed to a function that
- *   branches on it, a name copied into another name, or a name tested in a condition of a
- *   function nested inside the binding's own;
- * - an answer stored anywhere but in a plain name, or by any operator but `=`: a property,
- *   `state.shown = await menu.isVisible()`, a destructuring, or `shown ||= await
- *   menu.isVisible()`;
- * - a logical operator whose value is kept, though its left operand still decides whether its
- *   right one runs: `return (await menu.isVisible()) && (await menu.click())`, an arrow whose
- *   expression body is one, or an operand of a comma, each of which the scan reads as a value;
- * - shadowing of a name, and any other name read by its spelling rather than by its binding,
- *   since the scan models no scope and reads the order things run in from the text alone: a
- *   function of one file named like a wrapper of another is read as that wrapper, a condition
- *   that refers to an inner binding named like a name a probe's answer is bound to is read as
- *   referring to that name, a condition below an assignment is read as running after it even
- *   where it cannot, as in the other branch of an `if`, and a function passed to `expect.poll`
- *   by its name rather than written there is read as any function is. These read too much rather
- *   than too little, and a reason or a rename answers each.
+ * - an answer passed into a function or returned from one: a call's argument, as in
+ *   `Boolean(await menu.isVisible())` or `expect(await rows.count())`; a method called on the
+ *   answer, as in `(await rows.all()).map(...)`, whose callback runs once per element, or
+ *   `(await rows.all()).slice(1)` walked by a `for...of`; a `new` or a tagged template it is
+ *   handed to; a `return`, a `yield` or a `throw` that hands it out, or an arrow's expression
+ *   body; and a getter that a property read on it runs. A function that returns a probe is a
+ *   wrapper whose calls are probes (WHAT A PROBE IS), but a wrapper that returns the answer
+ *   through a variable - `const shown = await menu.isVisible(); return shown;` - a wrapper that
+ *   is a method, a `let` or a `var`, and one that returns another wrapper's call are not
+ *   collected;
+ * - an answer kept in an object property or an array element: `state.shown = await
+ *   menu.isVisible()`, `{ shown: await menu.isVisible() }`, `[await rows.count()]`, a spread into
+ *   an array, and an answer used as the key that picks or names one, as in `handlers[await
+ *   menu.getAttribute("data-kind")]` or `{ [await menu.textContent()]: true }`;
+ * - an answer read through another alias: a name copied into another name, `const ok = shown`; a
+ *   name bound to a probe or a wrapper rather than to its answer, `const shows = menuShows` or
+ *   `menu.isVisible.bind(menu)`; a method destructured off a locator, `const { isVisible } =
+ *   menu`; a member written in brackets, `menu["isVisible"]()`, or any other computed one; and a
+ *   name another file imports from the file that binds it.
  *
- * A pass here is a claim about the shapes above and about nothing else.
+ * WHERE IT READS TOO MUCH. These refuse a probe that may decide nothing, and no probe passes
+ * through them; a reason or a rename answers each:
+ *
+ * - shadowing, and every other name read by its spelling rather than by its binding, since the
+ *   scan models no scope: a function of one file named like a wrapper of another is read as that
+ *   wrapper, a position that refers to an inner binding named like a name an answer is bound to is
+ *   read as reading that name, and an assignment is read against the outermost function that
+ *   declares its name;
+ * - the order things run in, read from the text: a position written below a binding is read as
+ *   running after it even where it cannot, as in the other branch of an `if`;
+ * - a function passed to `expect.poll` by its name rather than written there, which is read as
+ *   any function is.
  *
  * `probesOfFiles` reads the file system and everything else here is pure over its arguments: no
  * environment, no network, no database and no server, so any process may call it.
@@ -150,11 +192,11 @@ export type DecidingProbe = {
   column: number;
   /** What is called: the method, `isVisible`, or the name of a wrapper, `menuShows`. */
   name: string;
-  /** What the answer decides, as WHAT DECIDES A PATH reads it: `if`, `ternary`, `while`,
-   *  `do-while`, `for`, `for-of`, `switch`, `&&`, `||` or `??` for the operator whose right
-   *  operand it decides, `test.skip` and its kin, or `const shown -> ternary@42` for a name bound
-   *  to the answer (`let` and `assign` for the other two bindings), with the kind and the line of
-   *  each condition that refers to it. */
+  /** What the answer decides, as WHAT DECIDES A PATH names it: the position the climb reaches,
+   *  `if`, `ternary`, `while`, `do-while`, `for`, `for-of`, `for-in`, `switch`, `case`, `&&`,
+   *  `||`, `??`, `&&=`, `||=`, `??=`, `?.`, `default` or `test.skip` and its kin; or a name bound
+   *  to the answer, `const shown -> ternary@42`, with how it is bound, the names read and the kind
+   *  and the line of each position that reads one, bindings the climb passes joined by `; `. */
   position: string;
   /** The reason comment that ends on the line directly above the call, its markers stripped and
    *  its lines joined by a space; the empty string when no comment ends there. */
@@ -205,26 +247,27 @@ const pageSideCalls: ReadonlySet<string> = new Set([
 /** The members of `test` whose first argument decides how the row runs. */
 const testModifiers: ReadonlySet<string> = new Set(["skip", "fixme", "slow", "fail"]);
 
-/** The logical operators: each hands its left operand's answer on to whatever decides above it,
- *  and decides by it whether its right operand runs. */
+/** The logical operators: each decides by its left operand whether its right operand runs. */
 const logicalOperators: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.AmpersandAmpersandToken,
   ts.SyntaxKind.BarBarToken,
   ts.SyntaxKind.QuestionQuestionToken,
 ]);
 
-/** The operators the climb goes through: the comparisons and the logical operators, each of which
- *  hands the answer on to whatever decides above it. */
-const climbedOperators: ReadonlySet<ts.SyntaxKind> = new Set([
-  ts.SyntaxKind.EqualsEqualsEqualsToken,
-  ts.SyntaxKind.ExclamationEqualsEqualsToken,
-  ts.SyntaxKind.EqualsEqualsToken,
-  ts.SyntaxKind.ExclamationEqualsToken,
-  ts.SyntaxKind.LessThanToken,
-  ts.SyntaxKind.GreaterThanToken,
-  ts.SyntaxKind.LessThanEqualsToken,
-  ts.SyntaxKind.GreaterThanEqualsToken,
-  ...logicalOperators,
+/** The logical assignments: each decides by its target's value whether its right side runs. */
+const logicalAssignments: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
+/** The prefix operators the climb goes through, whose value is computed from their operand's.
+ *  `++` and `--` are not among them: their operand is a name or a property, never an answer. */
+const carriedPrefixes: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.ExclamationToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.TildeToken,
 ]);
 
 /** One file of the scan, parsed. */
@@ -385,103 +428,251 @@ function probeName(call: ts.CallExpression, wrappers: ReadonlySet<string>): stri
   return ts.isIdentifier(callee) && wrappers.has(callee.text) ? callee.text : undefined;
 }
 
-/** The expression the climb of WHAT DECIDES A PATH reaches from `probe`: the first condition it
- *  meets on the way up, or else the outermost expression it reaches. */
-function climb(probe: ts.Expression): ts.Expression {
-  let node = probe;
-  for (;;) {
-    if (conditionKind(node) !== undefined) return node;
-    const parent = node.parent;
-    if (
-      ts.isAwaitExpression(parent) ||
-      ts.isParenthesizedExpression(parent) ||
-      (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) ||
-      (ts.isBinaryExpression(parent) && climbedOperators.has(parent.operatorToken.kind))
-    ) {
-      node = parent;
-    } else {
-      return node;
+/** Whether `operator` is an assignment's: `=`, a compound one such as `+=`, or `&&=`, `||=` or
+ *  `??=`, the range the grammar's `SyntaxKind` gives them. */
+function isAssignment(operator: ts.SyntaxKind): boolean {
+  return operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment;
+}
+
+/** Whether `root` runs code, as WHAT DECIDES A PATH reads it: it holds, outside any function or
+ *  class written in it, a call, a `new`, an `await`, a tagged template, a `delete`, a `++` or a
+ *  `--`, a `yield`, or an assignment of any operator. Literals, names and property reads run
+ *  nothing the scan can see: the getter a property read may run is a function, the first of
+ *  WHAT IT DOES NOT SEE. */
+function runsCode(root: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found || isFunctionLike(node) || ts.isClassLike(node)) return;
+    switch (node.kind) {
+      case ts.SyntaxKind.CallExpression:
+      case ts.SyntaxKind.NewExpression:
+      case ts.SyntaxKind.AwaitExpression:
+      case ts.SyntaxKind.TaggedTemplateExpression:
+      case ts.SyntaxKind.DeleteExpression:
+      case ts.SyntaxKind.YieldExpression:
+        found = true;
+        return;
+      case ts.SyntaxKind.PrefixUnaryExpression:
+      case ts.SyntaxKind.PostfixUnaryExpression: {
+        const { operator } = node as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression;
+        if (
+          operator === ts.SyntaxKind.PlusPlusToken ||
+          operator === ts.SyntaxKind.MinusMinusToken
+        ) {
+          found = true;
+          return;
+        }
+        break;
+      }
+      case ts.SyntaxKind.BinaryExpression:
+        if (isAssignment((node as ts.BinaryExpression).operatorToken.kind)) {
+          found = true;
+          return;
+        }
+        break;
     }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+/** Whether the optional chain `link` begins, an access or a call written with `?.`, runs code past
+ *  its `?.`: a call anywhere in the chain from `link` up, or code in an element access's key. */
+function chainRunsCode(link: ts.Node): boolean {
+  let current = link;
+  for (;;) {
+    if (ts.isCallExpression(current)) return true;
+    if (ts.isElementAccessExpression(current) && runsCode(current.argumentExpression)) return true;
+    const next = current.parent;
+    if (!ts.isOptionalChain(next) || next.expression !== current) return false;
+    current = next;
   }
 }
 
-/** Whether the value of `node` is thrown away: it is the whole of an expression statement, or the
- *  right operand of a logical operator whose own value is thrown away, read through parentheses,
- *  `await` and `void`. Such an expression runs only for what it does, so a logical operator in it
- *  is a branch. */
-function isThrownAway(node: ts.Expression): boolean {
-  let current: ts.Node = node;
-  while (
-    ts.isParenthesizedExpression(current.parent) ||
-    ts.isAwaitExpression(current.parent) ||
-    ts.isVoidExpression(current.parent)
+/** `test.skip`, `test.fixme`, `test.slow` or `test.fail`, where `node` is the first argument of
+ *  `call`, a call of one, and is no string, template or function. Nothing where it is not. */
+function testModifierKind(call: ts.CallExpression, node: ts.Node): string | undefined {
+  const callee = call.expression;
+  if (
+    call.arguments[0] !== node ||
+    !ts.isPropertyAccessExpression(callee) ||
+    !ts.isIdentifier(callee.expression) ||
+    callee.expression.text !== "test" ||
+    !testModifiers.has(callee.name.text) ||
+    ts.isStringLiteralLike(node) ||
+    ts.isTemplateExpression(node) ||
+    isFunctionLiteral(node)
   ) {
-    current = current.parent;
+    return undefined;
   }
-  const parent = current.parent;
-  if (ts.isExpressionStatement(parent)) return true;
-  return (
-    ts.isBinaryExpression(parent) &&
-    logicalOperators.has(parent.operatorToken.kind) &&
-    parent.right === current &&
-    isThrownAway(parent)
+  return `test.${callee.name.text}`;
+}
+
+/** Whether the pattern a declaration or a parameter binds holds a default that runs code, nested
+ *  patterns included. A plain name holds none. */
+function bindingDefaultRunsCode(name: ts.BindingName): boolean {
+  if (ts.isIdentifier(name)) return false;
+  const elements: readonly ts.ArrayBindingElement[] = name.elements;
+  return elements.some(
+    (element) =>
+      !ts.isOmittedExpression(element) &&
+      ((element.initializer !== undefined && runsCode(element.initializer)) ||
+        bindingDefaultRunsCode(element.name))
   );
 }
 
-/** `test.skip`, `test.fixme`, `test.slow` or `test.fail`, where `node` is a call of one. */
-function testModifier(node: ts.Node): string | undefined {
-  if (!ts.isCallExpression(node)) return undefined;
-  const callee = node.expression;
-  if (
-    ts.isPropertyAccessExpression(callee) &&
-    ts.isIdentifier(callee.expression) &&
-    callee.expression.text === "test" &&
-    testModifiers.has(callee.name.text)
-  ) {
-    return `test.${callee.name.text}`;
+/** Whether `target`, the left side of an `=` written as an array or object pattern, holds a
+ *  default that runs code, nested patterns included. Any other target holds none. */
+function assignedDefaultRunsCode(target: ts.Expression): boolean {
+  const node = unparenthesized(target);
+  if (ts.isArrayLiteralExpression(node)) {
+    return node.elements.some((element) => assignedDefaultRunsCode(element));
   }
-  return undefined;
+  if (ts.isObjectLiteralExpression(node)) {
+    return node.properties.some((property) => {
+      if (ts.isShorthandPropertyAssignment(property)) {
+        const initializer = property.objectAssignmentInitializer;
+        return initializer !== undefined && runsCode(initializer);
+      }
+      if (ts.isPropertyAssignment(property)) return assignedDefaultRunsCode(property.initializer);
+      return ts.isSpreadAssignment(property) && assignedDefaultRunsCode(property.expression);
+    });
+  }
+  if (ts.isSpreadElement(node)) return assignedDefaultRunsCode(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return runsCode(node.right) || assignedDefaultRunsCode(node.left);
+  }
+  return false;
 }
 
-/** What `node` is the condition of, as the kinds of WHAT DECIDES A PATH before the last read it:
- *  `if`, `ternary`, `while`, `do-while`, `for`, `for-of` for the iterable a `for...of` walks,
- *  `switch` for its discriminant, `&&`, `||` or `??` for the left operand of a logical operator
- *  whose value is thrown away, or a `test` modifier. Nothing where it decides no path, an `if`
- *  whose only branch is a `throw` among them. */
-function conditionKind(node: ts.Expression): string | undefined {
+/** What `node` decides as WHAT DECIDES A PATH names it, by the `SyntaxKind` of the node that holds
+ *  it, the grammar's places where a value picks what runs next: `if`, `ternary`, `while`,
+ *  `do-while`, `for`, `for-of`, `for-in`, `switch`, `case`, `&&`, `||` or `??` for a left operand
+ *  whose right one runs code, `&&=`, `||=` or `??=` for a logical assignment's target, `?.` for
+ *  what an optional chain that runs code reads, `default` for the source of a destructuring whose
+ *  pattern holds a default that runs code, or a `test` modifier. Nothing where it decides none. */
+function conditionKind(node: ts.Node): string | undefined {
   const parent = node.parent;
-  if (ts.isIfStatement(parent) && parent.expression === node) {
-    const then = parent.thenStatement;
-    const onlyThrows =
-      ts.isThrowStatement(then) ||
-      (ts.isBlock(then) && then.statements.length === 1 && ts.isThrowStatement(then.statements[0]));
-    return onlyThrows && parent.elseStatement === undefined ? undefined : "if";
+  switch (parent.kind) {
+    case ts.SyntaxKind.IfStatement:
+      return (parent as ts.IfStatement).expression === node ? "if" : undefined;
+    case ts.SyntaxKind.ConditionalExpression:
+      return (parent as ts.ConditionalExpression).condition === node ? "ternary" : undefined;
+    case ts.SyntaxKind.WhileStatement:
+      return (parent as ts.WhileStatement).expression === node ? "while" : undefined;
+    case ts.SyntaxKind.DoStatement:
+      return (parent as ts.DoStatement).expression === node ? "do-while" : undefined;
+    case ts.SyntaxKind.ForStatement:
+      return (parent as ts.ForStatement).condition === node ? "for" : undefined;
+    case ts.SyntaxKind.ForOfStatement:
+      return (parent as ts.ForOfStatement).expression === node ? "for-of" : undefined;
+    case ts.SyntaxKind.ForInStatement:
+      return (parent as ts.ForInStatement).expression === node ? "for-in" : undefined;
+    case ts.SyntaxKind.SwitchStatement:
+      return (parent as ts.SwitchStatement).expression === node ? "switch" : undefined;
+    case ts.SyntaxKind.CaseClause:
+      return (parent as ts.CaseClause).expression === node ? "case" : undefined;
+    case ts.SyntaxKind.BinaryExpression: {
+      const binary = parent as ts.BinaryExpression;
+      const operator = binary.operatorToken.kind;
+      if (binary.left === node) {
+        const decides =
+          logicalAssignments.has(operator) ||
+          (logicalOperators.has(operator) && runsCode(binary.right));
+        return decides ? ts.tokenToString(operator) : undefined;
+      }
+      const destructures =
+        binary.right === node &&
+        operator === ts.SyntaxKind.EqualsToken &&
+        assignedDefaultRunsCode(binary.left);
+      return destructures ? "default" : undefined;
+    }
+    case ts.SyntaxKind.PropertyAccessExpression:
+    case ts.SyntaxKind.ElementAccessExpression:
+    case ts.SyntaxKind.CallExpression: {
+      const link = parent as
+        | ts.PropertyAccessExpression
+        | ts.ElementAccessExpression
+        | ts.CallExpression;
+      if (link.expression === node && link.questionDotToken !== undefined && chainRunsCode(link)) {
+        return "?.";
+      }
+      return ts.isCallExpression(link) ? testModifierKind(link, node) : undefined;
+    }
+    case ts.SyntaxKind.VariableDeclaration:
+    case ts.SyntaxKind.Parameter:
+    case ts.SyntaxKind.BindingElement: {
+      const declaration = parent as
+        | ts.VariableDeclaration
+        | ts.ParameterDeclaration
+        | ts.BindingElement;
+      const destructures =
+        declaration.initializer === node && bindingDefaultRunsCode(declaration.name);
+      return destructures ? "default" : undefined;
+    }
+    default:
+      return undefined;
   }
-  if (ts.isConditionalExpression(parent) && parent.condition === node) return "ternary";
-  if (ts.isWhileStatement(parent) && parent.expression === node) return "while";
-  if (ts.isDoStatement(parent) && parent.expression === node) return "do-while";
-  if (ts.isForStatement(parent) && parent.condition === node) return "for";
-  if (ts.isForOfStatement(parent) && parent.expression === node) return "for-of";
-  if (ts.isSwitchStatement(parent) && parent.expression === node) return "switch";
-  if (
-    ts.isBinaryExpression(parent) &&
-    logicalOperators.has(parent.operatorToken.kind) &&
-    parent.left === node &&
-    isThrownAway(parent)
-  ) {
-    return ts.tokenToString(parent.operatorToken.kind);
+}
+
+/** The parent of `node` the climb of WHAT DECIDES A PATH goes on to, by its `SyntaxKind`: one whose
+ *  value is computed from `node`'s. Nothing where the value goes no further, a call `node` is
+ *  passed to and a method called on it among them. */
+function carrier(node: ts.Node): ts.Node | undefined {
+  const parent = node.parent;
+  switch (parent.kind) {
+    case ts.SyntaxKind.AwaitExpression:
+    case ts.SyntaxKind.ParenthesizedExpression:
+    case ts.SyntaxKind.AsExpression:
+    case ts.SyntaxKind.SatisfiesExpression:
+    case ts.SyntaxKind.TypeAssertionExpression:
+    case ts.SyntaxKind.NonNullExpression:
+    case ts.SyntaxKind.TypeOfExpression:
+      return parent;
+    case ts.SyntaxKind.PrefixUnaryExpression:
+      return carriedPrefixes.has((parent as ts.PrefixUnaryExpression).operator)
+        ? parent
+        : undefined;
+    case ts.SyntaxKind.BinaryExpression: {
+      // The comma's value is its right operand's, and so is an assignment's: the left side of an
+      // assignment is where the value goes, not where it comes from.
+      const binary = parent as ts.BinaryExpression;
+      const operator = binary.operatorToken.kind;
+      const rightOnly = operator === ts.SyntaxKind.CommaToken || isAssignment(operator);
+      return !rightOnly || binary.right === node ? parent : undefined;
+    }
+    case ts.SyntaxKind.ConditionalExpression: {
+      const conditional = parent as ts.ConditionalExpression;
+      return conditional.whenTrue === node || conditional.whenFalse === node ? parent : undefined;
+    }
+    case ts.SyntaxKind.TemplateSpan:
+      return parent.parent;
+    case ts.SyntaxKind.PropertyAccessExpression:
+    case ts.SyntaxKind.ElementAccessExpression: {
+      const access = parent as ts.PropertyAccessExpression | ts.ElementAccessExpression;
+      const above = access.parent;
+      const called = ts.isCallExpression(above) && above.expression === access;
+      return access.expression === node && !called ? parent : undefined;
+    }
+    default:
+      return undefined;
   }
-  const modifier = testModifier(parent);
-  if (
-    modifier !== undefined &&
-    (parent as ts.CallExpression).arguments[0] === node &&
-    !ts.isStringLiteralLike(node) &&
-    !ts.isTemplateExpression(node) &&
-    !isFunctionLiteral(node)
-  ) {
-    return modifier;
+}
+
+/** The nodes the climb of WHAT DECIDES A PATH passes from `probe`, `probe` first: up through each
+ *  parent `carrier` names, to the first node `conditionKind` names, or else to the outermost node
+ *  the value reaches. */
+function climb(probe: ts.Expression): ts.Node[] {
+  const path: ts.Node[] = [probe];
+  let node: ts.Node = probe;
+  while (conditionKind(node) === undefined) {
+    const parent = carrier(node);
+    if (parent === undefined) break;
+    path.push(parent);
+    node = parent;
   }
-  return undefined;
+  return path;
 }
 
 /** The function `node` stands in, or its file where it stands in none. */
@@ -493,52 +684,54 @@ function enclosingFunction(node: ts.Node): ts.Node {
   return current ?? node.getSourceFile();
 }
 
-/** One condition of a file: the expression, what it is the condition of, and the function it
- *  stands in, which a name bound to a probe's answer is read against. */
+/** Whether the function `scope` stands inside the function or file `outer`, at any depth. */
+function isNestedIn(scope: ts.Node, outer: ts.Node): boolean {
+  let current = scope;
+  while (!ts.isSourceFile(current)) {
+    current = enclosingFunction(current);
+    if (current === outer) return true;
+  }
+  return false;
+}
+
+/** One position of a file that decides a path: the node that stands there, what it decides, and
+ *  the function it stands in, which a name bound to a probe's answer is read against. */
 type Condition = {
-  readonly expression: ts.Expression;
+  readonly expression: ts.Node;
   readonly kind: string;
   readonly scope: ts.Node;
 };
 
-/** Every condition of `sourceFile` that decides a path, in the order the file writes them. */
+/** Every position of `sourceFile` that decides a path, in the order the file writes them. */
 function conditionsOf(sourceFile: ts.SourceFile): Condition[] {
   const conditions: Condition[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isExpression(node)) {
-      const kind = conditionKind(node);
-      if (kind !== undefined) {
-        conditions.push({ expression: node, kind, scope: enclosingFunction(node) });
-      }
+    const kind = conditionKind(node);
+    if (kind !== undefined) {
+      conditions.push({ expression: node, kind, scope: enclosingFunction(node) });
     }
     ts.forEachChild(node, visit);
   };
-  visit(sourceFile);
+  ts.forEachChild(sourceFile, visit);
   return conditions;
 }
 
-/** Whether `node` is a reference to a binding spelled `name`, rather than a property's name. */
-function isReferenceTo(node: ts.Node, name: string): boolean {
-  if (!ts.isIdentifier(node) || node.text !== name) return false;
-  const parent = node.parent;
-  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
-  if (ts.isPropertyAssignment(parent) && parent.name === node) return false;
-  return true;
-}
-
-/** The first reference to `name` under `root` that begins at or after `after`. */
-function referenceAfter(
+/** Every reference to one of `names` under `root` that begins at or after `after`, in the order
+ *  the file writes them: an identifier spelled so, but a property's name. */
+function referencesAfter(
   sourceFile: ts.SourceFile,
   root: ts.Node,
-  name: string,
+  names: readonly string[],
   after: number
-): ts.Node | undefined {
-  let found: ts.Node | undefined;
+): ts.Identifier[] {
+  const found: ts.Identifier[] = [];
   const visit = (node: ts.Node): void => {
-    if (found !== undefined) return;
-    if (node.getStart(sourceFile) >= after && isReferenceTo(node, name)) {
-      found = node;
-      return;
+    if (ts.isIdentifier(node) && names.includes(node.text) && node.getStart(sourceFile) >= after) {
+      const parent = node.parent;
+      const propertyName =
+        (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) &&
+        parent.name === node;
+      if (!propertyName) found.push(node);
     }
     ts.forEachChild(node, visit);
   };
@@ -546,78 +739,221 @@ function referenceAfter(
   return found;
 }
 
-/** A name a probe's answer is bound to: how it is bound (`const`, `let`, or `assign` for a plain
- *  `=`), the name, and the declaration or the assignment that binds it. */
-type Binding = {
-  readonly keyword: "const" | "let" | "assign";
-  readonly name: string;
-  readonly node: ts.Node;
-};
-
-/** The binding `top` is the whole value of: the initializer of a `const` or a `let` with a plain
- *  name, or the right side of a plain `=` whose left side is a plain name, parentheses read
- *  through. Nothing where it is neither. */
-function bindingOf(top: ts.Expression): Binding | undefined {
-  const parent = top.parent;
-  if (ts.isVariableDeclaration(parent) && parent.initializer === top) {
-    if (!ts.isIdentifier(parent.name)) return undefined;
-    const flags = parent.parent.flags;
-    if ((flags & ts.NodeFlags.Const) !== 0) {
-      return { keyword: "const", name: parent.name.text, node: parent };
-    }
-    if ((flags & ts.NodeFlags.Let) !== 0) {
-      return { keyword: "let", name: parent.name.text, node: parent };
-    }
-    return undefined;
-  }
-  if (
-    ts.isBinaryExpression(parent) &&
-    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-    parent.right === top
-  ) {
-    const target = unparenthesized(parent.left);
-    if (ts.isIdentifier(target)) return { keyword: "assign", name: target.text, node: parent };
-  }
-  return undefined;
+/** The names `name` binds: itself where it is a plain name, else every name of the pattern,
+ *  nested patterns included. */
+function boundNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  const elements: readonly ts.ArrayBindingElement[] = name.elements;
+  return elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : boundNames(element.name)
+  );
 }
 
-/** Whether `condition` is tested again after `assignment` runs, though it stands above it: the
- *  condition of a `while` or a `for` loop whose body holds the assignment. */
-function testedAfterBody(condition: Condition, assignment: ts.Node): boolean {
-  const loop = condition.expression.parent;
-  if (!ts.isWhileStatement(loop) && !ts.isForStatement(loop)) return false;
-  return assignment.pos >= loop.statement.pos && assignment.end <= loop.statement.end;
+/** The names an assignment to `target` binds: the name it is, or every name an array or object
+ *  pattern assigns, shorthand, spread and defaults included. A property or an element binds
+ *  none. */
+function assignedNames(target: ts.Expression): string[] {
+  const node = unparenthesized(target);
+  if (ts.isIdentifier(node)) return [node.text];
+  if (ts.isArrayLiteralExpression(node)) {
+    return node.elements.flatMap((element) => assignedNames(element));
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    return node.properties.flatMap((property) => {
+      if (ts.isShorthandPropertyAssignment(property)) return [property.name.text];
+      if (ts.isPropertyAssignment(property)) return assignedNames(property.initializer);
+      return ts.isSpreadAssignment(property) ? assignedNames(property.expression) : [];
+    });
+  }
+  if (ts.isSpreadElement(node)) return assignedNames(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return assignedNames(node.left);
+  }
+  return [];
+}
+
+/** Names a probe's answer is bound to: how (`const`, `let`, `var`, `using`, `param`, `default`, or
+ *  the assignment's operator), the names, the node that binds them, and whether it is an
+ *  assignment rather than a declaration. */
+type Binding = {
+  readonly how: string;
+  readonly names: readonly string[];
+  readonly node: ts.Node;
+  readonly assigns: boolean;
+};
+
+/** The binding `node` is the whole value of, by the `SyntaxKind` of its parent: the initializer of
+ *  a variable declaration, of a parameter or of a pattern element, the right side of an assignment
+ *  of any operator whose target is a name or a pattern, or the default of a shorthand property in
+ *  an assignment pattern. Nothing where it is none, or binds no name. */
+function bindingOf(node: ts.Node): Binding | undefined {
+  const parent = node.parent;
+  switch (parent.kind) {
+    case ts.SyntaxKind.VariableDeclaration: {
+      const declaration = parent as ts.VariableDeclaration;
+      if (declaration.initializer !== node) return undefined;
+      // `await using` sets the `Using` flag with `Const`, so `Using` is read first.
+      const flags = declaration.parent.flags;
+      let how = "var";
+      if ((flags & ts.NodeFlags.Using) !== 0) how = "using";
+      else if ((flags & ts.NodeFlags.Const) !== 0) how = "const";
+      else if ((flags & ts.NodeFlags.Let) !== 0) how = "let";
+      return { how, names: boundNames(declaration.name), node: declaration, assigns: false };
+    }
+    case ts.SyntaxKind.Parameter:
+    case ts.SyntaxKind.BindingElement: {
+      const declaration = parent as ts.ParameterDeclaration | ts.BindingElement;
+      if (declaration.initializer !== node) return undefined;
+      const how = ts.isParameter(declaration) ? "param" : "default";
+      return { how, names: boundNames(declaration.name), node: declaration, assigns: false };
+    }
+    case ts.SyntaxKind.ShorthandPropertyAssignment: {
+      const shorthand = parent as ts.ShorthandPropertyAssignment;
+      if (shorthand.objectAssignmentInitializer !== node) return undefined;
+      return { how: "default", names: [shorthand.name.text], node: shorthand, assigns: true };
+    }
+    case ts.SyntaxKind.BinaryExpression: {
+      const assignment = parent as ts.BinaryExpression;
+      const operator = assignment.operatorToken.kind;
+      if (assignment.right !== node || !isAssignment(operator)) return undefined;
+      const names = assignedNames(assignment.left);
+      const how = ts.tokenToString(operator);
+      if (names.length === 0 || how === undefined) return undefined;
+      return { how, names, node: assignment, assigns: true };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Whether `scope`, a function or the file, declares one of `names` itself, by spelling: a variable
+ *  or a parameter of its own, outside any function nested in it. */
+function declares(scope: ts.Node, names: readonly string[]): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found || (node !== scope && isFunctionLike(node))) return;
+    if (
+      (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
+      boundNames(node.name).some((name) => names.includes(name))
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  return found;
+}
+
+/** The function an assignment at `node` to `names` writes into, read by spelling: the outermost
+ *  function around it that declares one of them, or the file where the file declares one or no
+ *  function does. The outermost, so a name declared again in between reads more positions rather
+ *  than fewer. */
+function declaringScope(node: ts.Node, names: readonly string[]): ts.Node {
+  let declaring: ts.Node | undefined;
+  for (let scope = enclosingFunction(node); ; scope = enclosingFunction(scope)) {
+    if (ts.isSourceFile(scope)) {
+      return declaring === undefined || declares(scope, names) ? scope : declaring;
+    }
+    if (declares(scope, names)) declaring = scope;
+  }
+}
+
+/** The parts of the loop `node` runs on every turn: a `while`'s or a `do`'s condition and body, a
+ *  `for`'s condition, update and body, and a `for...of`'s or a `for...in`'s body, whose iterable is
+ *  read once. None where `node` is no loop. */
+function turnParts(node: ts.Node): ts.Node[] {
+  switch (node.kind) {
+    case ts.SyntaxKind.WhileStatement:
+    case ts.SyntaxKind.DoStatement: {
+      const loop = node as ts.WhileStatement | ts.DoStatement;
+      return [loop.expression, loop.statement];
+    }
+    case ts.SyntaxKind.ForStatement: {
+      const loop = node as ts.ForStatement;
+      return [loop.condition, loop.incrementor, loop.statement].filter(
+        (part) => part !== undefined
+      );
+    }
+    case ts.SyntaxKind.ForOfStatement:
+    case ts.SyntaxKind.ForInStatement:
+      return [(node as ts.ForOfStatement | ts.ForInStatement).statement];
+    default:
+      return [];
+  }
+}
+
+/** Whether `condition` runs again after `assignment` on a later turn of a loop of `condition`'s own
+ *  function: a loop whose parts run on every turn hold them both. */
+function repeatsAfter(condition: ts.Node, assignment: ts.Node): boolean {
+  for (
+    let loop = condition.parent;
+    !isFunctionLike(loop) && !ts.isSourceFile(loop);
+    loop = loop.parent
+  ) {
+    const parts = turnParts(loop);
+    if (
+      parts.some((part) => condition.pos >= part.pos && condition.end <= part.end) &&
+      parts.some((part) => assignment.pos >= part.pos && assignment.end <= part.end)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Where the positions of `conditions` read a name `binding` binds later, as
+ *  `DecidingProbe.position` spells it: `const shown -> ternary@42`. Nothing where none does. A
+ *  position reads it later where it stands in the binding's function, written after the binding
+ *  or, for an assignment, run again on a later turn of a loop that holds it; or where it stands in
+ *  a function nested in the binding's, wherever it is written, since a closure runs after it. */
+function bindingReads(
+  sourceFile: ts.SourceFile,
+  binding: Binding,
+  conditions: readonly Condition[]
+): string | undefined {
+  const scope = binding.assigns
+    ? declaringScope(binding.node, binding.names)
+    : enclosingFunction(binding.node);
+  const read = new Set<string>();
+  const uses: string[] = [];
+  for (const condition of conditions) {
+    let after = binding.node.getEnd();
+    if (condition.scope !== scope) {
+      if (!isNestedIn(condition.scope, scope)) continue;
+      after = 0;
+    } else if (binding.assigns && repeatsAfter(condition.expression, binding.node)) {
+      after = 0;
+    }
+    const references = referencesAfter(sourceFile, condition.expression, binding.names, after);
+    if (references.length === 0) continue;
+    for (const reference of references) read.add(reference.text);
+    const line = sourceFile.getLineAndCharacterOfPosition(references[0].getStart(sourceFile)).line;
+    uses.push(`${condition.kind}@${line + 1}`);
+  }
+  if (uses.length === 0) return undefined;
+  const names = binding.names.filter((name) => read.has(name));
+  return `${binding.how} ${names.join(",")} -> ${uses.join(",")}`;
 }
 
 /** What `probe` decides, as `DecidingProbe.position` spells it, or nothing where it decides no
- *  path. `conditions` are its file's. */
+ *  path: the position the climb reaches, or else every binding it passes that a position reads
+ *  later. `conditions` are its file's. */
 function positionOf(
   sourceFile: ts.SourceFile,
   probe: ts.CallExpression,
   conditions: readonly Condition[]
 ): string | undefined {
-  const top = climb(probe);
-  const kind = conditionKind(top);
+  const path = climb(probe);
+  const kind = conditionKind(path[path.length - 1]);
   if (kind !== undefined) return kind;
-  const binding = bindingOf(top);
-  if (binding === undefined) return undefined;
-  const scope = enclosingFunction(binding.node);
-  const uses: string[] = [];
-  for (const condition of conditions) {
-    if (condition.scope !== scope) continue;
-    // A condition counts once it runs after the binding: written below it, or a loop's condition
-    // tested again after the body that assigns the name.
-    const after =
-      binding.keyword === "assign" && testedAfterBody(condition, binding.node)
-        ? 0
-        : binding.node.getEnd();
-    const reference = referenceAfter(sourceFile, condition.expression, binding.name, after);
-    if (reference === undefined) continue;
-    const line = sourceFile.getLineAndCharacterOfPosition(reference.getStart(sourceFile)).line;
-    uses.push(`${condition.kind}@${line + 1}`);
+  const reads: string[] = [];
+  for (const node of path) {
+    const binding = bindingOf(node);
+    const read = binding === undefined ? undefined : bindingReads(sourceFile, binding, conditions);
+    if (read !== undefined) reads.push(read);
   }
-  if (uses.length === 0) return undefined;
-  return `${binding.keyword} ${binding.name} -> ${uses.join(",")}`;
+  return reads.length === 0 ? undefined : reads.join("; ");
 }
 
 /** Every probe the given files hold whose answer decides a path, each reported under the path it

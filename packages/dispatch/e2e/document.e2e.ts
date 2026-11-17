@@ -192,6 +192,8 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await askComposer.locator('button[type="submit"]').click();
     const askCard = alicePage.locator("[data-margin-item]", { hasText: "Should we publish this?" });
     await expect(askCard).toBeVisible();
+    // The card's locator requires `data-margin-item`, so the card the wait above saw holds it:
+    // this read is never null and the check below only narrows the type.
     const askId = await askCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("Document ask did not receive a margin id.");

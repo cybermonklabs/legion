@@ -323,6 +323,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await page.goto("/settings");
     await page.getByLabel("Token label").fill("Inbox reader");
     await page.getByRole("button", { name: "New token" }).click();
+    // textContent waits for the code element to attach, and an element's text is never null,
+    // so the check below only narrows the type.
     const token = await page.getByRole("status").locator("code").first().textContent();
     if (token === null) throw new Error("Settings minted no agent token");
     expect(token).toMatch(/^dsp_[A-Za-z0-9_-]{43}$/);

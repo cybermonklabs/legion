@@ -635,6 +635,8 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   const sixthBox = await sixth.boundingBox();
   if (third === null || fourth === null || fifth === null || sixthBox === null)
     throw new Error("Inbox row has no box");
+  // `rows` matches only elements that carry `data-inbox-row`, so this read is never null and
+  // the check below only narrows the type.
   const sixthID = await sixth.getAttribute("data-inbox-row");
   if (sixthID === null) throw new Error("sixth row has no id");
   const destination = page.locator(`[data-inbox-row="${sixthID}"]`);

@@ -119,6 +119,8 @@ async function openComposer(
   const span = documentEditor(page).locator('span[data-proof="comment"][data-id]');
   await expect(span).toHaveCount(1);
   const writtenAt = Date.now();
+  // The span's selector requires `data-id` and the count above waited for it, so this read
+  // is never null and the check below only narrows the type.
   const markId = await span.getAttribute("data-id");
   const by = await span.getAttribute("data-by");
   if (markId === null) throw new Error("The provisional comment mark has no data-id.");

@@ -2253,16 +2253,31 @@ A probe is a read that answers for the page as it stands and waits for no state:
 that returns one.
 A call on the plain identifier `Promise` is none: `Promise.all(...)` waits for
 the promises it is handed and reads no page.
-Its answer decides a path when it is the condition of a branch (an `if`, a `?:`,
-a `switch` or a loop), the list a `for...of` walks (`for (const row of await rows.all())`,
-which runs no turn on a page that has not drawn the rows yet, so the assertions
-inside it never run), the left operand of an `&&`, `||` or `??` whose value is
-thrown away (`(await menu.isVisible()) && (await menu.click());`, and in a chain
-every operand but the last), the first argument of `test.skip`, `test.fixme`,
-`test.slow` or `test.fail`, or a name bound to it by a `const`, a `let` or a
-plain `=` that a later condition of the same function reads (the condition of a
-loop whose body assigns the name counts, since the loop tests it again).
-A probe that is only the last operand of such a statement decides nothing.
+Its answer decides a path where it stands in a place TypeScript's grammar lets a
+value decide what runs next, and the guard's list of those places is the
+grammar's, enumerated by `SyntaxKind`, not the forms found so far: the condition
+of an `if` (one whose only branch throws among them), a `?:`, a `while`, a `do`
+or a `for`; a `switch`'s discriminant and each `case`; the iterable of a
+`for...of` or a `for...in` (`for (const row of await rows.all())` runs no turn
+on a page that has not drawn the rows yet, so the assertions inside it never
+run); the left operand of an `&&`, `||` or `??` whose right operand runs code,
+whatever its value goes on to (`(await menu.isVisible()) && (await menu.click())`);
+the target of an `&&=`, `||=` or `??=`; what a `?.` reads where the rest of the
+chain runs code; the source of a destructuring whose default runs code; and the
+first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`.
+The guard reaches that place from the probe through whatever computes a value
+from the answer (`await`, parentheses, `as`, `!`, an operator, a template
+literal, `(await rows.all()).length`), and it refuses as well an answer bound to
+a name, by a declaration, a default, an assignment of any operator or a
+destructuring, that such a place reads later: below the binding, on a later turn
+of a loop that assigns it, or in a function nested in the binding's.
+It does not follow three kinds of data flow, which no syntactic check can: an
+answer passed into a function or returned from one (an argument, a method
+called on the answer such as `.map` or `.slice`, a `return`), an answer kept in
+an object property or an array element, and an answer read through another
+alias (a name copied into another name, a name bound to the probe rather than to
+its answer, a method destructured off a locator or written in brackets).
+A probe that is only the last operand of a statement's `&&` decides nothing.
 The reason is a comment of at least eight words that ends on the line directly
 above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
 instant's answer is safe there.
@@ -2279,8 +2294,10 @@ of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
 `route` and the others its header lists), because each of those is read again,
 or at a moment the row did not pick.
 `e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
-controls, and `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
-`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops.
+controls, `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
+`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops, and
+`e2e/__tests__/fixtures/zero-wait-cases.fixture.ts`, which
+`e2e/__tests__/zero-wait-cases.test.ts` reads, its planted `case`.
 A value read that is then checked by an `expect` that does not retry
 (`expect(await rows.count()).toBe(3)`) is the same defect: it reads one instant,
 and the check never reads again.
