@@ -20,10 +20,13 @@ import (
 // delete (checkDrained), so the connection's drain, which waits only for its subscriptions, can
 // reach its publishes first and refuse the delete as "connection draining", an ERROR, whether or
 // not the consumer still exists. Ended first, the delete is a request the drain waits for. A
-// consumer still there is deleted with nothing logged; one already gone (a NATS restart loses an
+// consumer still there is deleted with no WARN or ERROR; one already gone (a NATS restart loses an
 // ordered consumer, which nats.go keeps in memory) is a warning, since the delete was for that
 // state. Either way nats.go reports nothing asynchronously and nothing is an ERROR, which
-// TestListenerFollowsTheInterestRegistryAcrossNATSRestarts refuses (LEGION-278).
+// TestListenerFollowsTheInterestRegistryAcrossNATSRestarts refuses (LEGION-278). The drain follows
+// the delete at once: while the client reads its heartbeats, nats.go puts a new consumer in the
+// place of a lost one no sooner than 5 s after the loss (docs/testing.md, "A test that deletes a KV
+// watcher's consumer").
 func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 	for _, test := range []struct {
 		name         string

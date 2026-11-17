@@ -29,6 +29,17 @@ func warnings(records []map[string]any) []string {
 	return found
 }
 
+// endedLines counts the INFO records saying name's watcher ended (Watcher.End).
+func endedLines(records []map[string]any, name string) int {
+	count := 0
+	for _, record := range records {
+		if level, _ := record["level"].(string); level == "INFO" && record["msg"] == name+" watcher ended" {
+			count++
+		}
+	}
+	return count
+}
+
 // testConsumers lists the test bucket's consumers.
 func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
 	t.Helper()
@@ -79,6 +90,9 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	if got := warnings(records()); len(got) != 0 {
 		t.Fatalf("End logged %q, want nothing", got)
 	}
+	if got := endedLines(records(), "test cache"); got != 1 {
+		t.Fatalf("End logged %d lines saying the watcher ended, want 1", got)
+	}
 }
 
 // A watch still starting when End's deadline passes is an ERROR, since End cannot say its watcher
@@ -104,6 +118,10 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	eventually(t, "the late watch to delete its consumer", func() bool { return len(testConsumers(t, conn)) == 0 })
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end found a watch still starting: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
+	}
+	// End gave up on the watch, so it cannot say the watcher ended.
+	if got := endedLines(records(), "test cache"); got != 0 {
+		t.Fatalf("End logged %d lines saying the watcher ended after it gave up on a watch, want none", got)
 	}
 }
 
@@ -261,5 +279,9 @@ func TestEndIsBoundedByItsContext(t *testing.T) {
 	}
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
+	}
+	// The stop is still waiting on its delete, so End cannot say the watcher ended.
+	if got := endedLines(records(), "test cache"); got != 0 {
+		t.Fatalf("End logged %d lines saying the watcher ended while its stop was unanswered, want none", got)
 	}
 }

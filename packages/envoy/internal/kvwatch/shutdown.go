@@ -54,6 +54,17 @@ func (w *Watcher) Stop() {
 // work once: a later End, or one beside it, waits for the first to finish, within the first's ctx,
 // and ends nothing more.
 //
+// Once every watcher it stopped has returned from its stop, whatever the deletes found, and no
+// watch was left starting, End logs `<name> watcher ended` at INFO, with the number it stopped.
+// When ctx ended a wait first, the ERROR or WARN it logged for that wait is the record, and it logs
+// no such line. That line, and not the state of the watcher's consumer, is what says the watcher
+// ended: a consumer the server lost does not stay lost, since nats.go's ordered consumer creates a
+// new one in its place once its idle heartbeats have been missing for a whole check (5 s
+// heartbeats, checked every 10 s: nats.go v1.53.1 js.go, activityCheck). End then deletes that one
+// with nothing else to report, or, while its create is still in flight, deletes nothing, since
+// nats.go has not yet named it to the subscription (js.go deleteConsumer), and leaves it for the
+// server to remove once its interest is gone.
+//
 // End stops each watcher at once, whether or not its scan has ended: the consumers must be gone
 // before the drain. That is safe with the jetstream watcher, which sends nothing once its
 // subscription has ended, and its consume reads it until it closes.
@@ -96,19 +107,25 @@ func (w *Watcher) end(ctx context.Context) {
 	for _, watcher := range retired {
 		go func() { results <- watcher.stop() }()
 	}
+	stopped := 0
 	for range retired {
 		select {
 		case err := <-results:
 			w.logEnd(err)
+			stopped++
 			continue
 		default:
 		}
 		select {
 		case err := <-results:
 			w.logEnd(err)
+			stopped++
 		case <-ctx.Done():
 			w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
 		}
+	}
+	if gaveUp == nil && stopped == len(retired) {
+		w.logger().Info(w.name+" watcher ended", slog.String("bucket", w.bucket), slog.Int("stopped", stopped))
 	}
 }
 
