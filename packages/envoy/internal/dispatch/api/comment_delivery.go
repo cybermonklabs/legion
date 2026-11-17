@@ -831,9 +831,10 @@ func (h *mentionHeldForOrder) send(created model.Event, actor model.Actor, takeo
 // comment whose comment.created event is created, to the session target names, waits behind - an
 // event the outbox still owes a send that session may take: one to the owner's topic family,
 // which the session may follow, one to that session's own subject, or one an event whose
-// recipient read failed may owe any session (model.MentionCopyHolderSQL) - and nil while it waits
-// for none. It is the order the outbox keeps for its own sends, which this send would otherwise
-// pass, since it reaches the session outside the outbox (planChains in internal/dispatch/outbox).
+// recipient read failed may owe any session (model.MentionCopyHolderSQL); or a role route whose
+// role that session holds now (model.MentionCopyRolesSQL) - and nil while it waits for none. It
+// is the order the outbox keeps for its own sends, which this send would otherwise pass, since it
+// reaches the session outside the outbox (planChains in internal/dispatch/outbox).
 //
 // Nothing waits in a deployment no outbox publishes (Deps.OutboxPublishes false): no earlier event
 // is ever sent there, so there is no order to keep and the wait would never end. Nor does a send
@@ -843,12 +844,20 @@ func (s *server) mentionCopyHolder(ctx context.Context, created model.Event, tar
 	if target.SessionID == nil || target.ResolveError != "" {
 		return nil, nil
 	}
-	return s.mentionCopyHolderFor(ctx, created, *target.SessionID)
+	return s.mentionCopyHolderFor(ctx, created, *target.SessionID, target.Delivery)
 }
 
-// mentionCopyHolderFor is mentionCopyHolder for a send to sessionID, the one statement a send held
-// before reads again before it tries once more (sendCommentMention).
-func (s *server) mentionCopyHolderFor(ctx context.Context, created model.Event, sessionID string) (*model.MentionCopyHolder, error) {
+// mentionCopyHolderFor is mentionCopyHolder for a send to sessionID in mode delivery, the rule a
+// send held before reads again before it tries once more (sendCommentMention). The first statement
+// answers for every earlier event but those that still owe a role route; when it finds none, the
+// second reads those routes (the usual answer is none), and each role's holder is resolved as a
+// mention of that role is (resolveMentionTarget, within mentionLookupTimeout): the route holds the
+// send when the holder is sessionID, as planChains keys the route on whoever holds the role at its
+// next batch, and when the lookup went unanswered, since sessionID may be the holder - the lane
+// tries again a moment later (mentionOrderRetry).
+func (s *server) mentionCopyHolderFor(
+	ctx context.Context, created model.Event, sessionID, delivery string,
+) (*model.MentionCopyHolder, error) {
 	if !s.deps.OutboxPublishes {
 		return nil, nil
 	}
@@ -857,12 +866,31 @@ func (s *server) mentionCopyHolderFor(ctx context.Context, created model.Event, 
 		created.ID, contracts.LegacyAgentSubject(sessionID),
 	).Scan(&by.EventID, &by.PublishError)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil, nil
-	case err != nil:
+	case err == nil:
+		return &by, nil
+	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, fmt.Errorf("read the earlier event that holds event %d's mention for %s: %w", created.ID, sessionID, err)
 	}
-	return &by, nil
+	rows, err := s.deps.Store.Pool.Query(ctx, model.MentionCopyRolesSQL, created.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", created.ID, err)
+	}
+	routes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MentionCopyRole, error) {
+		var route model.MentionCopyRole
+		err := row.Scan(&route.Topic, &route.EventID, &route.PublishError)
+		return route, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", created.ID, err)
+	}
+	for _, route := range routes {
+		role := strings.TrimPrefix(route.Topic, contracts.RoleTopicPrefix)
+		holder := s.resolveMentionTarget(ctx, "role:"+role, delivery, mentionLookupTimeout)
+		if holder.unanswered || (holder.SessionID != nil && *holder.SessionID == sessionID) {
+			return &route.MentionCopyHolder, nil
+		}
+	}
+	return nil, nil
 }
 
 // supersedeOvertakenAttempts settles superseded every earlier attempt of sent's mention that this

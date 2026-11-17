@@ -575,10 +575,14 @@ type outcome struct {
 // for the two roads a mention's copy takes outside the chains (model.MentionCopyHolderSQL): the key
 // of every destination of its list that neither an earlier batch (batchEvent.delivered) nor this
 // one (reached) reached, by destination.key, the owner's topic family spelled
-// model.OwedTopicFamily. A copy that waits on a mention is owed, and holds its key as planChains
-// holds it. A copy a comment_fallback_copies row owns (destination.heldAsARow) and a role route
-// reached with nothing to send (roleForward.skip) are not: planChains reads neither as holding
-// anything back. An event whose list ends at a recipient read that failed owes
+// model.OwedTopicFamily. A role route is the exception: it is recorded as its role topic, not as
+// the key of the holder it resolved to, because the holder can change before the event's next
+// record - a claim taken over, or one that could not be read becoming readable - and planChains
+// keys the route on whoever holds it at each batch; the copy's road reads the holder when it asks
+// (model.MentionCopyRolesSQL). A copy that waits on a mention is owed, and holds its key as
+// planChains holds it. A copy a comment_fallback_copies row owns (destination.heldAsARow) and a
+// role route reached with nothing to send (roleForward.skip) are not: planChains reads neither as
+// holding anything back. An event whose list ends at a recipient read that failed owes
 // model.OwedAnySession beside its list, the sessions that read would name, as planChains holds the
 // owner's later events from every session key it does not name. An event that cannot be read owes
 // nothing, as it holds nothing back. The answer is never nil: an empty list is an event that owes
@@ -599,7 +603,10 @@ func owedKeys(event *batchEvent, reached []string) []string {
 			continue
 		}
 		key := dest.key()
-		if key == ownerTopicKey {
+		switch {
+		case dest.role != "":
+			key = dest.subject
+		case key == ownerTopicKey:
 			key = model.OwedTopicFamily
 		}
 		if !slices.Contains(owed, key) {

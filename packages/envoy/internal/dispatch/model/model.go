@@ -2583,9 +2583,10 @@ func MentionLiveSQL(row string) string {
 // family, the notifications.dispatch. subjects of its issue, document or project, which reach
 // every session that follows them. OwedAnySession is the session an event whose recipient read
 // failed may still owe a copy, unnamed because the read that would name it did not answer. Every
-// other word is the subject a send reaches its session on: notifications.agent.<session>, which
-// a role forward to that session as the role's holder shares, or a role's own topic while no
-// holder is known.
+// other word is a subject: notifications.agent.<session>, a send to that session, or a role's own
+// topic (contracts.RoleTopicPrefix), a role route not reached yet, whatever session holds the role
+// - the holder is read when a copy asks (MentionCopyRolesSQL), as the outbox reads it again at
+// each batch, so a holder that changed between the record and the copy is the one asked about.
 const (
 	OwedTopicFamily = "topic-family"
 	OwedAnySession  = "any-session"
@@ -2595,12 +2596,14 @@ const (
 // the session it is bound for - its id and its publish_error, the reason its last publish attempt
 // failed - and no row while the copy waits for nothing. The copy is of the comment whose
 // comment.created event's id is $1, and $2 is that session's key (the subject OwedTopicFamily's
-// doc names). It waits while an earlier event
-// of the same owner - an issue, a document or a project, spelled as the outbox orders an owner's
-// events - is unpublished, is no pending subscription command, and still owes a send that session
-// may take before the copy: one to the owner's topic family, which any session may follow and
-// the outbox cannot know which do, one to that very key, or one to a session its failed recipient
-// read did not name (OwedAnySession). The earliest such event is the one read.
+// doc names). It waits while an earlier event of the same owner - an issue, a document or a
+// project, spelled as the outbox orders an owner's events - is unpublished, is no pending
+// subscription command, and still owes a send that session may take before the copy: one to the
+// owner's topic family, which any session may follow and the outbox cannot know which do, one to
+// that very key, or one to a session its failed recipient read did not name (OwedAnySession). The
+// earliest such event is the one read. A role route an earlier event still owes holds the copy
+// only when the role's holder is that session, which this statement cannot read: the caller asks
+// MentionCopyRolesSQL for those routes when this one answers no row.
 //
 // An event the outbox has not recorded yet (owed_keys null) owes its topic family at least, the
 // first destination of every event, so it holds every copy. It must: a new event has no record
@@ -2628,11 +2631,37 @@ const MentionCopyHolderSQL = `select k.id, k.publish_error
 		order by k.id
 		limit 1`
 
-// MentionCopyHolder is the earlier event a copy of a mention waits behind (MentionCopyHolderSQL):
-// its id, and why its last publish attempt failed, nil while none has.
+// MentionCopyRolesSQL reads the role routes the earlier events of a comment's owner still owe:
+// for each role topic one of them owes, that topic and the earliest such event, with its id and
+// publish_error, the comment's comment.created event's id being $1. Its rows are the earlier
+// events MentionCopyHolderSQL cannot judge: each holds a copy bound for the role's holder, and
+// only the caller can read who that is now (mentionCopyHolder in internal/dispatch/api,
+// copyHolder in internal/dispatch/outbox). It reads the same owner's unpublished events as
+// MentionCopyHolderSQL, through events_outbox_owner, and answers no row - the usual case - when
+// none of them owes a role route.
+const MentionCopyRolesSQL = `select distinct on (owed.owed_key) owed.owed_key, k.id, k.publish_error
+		from events c
+		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)
+		cross join lateral unnest(k.owed_keys) as owed(owed_key)
+		where c.id = $1::bigint
+		  and k.id < c.id
+		  and k.published_at is null
+		  and (k.payload ->> 'pending') is distinct from 'true'
+		  and starts_with(owed.owed_key, '` + contracts.RoleTopicPrefix + `')
+		order by owed.owed_key, k.id`
+
+// MentionCopyHolder is the earlier event a copy of a mention waits behind (MentionCopyHolderSQL,
+// MentionCopyRolesSQL): its id, and why its last publish attempt failed, nil while none has.
 type MentionCopyHolder struct {
 	EventID      int64
 	PublishError *string
+}
+
+// MentionCopyRole is one row of MentionCopyRolesSQL: a role topic an earlier event still owes,
+// and the earliest such event.
+type MentionCopyRole struct {
+	Topic string
+	MentionCopyHolder
 }
 
 // MentionCopyHeldWarnAfter is how long a copy of a mention waits behind an earlier event before

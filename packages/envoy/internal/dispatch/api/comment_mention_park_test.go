@@ -85,13 +85,15 @@ func (r *parkRig) enqueue(id, target string) mentionSend {
 	return item
 }
 
-// state is what the sender holds now: how many goroutines serve lanes, whether session:parked is
-// parked, how many sends wait on it, and how many sends are queued in all.
+// state is what the sender holds now: how many goroutines serve lanes, whether session:parked's
+// held lane is parked, how many sends wait on it, and how many sends are queued in all. The rig's
+// comments name no owner, so they share one held lane (heldLane).
 func (r *parkRig) state() (serving int, parked bool, onLane, queued int) {
 	r.sender.mu.Lock()
 	defer r.sender.mu.Unlock()
-	_, parked = r.sender.parked["session:parked"]
-	return r.sender.serving, parked, len(r.sender.lanes["session:parked"]), len(r.sender.claims)
+	held := heldLane("session:parked", "")
+	_, parked = r.sender.parked[held]
+	return r.sender.serving, parked, len(r.sender.lanes[held]), len(r.sender.claims)
 }
 
 // serveStacks counts the goroutines whose stack is in the sender's lane loop.

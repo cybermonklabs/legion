@@ -91,7 +91,7 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `update events set `+row.state+` where id = $1`, earlier.ID); err != nil {
 				t.Fatalf("set the earlier event %s: %v", row.state, err)
 			}
-			by, err := copyHolder(ctx, deps, comment.ID, s1)
+			by, err := copyHolder(ctx, deps, comment.ID, s1, "s1")
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}
@@ -105,7 +105,7 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 		})
 	}
 	// Control: the rule reads earlier events only - the comment holds no copy of the event before it.
-	if by, err := copyHolder(ctx, deps, earlier.ID, s1); err != nil || by != nil {
+	if by, err := copyHolder(ctx, deps, earlier.ID, s1, "s1"); err != nil || by != nil {
 		t.Fatalf("a copy of the earlier event itself waits behind %+v (%v), want nothing: no event of T-1 comes before it", by, err)
 	}
 }

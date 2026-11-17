@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,12 +176,16 @@ func (m mentionSend) lane() string {
 //
 // A send also waits for every earlier event of its comment's owner that the outbox still owes the
 // mentioned session (mentionHeldForOrder, model.MentionCopyHolderSQL), so the session takes the
-// comment after them. Such a send makes no try: it hands its claim back, goes back to the head of
-// its lane, and the lane parks, with no goroutine on it and its later sends behind it, until
-// mentionOrderRetry of that send's parks has passed (park, unpark). A parked lane sends nothing,
-// so it counts against mentionSendLanes no more than a lane with nothing queued, and its sends stay
-// among the queued ones maxQueuedMentionSends bounds, their claims written again as every queued
-// send's are.
+// comment after them. Such a send makes no try: it hands its claim back and goes, with every send
+// of the same owner queued behind it on its lane, to a held lane of that owner and recipient
+// (heldLane), which parks, with no goroutine on it, until mentionOrderRetry of that send's parks
+// has passed (park, unpark). The owner's later sends to the recipient queue behind it there; the
+// recipient's sends of other owners stay on its lane and go on, since one owner's earlier event
+// holds back no other owner's. While a held lane exists the recipient can have two sends in
+// flight, one of each lane, and the order between two owners' comments is the order they went in.
+// A parked lane sends nothing, so it counts against mentionSendLanes no more than a lane with
+// nothing queued, and its sends stay among the queued ones maxQueuedMentionSends bounds, their
+// claims written again as every queued send's are.
 //
 // The statements the sender makes go through its three functions, which register binds to the
 // server: send (sendCommentMention), refresh (refreshMentionClaims) and release
@@ -324,6 +329,13 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 	m.held[key] = struct{}{}
 	m.claims[key] = item.claimed
 	lane := item.lane()
+	if held := heldLane(lane, item.owner()); held != lane {
+		if _, waits := m.lanes[held]; waits {
+			// The owner's sends to this recipient wait behind one of them that waits for an
+			// earlier event (park): this one goes behind them, so the owner's order holds.
+			lane = held
+		}
+	}
 	waiting, scheduled := m.lanes[lane]
 	m.lanes[lane] = append(waiting, item)
 	switch {
@@ -339,8 +351,8 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 }
 
 // serve sends lane's queue, then any lane waiting for a goroutine, until none waits. A send that
-// waited for an earlier event of its comment's owner parks its lane (park), and the goroutine
-// moves on to a lane that waits.
+// waited for an earlier event of its comment's owner parks the owner's sends to its recipient
+// (park), and the goroutine goes on with what is left of its lane, or a lane that waits.
 func (m *mentionSender) serve(lane string) {
 	defer m.done.Done()
 	var finished mentionKey
@@ -395,14 +407,29 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 	return item, lane, true
 }
 
+// heldLane is the lane the sends of owner to the recipient lane names wait on while one of them
+// waits for an earlier event of owner (park): a lane of its own beside lane, so a recipient's sends
+// of other owners pass them. A lane that is one already is its own.
+func heldLane(lane, owner string) string {
+	if strings.Contains(lane, "\x00") {
+		return lane
+	}
+	return lane + "\x00" + owner
+}
+
 // park puts item, the send lane just started that waited for an earlier event of its comment's
-// owner, back at the head of lane under the claim it holds now, which this sender writes again
-// from here as it writes every queued send's (refreshHeldClaims), and leaves lane with no
-// goroutine until mentionOrderRetry of item's parks has passed (unpark). Its attempt stays held,
-// so a keyed repeat of the comment queues it no second time (queueLocked). A park once the sender
-// stopped still records the claim, which the drain gives back with the rest (wait).
+// owner, at the head of that owner's held lane for the recipient (heldLane) under the claim it
+// holds now, which this sender writes again from here as it writes every queued send's
+// (refreshHeldClaims), and leaves the held lane with no goroutine until mentionOrderRetry of
+// item's parks has passed (unpark). Every send of the same owner still queued on lane moves with
+// it, in order, and every later one queues behind them (queueLocked), so the owner's sends keep
+// their order; the recipient's sends of other owners stay on lane and go on, as an earlier event
+// of one owner holds no event of another (planChains keeps order per owner). The held lane is
+// deleted once it is empty and served (next), after which the owner's sends join lane again. Its
+// attempt stays held, so a keyed repeat of the comment queues it no second time. A park once the
+// sender stopped still records the claim, which the drain gives back with the rest (wait).
 //
-// The wait has no bound, so it shows instead: the held gauges read every parked lane's head send
+// The wait has no bound, so it shows instead: the held gauges read every held lane's head send
 // (heldSamples), and a send held heldWarnAfter since it first waited is logged once at WARN,
 // naming its owner, the earlier event it waits behind and that event's last publish error - beside
 // the ERROR the outbox writes for that event's own failed publish, which is the cause.
@@ -412,20 +439,36 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 		item.heldSince = time.Now()
 	}
 	delay := mentionOrderRetry(item.parks)
+	owner := item.owner()
+	held := heldLane(lane, owner)
 	m.mu.Lock()
 	warn := !item.warned && time.Since(item.heldSince) >= m.heldWarnAfter
 	item.warned = item.warned || warn
 	m.claims[item.key()] = item.claimed
-	m.lanes[lane] = append([]mentionSend{item}, m.lanes[lane]...)
-	m.parked[lane] = struct{}{}
+	if held == lane {
+		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
+	} else {
+		moved := []mentionSend{item}
+		kept := make([]mentionSend, 0, len(m.lanes[lane]))
+		for _, queued := range m.lanes[lane] {
+			if queued.owner() == owner {
+				moved = append(moved, queued)
+			} else {
+				kept = append(kept, queued)
+			}
+		}
+		m.lanes[lane] = kept
+		m.lanes[held] = moved
+	}
+	m.parked[held] = struct{}{}
 	m.mu.Unlock()
 	if warn {
 		slog.Warn("dispatch: a comment mention's send waits behind an earlier event of its owner",
-			"owner", item.owner(), "comment", item.comment.ID, "target", item.mention.Target, "session", item.heldFor,
+			"owner", owner, "comment", item.comment.ID, "target", item.mention.Target, "session", item.heldFor,
 			"event_id", item.heldBy.EventID, "publish_error", deref(item.heldBy.PublishError),
 			"held_for", time.Since(item.heldSince).Round(time.Second))
 	}
-	time.AfterFunc(delay, func() { m.unpark(lane) })
+	time.AfterFunc(delay, func() { m.unpark(held) })
 }
 
 // heldSamples is, by owner, how many sends wait at the head of a parked lane behind an earlier
@@ -600,7 +643,7 @@ func (m *mentionSender) wait() {
 func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (mentionSend, bool) {
 	ctx = store.WithTransactionTracking(ctx)
 	if item.heldFor != "" {
-		if by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor); err == nil && by != nil {
+		if by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor, item.mention.Delivery); err == nil && by != nil {
 			item.heldBy = *by
 			return item, true
 		}

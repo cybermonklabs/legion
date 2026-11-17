@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -1749,7 +1750,8 @@ func decideFallbackCopy(
 	// reaches the session before it. The row waits as one whose mention is still being sent does,
 	// and holds nothing of its own back: the owner's later events go on. The pass counts and
 	// reports what it waits on (heldCopies).
-	if by, err := copyHolder(ctx, deps, held.eventID, fallbackCopyKey(held.destination, forward)); err != nil {
+	key := fallbackCopyKey(held.destination, forward)
+	if by, err := copyHolder(ctx, deps, held.eventID, key, strings.TrimPrefix(key, contracts.AgentTopicPrefix)); err != nil {
 		return 0, fallbackSend{}, err
 	} else if by != nil {
 		return fallbackWaitsForAnEarlierEvent, fallbackSend{heldBy: by}, nil
@@ -1768,20 +1770,67 @@ func fallbackCopyKey(subject string, forward *roleForward) string {
 // copyHolder is the earlier event of its owner a copy of the comment whose comment.created event
 // is eventID, bound for the session key key, waits behind - one that still owes a send that
 // session may take: to the owner's topic family, to that key, or, its recipient read having
-// failed, to any session (model.MentionCopyHolderSQL) - and nil while it waits for none. It is the
-// rule the API's send of a mention asks too (mentionCopyHolder in internal/dispatch/api), so both
-// roads a mention's copy takes outside the owner's chains keep the order planChains keeps inside
-// them.
-func copyHolder(ctx context.Context, deps Deps, eventID int64, key string) (*model.MentionCopyHolder, error) {
+// failed, to any session (model.MentionCopyHolderSQL); or a role route whose holder is session,
+// the session key names (model.MentionCopyRolesSQL, copyWaitsForRole) - and nil while it waits
+// for none. A key that names no session, a role topic for a copy kept for the role's next holder,
+// asks the first rule alone. It is the rule the API's send of a mention asks too
+// (mentionCopyHolder in internal/dispatch/api), so both roads a mention's copy takes outside the
+// owner's chains keep the order planChains keeps inside them.
+func copyHolder(ctx context.Context, deps Deps, eventID int64, key, session string) (*model.MentionCopyHolder, error) {
 	var by model.MentionCopyHolder
 	err := deps.Store.Pool.QueryRow(ctx, model.MentionCopyHolderSQL, eventID, key).Scan(&by.EventID, &by.PublishError)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil, nil
-	case err != nil:
+	case err == nil:
+		return &by, nil
+	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, fmt.Errorf("read the earlier event that holds event %d's copy for %s: %w", eventID, key, err)
+	case session == key:
+		return nil, nil
 	}
-	return &by, nil
+	routes, err := owedRoleRoutes(ctx, deps.Store.Pool, eventID)
+	if err != nil {
+		return nil, err
+	}
+	for _, route := range routes {
+		if copyWaitsForRole(ctx, deps, strings.TrimPrefix(route.Topic, contracts.RoleTopicPrefix), session) {
+			return &route.MentionCopyHolder, nil
+		}
+	}
+	return nil, nil
+}
+
+// owedRoleRoutes is model.MentionCopyRolesSQL's rows for the comment whose comment.created event is
+// eventID: each role topic an earlier event of its owner still owes, with the earliest such event.
+func owedRoleRoutes(ctx context.Context, db queryer, eventID int64) ([]model.MentionCopyRole, error) {
+	rows, err := db.Query(ctx, model.MentionCopyRolesSQL, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", eventID, err)
+	}
+	routes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MentionCopyRole, error) {
+		var route model.MentionCopyRole
+		err := row.Scan(&route.Topic, &route.EventID, &route.PublishError)
+		return route, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", eventID, err)
+	}
+	return routes, nil
+}
+
+// copyWaitsForRole is whether a copy bound for session waits for an earlier event's route to role:
+// it does when session holds the role now, as planChains would key that route on session at its
+// next batch (destination.key), and when the role's claim cannot be read, since session may hold
+// it - the row is read again a moment later (mentionPendingDelay). A deployment with no role
+// readers forwards no role route, so its routes hold no copy (errNoRoleReaders).
+func copyWaitsForRole(ctx context.Context, deps Deps, role, session string) bool {
+	resolution, err := resolveRole(ctx, deps, role)
+	switch {
+	case errors.Is(err, errNoRoleReaders):
+		return false
+	case err != nil:
+		return true
+	}
+	return resolution.Holder == session
 }
 
 // claimFallbackCopies claims at most batchSize unsettled fallback rows that are due - never
