@@ -120,7 +120,8 @@ live on the day the carry ships, so each of those ends as it always did and the 
 replaces it carries.
 A dormant enrollment proves nothing from the moment it goes dormant, as any ended enrollment proves
 nothing, and its next renewal is refused `ENROLLMENT_NOT_LIVE`; what it holds waits for the next
-enrollment of that session name under the same principal to take.
+enrollment of that session name under the same principal, or under a service account paired with
+it ([Requests and grants](#requests-and-grants)), to take.
 An approval given while the box is gone still mints a grant: the broker hangs it off the row the
 carry is keeping for that session, and the session's next enrollment takes it with the rest
 (`packages/envoy/internal/broker/requests/machine_state.go`, `ApplyDecision`).
@@ -725,9 +726,9 @@ moved, and one `grant.moved` row per grant, naming the grant, the enrollment hol
 one it came from.
 
 Three things take nothing.
-A session name another principal holds is refused outright: the enrollment is refused
-`SESSION_HELD`, naming the session and no holder, and writes nothing
-(`enroll.go`, `bindSessionName`).
+A session name another principal holds is refused, unless that principal is a service account
+paired with the enrolling pod's (below): the enrollment is refused `SESSION_HELD`, naming the
+session and no holder, and writes nothing (`enroll.go`, `bindSessionName`).
 A token exchange under that name is refused the same way, on the same row, so the name stays its
 principal's for 90 days past the last lease or token under it
 (`packages/envoy/internal/broker/oauthstore/exchange.go`, `ErrSessionHeld` and `SessionRetention`).
@@ -736,6 +737,29 @@ revoked credential does not authenticate, and an enrollment already under way fi
 revoked and is refused `LAUNCHER_INVALID`.
 A session enrolling under a name of its own has no earlier enrollment of that pair, so it starts with
 nothing but the grants it asks for.
+
+Two Kubernetes service accounts can be paired so that either takes a session name the other holds:
+`BROKER_SESSION_ACCOUNT_PAIRS`, which an operator sets before moving a deployment's pods from one
+account to the other ([Operate](/legion/broker/operate/#what-to-run)).
+A pod's principal is the account its projected token proves, so without the pair a role's next
+pod, on the new account, is refused its own session name, and what the name carries stays behind.
+With the pair, the claim takes the name, whether an enrollment or a token exchange makes it
+(`oauthstore/exchange.go`, `BindSession`).
+An enrollment under the name then takes what the other account's enrollments of it still hold, by
+the rule above for a successor under the same principal: the grants, the pending requests and the
+withheld names (`enroll.go`, `adopt`).
+A pair works both ways, so pods moved back take the names back the same way.
+A pair does not chain: with A paired with B and B with C, C takes a name B holds and never one A
+holds, since only the holder's own pairs count.
+No pair takes a name an entry of the token exchange fixes.
+A take holds the name for the taker's own claim, 90 days past its own lease or token, and not for
+what was left of the holder's.
+Two claims racing for one name end with one holder.
+The broker logs each take at WARN once it has committed:
+`broker: an enrollment took a session name from the account paired with its own`, naming the
+session, the principal it took the name from (`from`), the one that took it (`to`) and the
+enrollment, or `broker: the token exchange took a session name from the account paired with its
+own`, naming the session, `from` and `to`.
 
 A grant that moves still ends, three ways.
 It ends when its own lifetime runs out, whichever box holds it by then.
@@ -810,9 +834,18 @@ session was approved for, with no approval of its own.
 Within one principal what stands between a caller and a secret is the sign-in on a box, or the
 account, and never the session name.
 Three things bound it.
-Another principal is refused the name outright.
+Another principal is refused the name, but for a service account paired with the holder's (below).
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
+
+The broker cannot tell an operator moving pods from one account to another from an attack, so a
+pair of service accounts is the operator's word that the move is intended.
+While it stands, a pod of either account can claim any session name the other holds, not only its
+own role's, so a pod of one project's account can claim a name a shared account holds for another
+project's role.
+Two things bound this for Legion's pods: the daemon gives each role only its own name, and a name
+leaves the shared account once its role's pod has moved.
+Remove a pair once no live pod runs as the old account.
 
 A claim is asserted the same way: it rides in the enrollment's body, and it is the launcher's word,
 so a holder of the Legion daemon's login can state any claim of the daemon's service and take what a

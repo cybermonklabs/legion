@@ -1206,11 +1206,13 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
-// another principal the name, and this refuses another pod of the same principal, which the claim
-// cannot tell apart because the name belongs to the account. It runs here rather than inside
-// decide because a refusal raised through the library's store hook arrives as invalid_request,
-// and this one is invalid_grant: the subject token is sound and it is the broker's state that
-// refuses it, exactly as a session name another principal holds is.
+// another principal the name, an account paired with the holder's excepted
+// (oauthstore.Store.SessionPairs), and this refuses another pod of the same principal, which the
+// claim cannot tell apart because the name belongs to the account; a pod of a paired account is
+// held to it too. It runs here rather than inside decide because a refusal raised through the
+// library's store hook arrives as invalid_request, and this one is invalid_grant: the subject
+// token is sound and it is the broker's state that refuses it, exactly as the claim refuses a
+// session name another principal holds and the caller may not take.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil

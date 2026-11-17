@@ -144,8 +144,10 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	// Wired as cmd/broker/main.go wires it, so a session name belongs to one principal on this
-	// server too: the enrollment route refuses a name another principal holds.
+	// Wired as cmd/broker/main.go wires it, so a session name is held on this server as on the
+	// broker: the enrollment route refuses a name another principal holds, unless a test pairs
+	// that principal's account with the enrolling pod's (testServer.sessions), when the
+	// enrollment takes it.
 	sessions := oauthstore.New(st.Pool)
 	enr.Sessions = sessions
 

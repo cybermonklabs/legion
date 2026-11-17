@@ -822,10 +822,11 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 
 // carryPrincipal is the identity an enrollment belongs to, which the insert writes into
 // enrollments.carry_principal: the half of the pair a grant follows that keeps one session name
-// from reaching another principal's grant (adopt). It is read from what the caller has already
-// proved and never from anything the launcher states, and every spelling is exchange's own, the
-// broker's one definition of each, so that the name a session writes its Dispatch tokens under
-// and the name its grant follows have the same holder.
+// from reaching another principal's grant (adopt), an account paired with this one
+// (SessionBinder.PairedWith) excepted. It is read from what the caller has already proved and
+// never from anything the launcher states, and every spelling is exchange's own, the broker's
+// one definition of each, so that the name a session writes its Dispatch tokens under and the
+// name its grant follows have the same holder.
 //
 //   - A pod belongs to the service account its own projected token proved
 //     (exchange.AccountPrincipal), the same account requests.Machine.requester reads a pod's
