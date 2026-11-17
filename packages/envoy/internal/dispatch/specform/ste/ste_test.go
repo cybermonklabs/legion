@@ -2,7 +2,6 @@ package ste
 
 import (
 	"encoding/json"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -188,16 +187,10 @@ const walksOfALine = 5
 // phrasal verb, marketing adjective and nominalization, and the first place of each member of a
 // synonym group, which stand after words of "é" here. An agent's document can hold such a line,
 // and the approval request holds its transaction while Lint reads it. The test counts the
-// characters, which no load of the machine changes: every count of Lint goes through runes, the
-// one call of utf8.RuneCountInString in ste.go, so the test reads that file too.
+// characters that Lint counts through runes, which no load of the machine changes. All of the
+// work of a judgment, a count spelled in another way among it, is the work that
+// specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText measures.
 func TestEachRuleThatWalksMatchesCountsEachCharacterOfALineOnce(t *testing.T) {
-	source, err := os.ReadFile("ste.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls := strings.Count(string(source), "utf8.RuneCountInString"); calls != 1 {
-		t.Fatalf("ste.go names utf8.RuneCountInString %d times, want once, in runes, which this test counts through", calls)
-	}
 	var data ruleData
 	if err := json.Unmarshal(rulesJSON, &data); err != nil {
 		t.Fatal(err)

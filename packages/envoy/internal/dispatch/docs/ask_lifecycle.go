@@ -327,7 +327,10 @@ func FollowedDocuments(documents []model.AskApprovalDocument, versions []ClosedI
 // versions that the follow leaves it (FollowedDocuments).
 //
 // A document whose stored updates are ahead of its latest version (contentChangedSinceVersion) is
-// left out, for the settlement it owes. The reopen's own ask-state write is such an update, and that
+// left out, for the settlement it owes. That settlement's version moves the open request with no
+// judgment, as each version write moves an open request: the request then waits on its agent,
+// unless the version holds the text that Dispatch judged, and the approval of a version that breaks
+// the form is refused. The reopen's own ask-state write is such an update, and that
 // settlement's version holds the text the reopen leaves, which its own write compares with the
 // version the request names and with the approved text. A reopen that writes back the text the
 // person was asked about then keeps the request with the person, which a move to the closed

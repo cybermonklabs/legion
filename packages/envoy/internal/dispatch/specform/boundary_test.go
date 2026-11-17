@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -136,6 +137,19 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"the cost of the rule: a / before an address", "x/ada@example.com", nil},
 		{"an email address in brackets, then a colon", "(ada@example.com:)", []string{"person ada@example.com"}},
 		{"an email address, then a colon and a comma", "ada@example.com:,", []string{"person ada@example.com"}},
+		{"an email address, then a colon and white space of another kind", "ada@example.com:\tshe", []string{"person ada@example.com"}},
+		{"an email address, then a colon and a no-break space", "ada@example.com:\u00a0she", []string{"person ada@example.com"}},
+		{"an email address, then a colon and a semicolon", "ada@example.com:;", []string{"person ada@example.com"}},
+		{"an email address, then a colon and a stop of a question", "ada@example.com:?", []string{"person ada@example.com"}},
+		{"an email address, then a colon and a stop of an exclamation", "ada@example.com:!", []string{"person ada@example.com"}},
+		{"an email address in square brackets, then a colon", "[ada@example.com:]", []string{"person ada@example.com"}},
+		{"an email address in quotes, then a colon", "\u201cada@example.com:\u201d", []string{"person ada@example.com"}},
+		{"an scp address before a path in double quotes", `deploy@build.example.com:"/srv/my reports/"`, nil},
+		{"an scp address before a path in single quotes", "deploy@build.example.com:'/srv/my reports/'", nil},
+		{"an rsync address before a path from a variable", "deploy@build.example.com:$HOME/app/", nil},
+		{"an scp address before a pattern", "deploy@build.example.com:*.log", nil},
+		{"an rsync address before a module", "ops@backup.example.com::backups", nil},
+		{"the cost of the rule: a quote after the colon", `ada@example.com:"`, nil},
 		{"the control: an email address after mailto:", "mailto:ada@example.com", []string{"person ada@example.com"}},
 		{"a handle", "@josé", []string{"person @josé"}},
 		{"a handle", "é@legion", nil},
@@ -225,55 +239,65 @@ func TestNoFormHoldsAnotherNotionOfAWord(t *testing.T) {
 	}
 }
 
-// Every regular expression of the rules file is built through the guard: no call of a compile
-// function of package regexp stands in rules.go outside wordRegexp, so no form of a name can hold
-// a notion of a word that the guard did not read. The test sees the one call inside wordRegexp, so
-// it reads the file it names.
+// Every regular expression of the package is built through the guard: no call of a compile
+// function of package regexp stands outside wordRegexp in a file of the package that is no test,
+// so no form of a name can hold a notion of a word that the guard did not read. The test sees the
+// one call inside wordRegexp, so it reads the files it names.
 func TestEveryPatternOfTheRulesIsBuiltThroughTheGuard(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "rules.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := ""
-	for _, spec := range file.Imports {
-		if spec.Path.Value == `"regexp"` {
-			name = "regexp"
-			if spec.Name != nil {
-				name = spec.Name.Name
+	read, inside, outside := 0, 0, []string{}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read++
+		name := ""
+		for _, spec := range file.Imports {
+			if spec.Path.Value == `"regexp"` {
+				name = "regexp"
+				if spec.Name != nil {
+					name = spec.Name.Name
+				}
 			}
 		}
-	}
-	if name == "" {
-		t.Fatal("rules.go imports no package regexp, so this test reads nothing")
-	}
-	inside, outside := 0, []string{}
-	for _, declaration := range file.Decls {
-		guard := false
-		if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.Name == "wordRegexp" {
-			guard = true
+		if name == "" {
+			continue
 		}
-		ast.Inspect(declaration, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if !ok {
+		for _, declaration := range file.Decls {
+			guard := false
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.Name == "wordRegexp" {
+				guard = true
+			}
+			ast.Inspect(declaration, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != name ||
+					!strings.HasPrefix(selector.Sel.Name, "Compile") && !strings.HasPrefix(selector.Sel.Name, "MustCompile") {
+					return true
+				}
+				if guard {
+					inside++
+				} else {
+					outside = append(outside, path+": "+name+"."+selector.Sel.Name)
+				}
 				return true
-			}
-			if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != name ||
-				!strings.HasPrefix(selector.Sel.Name, "Compile") && !strings.HasPrefix(selector.Sel.Name, "MustCompile") {
-				return true
-			}
-			if guard {
-				inside++
-			} else {
-				outside = append(outside, name+"."+selector.Sel.Name)
-			}
-			return true
-		})
+			})
+		}
 	}
-	if inside == 0 {
-		t.Fatal("wordRegexp calls no compile function of package regexp, so this test reads nothing")
+	if read < 2 || inside == 0 {
+		t.Fatalf("the test read %d files of the package and saw %d compile calls in wordRegexp, so it reads nothing", read, inside)
 	}
 	if len(outside) > 0 {
-		t.Errorf("rules.go compiles %q outside wordRegexp; build each pattern through wordRegexp", outside)
+		t.Errorf("the package compiles %q outside wordRegexp; build each pattern through wordRegexp", outside)
 	}
 }
 
