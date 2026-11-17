@@ -3585,8 +3585,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A current unit sends no title or summary text, because the stream keeps an envelope for its whole retention window and no deletion on the unit can recall it, so a reader fetches the current text through those links.
   A `summary_ready` payload also copies `status`, `summary_preset`, `summary_model`, `timestamp`, `version` and `payload_type`, and an older unit's `title` and `summary` (capped, with `body_truncated` when cut) still pass when present.
 
-- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is optional for trusted Ghost Wispr deployments;
-  when unset, skip signature verification explicitly rather than half-verifying missing headers.
+- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is required when `ENVOY_WEBHOOKS` names `ghostwispr`, as the GitHub and Slack secrets are for theirs:
+  an empty or blank value refuses the listener's start with an error naming the variable (`LoadWebhookConfig`, `internal/webhook/config.go`).
+  The handler checks the signature of every event, and `verify.GhostWispr` answers false for an empty secret, so a handler built with an empty secret answers 401 to every event and publishes nothing.
 
 - GitHub mention routing is additive: matching comments publish to both `.comment` and `.mention` topics.
 
