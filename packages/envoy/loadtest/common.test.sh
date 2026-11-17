@@ -509,14 +509,15 @@ case_holder_names_escaped() {
   weird=$'a\rb\nc\td\e[0m\\e\xff'
   want='a\rb\nc\td\x1b[0m\\e\xff'
   : >"$dir/lock"
-  # The `:` keeps bash from executing sleep in its own place, which would drop the command line
-  # under test.
-  bash -c 'exec 9>>"$1"; sleep 300 9>&-; :' holder "$dir/lock" "$weird" &
+  # The holder execs sleep under the command line under test (`exec -a`), so its pid, the one
+  # cleanup kills, is the sleep that holds descriptor 9, and no process outlives the test. Its output
+  # goes to /dev/null, as every other background process's here does.
+  bash -c 'exec 9>>"$1"; exec -a "$2" sleep 300' holder "$dir/lock" "$weird" >/dev/null 2>&1 &
   holder=$!
   pids+=("$holder")
   for ((i = 0; i < 100; i++)); do [ "$(readlink "/proc/$holder/fd/9" 2>/dev/null)" = "$dir/lock" ] && break; sleep 0.1; done
   out=$(bash -c 'source "$1"; lock_holders "$2"' check "$helper" "$dir/lock")
-  [[ $out == *"pid $holder (bash -c exec 9>>\"\$1\"; sleep 300 9>&-; : holder $dir/lock $want)"* ]] ||
+  [[ $out == *"pid $holder ($want 300)"* ]] ||
     { fail "lock_holders did not print the holder's command line escaped"; return; }
   [[ $out != *[$'\r\n\t\e']* && $out != *$'\xff'* ]] ||
     { fail "lock_holders printed a control character or a byte that is not ASCII as it is"; return; }
@@ -542,7 +543,7 @@ s.listen()
 open(sys.argv[1] + ".tmp", "w").write(str(s.getsockname()[1]))
 os.replace(sys.argv[1] + ".tmp", sys.argv[1])
 time.sleep(300)
-' "$dir/port" "$weird" &
+' "$dir/port" "$weird" >/dev/null 2>&1 &
   listener=$!
   pids+=("$listener")
   wait_for "$dir/port" || { fail "the listener wrote no port"; return; }
