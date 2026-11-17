@@ -12,6 +12,7 @@
     "test": "bun run build:contracts && bun run test:web web/src && bun run test:harness e2e/__tests__",
     "test:web": "bun test --parallel --timeout 60000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts",
     "test:harness": "bun test --parallel --timeout 60000",
+    "test:repeat": "bun run build:contracts && bun e2e/tools/unit-repeat.ts",
     "dispatch:local": "bun e2e/local-instance.ts",
     "build:contracts": "bun run --filter @legion/contracts build:dispatch",
     "e2e": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts",
