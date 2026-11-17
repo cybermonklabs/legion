@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -234,15 +236,26 @@ type result struct {
 	stderr string
 }
 
+// binaryLimit bounds one run of the built binary, which answers in milliseconds. A run that blocks,
+// as one that opens a named pipe nothing writes to does, is killed at the limit and fails its test
+// then, rather than holding it until go test's own deadline and outliving it.
+const binaryLimit = 20 * time.Second
+
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output.
+// empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
+// test.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(binary, args...)
+	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("architecture-check %q did not finish within %s and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
+	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
 		t.Fatalf("run architecture-check %q: %v", args, err)
