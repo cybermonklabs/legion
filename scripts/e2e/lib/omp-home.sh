@@ -78,3 +78,16 @@ make_omp_home() {
 omp_setup_wizard_off() {
   printf 'startup:\n  setupWizard: false\n' >>"$1"
 }
+
+# omp_session_unsets is env's -u options for the variables of the operator's own Oh My Pi session
+# that no Oh My Pi a rig starts from that session may inherit: OMP_SESSION_ID, that session's id;
+# OMPCODE, the mark Oh My Pi puts on the shells its bash tool spawns (buildSpawnEnv in
+# @oh-my-pi/pi-utils procmgr.ts); PI_CONFIG_FILES, that session's settings overlays, which Oh My Pi
+# lays over the profile it opens; ENVOY_NATS_URL, the NATS that session's Envoy plugin dials; and
+# LEGION_OMP_PATH, the Oh My Pi binary that `legion controller start` and the daemon run in place
+# of omp_invocation (ResolveInvocation, packages/daemon/internal/omplaunch). `legion controller
+# start` hands Oh My Pi its caller's environment, so every rig that runs it, or an interactive omp,
+# from the operator's shell drops these first: `env "${omp_session_unsets[@]}" …` in an argv, and
+# `env ${omp_session_unsets[*]} …` in a pane's shell command, which no name here needs quoted in.
+# shellcheck disable=SC2034 # the scripts that source this file read it
+omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH)

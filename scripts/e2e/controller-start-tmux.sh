@@ -89,9 +89,10 @@ tm() { tmux -L accept "$@"; }
 state_json() { legion state --json --port "$daemon_port"; }
 envoy_role() { curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
 log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" | jq -s length; }
-# The operator's shell, less the running session's own OMP and Envoy variables, with the run's own
-# HOME for Oh My Pi: operator_env runs a command in it, and the daemon starts in it (start_kept).
-operator_shell=(env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME="$omp_home" OMP_PROFILE="$profile")
+# The operator's shell, less the running session's own OMP and Envoy variables (omp_session_unsets,
+# lib/omp-home.sh), with the run's own HOME for Oh My Pi: operator_env runs a command in it, and the
+# daemon starts in it (start_kept).
+operator_shell=(env "${omp_session_unsets[@]}" HOME="$omp_home" OMP_PROFILE="$profile")
 operator_env() { "${operator_shell[@]}" "$@"; }
 # controller_omp STATE_DIR: the pid of the Oh My Pi `legion controller start` launched for STATE_DIR.
 controller_omp() {
@@ -294,7 +295,7 @@ note "the daemon minted nothing; $ctl_state not created"
 pass
 
 begin controller-claims-the-role
-tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
+tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
 until_true 180 "controllerLocator in the state" sh -c "'$work/legion' state --json --port $daemon_port | jq -e '.controllerLocator.sessionId != null'"
 locator1=$(state_json | jq -c .controllerLocator)
 session1=$(jq -r .sessionId <<<"$locator1")
@@ -387,7 +388,7 @@ if [ "$code" != 500 ] || ! grep -qF DISPATCH_UNAVAILABLE "$evidence/checks/grant
   fail "the grant answered $code $(cat "$evidence/checks/grant-before-second-start.json") before the second start, want 500 DISPATCH_UNAVAILABLE"
 fi
 note "the grant, before the second start → $code $(cat "$evidence/checks/grant-before-second-start.json")"
-tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
+tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
 until_true 180 "controllerLocator to name a second session" sh -c "'$work/legion' state --json --port $daemon_port | jq -e --arg s '$session1' '.controllerLocator.sessionId != null and .controllerLocator.sessionId != \$s'"
 locator2=$(state_json | jq -c .controllerLocator)
 session2=$(jq -r .sessionId <<<"$locator2")
