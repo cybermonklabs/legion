@@ -72,8 +72,8 @@ make_omp_home() {
 # packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard: false` shuts it whatever setup
 # version the build counts to; `--mode rpc` never opens it. A named profile's own settings file is
 # its agent/config.yml, and it inherits no other config.yml of the home (getProfileConfigRoot in
-# @oh-my-pi/pi-utils dirs.ts); only the working directory's project settings and PI_CONFIG_FILES
-# overlays merge over it, and neither is in the home. So each profile the run writes carries the line.
+# @oh-my-pi/pi-utils dirs.ts). Only the working directory's project settings and PI_CONFIG_FILES
+# overlays merge over it, so each profile the run writes carries the line.
 omp_setup_wizard_off() {
   printf 'startup:\n  setupWizard: false\n' >>"$1"
 }
