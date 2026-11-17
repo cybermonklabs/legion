@@ -1874,10 +1874,8 @@ func main() {
 			func() error {
 				// Each tick reads whether every copied bucket still exists first, so a cache whose
 				// bucket is gone is left out of the checks and the rebuild (bucketMissing), and
-				// logs missingBucketLine for the alarm while it stays gone. A read that fails
-				// keeps that bucket's last result (checkCopiedBuckets). The known-session bucket is
-				// left to its store while the store cannot read it (monitoredBuckets).
-				checkCopiedBuckets(monitorCtx, logger, client.JS(), monitoredBuckets(copied, known), missing)
+				// logs missingBucketLine for the alarm while it stays gone (checkMonitoredBuckets).
+				checkMonitoredBuckets(monitorCtx, logger, client.JS(), copied, known, missing)
 				if err := checkSelfHealth(caches, probeDurable); err != nil {
 					return err
 				}

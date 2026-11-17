@@ -269,16 +269,33 @@ func readBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string
 // checkCopiedBuckets is the self-health monitor's read of the copied buckets, each tick: it reads
 // every bucket, applies the reads to missing, and logs missingBucketLine for every bucket missing
 // holds - one this read could not read included, so the alarm keeps firing until a read finds the
-// bucket present. A tick ctx ended (the shutdown) says nothing and logs nothing.
-func checkCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) {
+// bucket present. It returns the reads, for the monitor to tell a store whose bucket a read found
+// present (session.KnownSessions.BucketPresent). A tick ctx ended (the shutdown) says nothing,
+// logs nothing and returns no read.
+func checkCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) bucketReads {
 	reads := readBuckets(ctx, js, buckets)
 	if ctx.Err() != nil {
-		return
+		return bucketReads{}
 	}
 	missing.observe(reads)
 	logMissingBuckets(logger, missing.list())
 	if err := reads.err(); err != nil {
 		logger.Warn("listener could not read whether its KV buckets exist; it keeps what it last read", slog.String("error", err.Error()))
+	}
+	return reads
+}
+
+// checkMonitoredBuckets is the self-health monitor's read of the copied buckets at a tick: those of
+// copied it monitors (monitoredBuckets: the known-session bucket is left to its store while the
+// store cannot read it), applied to missing (checkCopiedBuckets). A read that finds the
+// known-session bucket there tells the store, which opens it at once if its last attempt found it
+// missing (session.KnownSessions.BucketPresent), so its registrations are answered again within a
+// tick of the operator creating it, rather than at its retry's next attempt, up to five minutes
+// later, while /healthz already reads the bucket there.
+func checkMonitoredBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, copied []string, known *session.KnownSessions, missing *missingBuckets) {
+	reads := checkCopiedBuckets(ctx, logger, js, monitoredBuckets(copied, known), missing)
+	if slices.Contains(reads.present, bus.KnownSessionBucket) {
+		known.BucketPresent(ctx)
 	}
 }
 

@@ -584,6 +584,26 @@ func (s *KnownSessions) Unreadable() bool {
 	return s != nil && s.watch() == nil && !s.bucketMissing.Load()
 }
 
+// BucketPresent is the listener's word that a read of the store's bucket's stream found it there
+// (the self-health monitor's tick). A store whose last attempt found the bucket missing, and so
+// never opened it, then attempts again now, as a connection event that found no bucket open does
+// (Rewatch), rather than at its retry's next attempt, which backs off to retryMax: so the
+// registrations it refuses while its bucket is missing are answered again within a tick of the
+// operator creating it, and not up to five minutes after the monitor and /healthz already read it
+// there. Any other store is left as it is: an open one's watcher follows a bucket created again
+// under it by itself, and one that cannot read the bucket is its retry's. The wait for the retry's
+// lock ends with ctx, the tick's.
+func (s *KnownSessions) BucketPresent(ctx context.Context) {
+	if s == nil || s.watch() != nil || !s.bucketMissing.Load() {
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	s.armRepairWithin(ctx)
+}
+
 // logger is the logger WithKnownSessionLogger set, or the default one.
 func (s *KnownSessions) logger() *slog.Logger {
 	if s.log == nil {
