@@ -62,9 +62,13 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
-// writes historical state in migrations and test fixtures. The write is one transaction with the
-// role-holder publication it queues (putClaim).
+// writes historical state in migrations and test fixtures. A write that can queue a role-holder
+// publication is one transaction with the publication it queues (putClaim); a write that can queue
+// none (queuesRoleHolders) is one statement on the pool, with no transaction around it.
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
+	if !s.queuesRoleHolders(c) {
+		return upsertClaim(ctx, s.pool, c)
+	}
 	var queued bool
 	var wrote error
 	if err := s.Tx(ctx, func(tx pgx.Tx) error {
@@ -278,14 +282,14 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
 // EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
 // state that holds it — retired, failed, suspended, or launching again. A write that changes no
-// holder queues nothing, and neither does a claim that holds no role of an issue (holdsIssueRole)
-// nor any write before the daemon turns the publication on (PublishRoleHolders).
+// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders).
 // It answers whether it queued, so that the caller can wake the lane once tx commits
 // (committedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
 // RetireDelivery and AdmitClaim — so whichever decision makes a write, the store holds the change
-// and its publication together, or neither.
+// and its publication together, or neither; PutClaim alone writes on the pool when it can queue
+// none, since then nothing goes with the write.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
-	if !s.publishesRoleHolders() || !holdsIssueRole(c) {
+	if !s.queuesRoleHolders(c) {
 		return false, upsertClaim(ctx, tx, c)
 	}
 	stored, err := storedRoleHolder(ctx, tx, c)
@@ -304,7 +308,8 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 	return true, nil
 }
 
-// upsertClaim writes the row of claim c, in putClaim's transaction.
+// upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
+// that can queue no publication.
 //
 // The write that records a retirement stamps the claim with retired_at_write_mark, a number
 // from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
