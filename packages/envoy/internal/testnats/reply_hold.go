@@ -103,6 +103,17 @@ func (h *ReplyHold) Drop() {
 	h.dropLocked()
 }
 
+// Release holds nothing more and leaves every connection the hold is relaying open: a request a
+// client sends from now on is answered, on its present connection or on one it dials, while a
+// reply the hold has already withheld stays withheld. A test that cuts the connection by other
+// means than Drop - the client's own close of it, say - releases the hold first, so the client's
+// next connection through it is not held too.
+func (h *ReplyHold) Release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.releaseLocked()
+}
+
 // Cut is Drop that also refuses every connection the hold accepts until Restore, as a dial the
 // network refuses ends: each client through it is disconnected at once and stays disconnected, its
 // reconnects failing, until Restore.
@@ -124,11 +135,16 @@ func (h *ReplyHold) Restore() {
 // dropLocked holds nothing more and closes every connection the hold is relaying; the caller holds
 // h.mu.
 func (h *ReplyHold) dropLocked() {
-	h.prefix, h.replies, h.held = "", nil, nil
+	h.releaseLocked()
 	for conn := range h.conns {
 		_ = conn.Close()
 		delete(h.conns, conn)
 	}
+}
+
+// releaseLocked holds nothing more; the caller holds h.mu.
+func (h *ReplyHold) releaseLocked() {
+	h.prefix, h.replies, h.held = "", nil, nil
 }
 
 // flushes is one relayed connection's count of the PINGs the client sent and the PONGs forwarded

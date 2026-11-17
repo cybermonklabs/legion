@@ -30,16 +30,42 @@ import (
 // the stream held the copy, so the publish route answered 404 and the sender's fallback ran for a
 // message the role's next holder is handed.
 func TestAKeepWhoseAckTheDropLostAnswersTheStoredCopyAsKept(t *testing.T) {
+	keepThroughACut(t, "lost-keep-role", "the drop", func(hold *testnats.ReplyHold, _ *bus.Client) { hold.Drop() })
+}
+
+// A keep whose connection closed under its acknowledgement answers the stored copy as kept, as the
+// row above does for a drop: nats.go closes a running client's connection after the same
+// authorization error twice in a row or an unclassified -ERR, and the client dials a replacement
+// (bus's onClosed). The bus answers the keep's publish bus.ErrConnectionLost for a close as for a
+// drop (bus's bindRequest), so the keep publishes again on the replacement and reads the copy the
+// duplicate answer names. The row releases the hold before it closes the connection, once the
+// first publish's acknowledgement is withheld, so the replacement's publish is answered.
+//
+// The control is this row at 190f7cb177, whose bus passed nats.ErrConnectionClosed on when it
+// reached the request before the request's life had ended, which nats.go's close order allows:
+// the keep's bus.Reconnected does not match that error, so the keep failed while the stream held
+// the copy.
+func TestAKeepWhoseConnectionClosedUnderItsAckAnswersTheStoredCopyAsKept(t *testing.T) {
+	keepThroughACut(t, "closed-keep-role", "the close", func(hold *testnats.ReplyHold, client *bus.Client) {
+		hold.Release()
+		client.Connection().Close()
+	})
+}
+
+// keepThroughACut keeps one role message through a hold that withholds the publish's
+// acknowledgement, cuts the connection with cut while it is withheld, and requires the keep to
+// answer the one copy the stream holds as kept.
+func keepThroughACut(t *testing.T, role, what string, cut func(*testnats.ReplyHold, *bus.Client)) {
+	t.Helper()
 	hold := testnats.StartReplyHold(t, testnats.URL(t))
 	client, err := bus.ConnectOwningStream([]string{hold.URL()}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener through the hold: %v", err)
 	}
 	t.Cleanup(client.Close)
-	const role = "lost-keep-role"
 	subject := bus.KeptRoleSubject(role)
 	cfg := listenerDeliveryHandlerConfig{client: client, logger: logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), now: time.Now}
-	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "lost-keep-00")
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
 
 	held := hold.Hold(subject)
 	type answer struct {
@@ -58,17 +84,17 @@ func TestAKeepWhoseAckTheDropLostAnswersTheStoredCopyAsKept(t *testing.T) {
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the hold withheld no acknowledgement of the keep's publish by the test's deadline")
 	}
-	dropped := time.Now()
-	hold.Drop()
+	cutAt := time.Now()
+	cut(hold, client)
 	var got answer
 	select {
 	case got = <-answered:
 	case <-time.After(testnats.Remaining(t)):
-		t.Fatal("the keep whose acknowledgement the drop lost was still waiting at the test's deadline")
+		t.Fatalf("the keep whose acknowledgement %s cut off was still waiting at the test's deadline", what)
 	}
 	if got.err != nil {
-		t.Fatalf("the keep answered %v %s after the drop (ErrConnectionLost: %t), want the stored copy answered as kept",
-			got.err, time.Since(dropped), errors.Is(got.err, bus.ErrConnectionLost))
+		t.Fatalf("the keep answered %v %s after %s (ErrConnectionLost: %t, ErrConnectionClosed: %t), want the stored copy answered as kept",
+			got.err, time.Since(cutAt), what, errors.Is(got.err, bus.ErrConnectionLost), errors.Is(got.err, nats.ErrConnectionClosed))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()
@@ -83,5 +109,5 @@ func TestAKeepWhoseAckTheDropLostAnswersTheStoredCopyAsKept(t *testing.T) {
 	if next, err := client.NextStoredMessage(ctx, subject, first.Sequence+1); !errors.Is(err, nats.ErrMsgNotFound) {
 		t.Fatalf("the kept lane holds a copy past %d (at %d, %v), want one copy", first.Sequence, next.Sequence, err)
 	}
-	t.Logf("the keep answered its own stored copy at sequence %d as kept %s after the drop", first.Sequence, time.Since(dropped))
+	t.Logf("the keep answered its own stored copy at sequence %d as kept %s after %s", first.Sequence, time.Since(cutAt), what)
 }

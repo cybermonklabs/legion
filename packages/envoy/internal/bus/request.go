@@ -29,11 +29,13 @@ import (
 // A caller that holds a lock or a shared read releases it before it waits, since that wait is the
 // whole of the outage.
 //
-// It is the error of a client that is still running and so recovers its connection. A client that
-// was stopped (Close, or Drain once its connection has closed) recovers nothing, and a request cut
-// off by its stop answers nats.ErrConnectionClosed instead, as nats.go answers a request its own
-// close cut off: a caller that reads that error as lasting (cistore's kvErrorLasts, sendStored's
-// reconnect branch) reads it as it always did (lostOrClosed).
+// It is the error of a client that is still running and so recovers its connection, also when that
+// connection closed under the request rather than dropped (bindRequest): the client replaces a
+// closed connection (onClosed). A client that was stopped (Close, or Drain once its connection has
+// closed) recovers nothing, and a request cut off by its stop answers nats.ErrConnectionClosed
+// instead, as nats.go answers a request its own close cut off: a caller that reads that error as
+// lasting (cistore's kvErrorLasts, sendStored's reconnect branch) reads it as it always did
+// (lostOrClosed).
 var ErrConnectionLost = errors.New("bus: the NATS connection was lost")
 
 // connectionLost is the error Request returns for a request the loss of client's connection cut
@@ -138,6 +140,14 @@ var endedLife = func() context.Context {
 // bindRequest is the context a request made under ctx on c's connection is sent with, and the func
 // that ends it and names the request's error: one the end of the connection's life cut off, while
 // ctx itself had not ended, is lostOrClosed's. A nil c binds nothing.
+//
+// A request nats.go answered nats.ErrConnectionClosed is one such: the close cut it off, whether or
+// not the life has ended yet. nats.go's close answers every pending request (clearPendingRequestCalls,
+// nats.go:6086) before it reports CLOSED (changeConnStatus, :6142), and the life ends only once its
+// goroutine reads that report, so the request can come back first. Read by the life alone, a close
+// on a running client - nats.go's own, after the same authorization error twice in a row or an
+// unclassified -ERR (connect.go's options) - would answer its caller the raw closed error, which
+// Reconnected does not retry, where the client goes on to replace the connection (onClosed).
 func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) error) {
 	if c == nil {
 		return ctx, func(err error) error { return err }
@@ -151,7 +161,10 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 	return bound, func(err error) error {
 		stop()
 		cancel(nil)
-		if err == nil || ctx.Err() != nil || life.Err() == nil {
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+		if life.Err() == nil && !errors.Is(err, nats.ErrConnectionClosed) {
 			return err
 		}
 		return c.lostOrClosed(err)
