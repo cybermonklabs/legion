@@ -11730,11 +11730,7 @@ console.log(JSON.stringify(args));
           topic: "notifications.slack.T4266.C4266.mention",
         })
       );
-      for (let step = 0; step < 20; step += 1) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setImmediate(resolve);
-        await promise;
-      }
+      await settle();
       held.release();
       await moved;
       const landed = h.landed
