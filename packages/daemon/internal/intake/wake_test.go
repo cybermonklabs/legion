@@ -42,6 +42,12 @@ func TestDecodeTheListenerWakeReport(t *testing.T) {
 			want:    ListenerWake{Kind: ListenerWakeAgent, Session: "session-1", At: at, Report: "wake-1"},
 		},
 		{
+			name:    "a message on a topic a released session follows",
+			source:  "envoy",
+			payload: `{"kind":"followed_topic","session":"session-1","topic":"notifications.github.acme.widgets.pr.3370.review","at":` + strconv.FormatInt(millis, 10) + `}`,
+			want:    ListenerWake{Kind: ListenerWakeFollowed, Session: "session-1", Topic: "notifications.github.acme.widgets.pr.3370.review", At: at, Report: "wake-1"},
+		},
+		{
 			name:    "the listener's liveness report",
 			source:  "envoy",
 			payload: `{"kind":"listener_ready","at":` + strconv.FormatInt(millis, 10) + `}`,
@@ -49,6 +55,7 @@ func TestDecodeTheListenerWakeReport(t *testing.T) {
 		},
 		{name: "a role message naming no role", source: "envoy", payload: `{"kind":"role_message","at":` + strconv.FormatInt(millis, 10) + `}`},
 		{name: "an agent message naming no session", source: "envoy", payload: `{"kind":"agent_message","at":` + strconv.FormatInt(millis, 10) + `}`},
+		{name: "a followed-topic message naming no session", source: "envoy", payload: `{"kind":"followed_topic","topic":"notifications.team.x","at":` + strconv.FormatInt(millis, 10) + `}`},
 		{name: "a kind this build has no wake for", source: "envoy", payload: `{"kind":"something_later","at":` + strconv.FormatInt(millis, 10) + `}`},
 		{name: "no time", source: "envoy", payload: `{"kind":"listener_ready"}`},
 		{

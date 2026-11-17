@@ -1277,20 +1277,24 @@ func (CheckBound) isFact() {}
 
 // ListenerWake is one report the Envoy listener publishes on notifications.legion.wake, the one
 // subject whose consumer every daemon runs: the listener alone sees a message published to a
-// role topic with no live holder and a message sent to the agent subject of a session that is
-// gone, and both must bring a released pod back. The listener does not know which daemon owns a
-// session and must not learn: it reports the role token or the session id it saw, every daemon
-// reads the report, and each acts only on a released claim of its own project.
+// role topic with no live holder, a message sent to the agent subject of a session that is gone,
+// and a message on a topic such a session follows, and each must bring a released pod back. The
+// listener does not know which daemon owns a session and must not learn: it reports the role
+// token or the session id it saw, every daemon reads the report, and each acts only on a released
+// claim of its own project.
 //
-// Kind is ListenerWakeRole, ListenerWakeAgent or ListenerWakeReady. Role is the claim token of
-// the role topic a message was published to, Session the session a message was sent to, and At
-// the listener's own clock at the report, because the stream's store time is the NATS server's.
-// A ListenerWakeReady report names neither a role nor a session: it is the positive liveness
-// signal R7's gate reads, published at the listener's start and every five minutes after it.
+// Kind is ListenerWakeRole, ListenerWakeAgent, ListenerWakeFollowed or ListenerWakeReady. Role is
+// the claim token of the role topic a message was published to, Session the session a message
+// was sent to or whose followed topic it was published on, Topic that followed topic as the
+// message named it, and At the listener's own clock at the report, because the stream's store
+// time is the NATS server's. A ListenerWakeReady report names neither a role nor a session: it is
+// the positive liveness signal R7's gate reads, published at the listener's start and every five
+// minutes after it.
 type ListenerWake struct {
 	Kind    string
 	Role    string
 	Session string
+	Topic   string
 	At      time.Time
 	// Report is the listener's own id for this report, which makes a redelivered report the same
 	// wake rather than a second one.
@@ -1301,9 +1305,10 @@ func (ListenerWake) isFact() {}
 
 // The kinds a ListenerWake report carries, as the listener writes them on the wire.
 const (
-	ListenerWakeRole  = "role_message"
-	ListenerWakeAgent = "agent_message"
-	ListenerWakeReady = "listener_ready"
+	ListenerWakeRole     = "role_message"
+	ListenerWakeAgent    = "agent_message"
+	ListenerWakeFollowed = "followed_topic"
+	ListenerWakeReady    = "listener_ready"
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row

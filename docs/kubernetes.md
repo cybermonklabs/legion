@@ -6085,9 +6085,12 @@ The wakes are these:
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
+- a message published on a topic a released session follows, which the Envoy listener reports to the daemon as it reports the two above: a Dispatch topic the role subscribed to, CI or a pull request of a repository that is not the issue's, any topic the role took with `envoy_subscribe`.
+  Envoy keeps the subscriptions of a released session for up to 30 days after its last registration, so the woken role follows every topic it subscribed to without subscribing again, and its consumer hands it that message and every other one published on those topics while it was released, for as long as the stream keeps a message (72 hours).
+  The listener reports at most one such wake for a session and a topic in each five minutes, so a burst of events on one pull request wakes the pod once;
+
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
-  It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
-  A message on such a topic wakes no released pod, but it is not lost: Envoy keeps the subscriptions of a released session for up to 30 days after its last registration, so the role woken by the backstop, or by any other wake, follows every topic it subscribed to without subscribing again, and its consumer delivers what was published on them while it was released, for as long as the stream keeps a message (72 hours).
+  It stands in for a wait that raises no event of its own: a deploy run, a Kubernetes Job, anything the role watches by polling rather than by a topic.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
@@ -6155,7 +6158,7 @@ Those are the defaults, and release is on under `runtime: kubernetes` wherever t
 `idle_minutes: 0` turns both rules off, and the deployment's pods then live as they did before, from an issue's first role start to its close.
 The loader refuses a `backstop_minutes` below `idle_minutes`, which would wake a pod the daemon has only just released.
 Each of the two is at most 35791 minutes, about 24 days, the same 32-bit timer bound every duration key of the file carries.
-Whatever the setting says, the daemon releases no pod that has a live claim while the Envoy listener it uses does not report the role messages and direct messages of released sessions, since those two wakes would otherwise be lost.
+Whatever the setting says, the daemon releases no pod that has a live claim while the Envoy listener it uses does not report the role messages, direct messages and followed-topic messages of released sessions, since those three wakes would otherwise be lost.
 That gate holds the idle release alone.
 A release of a pod no claim owns runs whether or not the listener reports, because it suspends no claim and leaves no role waiting for a message in a pod that is gone.
 The two starts that build its pod again, an operator's retry and a start the daemon queues, read no listener.

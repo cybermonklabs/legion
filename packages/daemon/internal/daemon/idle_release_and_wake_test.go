@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -230,41 +229,30 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigRetryPublish(t, rig, issue, "keeps nothing", "keep-none-1")
 	})
 
-	t.Run("AnEventOnASubscribedTopicDoesNotWakeThePod", func(t *testing.T) {
+	t.Run("AnEventOnASubscribedTopicWakesThePodAndReachesIt", func(t *testing.T) {
 		issue := rig.issue(idleRigSubscribed)
-		token := rig.token(issue)
-		before := rig.pods.starts(issue.pod)
+		const message = "an event on a topic the session took"
 		status, body := rig.listener.publish(map[string]any{
-			"topic": idleRigSubscribedTopic, "message": "an event on a topic the session took",
+			"topic": idleRigSubscribedTopic, "message": message,
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "subscribed-1",
 		})
 		if status != http.StatusOK && status != http.StatusAccepted {
 			t.Fatalf("the topic publish answered %d %s, want it taken", status, body)
 		}
-		// The listener reports a wake only for a role topic no live session holds and for an
-		// agent subject nothing can place; a topic a session took with envoy_subscribe is neither,
-		// so the pod stays released and its role waits for the backstop instead. The released
-		// session's interest record still names the topic, since its process removed only its
-		// session's record as it stopped, so the listener's fanout finds that session, has no
-		// session record to deliver through, and gives the delivery up without a wake report
-		// (fanoutDelivery).
-		idleRigSettle(t, 8*time.Second, func() {
-			state := rig.api.claim(token)
-			if state.State != string(supervise.StateSuspended) || state.SuspendedBy != string(supervise.SuspendedByReleased) {
-				t.Fatalf("%s is %s (suspended by %q) after an event on its subscribed topic, want it still released",
-					issue.key, state.State, state.SuspendedBy)
-			}
-			if rig.kube.pod(issue.pod) {
-				t.Fatalf("a pod came back for %s after an event on its subscribed topic", issue.key)
-			}
-		})
-		if started := rig.pods.starts(issue.pod); started != before {
-			t.Errorf("%s's pod started %d times, want the %d it had: a subscribed topic wakes nothing", issue.key, started, before)
+		// The released session's interest row still names the topic, since its process removed
+		// only its session's record as it stopped, so the listener's fanout finds that session gone
+		// and reports a followed-topic wake naming it (reportFollowedWakes), which the daemon
+		// resumes the released claim on. The woken role is told which topic woke it, and the
+		// message reaches it once, from its own consumer.
+		rig.awaitResumed(issue, 2)
+		rig.awaitTask(issue, "The wake is a message published on a topic your session follows ("+idleRigSubscribedTopic+")")
+		idleRigDeliveredOnce(t, rig, issue, message)
+		var kinds []string
+		for _, resume := range rig.resumesOf(issue) {
+			kinds = append(kinds, resume.Kind)
 		}
-		for _, resume := range rig.releaseRecords(rig.issue(idleRigDelivery)).Resumes {
-			if resume.Issue == issue.key {
-				t.Errorf("a resume of %s was recorded (%s): a subscribed topic wakes nothing", issue.key, resume.Kind)
-			}
+		if len(kinds) != 1 || kinds[0] != "followed_topic" {
+			t.Errorf("the resumes of %s are recorded as %v, want the one followed_topic wake", issue.key, kinds)
 		}
 	})
 
@@ -738,26 +726,6 @@ func (r *idleWakeRig) awaitTask(issue idleRigIssue, want string) {
 	idleRigEventually(r.t, idleRigRecordWait, "the woken role of "+issue.key+" given its wake's task", func() bool {
 		return idleRigCount(r.newPrompts(issue), want) >= 1
 	})
-}
-
-// idleRigSettle runs check now and again for the whole of within, so a test that must see
-// nothing happen watches for it rather than reading once and moving on. Its span is not a bound
-// on a fault, as every other wait of the row carries, but the watch itself: it has one caller,
-// the subscribed topic, whose claim is that nothing was woken. The listener decides whether to
-// raise a wake report inside the publish this follows, so what the span covers is the daemon's
-// own pass over the reports it raised — and a publish that raised none leaves nothing positive
-// to wait for. Every other wait of the row is for something that does happen, and gives up at
-// its own span instead (idleRigEventually).
-func idleRigSettle(t *testing.T, within time.Duration, check func()) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		check()
-		if t.Failed() || time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(idleRigPoll)
-	}
 }
 
 // idleRigTexts is what a failure prints of the messages a role recorded.

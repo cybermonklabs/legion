@@ -436,6 +436,15 @@ func TestAnAgentMessageForAnotherDaemonsSessionWakesNothing(t *testing.T) {
 	}
 }
 
+// The woken role's task names the topic the message was published on, which is what the session
+// was waiting for.
+func TestAFollowedTopicWakeNamesTheTopic(t *testing.T) {
+	rig := newWakeRig(t)
+	const topic = "notifications.github.acme.widgets.pr.3370.review"
+	rig.apply("followed-topic", intake.ListenerWake{Kind: intake.ListenerWakeFollowed, Session: "session-implementer", Topic: topic, At: wakeAt, Report: "report-4"})
+	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeFollowedTopic, topic, "a topic your session follows")
+}
+
 // R7: the listener's liveness report is recorded and wakes nothing.
 func TestAListenerReadyReportIsRecordedAndWakesNothing(t *testing.T) {
 	rig := newWakeRig(t)
@@ -583,6 +592,7 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 		{kind: pods.WakeChecks, detail: "head1 failed build", want: "head1 failed build"},
 		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic"},
 		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session"},
+		{kind: pods.WakeFollowedTopic, detail: "notifications.team.x", want: "a topic your session follows"},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "backstop"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
