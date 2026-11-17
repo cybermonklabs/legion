@@ -2065,4 +2065,43 @@ package api
 // again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 146
+//
+// 155: dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
+// which moves the two launcher shapes contract 144 added. The daemon's answer to the hello of that
+// pod's launcher, `shimwire.LauncherHelloAck`, now carries `memoryGuard` too, from a block of its
+// own, `runtime.kubernetes.memory_guard.controller_pod`, beside `issue_pods` (sandbox's
+// Runtime.launcherHelloAck hands each pod kind its own block and never the other's, and leaves the
+// member out where that block's `enabled` is false). That launcher, PID 1 of the controller's
+// container, runs the guard in its single-role form and sends `launcher_memory_kill` for each
+// process it ended, every process of the container being the controller's. The daemon applies the
+// report once, under the same event id `memory-guard-kill:<guard>:<sequence>`, as the fact
+// `intake.ControllerMemoryGuardKill`, and tells the controller as one controller notice of the new
+// kind `memory-guard-kill` under the project key (workflow's controllerMemoryGuardKill), one row
+// for each kill and never through admission's wakeController. It names the process by its
+// executable and carries none of its arguments, as 144's note does.
+//
+// The skew is safe in both directions, for 144's reasons. An older launcher ignores the member in
+// its single-role form and runs no guard there. An older daemon writes no member for the
+// controller's pod, so that pod's launcher, which runs the guard at its defaults from its start,
+// turns it off at the first acknowledgement, and since the acknowledgement carried no settings it
+// sends no report on that connection (manager.openMemoryReports). An earlier daemon does not know
+// the notice kind: it refuses an unsent outbox row of kind `memory-guard-kill` and tries that row
+// again for ever, so a rollback below this release deletes those rows first, and takes
+// `controller_pod` out of the file, which an earlier loader refuses by name (docs/kubernetes.md,
+// "Rolling back below the release that guards the controller's pod's memory"). The plugin reads no
+// notice kind, and the key is no part of this number, for 144's reason.
+//
+// cybermonklabs/legion#3519 (dispatch://INFRA-2009) touches the same acknowledgement, adding
+// `volumeTrim` beside `memoryGuard`. Of this change and that one, the one that merges second
+// takes a number above the first's, every site that names the number included, and keeps every
+// member of both.
+// (This change took 155. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
+// open pull request of this repository, made between 2026-11-17T04:33:37Z and 04:37:38Z, gave
+// above main's 146: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and #4065), 151 (#4106),
+// 152 (#3730), 153 (#4115) and 154 (#3659), and no head declared a number above 154, so 155 was
+// the lowest free number above main's 146 at that reading. That is a reading and never the rule:
+// read main's own number and every open head again at the next forward merge rather than from
+// this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 155
