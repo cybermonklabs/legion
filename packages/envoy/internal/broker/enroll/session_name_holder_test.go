@@ -9,13 +9,19 @@ package enroll
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // sessionNameHolder is the principal the broker records as holding a session name, "" for a name
@@ -42,6 +48,157 @@ func enrollmentsNaming(t *testing.T, svc *Service, session string) int {
 		t.Fatalf("count the enrollments naming session %s: %v", session, err)
 	}
 	return rows
+}
+
+// oldPodAccount and movedPodAccount are the two ServiceAccounts of a deployment an operator
+// moves: its pods ran as the first and run as the second now. A test that pairs them says so
+// (pairAccounts), and nothing else pairs them.
+const (
+	oldPodAccount   = "system:serviceaccount:legion:worker"
+	movedPodAccount = "system:serviceaccount:legion-next:worker"
+)
+
+// pairAccounts pairs the ServiceAccount subjects a and b for session names, both ways, as
+// cmd/broker reads one pair of BROKER_SESSION_ACCOUNT_PAIRS into the store an enrollment binds its
+// name through (oauthstore.Store.SessionPairs).
+func pairAccounts(t *testing.T, svc *Service, a, b string) {
+	t.Helper()
+	binder, ok := svc.Sessions.(*oauthstore.Store)
+	if !ok {
+		t.Fatalf("the service binds session names through %T, want the *oauthstore.Store cmd/broker wires", svc.Sessions)
+	}
+	first, second := exchange.AccountPrincipal(a), exchange.AccountPrincipal(b)
+	binder.SessionPairs = map[string][]string{first: {second}, second: {first}}
+}
+
+// enrollmentTookName is the line Create logs once an enrollment that took its session name from
+// the account paired with its own has committed.
+const enrollmentTookName = "broker: an enrollment took a session name from the account paired with its own"
+
+// nameTake is one enrollmentTookName line, as its level and attributes say it.
+type nameTake struct {
+	Level                         slog.Level
+	Session, From, To, Enrollment string
+}
+
+// nameTakes is every enrollmentTookName line capture holds, in the order they were logged.
+func nameTakes(capture *logtest.Recorder) []nameTake {
+	var takes []nameTake
+	for _, r := range capture.Records() {
+		if r.Message != enrollmentTookName {
+			continue
+		}
+		take := nameTake{Level: r.Level}
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "session":
+				take.Session = a.Value.String()
+			case "from":
+				take.From = a.Value.String()
+			case "to":
+				take.To = a.Value.String()
+			case "enrollment":
+				take.Enrollment = a.Value.String()
+			}
+			return true
+		})
+		takes = append(takes, take)
+	}
+	return takes
+}
+
+// adoption is one enrollment.adopted row: the predecessor it took from, the rule it moved by,
+// and how many grants, requests and withheld names moved.
+type adoption struct {
+	From                       uuid.UUID
+	Rule                       string
+	Grants, Requests, Withheld int64
+}
+
+// adoptionsOf is every enrollment.adopted row on enrollment to, in the order of the predecessor
+// each names.
+func adoptionsOf(t *testing.T, svc *Service, to uuid.UUID) []adoption {
+	t.Helper()
+	rows, err := svc.Store.Pool.Query(context.Background(), `select (detail->>'from')::uuid, coalesce(detail->>'rule',''),
+			(detail->>'grants')::bigint, (detail->>'requests')::bigint, (detail->>'withheld_secrets')::bigint
+		from audit where kind='enrollment.adopted' and enrollment_id=$1 order by (detail->>'from')::uuid`, to)
+	if err != nil {
+		t.Fatalf("read the enrollment.adopted rows of %s: %v", to, err)
+	}
+	adoptions, err := pgx.CollectRows(rows, pgx.RowToStructByPos[adoption])
+	if err != nil {
+		t.Fatalf("read the enrollment.adopted rows of %s: %v", to, err)
+	}
+	return adoptions
+}
+
+// withheldFromReplacedPod is the name withheld from the replaced pod's session (replacedPod).
+const withheldFromReplacedPod = "AUTO_TOKEN"
+
+// replacedPod is a role's pod running as oldPodAccount that enrolled session, holds a live grant,
+// waits on a request nobody has answered yet and has had withheldFromReplacedPod taken back from
+// it, and was then replaced: its launcher revoked its enrollment, as the daemon does when it lets
+// the role's process go, which leaves the row dormant holding all three for the session's next
+// enrollment. It answers the launcher's credential, the pod's enrollment, its grant and its
+// pending request.
+func replacedPod(t *testing.T, svc *Service, pod func(account, uid string) Enrollment) (Credential, Enrollment, uuid.UUID, string) {
+	t.Helper()
+	ctx := context.Background()
+	cluster := mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
+	old, err := svc.Create(ctx, cluster, pod(oldPodAccount, "pod-uid-old"))
+	if err != nil {
+		t.Fatalf("the old account's pod enrolment: %v", err)
+	}
+	grant := insertLiveGrant(t, svc, old.ID)
+	request := insertPendingRequest(t, svc, old.ID)
+	withholdSecret(t, svc, old.ID, withheldFromReplacedPod)
+	if err := svc.Revoke(ctx, cluster, old.ID.String(), "launcher"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if left := readCarryState(t, svc, old.ID); !left.Dormant || left.LiveGrants != 1 || left.Pending != 1 {
+		t.Fatalf("the replaced pod's enrollment is %+v, want it dormant holding its grant and its pending request: this test measures what its successor takes", left)
+	}
+	return cluster, old, grant, request
+}
+
+// tookAllOfIt fails t unless enrollment moved holds everything the replaced pod old held — its
+// grant, its pending request, still pending, and its withheld name — and old holds none of it and
+// is no longer dormant, with the trail the session rule writes: one enrollment.adopted row from
+// old by rule session and one grant.moved row naming the grant and old.
+func tookAllOfIt(t *testing.T, svc *Service, old, moved Enrollment, grant uuid.UUID, request string) {
+	t.Helper()
+	if holder := grantHolder(t, svc, grant); holder != moved.ID {
+		t.Fatalf("grant %s hangs off %s, want the moved account's pod %s: it takes the grant the replaced pod held", grant, holder, moved.ID)
+	}
+	if holder := requestHolder(t, svc, request); holder != moved.ID {
+		t.Fatalf("request %s hangs off %s, want the moved account's pod %s", request, holder, moved.ID)
+	}
+	if state, decidedBy, cancellations, _ := requestState(t, svc, request); state != "pending" || decidedBy != "" || cancellations != 0 {
+		t.Fatalf("request %s is %s, decided by %q, with %d cancellations; want it still pending: the move answers nothing", request, state, decidedBy, cancellations)
+	}
+	if got, want := withheldNames(t, svc, moved.ID), []string{withheldFromReplacedPod}; !slices.Equal(got, want) {
+		t.Fatalf("the moved account's pod withholds %v, want %v: a new account does not give back what an operator took back from the session", got, want)
+	}
+	if got := withheldNames(t, svc, old.ID); len(got) != 0 {
+		t.Fatalf("the replaced pod still withholds %v, want nothing: every withheld row moves to the enrollment the session runs on now", got)
+	}
+	if left := readCarryState(t, svc, old.ID); !left.Ended || left.Dormant || left.LiveGrants != 0 || left.Pending != 0 {
+		t.Fatalf("the replaced pod is %+v, want it ended, no longer dormant and holding nothing, so the carry sweep has nothing of it to revoke", left)
+	}
+	// The grant's request moves beside the pending one: insertLiveGrant writes the granted
+	// request its grant was issued for, and the session rule moves every request off the row.
+	want := []adoption{{From: old.ID, Rule: "session", Grants: 1, Requests: 2, Withheld: 1}}
+	if got := adoptionsOf(t, svc, moved.ID); !slices.Equal(got, want) {
+		t.Fatalf("the moved account's pod has enrollment.adopted rows %+v, want %+v: the paired take is the session rule's, with its trail", got, want)
+	}
+	if rows := auditRows(t, svc, moved.ID, "grant.moved"); rows != 1 {
+		t.Fatalf("the moved account's pod has %d grant.moved rows, want one for the one grant", rows)
+	}
+	var from string
+	if err := svc.Store.Pool.QueryRow(context.Background(), `select detail->>'from' from audit where kind='grant.moved' and grant_id=$1 and enrollment_id=$2`,
+		grant, moved.ID).Scan(&from); err != nil || from != old.ID.String() {
+		t.Fatalf("grant %s is recorded as moved from %q (%v), want the replaced pod %s", grant, from, err, old.ID)
+	}
 }
 
 // TestASessionNameAnotherPrincipalHoldsIsRefusedAndTakesNothing: the second principal reaching for
@@ -286,5 +443,108 @@ func TestARevokedSignInTradesNothingSoItsBoxReachesNoEnrollment(t *testing.T) {
 	}
 	if got := sessionNameHolder(t, svc, "revoked-box-session"); got != "" {
 		t.Fatalf("the name revoked-box-session is held by %q, want nobody: the refused enrolment bound nothing", got)
+	}
+}
+
+// TestAPairedAccountsPodTakesTheNameAndWhatItCarries is the move BROKER_SESSION_ACCOUNT_PAIRS
+// exists for: an operator moves a deployment's pods from one ServiceAccount to another, and a
+// role's next pod, running as the second account, enrols under the session name the role's
+// replaced pod held as the first. Unpaired, that is a name another principal holds, refused as it
+// always was and taking nothing. Paired, the new pod takes the name and everything the replaced
+// pod's enrollment of it held — its grant, its pending request and its withheld name — as the
+// same account's next pod would (TestTheSamePrincipalsSecondBoxTakesTheNameAndWhatItHeld), with
+// the session rule's trail, and the broker logs the take once it has committed, naming the name,
+// the account it took the name from and the account that took it.
+func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+	issuer, key := withPodVerifier(t, svc)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	const session = "implementer-g1"
+	pod := func(account, uid string) Enrollment {
+		t.Helper()
+		return Enrollment{Kind: "pod", RuntimeID: uid, Thumbprint: "tp-" + uid, SessionID: str(session),
+			PodToken: mintPodToken(t, issuer, key, account, uid)}
+	}
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(oldPodAccount), exchange.AccountPrincipal(movedPodAccount)
+	cluster, old, grant, request := replacedPod(t, svc, pod)
+
+	_, err := svc.Create(ctx, cluster, pod(movedPodAccount, "pod-uid-new"))
+	if !errors.Is(err, ErrSessionHeld) {
+		t.Fatalf("the moved account's pod enrolment with no pair = %v, want ErrSessionHeld: an unpaired account is refused a name another holds, as before", err)
+	}
+	if rows := enrollmentsNaming(t, svc, session); rows != 1 {
+		t.Fatalf("%d enrollments name %s after the refusal, want the replaced pod's alone", rows, session)
+	}
+	if got := sessionNameHolder(t, svc, session); got != oldPrincipal {
+		t.Fatalf("the name %s is held by %q after the refusal, want the old account %q still", session, got, oldPrincipal)
+	}
+	if holder := grantHolder(t, svc, grant); holder != old.ID {
+		t.Fatalf("grant %s hangs off %s after the refusal, want the replaced pod's %s", grant, holder, old.ID)
+	}
+	if holder := requestHolder(t, svc, request); holder != old.ID {
+		t.Fatalf("request %s hangs off %s after the refusal, want the replaced pod's %s", request, holder, old.ID)
+	}
+	if got := withheldNames(t, svc, old.ID); !slices.Equal(got, []string{withheldFromReplacedPod}) {
+		t.Fatalf("the replaced pod withholds %v after the refusal, want [%s]", got, withheldFromReplacedPod)
+	}
+	if takes := nameTakes(capture); len(takes) != 0 {
+		t.Fatalf("the refused enrolment logged takes %+v, want none: it took nothing", takes)
+	}
+
+	pairAccounts(t, svc, oldPodAccount, movedPodAccount)
+	moved, err := svc.Create(ctx, cluster, pod(movedPodAccount, "pod-uid-new"))
+	if err != nil {
+		t.Fatalf("the moved account's pod enrolment with the pair = %v, want it enrolled: a paired account takes the name its pair holds", err)
+	}
+	if got := sessionNameHolder(t, svc, session); got != movedPrincipal {
+		t.Fatalf("the name %s is held by %q, want the moved account %q", session, got, movedPrincipal)
+	}
+	tookAllOfIt(t, svc, old, moved, grant, request)
+	want := []nameTake{{Level: slog.LevelWarn, Session: session, From: oldPrincipal, To: movedPrincipal, Enrollment: moved.ID.String()}}
+	if got := nameTakes(capture); !slices.Equal(got, want) {
+		t.Fatalf("the take logged %+v, want exactly %+v: one line naming the name, the account it was taken from and the one that took it", got, want)
+	}
+}
+
+// TestAPairedAccountsEnrollmentAfterItsExchangeTookTheNameTakesWhatItCarries: a Legion pod
+// trades a token under its session name before or after it enrols
+// (TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount), so the moved account's pod
+// may take the name through the exchange's claim, the same oauthstore.Store.BindSession call,
+// before its enrolment makes one. That enrolment then claims a name its own account already
+// holds: it takes the name from nobody, so it logs no take, and it still takes what the old
+// account's enrollment of the name holds, because adopt's session rule matches the paired account
+// at every enrolment and not only at the one whose bind took the name.
+func TestAPairedAccountsEnrollmentAfterItsExchangeTookTheNameTakesWhatItCarries(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+	issuer, key := withPodVerifier(t, svc)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	const session = "implementer-g1"
+	pod := func(account, uid string) Enrollment {
+		t.Helper()
+		return Enrollment{Kind: "pod", RuntimeID: uid, Thumbprint: "tp-" + uid, SessionID: str(session),
+			PodToken: mintPodToken(t, issuer, key, account, uid)}
+	}
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(oldPodAccount), exchange.AccountPrincipal(movedPodAccount)
+	cluster, old, grant, request := replacedPod(t, svc, pod)
+	pairAccounts(t, svc, oldPodAccount, movedPodAccount)
+
+	taken, err := svc.Sessions.BindSession(ctx, session, movedPrincipal, false, time.Now().Add(time.Hour))
+	if err != nil || taken != oldPrincipal {
+		t.Fatalf("the moved account's trade under %s = %q, %v; want it to take the name from %q", session, taken, err, oldPrincipal)
+	}
+	moved, err := svc.Create(ctx, cluster, pod(movedPodAccount, "pod-uid-new"))
+	if err != nil {
+		t.Fatalf("the moved account's pod enrolment after its trade = %v, want it enrolled: the name is already its account's", err)
+	}
+	if got := sessionNameHolder(t, svc, session); got != movedPrincipal {
+		t.Fatalf("the name %s is held by %q, want the moved account %q", session, got, movedPrincipal)
+	}
+	tookAllOfIt(t, svc, old, moved, grant, request)
+	if takes := nameTakes(capture); len(takes) != 0 {
+		t.Fatalf("the enrolment logged takes %+v, want none: its account held the name already, so it took the name from nobody", takes)
 	}
 }

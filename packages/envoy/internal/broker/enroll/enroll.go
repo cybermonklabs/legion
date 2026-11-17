@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
@@ -84,11 +85,15 @@ var (
 	// credential its exchange minted is no longer live: revoked, past the expiry its Google
 	// identity token gave it, or its account no longer listed for its service (Renew).
 	ErrMachineLoginEnded = errors.New("the machine login that enrolled this session has ended")
-	// ErrSessionHeld refuses an enrollment whose session name another principal holds, read from
-	// the one table that says who holds a name — the same one the token exchange binds every
-	// token's name in (oauthstore.Store.BindSession, oauthstore.ErrSessionHeld). Its text names
-	// the session and says what to do about it, as that refusal's own text and the exchange's
-	// do, and names no holder: whoever holds the name is not this caller's to learn.
+	// ErrSessionHeld refuses an enrollment whose session name another principal holds and the
+	// enrollment's own principal may not take, read from the one table that says who holds a name
+	// — the same one the token exchange binds every token's name in (oauthstore.Store.BindSession,
+	// oauthstore.ErrSessionHeld). An account paired with the holder (SessionBinder.PairedWith)
+	// takes the name rather than being refused it, unless the configuration fixes the name; every
+	// other principal is refused, an account paired only with the holder's own pair among them,
+	// since a pair does not chain. Its text names the session and says what to do about it, as
+	// that refusal's own text and the exchange's do, and names no holder: whoever holds the name
+	// is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
 )
 
@@ -180,13 +185,20 @@ type PodVerifier interface {
 	VerifyAccount(ctx context.Context, raw string) (AccountClaims, error)
 }
 
-// SessionBinder binds a session name to the principal that holds it and refuses it to every
-// other: oauthstore.Store, whose BindSession the token exchange binds the name of every token it
-// mints with. It is an interface here for the same reason PodVerifier is one — so a test wires a
-// binder of its own — and it joins the transaction the context carries (oauthstore.WithTx), which
-// is how an enrollment's bind and its own rows commit or roll back together.
+// SessionBinder binds a session name to the principal that holds it and refuses it to every other
+// principal but an account paired with the holder, which takes it (PairedWith):
+// oauthstore.Store, whose BindSession the token exchange binds the name of every token it mints
+// with. BindSession answers the principal it took the name from, "" when it took it from nobody.
+// It is an interface here for the same reason PodVerifier is one — so a test wires a binder of
+// its own — and it joins the transaction the context carries (oauthstore.WithTx), which is how an
+// enrollment's bind and its own rows commit or roll back together.
 type SessionBinder interface {
 	BindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error)
+	// PairedWith is every principal paired with principal (oauthstore.Store.SessionPairs, both
+	// ways): each takes a session name principal holds, and principal takes one any of them
+	// holds. adopt's session rule matches them beside the enrollment's own principal. It is nil
+	// for a principal in no pair, and the caller does not write to the slice.
+	PairedWith(principal string) []string
 }
 
 type Service struct {
@@ -199,14 +211,18 @@ type Service struct {
 
 	// Sessions binds every enrollment that names a session to the principal that enrollment
 	// belongs to (carryPrincipal), in the enrollment's own transaction, and refuses it a name
-	// another principal holds (Create, ErrSessionHeld). It is the broker's one record of which
-	// principal holds a session name, oauth_session_bindings, written here and by the token
-	// exchange alike, so the name a session writes its Dispatch tokens under and the name its
-	// grant follows have the same holder.
+	// another principal holds (Create, ErrSessionHeld), unless that principal is an account paired
+	// with the enrollment's own, from which the enrollment takes the name
+	// (SessionBinder.PairedWith). It is the broker's one record of which principal holds a session
+	// name, oauth_session_bindings, written here and by the token exchange alike, so the name a
+	// session writes its Dispatch tokens under and the name its grant follows have the same
+	// holder. Its pairs are also the principals beside the enrollment's own whose enrollments of
+	// the same name adopt's session rule takes from.
 	//
 	// nil on a broker that binds nothing: such a broker writes no binding, refuses no
-	// enrollment its name, and so lets two principals enrol one name, each adopting nothing of
-	// the other's (adopt). cmd/broker/main.go wires the real oauthstore.Store.
+	// enrollment its name, pairs nothing, and so lets two principals enrol one name, each
+	// adopting nothing of the other's (adopt). cmd/broker/main.go wires the real
+	// oauthstore.Store.
 	Sessions SessionBinder
 
 	// Chain re-verifies a launcher credential's issuance chain on every AuthenticateLauncher
@@ -597,21 +613,24 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // ErrUnauthenticated.
 //
 // An enrollment that names a session also records the principal that session belongs to
-// (carryPrincipal), and takes what every predecessor of that name under that principal still
-// holds: its grants, its pending requests and its withholds move to this row, and a predecessor
-// a box's end left dormant is finished by the move (adopt). That is how a grant follows a
-// session to the next box it comes up on. It changes none of the identity checks above and
-// nothing in the answer: an enrollment that names no session, one whose caller proved no
-// principal and one with no predecessor each adopt nothing, an idempotent re-enrollment
-// (Existing) adopts nothing, and a pod's token check and the pod-uid ratchet run exactly as they
-// did. Only the rows move.
+// (carryPrincipal), and takes what every predecessor of that name under that principal, or under
+// an account paired with it (SessionBinder.PairedWith), still holds: its grants, its pending
+// requests and its withholds move to this row, and a predecessor a box's end left dormant is
+// finished by the move (adopt). That is how a grant follows a session to the next box it comes up
+// on, and to the next pod of a deployment an operator moved to another account. It changes none
+// of the identity checks above and nothing in the answer: an enrollment that names no session,
+// one whose caller proved no principal and one with no predecessor each adopt nothing, an
+// idempotent re-enrollment (Existing) adopts nothing, and a pod's token check and the pod-uid
+// ratchet run exactly as they did. Only the rows move.
 //
 // Because a grant follows a name under one principal, the name has to belong to one principal,
 // and before anything is adopted the enrollment binds its session name to that principal
-// (bindSessionName): a name no principal holds becomes this one's, and a name another principal
-// holds is ErrSessionHeld, the whole enrollment refused and nothing written. An enrollment that
-// names no session, and one whose caller proved no principal, bind nothing and are refused
-// nothing.
+// (bindSessionName): a name no principal holds becomes this one's, a name an account paired with
+// this one holds is taken from it, which the broker logs once the enrollment has committed, and a
+// name any other principal holds is ErrSessionHeld, the whole enrollment refused and nothing
+// written. Either account of a pair takes a name the other holds; a pair does not chain, and a
+// name the configuration fixes is never taken. An enrollment that names no session, and one whose
+// caller proved no principal, bind nothing and are refused nothing.
 //
 // Every enrollment also records whose its requests are (ownerKey): the person its credential
 // carries, the claim its launcher stated for a pod, or the machine. Any enrollment of the same
@@ -680,7 +699,9 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // revoked credential (ErrUnauthenticated): an insert either commits before a revoke reads the
 // credential's enrollments, and is ended with them, or finds the credential revoked. Then it
 // binds the enrollment's session name to its principal (bindSessionName), which is the one other
-// thing that can refuse an attempt outright.
+// thing that can refuse an attempt outright, and a bind that took the name from the account paired
+// with the enrollment's own is logged once the attempt has committed, and never by one that did
+// not.
 func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollment) (result Enrollment, retry bool, err error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -694,7 +715,8 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 	if err != nil {
 		return Enrollment{}, false, err
 	}
-	if err := s.bindSessionName(ctx, tx, in); err != nil {
+	taken, err := s.bindSessionName(ctx, tx, in)
+	if err != nil {
 		return Enrollment{}, false, err
 	}
 	// pod_token_renewed_at starts null on every row, a pod's included: the first renewal carrying
@@ -723,24 +745,51 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 		in.ID, record.LauncherActor(cred.ID.String()), in.Kind, in.RuntimeID, in.Thumbprint, in.Slot, in.Claim); err != nil {
 		return Enrollment{}, false, err
 	}
-	if err := adopt(ctx, tx, in, record.LauncherActor(cred.ID.String())); err != nil {
+	// The principals adopt's session rule matches: the enrollment's own, and each one paired with
+	// it, since either account of a pair takes a name the other holds (bindSessionName). None for
+	// an enrollment that carries nothing, whose session rule matches no row.
+	var principals []string
+	if in.carry != nil {
+		var paired []string
+		if s.Sessions != nil {
+			paired = s.Sessions.PairedWith(*in.carry)
+		}
+		principals = append(append(make([]string, 0, 1+len(paired)), *in.carry), paired...)
+	}
+	if err := adopt(ctx, tx, in, principals, record.LauncherActor(cred.ID.String())); err != nil {
 		return Enrollment{}, false, err
 	}
-	return in, false, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return Enrollment{}, false, err
+	}
+	if taken != "" {
+		// An enrollment's claim is never fixed (bindSessionName), so a name it took from a live
+		// holder is a pair's take: the one way a principal loses a name it used within the
+		// retention to an enrollment. Logged once it has committed, as the exchange logs its own.
+		slog.Warn("broker: an enrollment took a session name from the account paired with its own",
+			"session", *in.SessionID, "from", taken, "to", *in.carry, "enrollment", in.ID)
+	}
+	return in, false, nil
 }
 
 // bindSessionName binds in's session name to the principal the enrollment belongs to (in.carry),
 // in the enrollment's own transaction, which oauthstore.WithTx is how the binder joins: the name
 // is this principal's from here on, and the binding and the enrollment commit or roll back
 // together, so a refused name leaves no enrollment and a rolled-back enrollment leaves no
-// binding.
+// binding. It answers the principal it took the name from, an account paired with in.carry whose
+// claim had not run out, and "" when the name was unheld, run out or already in.carry's, and
+// when it binds nothing.
 //
 // It is the same claim the token exchange makes for every token it mints
 // (oauthstore.Store.BindSession) on the same table, which is the point: a Legion role's pod
 // trades a token under its session name before or after it enrolls under that name, and the two
 // claims are the same principal's (exchange.AccountPrincipal of the ServiceAccount subject its
 // projected token proved, which carryPrincipal spells the same way), so neither refuses the
-// other. A name another principal holds is ErrSessionHeld, naming the session and no holder.
+// other. A name an account paired with this principal holds (SessionBinder.PairedWith) is taken
+// from it, so a deployment whose pods an operator moved to another account keeps each role's
+// session name: either account of a pair takes a name the other holds, whether by this claim or
+// by the exchange's, and a pair does not chain. A name any other principal holds is
+// ErrSessionHeld, naming the session and no holder.
 //
 // An enrollment with no principal beside its name binds nothing and is refused nothing, as it
 // adopts nothing: that is an enrollment stating no session, and one whose credential proved no
@@ -750,23 +799,25 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 //
 // The claim is not fixed: the configuration fixes a name for a principal at the exchange's own
 // entries (exchange.Set.Reservations), and an enrollment is no entry, so a name the
-// configuration fixes for someone else refuses an enrollment exactly as it refuses a trade.
+// configuration fixes for someone else refuses an enrollment exactly as it refuses a trade, even
+// where that someone is an account paired with this one, since no pair takes a fixed name. So
+// this claim takes a live name only from a pair, and any principal it answers is a pair's.
 //
 // Locks: this takes the credential's row (createAttempt, for share) and then the name's own row,
 // which is the order the exchange takes them in too — it mints the launcher credential before it
 // claims the name (oauth.Provider.claimSession) — so neither can deadlock with the other.
-func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment) error {
+func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment) (string, error) {
 	if s.Sessions == nil || in.carry == nil {
-		return nil
+		return "", nil
 	}
-	_, err := s.Sessions.BindSession(oauthstore.WithTx(ctx, tx), *in.SessionID, *in.carry, false, in.LeaseExpires)
+	taken, err := s.Sessions.BindSession(oauthstore.WithTx(ctx, tx), *in.SessionID, *in.carry, false, in.LeaseExpires)
 	if errors.Is(err, oauthstore.ErrSessionHeld) {
-		return fmt.Errorf("%w: %s. Enrol under a name of your own.", ErrSessionHeld, *in.SessionID)
+		return "", fmt.Errorf("%w: %s. Enrol under a name of your own.", ErrSessionHeld, *in.SessionID)
 	}
 	if err != nil {
-		return fmt.Errorf("bind the enrollment's session name: %w", err)
+		return "", fmt.Errorf("bind the enrollment's session name: %w", err)
 	}
-	return nil
+	return taken, nil
 }
 
 // carryPrincipal is the identity an enrollment belongs to, which the insert writes into
@@ -888,14 +939,17 @@ const holdsForItsSession = `exists (select 1 from grants g where g.enrollment_id
 // withheld names.
 const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not null) and (` + holdsForItsSession + `)`
 
-// adopt moves what every predecessor of this enrollment's (carry_principal, session_id) holds to
+// adopt moves what every predecessor of this enrollment's session name under principals holds to
 // the enrollment createAttempt has just inserted, inside that same transaction, revoking none of
-// it, and then what a dormant enrollment of the same claim still holds. Both kinds of enrollment
-// adopt by the session rule, a session's and a pod's; only a pod a launcher stated a claim for
-// adopts by the claim rule.
+// it, and then what a dormant enrollment of the same claim still holds. principals is the
+// enrollment's own principal (carry_principal) and each principal paired with it
+// (SessionBinder.PairedWith), as createAttempt reads them, and none for an enrollment that
+// carries nothing. Both kinds of enrollment adopt by the session rule, a session's and a pod's;
+// only a pod a launcher stated a claim for adopts by the claim rule.
 //
-// A predecessor is another enrollment of the same pair, and the rule has two parts, because what
-// a grant may follow and what a withhold must follow are not the same thing:
+// A predecessor is another enrollment of the same name under one of principals, and the rule has
+// two parts, because what a grant may follow and what a withhold must follow are not the same
+// thing:
 //
 //   - An enrollment the carry left something on (carriesForItsSession) is a predecessor for
 //     everything under it: its grants, its requests and its withheld names. It is one of two
@@ -903,25 +957,38 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 //     a dormant one, a box whose end left what it held for the session to take (endEnrollment).
 //     What that reading keeps out is a row ended for good, whose grants its own end revoked and
 //     whose requests it cancelled: there is no live grant on it to follow the session.
-//   - An enrollment of the pair that holds withheld names is a predecessor for those names,
-//     whatever state its row is in — live, dormant, or ended for good. That last is the usual
-//     case rather than a corner: an operator's revoke of an automatic grant writes the withheld
-//     row and takes the grant, so the box is commonly left holding no live grant and no pending
-//     request at all, its end is therefore terminal and its row never goes dormant. Were the
-//     names left on it, the next enrolment of the session would find the secret automatic again
-//     and a replaced box would undo what the operator said. Off a row ended for good, taking
-//     them hands nothing over: nothing reaches the broker through an enrollment that is over, so
-//     the names only ever sat there. Off a live predecessor it does hand something over, and
-//     that is accepted here: requests.Machine reads a requester's withheld names by the
-//     enrollment's own id, so the box the names move off asks for that name automatically again.
-//     What bounds it is that a withhold binds a session name and never the principal behind it —
-//     the same principal can start a session under a name it has not used and get a box with
-//     nothing withheld on it at all — and that the session the operator took the name from is
-//     left without it, because the names move to the enrollment that session runs on now.
+//   - An enrollment of the name under one of principals that holds withheld names is a
+//     predecessor for those names, whatever state its row is in — live, dormant, or ended for
+//     good. That last is the usual case rather than a corner: an operator's revoke of an
+//     automatic grant writes the withheld row and takes the grant, so the box is commonly left
+//     holding no live grant and no pending request at all, its end is therefore terminal and its
+//     row never goes dormant. Were the names left on it, the next enrolment of the session would
+//     find the secret automatic again and a replaced box would undo what the operator said. Off a
+//     row ended for good, taking them hands nothing over: nothing reaches the broker through an
+//     enrollment that is over, so the names only ever sat there. Off a live predecessor it does
+//     hand something over, and that is accepted here: requests.Machine reads a requester's
+//     withheld names by the enrollment's own id, so the box the names move off asks for that
+//     name automatically again. What bounds it is that a withhold binds a session name and never
+//     the principal behind it — the same principal can start a session under a name it has not
+//     used and get a box with nothing withheld on it at all — and that the session the operator
+//     took the name from is left without it, because the names move to the enrollment that
+//     session runs on now.
 //
-// An enrollment of the pair that holds neither is no predecessor and is left exactly as it is,
-// which is what keeps a second live session of one name from being ended by its neighbour's
-// enrolment.
+// An enrollment of the name under one of principals that holds neither is no predecessor and is
+// left exactly as it is, which is what keeps a second live session of one name from being ended
+// by its neighbour's enrolment.
+//
+// The principals beside the enrollment's own are its account's pairs: either account of a pair
+// takes a session name the other holds (bindSessionName), so an enrollment of the name under one
+// takes what the other account's enrollments of the name hold, by this same rule, as a successor
+// of the same principal would. The rule matches them at every enrollment, not only at the one
+// whose bind took the name, because the token exchange takes the name for a paired account too:
+// a pod whose own exchange took the name before it enrolled is the name's holder by the time it
+// enrols, and still takes what the other account's enrollments of that name hold. A pair gives
+// no more than the session rule gives a successor of the same principal, withheld names
+// included, since a withhold binds a session name and never the principal behind it (the second
+// part above), and the name is this enrollment's principal's by the time it adopts. Only the
+// enrollment's own pairs are matched, so a pair does not chain.
 //
 // The claim rule is the one move by owner (ownerKey), and it is narrower than the session rule on
 // purpose. A Legion role's next pod comes up under a session of its own — a fresh session, a
@@ -935,8 +1002,9 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // still running, and this is no end of it. A person's and a machine's grants move by the session
 // rule alone, so a session that resumes gets its own grant back even after another session of
 // the same person enrolled first, and that other session, which reads and cancels the request
-// (requests.Machine.OwnerOf), never takes the grant. A row both rules find is the session
-// rule's.
+// (requests.Machine.OwnerOf), never takes the grant. A pair changes nothing of the claim rule,
+// which reads the owner alone, and a row both rules find, a paired account's included, is the
+// session rule's.
 //
 // What moves is the rows keyed by the predecessor: grants.enrollment_id and
 // requests.enrollment_id from a predecessor of the first part, withheld_secrets.enrollment_id
@@ -976,42 +1044,43 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // enrollment before the grants and requests under it; and this package's
 // enrollment-then-request writers take the enrollment first too (ApplyDecision says so itself) —
 // so none of them can deadlock with this one.
-func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
+func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, principals []string, actor string) error {
 	claim := in.owner
 	if claim != nil && !strings.HasPrefix(*claim, claimOwnerPrefix) {
 		claim = nil
 	}
-	if in.carry == nil && claim == nil {
+	if len(principals) == 0 && claim == nil {
 		return nil
 	}
 	// Every predecessor of both rules in one statement. An enrollment that carries nothing sends
-	// a null pair, and one whose owner is no claim a null owner: a comparison with a null is never
-	// true, so that rule's arm finds no row. The third column says which rule a row is the session
-	// rule's, and the fourth whether the carry left something on it: a session-rule row the carry
-	// left something on gives up its grants and requests as well as its withheld names, one that
-	// matched the withheld clause alone gives up the names, and a claim-rule row gives up its
-	// grants and requests. The claim arm spells the partial index's own predicate, which is what
-	// lets it read enrollments_claim_owner_dormant (migration 0032).
+	// no principals, a null array, and one whose owner is no claim a null owner: a comparison
+	// with a null is never true, so that rule's arm finds no row. The third column says which rule
+	// a row is the session rule's, and the fourth whether the carry left something on it: a
+	// session-rule row the carry left something on gives up its grants and requests as well as
+	// its withheld names, one that matched the withheld clause alone gives up the names, and a
+	// claim-rule row gives up its grants and requests. The claim arm spells the partial index's
+	// own predicate, which is what lets it read enrollments_claim_owner_dormant (migration 0032).
 	rows, err := tx.Query(ctx, `select e.id, e.dormant_since is not null,
-			coalesce(e.carry_principal=$1 and e.session_id=$2, false),
-			coalesce(e.carry_principal=$1 and e.session_id=$2, false) and `+carriesForItsSession+`
+			coalesce(e.carry_principal = any($1::text[]) and e.session_id=$2, false),
+			coalesce(e.carry_principal = any($1::text[]) and e.session_id=$2, false) and `+carriesForItsSession+`
 		from enrollments e
 		where e.id <> $3
-			and ((e.carry_principal=$1 and e.session_id=$2
+			and ((e.carry_principal = any($1::text[]) and e.session_id=$2
 					and (`+carriesForItsSession+`
 						or exists (select 1 from withheld_secrets w where w.enrollment_id=e.id)))
 				or (e.owner=$4 and e.owner like '`+claimOwnerPrefix+`%' and e.dormant_since is not null
 					and (`+holdsForItsSession+`)))
-		order by e.id for update of e`, in.carry, in.SessionID, in.ID, claim)
+		order by e.id for update of e`, principals, in.SessionID, in.ID, claim)
 	if err != nil {
 		return err
 	}
 	type predecessor struct {
 		ID      uuid.UUID
 		Dormant bool
-		// Session is the session rule: the row is of this enrollment's own pair. False is a row
-		// the claim rule alone found, a dormant enrollment of the same claim, which gives up its
-		// grants and requests and keeps its withheld names.
+		// Session is the session rule: the row is of this enrollment's session name under one of
+		// principals, its own or a paired account's. False is a row the claim rule alone found, a
+		// dormant enrollment of the same claim, which gives up its grants and requests and keeps
+		// its withheld names.
 		Session bool
 		// Carries is the session rule's first part: the carry left a live grant or a pending
 		// request on this row, so its grants and requests move beside its withheld names. False on
