@@ -1,10 +1,11 @@
 /** The fixtures of the tests of `e2e/acceptance/outside-path-reach.sh`, the driver of the check
  *  `c-outside-path-reach` (dispatch://INFRA-3862), which a person from outside runs on their own
  *  device to measure which of our listed addresses that device reaches over the path we give them.
- *  Three files use them: `outside-path-reach-input.test.ts` (the inputs the script refuses, the
+ *  Four files use them: `outside-path-reach-input.test.ts` (the inputs the script refuses, the
  *  origin's two answers and its classifier, none of which reaches a probe),
- *  `outside-path-reach.test.ts` (runs that probe) and `outside-path-reach-blackhole.test.ts` (the
- *  two runs that need a network dropping TEST-NET-1).
+ *  `outside-path-reach.test.ts` (runs that probe), `outside-path-reach-blackhole.test.ts` (the
+ *  two runs that need a network dropping TEST-NET-1) and `outside-path-reach-tmout.test.ts` (a
+ *  list on a pipe under an inherited TMOUT).
  *  `bun test` collects only `*.test.ts` and its kin, so this module runs nowhere of its own.
  *
  *  Every row runs the script itself against real listeners: a fake Dispatch (`Bun.serve`, which
@@ -30,7 +31,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { TCPSocketListener, udp } from "bun";
+import type { udp } from "bun";
 
 export const script = fileURLToPath(
   new URL("../acceptance/outside-path-reach.sh", import.meta.url)
@@ -58,8 +59,8 @@ export function probingRow(skip: boolean) {
 }
 
 /** A bash loop that waits until `file` exists, with no limit but this test process's life: once
- *  this process has gone it ends the waiting shell with status 70, so no waiter outlives a row
- *  that failed at its timeout. */
+ *  this process has gone it ends the waiting shell with status 70, so no waiter outlives this test
+ *  process. */
 export function untilExists(file: string): string {
   return `until [ -e ${file} ]; do kill -0 ${process.pid} 2>/dev/null || exit 70; ${hostSleep} 0.05; done`;
 }
@@ -165,12 +166,11 @@ const closedReservations: udp.Socket<"buffer">[] = [];
 /** A port that refuses a connection: the next of the range, wrapping round it, past any a host
  *  program holds. The kernel hands none of them to a `port: 0` listener.
  *  It reserves a port before it connects to it: it binds a UDP socket to the same number on
- *  127.0.0.1 and holds it for the rest of this process's life. No other process can bind it
- *  meanwhile, and the kernel frees it however the process ends. So no two processes issue one
- *  port, and the connection reaches no row's listener, since a row listens in this range only on a
- *  port its own process reserved; unreserved, it could reach another process's holding target,
- *  which counts every connection. It tests by connecting, not by binding a TCP listener, since on
- *  the BSDs a bind on 127.0.0.1 succeeds beside a listener on every address. */
+ *  127.0.0.1 and holds it for the rest of this process's life, and the kernel frees it however the
+ *  process ends. So no other process's `closedPort` can issue it meanwhile. Unreserved, another
+ *  process could issue it too and listen on it, as the row that closes a holding target does, and
+ *  this process's closed target would read REACHED. It tests by connecting, not by binding a TCP
+ *  listener, since on the BSDs a bind on 127.0.0.1 succeeds beside a listener on every address. */
 export async function closedPort(): Promise<number> {
   while (closedIssued < closedRange.span) {
     const port = closedRange.low + ((closedStart + closedIssued++) % closedRange.span);
@@ -215,24 +215,18 @@ export function closingTarget() {
   });
 }
 
-/** A listener that holds every connection it takes; `accepted.count` counts them. */
-export type HoldingTarget = TCPSocketListener & { accepted: { count: number } };
-
 /** A target that accepts, speaks first and holds the connection open, as NATS does, on `port`. */
-export function holdingTarget(port = 0): HoldingTarget {
-  const accepted = { count: 0 };
-  const listener = Bun.listen({
+export function holdingTarget(port = 0) {
+  return Bun.listen({
     hostname: "127.0.0.1",
     port,
     socket: {
       open(socket) {
-        accepted.count += 1;
         socket.write("INFO {}\r\n");
       },
       data() {},
     },
   });
-  return Object.assign(listener, { accepted });
 }
 
 /** The bash wrapper `drive` runs to give the script its target list. Its arguments: how the list
@@ -241,14 +235,14 @@ export function holdingTarget(port = 0): HoldingTarget {
  *  exits (any word for yes, empty for no), the paths of sleep and mkfifo, the named pipe's path,
  *  the path the wrapper creates once the script exits, then the shell and the script. The writer
  *  of a named pipe is stopped once the script exits, in case the script stopped before it opened
- *  the pipe. */
+ *  the pipe, and a held list's writer stops once the test process, the wrapper's parent, has gone. */
 const listFeeder = [
   "via=$1 first=$2 later=$3 hold=$4 sleep=$5 mkfifo=$6 fifo=$7 ended=$8",
   "shift 8",
   "feed() {",
   '  printf "%s" "$first"',
   '  [ -z "$later" ] || { "$sleep" 2; printf "%s" "$later"; }',
-  '  [ -z "$hold" ] || until [ -e "$ended" ]; do "$sleep" 0.05; done',
+  '  [ -z "$hold" ] || until [ -e "$ended" ]; do kill -0 "$PPID" 2>/dev/null || exit 70; "$sleep" 0.05; done',
   "}",
   "case $via in",
   '  stdin) feed | { OUTSIDE_PATH_TARGETS=/dev/stdin "$@"; status=$?; : >"$ended"; exit "$status"; } ;;',

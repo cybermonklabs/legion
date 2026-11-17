@@ -79,25 +79,44 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
-  // Two holding targets beside the holding origin. Each probe of either one waits, before it
-  // connects, until the other one's probe of the same round has begun. Probed at once, both go on
-  // at once; probed one after another, the first never ends and the row fails at its timeout.
+  // Two holding targets beside the holding origin and two closed targets. Each probe of any of the
+  // five waits, before it connects, until the probe of every other one in the same round has begun
+  // and, in each round but the last, until the sleep after that round has begun. A round that probes
+  // its hosts at once, and sleeps while they run, goes on at once. A round that probes any of them
+  // only once another has ended, or that waits for its probes before its sleep, never ends, and the
+  // row fails at its timeout.
   probingRow(withoutTools)(
     "reads targets that accept and hold the connection as reached, each round probing them at once",
     async () => {
       const origin = fakeDispatch();
       const first = holdingTarget();
       const second = holdingTarget();
+      const closed = [await closedPort(), await closedPort()];
       try {
+        const hosts = {
+          origin: `127.0.0.1:${origin.port}`,
+          "closed-a": `127.0.0.1:${closed[0]}`,
+          "closed-b": `127.0.0.1:${closed[1]}`,
+          "nats-a": `127.0.0.1:${first.port}`,
+          "nats-b": `127.0.0.1:${second.port}`,
+        };
         const { path } = pathRounds(
-          { "nats-a": `127.0.0.1:${first.port}`, "nats-b": `127.0.0.1:${second.port}` },
-          "case $target in nats-a) other=nats-b ;; nats-b) other=nats-a ;; *) other= ;; esac\n" +
-            `[ -z "$other" ] || ${untilExists('"$rounds/$other-$round"')}`
+          hosts,
+          [
+            'if [ -n "$target" ]; then',
+            ...Object.keys(hosts).map(
+              (other) => `  [ "$target" = ${other} ] || ${untilExists(`"$rounds/${other}-$round"`)}`
+            ),
+            `  [ "$round" -ge 5 ] || ${untilExists('"$rounds/sleep-$round"')}`,
+            "fi",
+          ].join("\n")
         );
         const run = await drive(
           {
             OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-            OUTSIDE_PATH_TARGETS: await list(
+            OUTSIDE_PATH_TARGETS: targets(
+              `closed-a 127.0.0.1 ${closed[0]}`,
+              `closed-b 127.0.0.1 ${closed[1]}`,
               `nats-a 127.0.0.1 ${first.port}`,
               `nats-b 127.0.0.1 ${second.port}`
             ),
@@ -106,9 +125,11 @@ describe.concurrent("outside-path-reach.sh", () => {
         );
         expect(lineFor(run, "nats-a")).toContain(" REACHED; curl exit 28,");
         expect(lineFor(run, "nats-b")).toContain(" REACHED; curl exit 28,");
+        // Only the host's curl, connecting to the target, reads a round of it REACHED here.
+        expect(probesOf(lineFor(run, "nats-a"))).toEqual(Array(5).fill("REACHED"));
+        expect(probesOf(lineFor(run, "nats-b"))).toEqual(Array(5).fill("REACHED"));
         expect(verdict(run)).toBe("FAIL: reached nats-a nats-b");
         expect(run.code).toBe(1);
-        expect([first.accepted.count, second.accepted.count]).toEqual([5, 5]);
       } finally {
         origin.stop(true);
         first.stop(true);
@@ -419,7 +440,6 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
-        expect(hub.accepted.count).toBe(4);
         expect(readFileSync(log, "utf8")).toBe(
           [1, 2, 3, 4, 5].map((round) => `probe hub ${round}\n`).join("slept 6\n")
         );
