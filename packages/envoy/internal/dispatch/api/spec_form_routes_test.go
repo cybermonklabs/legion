@@ -6,12 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -938,104 +935,4 @@ func TestTheGateKnowsTheComponentNamesUnderItsRoot(t *testing.T) {
 		t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, statement.PrimaryArtifactID, nil))
-}
-
-// countingQueryer is q with a count of the statements a judgment sends through it, each statement
-// of a batch among them.
-type countingQueryer struct {
-	q          queryer
-	statements int
-}
-
-func (c *countingQueryer) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	c.statements++
-	return c.q.QueryRow(ctx, sql, args...)
-}
-
-func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	c.statements++
-	return c.q.Query(ctx, sql, args...)
-}
-
-func (c *countingQueryer) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	c.statements += batch.Len()
-	return c.q.SendBatch(ctx, batch)
-}
-
-// A document of the size of level two, 301 statements that all break the form, and the same
-// document with every statement clean, is judged in work that grows at most in proportion to its
-// statements. The test counts the work, which no load of the machine changes: the judgment
-// (specFormOf) sends as many statements to the database for 602 statements as for 301, and it
-// allocates less than three times as much, where a judgment that reads the database again for each
-// text, or does work for each pair of texts, fails one of the two. Both documents stand under the
-// root before either is judged, since the judgment reads each other covered document under it.
-// Each count is the least of three judgments, since another goroutine of the test server can only
-// add to the allocations. Through the request route, the broken document of 301 statements is
-// refused, and the clean one opens.
-func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
-	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	served := &server{deps: tree.deps}
-	for _, test := range []struct {
-		name, body string
-		broken     bool
-	}{
-		{name: "broken", body: formFaults[0].broken, broken: true},
-		{name: "clean", body: "Dispatch shows the person each question."},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			issues := map[int]formIssue{}
-			for _, count := range []int{301, 602} {
-				var spec strings.Builder
-				spec.WriteString("# Level two\n")
-				for index := 1; index <= count; index++ {
-					fmt.Fprintf(&spec, "\n:::requirement{#statement-%d}\n%s\n:::\n", index, test.body)
-				}
-				issues[count] = createFormIssue(t, tree.handler, tree.root, fmt.Sprintf("Level two sized, %d statements: %s", count, test.name), spec.String())
-				awaitSettled(t, tree.database, issues[count].PrimaryArtifactID)
-			}
-			type work struct {
-				statements  int
-				allocations uint64
-			}
-			judge := func(count int) work {
-				documents := []model.AskApprovalDocument{{ArtifactID: issues[count].PrimaryArtifactID, Name: "spec.md", Version: 1}}
-				var least work
-				for run := range 3 {
-					counter := &countingQueryer{q: tree.database.Pool}
-					var before, after runtime.MemStats
-					runtime.ReadMemStats(&before)
-					result, err := served.specFormOf(context.Background(), counter, documents, specform.ActRequest)
-					runtime.ReadMemStats(&after)
-					if err != nil {
-						t.Fatalf("judge %d statements: %v", count, err)
-					}
-					if found, want := len(result.refusing()), map[bool]int{true: count, false: 0}[test.broken]; found != want {
-						t.Fatalf("the judgment of %d statements has %d findings, want %d", count, found, want)
-					}
-					if allocations := after.Mallocs - before.Mallocs; run == 0 || allocations < least.allocations {
-						least.allocations = allocations
-					}
-					least.statements = counter.statements
-				}
-				return least
-			}
-			small, large := judge(301), judge(602)
-			t.Logf("301 statements: %d statements sent, %d allocations; 602 statements: %d statements sent, %d allocations",
-				small.statements, small.allocations, large.statements, large.allocations)
-			if small.statements == 0 {
-				t.Fatal("the judgment sent no statement to the database, so this test counts nothing")
-			}
-			if large.statements != small.statements {
-				t.Errorf("the judgment sent %d statements for 602 statements and %d for 301, want the same count", large.statements, small.statements)
-			}
-			if large.allocations >= 3*small.allocations {
-				t.Errorf("the judgment allocated %d times for 602 statements and %d for 301, want less than three times as much",
-					large.allocations, small.allocations)
-			}
-			want := map[bool]int{true: http.StatusConflict, false: http.StatusCreated}[test.broken]
-			if response := requestFormApproval(t, tree.handler, issues[301].PrimaryArtifactID, nil); response.Code != want {
-				t.Fatalf("request of 301 statements: status=%d, want %d", response.Code, want)
-			}
-		})
-	}
 }

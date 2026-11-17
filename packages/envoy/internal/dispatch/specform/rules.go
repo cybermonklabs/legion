@@ -65,11 +65,13 @@ var steRules = map[string]string{
 const wordClass = `\p{L}\p{M}\p{Nd}\p{Pc}`
 
 // otherWordNotions are the notions of a word of the regular expressions themselves, which read
-// ASCII only. No regular expression of this file holds one (wordRegexp).
+// ASCII only. No regular expression of this package holds one (wordRegexp).
 var otherWordNotions = []string{`\w`, `\W`, `\b`, `\B`, `[:word:]`}
 
 // wordRegexp is the regular expression expr, which holds no notion of a word of its own
-// (otherWordNotions), so it reads a word only as wordClass does: wordRegexp panics on one.
+// (otherWordNotions), so it reads a word only as wordClass does: wordRegexp panics on one. Each
+// regular expression of the package is built through it
+// (TestEveryPatternOfTheRulesIsBuiltThroughTheGuard).
 func wordRegexp(expr string) *regexp.Regexp {
 	for _, notion := range otherWordNotions {
 		if strings.Contains(expr, notion) {
@@ -110,9 +112,11 @@ var (
 	// sign, as in "checker@v1.2.3", is no address. Its local part and its domain take the letters
 	// beside them, so a letter there makes a longer address. An email address is a whole word, and
 	// no email address where it is part of a longer address: a "/" before it, as the user of a URL
-	// ("ssh://git@github.com/owner/repo.git"), or a ":" and a character of a path after it, as the
-	// host of an SSH address ("git@github.com:owner/repo.git").
-	email = newWordForm(`[`+wordClass+`.+\-]+@(?:[`+wordClass+`\-]+\.)+\p{L}[\p{L}\p{M}]+`, "/", `:[`+wordClass+`/~.\-]`)
+	// ("ssh://git@github.com/owner/repo.git"), or a ":" after it, as the user and host of a remote
+	// path ("git@github.com:owner/repo.git", "deploy@build.example.com:'/srv/my reports/'"),
+	// unless white space, a closing mark (\p{Pe}, \p{Pf}) or one of ",", ";", "!" and "?" follows
+	// the ":", or the text ends there. So "(ada@example.com:)" and "ada@example.com: she" name her.
+	email = newWordForm(`[`+wordClass+`.+\-]+@(?:[`+wordClass+`\-]+\.)+\p{L}[\p{L}\p{M}]+`, "/", `:[^\s\v\x{85}\p{Z}\p{Pe}\p{Pf},;!?]`)
 	// handle is an @handle, which no "@" comes before and no "/" or "@" comes after, so the scope
 	// of a package such as "@types/node" is no handle.
 	handle = newWordForm(`@\p{L}[`+wordClass+`\-]*`, "@", `[/@]`)
@@ -236,6 +240,27 @@ type span struct {
 	broken
 }
 
+// covered is which bytes of a line the spans that a rule found so far hold, so that the rule reads
+// in one step whether a form starts inside one (holds), and marks each span once (mark): its work
+// is the length of the line and of its spans, never their count times the count of its forms.
+type covered []bool
+
+func newCovered(line string) covered {
+	return make(covered, len(line))
+}
+
+func (c covered) mark(spans ...span) {
+	for _, each := range spans {
+		for at := each.start; at < each.end; at++ {
+			c[at] = true
+		}
+	}
+}
+
+func (c covered) holds(at int) bool {
+	return c[at]
+}
+
 // referenceBreaks is each link to a record of Dispatch, incident, pull request and person that
 // line names, rule by rule, each rule's in the order of the line. A line that is an address (the
 // address of a link or an image) names a record only by the forms that an address holds: a
@@ -244,27 +269,25 @@ type span struct {
 // nor in a reference that words hold, such as "https://example.com/guide#12". A "#12" in the name
 // of an incident names no pull request.
 func referenceBreaks(c Context, people [][]string, line string, address bool) []broken {
-	var references, links []span
+	var links []span
+	references := newCovered(line)
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
 		raw := referenceAt(line, located.Offset)
-		references = append(references, span{start: located.Offset, end: located.Offset + len(raw)})
+		references.mark(span{start: located.Offset, end: located.Offset + len(raw)})
 		if located.Kind != "url" {
 			links = append(links, span{located.Offset, located.Offset + len(raw), broken{ruleDispatchLink, linkDetail(raw)}})
 		}
-	}
-	inReference := func(at int) bool {
-		return inSpans(references, at)
 	}
 	for _, each := range bareKey.find(line) {
 		key := line[each.start:each.end]
 		project := key[:strings.LastIndexByte(key, '-')]
 		ref, ok := text.ParseRef("dispatch://"+key, "")
-		if !inReference(each.start) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
+		if !references.holds(each.start) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
 			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("key", key)}})
 		}
 	}
 	for _, each := range recordID.find(line) {
-		if !inReference(each.start) {
+		if !references.holds(each.start) {
 			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("id", line[each.start:each.end])}})
 		}
 	}
@@ -273,18 +296,20 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	for _, link := range links {
 		found = append(found, link.broken)
 	}
-	var incidents []span
-	if !address {
-		incidents = incident.find(line)
-		for _, each := range incidents {
-			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", line[each.start:each.end], incidentForms)})
-		}
-	}
 	pullRequests := pullRequestAddress.find(line)
 	if !address {
+		// A form of a pull request inside an address of one, an incident or a form found before
+		// it is part of that name.
+		named := newCovered(line)
+		named.mark(pullRequests...)
+		for _, each := range incident.find(line) {
+			named.mark(each)
+			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", line[each.start:each.end], incidentForms)})
+		}
 		for _, form := range []wordForm{pullRequestRepo, pullRequestName} {
 			for _, each := range form.find(line) {
-				if !inReference(each.start) && !inSpans(pullRequests, each.start) && !inSpans(incidents, each.start) {
+				if !references.holds(each.start) && !named.holds(each.start) {
+					named.mark(each)
 					pullRequests = append(pullRequests, each)
 				}
 			}
@@ -297,12 +322,12 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	var names []string
 	if address {
 		for _, each := range email.find(line) {
-			if !inReference(each.start) {
+			if !references.holds(each.start) {
 				names = append(names, line[each.start:each.end])
 			}
 		}
 	} else {
-		names = personNames(people, line, inReference)
+		names = personNames(people, line, references)
 	}
 	for _, name := range names {
 		found = append(found, broken{rulePerson, fmt.Sprintf("it names a person: %q", name)})
@@ -330,16 +355,23 @@ func referenceAt(line string, offset int) string {
 	}); end >= 0 {
 		raw = raw[:end]
 	}
-	for {
-		trimmed := strings.TrimRight(raw, ".,;:!?")
-		if strings.HasSuffix(trimmed, ")") && strings.Count(trimmed, "(") < strings.Count(trimmed, ")") {
-			trimmed = trimmed[:len(trimmed)-1]
+	// The parentheses are counted once, and the walk goes back from the end, so a run of closing
+	// ones costs one pass.
+	opened, closed := strings.Count(raw, "("), strings.Count(raw, ")")
+	end := len(raw)
+	for ; end > 0; end-- {
+		switch raw[end-1] {
+		case '.', ',', ';', ':', '!', '?':
+		case ')':
+			if opened >= closed {
+				return raw[:end]
+			}
+			closed--
+		default:
+			return raw[:end]
 		}
-		if trimmed == raw {
-			return raw
-		}
-		raw = trimmed
 	}
+	return raw[:end]
 }
 
 // peopleNames is the name of each signed-in person: the parts of the local part of the person's
@@ -386,17 +418,22 @@ func peopleNames(c Context, in Input) [][]string {
 // personNames is each person line names, in the order of the line: an email address, an
 // @handle, and the name of one signed-in person (peopleNames), its parts in order as whole words
 // (nameWord) that only white space parts, each with a capital first letter as a name is written.
-// A reference holds none.
-func personNames(people [][]string, line string, inReference func(int) bool) []string {
+// A reference holds none, and a name holds no other.
+func personNames(people [][]string, line string, references covered) []string {
 	var found []span
+	named := newCovered(line)
+	keep := func(each span) {
+		named.mark(each)
+		found = append(found, each)
+	}
 	for _, each := range email.find(line) {
-		if !inReference(each.start) {
-			found = append(found, each)
+		if !references.holds(each.start) {
+			keep(each)
 		}
 	}
 	for _, each := range handle.find(line) {
-		if !inReference(each.start) && !inSpans(found, each.start) {
-			found = append(found, each)
+		if !references.holds(each.start) && !named.holds(each.start) {
+			keep(each)
 		}
 	}
 	var words []span
@@ -407,7 +444,7 @@ func personNames(people [][]string, line string, inReference func(int) bool) []s
 		for index, part := range name {
 			word := words[at+index]
 			first, _ := utf8.DecodeRuneInString(line[word.start:])
-			if !unicode.IsUpper(first) || strings.ToLower(line[word.start:word.end]) != part || inReference(word.start) {
+			if !unicode.IsUpper(first) || strings.ToLower(line[word.start:word.end]) != part || references.holds(word.start) {
 				return false
 			}
 			if index > 0 && strings.TrimFunc(line[words[at+index-1].end:word.start], unicode.IsSpace) != "" {
@@ -418,8 +455,8 @@ func personNames(people [][]string, line string, inReference func(int) bool) []s
 	}
 	for _, name := range people {
 		for at := 0; at+len(name) <= len(words); at++ {
-			if !inSpans(found, words[at].start) && writes(at, name) {
-				found = append(found, span{start: words[at].start, end: words[at+len(name)-1].end})
+			if !named.holds(words[at].start) && writes(at, name) {
+				keep(span{start: words[at].start, end: words[at+len(name)-1].end})
 			}
 		}
 	}
@@ -429,13 +466,4 @@ func personNames(people [][]string, line string, inReference func(int) bool) []s
 		names[index] = line[each.start:each.end]
 	}
 	return names
-}
-
-func inSpans(spans []span, at int) bool {
-	for _, each := range spans {
-		if at >= each.start && at < each.end {
-			return true
-		}
-	}
-	return false
 }

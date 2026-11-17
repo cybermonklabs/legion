@@ -1,15 +1,18 @@
 // Package cputest reads this process's own CPU time, the measure every growth test in this module
-// times a call by. A call's wall time counts every moment the scheduler leaves the process off a
-// core, so a loaded machine stretches it on either side of a comparison without the call doing more
-// work; CPU time leaves that out. It is not immune to load: a busy machine still slows the
-// process's own CPU time through shared caches and clock frequency, so a comparison still samples
-// each side more than once. pmdoc's linear-time tests and the api's save ladders both time calls
-// this way, so it lives here once; it is an ordinary package rather than a _test.go file because
-// Go cannot share test-only code across packages (see internal/stacktest's identical reasoning).
+// times a call by, and the CPU time of the one thread that runs a call (OfCall). A call's wall time
+// counts every moment the scheduler leaves the process off a core, so a loaded machine stretches it
+// on either side of a comparison without the call doing more work; CPU time leaves that out. It is
+// not immune to load: a busy machine still slows the process's own CPU time through shared caches
+// and clock frequency, so a comparison still samples each side more than once. pmdoc's linear-time
+// tests and the api's save ladders both time calls this way, and the form of The Spec times its
+// judgment on the thread, so it lives here once; it is an ordinary package rather than a _test.go
+// file because Go cannot share test-only code across packages (see internal/stacktest's identical
+// reasoning).
 package cputest
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -24,6 +27,18 @@ func Process() time.Duration {
 		panic(fmt.Sprintf("getrusage(RUSAGE_SELF): %v", err))
 	}
 	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
+}
+
+// OfCall is the CPU time that one run of call spends on the thread that runs it (Thread): it holds
+// the calling goroutine on its thread (runtime.LockOSThread) from the reading before call to the
+// reading after it, so both readings are of that thread. Work that call hands to another goroutine
+// is not in it, and nor is the collector's work on another thread; work that allocates nothing is.
+func OfCall(call func()) time.Duration {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	before := Thread()
+	call()
+	return Thread() - before
 }
 
 // resolution is the smallest step Process moves in on this machine, measured once: the fewest

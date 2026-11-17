@@ -194,9 +194,11 @@ const specFormDocumentOwner = documentOwnerValidation(true);
 /**
  * The refusal of the part of dispatch_spec_form's rule that `value` breaks, or undefined when it
  * keeps the rule. It reads one document, or the spec and the Verification document of one issue,
- * under the document-owner rule, and a version only of a document that artifact or ref names.
- * With root, it walks the issues under that root, which names them all, so no argument that names
- * a document goes beside it. The schema hands each callback the parsed arguments object.
+ * under the document-owner rule, and a version only of a document that artifact names. The check
+ * of a call reads the arguments after a ref has named its owner and its document, so a ref of a
+ * document gives artifact, and a ref of an issue gives none. With root, it walks the issues under
+ * that root, which names them all, so no argument that names a document goes beside it. The
+ * schema hands each callback the parsed arguments object.
  */
 function specFormRefusal(value: unknown): string | undefined {
   const input = value as Readonly<Record<string, unknown>>;
@@ -207,12 +209,7 @@ function specFormRefusal(value: unknown): string | undefined {
   }
   return brokenParts([
     [specFormDocumentOwner.check(value), specFormDocumentOwner.message],
-    [
-      input["version"] === undefined ||
-        typeof input["artifact"] === "string" ||
-        typeof input["ref"] === "string",
-      SPEC_FORM_VERSION_RULE,
-    ],
+    [input["version"] === undefined || typeof input["artifact"] === "string", SPEC_FORM_VERSION_RULE],
   ]);
 }
 

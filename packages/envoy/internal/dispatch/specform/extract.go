@@ -3,7 +3,6 @@ package specform
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -19,25 +18,28 @@ type Extracted struct {
 	Counts map[Kind]int
 }
 
+// The forms of the lines that the extractor reads, each built through the guard (wordRegexp), as
+// every pattern of the package is.
 var (
 	// entryTail is what follows the bold statement of an entry line, the form of the how-to of The
 	// Spec ("- **<statement>** `<id>` · under: …"): the id in code font, then " · under:".
-	entryTail = regexp.MustCompile("^ `([^`]+)` · under:")
+	entryTail = wordRegexp("^ `([^`]+)` · under:")
 	// componentHeading is the text of a heading that names a component or an interface by its id.
-	componentHeading = regexp.MustCompile("^(.+?) \\((?:component|interface) `([^`]+)`\\)$")
-	purposeLine      = regexp.MustCompile(`^Purpose of ([^\s:]+): (.+)$`)
+	componentHeading = wordRegexp("^(.+?) \\((?:component|interface) `([^`]+)`\\)$")
+	purposeLine      = wordRegexp(`^Purpose of ([^\s:]+): (.+)$`)
 	// definitionTail is what follows the bold term of a term line ("- **<term>**: <definition>"):
 	// a colon, one space and the definition, which can stand wholly in its footnote.
-	definitionTail = regexp.MustCompile(`^: (.*)$`)
+	definitionTail = wordRegexp(`^: (.*)$`)
 )
 
-// extraction is ExtractDocument's state: what it read, the bodies each node and kind had, the
-// level of the heading Terms whose part the walk is in (0 outside one), and the footnotes of the
-// document.
+// extraction is ExtractDocument's state: what it read, how many texts each node and kind has and
+// each text it kept, the level of the heading Terms whose part the walk is in (0 outside one), and
+// the footnotes of the document.
 type extraction struct {
 	where      string
 	out        Extracted
-	bodies     map[[2]string][]string
+	texts      map[[2]string]int
+	kept       map[[3]string]bool
 	termsLevel int
 	// footnotes is each footnote definition of the document by the key that a reference finds it
 	// by (pmdoc.FootnoteLabelKey), the first one where two share a key, as the parser resolves a
@@ -51,12 +53,13 @@ type extraction struct {
 // named "<node> (2)", "<node> (3)".
 func (e *extraction) add(node string, kind Kind, body string, held Held) {
 	key := [2]string{node, string(kind)}
-	seen := fmt.Sprintf("%q %q", body, held)
-	if slices.Contains(e.bodies[key], seen) {
+	text := [3]string{node, string(kind), fmt.Sprintf("%q %q", body, held)}
+	if e.kept[text] {
 		return
 	}
-	e.bodies[key] = append(e.bodies[key], seen)
-	if n := len(e.bodies[key]); n > 1 {
+	e.kept[text] = true
+	e.texts[key]++
+	if n := e.texts[key]; n > 1 {
 		node = fmt.Sprintf("%s (%d)", node, n)
 	}
 	e.out.Texts = append(e.out.Texts, Text{Node: node, Kind: kind, Body: body, Where: e.where, Held: held})
@@ -121,7 +124,8 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 	e := &extraction{
 		where:     fmt.Sprintf("%s version %d", document, version),
 		out:       Extracted{Counts: map[Kind]int{}},
-		bodies:    map[[2]string][]string{},
+		texts:     map[[2]string]int{},
+		kept:      map[[3]string]bool{},
 		footnotes: map[string]*pmdoc.Node{},
 		notes:     map[string]reading{},
 	}
@@ -271,7 +275,7 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 			tail.words, tail.shown = strings.TrimSpace(tail.words), strings.TrimSpace(tail.shown)
 			tail.notes = append(slices.Clip(strong.notes), after.notes...)
 			if definition, held := e.text(tail); definition != "" {
-				nameHeld := strong.held
+				nameHeld := strong.held.unique()
 				nameHeld.Shown = strong.shown
 				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where, NameHeld: nameHeld, DefinitionHeld: held})
 				e.out.Counts[KindDefinition]++
@@ -404,8 +408,8 @@ func joined(sep string, readings []reading) reading {
 
 // text is the body of a text of readings, the words of each on a line, then the words of each
 // footnote that they refer to, once and in the order of the first reference, also a footnote
-// that a footnote refers to, and everything they hold, with the same lines as the page shows them
-// (Held.Shown).
+// that a footnote refers to, and everything they hold, each address and title once, with the same
+// lines as the page shows them (Held.Shown).
 func (e *extraction) text(readings ...reading) (string, Held) {
 	out := joined("\n", readings)
 	var lines, shown []string
@@ -428,7 +432,7 @@ func (e *extraction) text(readings ...reading) (string, Held) {
 		out.held = out.held.with(note.held)
 	}
 	out.held.Shown = strings.Join(shown, "\n")
-	return strings.Join(lines, "\n"), out.held
+	return strings.Join(lines, "\n"), out.held.unique()
 }
 
 // note is the reading of the footnote whose key is key: the words of each paragraph and heading
@@ -505,10 +509,11 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 
 // linkHeld is held with the address and the title of the link that starts at nodes[index]: the
 // link of that node, which the node before it does not carry. A link is the nodes in a row that
-// carry it. A link whose address is its own shown words, with or without "mailto:", is an
-// autolink, the form in which Dispatch stores an address or an email address that the words hold:
-// its address is judged one time, in the shown words, where its neighbours are, so it holds its
-// title alone.
+// carry it. Its address is judged as an address, whatever stands beside the link, but for one
+// form: a link whose address is "mailto:" and its own shown words is the form in which Dispatch
+// stores an email address that the words hold, such as the host of git@github.com:owner/repo.git,
+// so it is judged one time, in the shown words, where its neighbours are, and holds its title
+// alone.
 func linkHeld(held Held, nodes []*pmdoc.Node, index int) Held {
 	href, title, ok := link(nodes[index])
 	if !ok {
@@ -526,7 +531,7 @@ func linkHeld(held Held, nodes []*pmdoc.Node, index int) Held {
 		}
 		words.WriteString(shownWords(node))
 	}
-	if shown := words.String(); href != shown && href != "mailto:"+shown {
+	if href != "mailto:"+words.String() {
 		held = held.withAddress(href)
 	}
 	return held.withTitle(title)

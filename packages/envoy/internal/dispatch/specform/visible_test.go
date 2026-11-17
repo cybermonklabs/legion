@@ -127,11 +127,13 @@ func TestTheRulesJudgeTheWordsAndTheReferenceRulesTheAddresses(t *testing.T) {
 	})
 }
 
-// A link whose address is its own shown words, with or without "mailto:", is an autolink: the
-// form in which Dispatch stores an address or an email address that the words hold. It is judged
-// one time, in the words of the page, where its neighbours are. So the SSH address of a
-// repository opens in each of its forms, in words as in code font, and each form of an email
-// address of a person is refused. A link whose words and address differ is judged in both.
+// A link whose address is its own shown words after "mailto:" is the form in which Dispatch stores
+// an email address that the words hold, so it is judged one time, in the words of the page, where
+// its neighbours are. So the SSH address of a repository opens in each of its forms, in words as
+// in code font, and each form of an email address of a person is refused. Each other link is
+// judged in its address too, whatever stands beside it: a word joined to an autolink of a record
+// or a pull request hides it from the words, and not from the address. A link whose words and
+// address give the same finding gives it once.
 func TestAnAutolinkIsJudgedOnceInTheWordsOfThePage(t *testing.T) {
 	requireJudged(t, []judgedRow{
 		{"an SSH address in words", requirement("scp", "Legion clones git@github.com:owner/repo.git for each run."),
@@ -160,6 +162,22 @@ func TestAnAutolinkIsJudgedOnceInTheWordsOfThePage(t *testing.T) {
 			[]string{"statement words person"}, "", "", ""},
 		{"the control: the address of a pull request in words", requirement("pr", "Legion lands https://github.com/acme/legion/pull/12 today."),
 			[]string{"statement pr pull-request"}, "", "", ""},
+		{"an autolink of a record", requirement("record", "Dispatch stores each comment, as <dispatch://ACME-1> shows."),
+			[]string{"statement record dispatch-link"}, "", "", ""},
+		{"an autolink of a record, a word joined after it", requirement("record-after", "Dispatch stores each comment, as <dispatch://ACME-1>xyz shows."),
+			[]string{"statement record-after dispatch-link"}, "", "", ""},
+		{"an autolink of a record, a word joined before it", requirement("record-before", "Dispatch stores each comment, as xyz<dispatch://ACME-1> shows."),
+			[]string{"statement record-before dispatch-link"}, "", "", ""},
+		{"a link of a record whose words are its address, a word joined after it", requirement("words-after",
+			"Dispatch stores each comment, as [dispatch://ACME-1](dispatch://ACME-1)xyz shows."), []string{"statement words-after dispatch-link"}, "", "", ""},
+		{"a link of a record whose words are its address, a word joined before it", requirement("words-before",
+			"Dispatch stores each comment, as xyz[dispatch://ACME-1](dispatch://ACME-1) shows."), []string{"statement words-before dispatch-link"}, "", "", ""},
+		{"an autolink of a pull request, a word joined after it", requirement("pull-after", "Dispatch stores each comment, as <https://github.com/acme/widgets/pull/12>x shows."),
+			[]string{"statement pull-after pull-request"}, "", "", ""},
+		{"an autolink of a pull request, a word joined before it", requirement("pull-before", "Dispatch stores each comment, as x<https://github.com/acme/widgets/pull/12> shows."),
+			[]string{"statement pull-before pull-request"}, "", "", ""},
+		{"the stated limit: a mail link after a /, judged in the words", requirement("mail-path", "Dispatch stores each comment, as x/[ada@example.com](mailto:ada@example.com) shows."),
+			nil, "", "", ""},
 	})
 }
 

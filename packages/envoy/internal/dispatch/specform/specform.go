@@ -6,7 +6,6 @@
 package specform
 
 import (
-	"slices"
 	"strings"
 )
 
@@ -54,29 +53,46 @@ type Held struct {
 	Shown             string
 }
 
-// with is held and each address and title of more that held does not hold yet.
+// with is held and each address and title of more after its own. A reading gathers them so, in
+// the order that it reads them, and keeps the first of each once it is whole (unique), so its work
+// is in proportion to its links and images, not their count times their count. A caller keeps the
+// Held that with, withAddress and withTitle answer, and no longer the one it gave them.
 func (held Held) with(more Held) Held {
-	for _, address := range more.Addresses {
-		held = held.withAddress(address)
-	}
-	for _, title := range more.Titles {
-		held = held.withTitle(title)
-	}
+	held.Addresses = append(held.Addresses, more.Addresses...)
+	held.Titles = append(held.Titles, more.Titles...)
 	return held
 }
 
 func (held Held) withAddress(address string) Held {
-	if address != "" && !slices.Contains(held.Addresses, address) {
-		held.Addresses = append(slices.Clip(held.Addresses), address)
+	if address != "" {
+		held.Addresses = append(held.Addresses, address)
 	}
 	return held
 }
 
 func (held Held) withTitle(title string) Held {
-	if title != "" && !slices.Contains(held.Titles, title) {
-		held.Titles = append(slices.Clip(held.Titles), title)
+	if title != "" {
+		held.Titles = append(held.Titles, title)
 	}
 	return held
+}
+
+// unique is held with each address and each title once, the first of each, in their order.
+func (held Held) unique() Held {
+	held.Addresses, held.Titles = firstOfEach(held.Addresses), firstOfEach(held.Titles)
+	return held
+}
+
+func firstOfEach(values []string) []string {
+	var kept []string
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			kept = append(kept, value)
+		}
+	}
+	return kept
 }
 
 // Term is a term and its definition, with what each holds beside its words. Where of a listed

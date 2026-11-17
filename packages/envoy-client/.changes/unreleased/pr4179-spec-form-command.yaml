@@ -6,9 +6,9 @@ body: |-
   Dispatch read. A document that no root of The Spec covers says why Dispatch refuses nothing for
   it, and still lists its findings. Its first line counts the texts that break the form. With no
   `--artifact`, the command reads the spec and the Verification document of the issue. A version
-  number belongs to one document, so `--version` with an issue and no `--artifact` is refused
-  before any request. A key that names no issue prints `NOT_FOUND: not found` and exits 1, as
-  `dispatch read` does.
+  number belongs to one document, so `--version` with an issue, or a `--ref` of an issue, and no
+  `--artifact` is refused before any request. A key that names no issue prints
+  `NOT_FOUND: not found` and exits 1, as `dispatch read` does.
   `dispatch spec-form --root <KEY>` lists each issue under that
   root, with the form of its spec and its Verification document. `dispatch request-approval` prints
   a refusal for the form as `SPEC_FORM: <the refusal>` and exits 1, and the `DispatchServiceError`

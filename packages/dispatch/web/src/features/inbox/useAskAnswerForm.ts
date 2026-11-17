@@ -130,13 +130,8 @@ function answerFailure(error: Error): AskAnswerFailure {
           retryable: false,
         };
       case "SPEC_FORM":
-        return {
-          message:
-            error.refusal === undefined
-              ? error.message
-              : `${error.refusal}\n${CARD_FORM_NEXT_STEP}`,
-          retryable: false,
-        };
+        // Dispatch sends `refusal` in every SPEC_FORM body (the OpenAPI document requires it).
+        return { message: `${error.refusal}\n${CARD_FORM_NEXT_STEP}`, retryable: false };
     }
   }
   return { message: "Could not save your answer.", retryable: true };

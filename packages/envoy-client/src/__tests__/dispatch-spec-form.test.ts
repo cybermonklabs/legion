@@ -514,7 +514,7 @@ describe("dispatch spec-form", () => {
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form?version=2"]);
   });
 
-  test("--version with an issue and no --artifact is refused before any request, since a version belongs to one document", async () => {
+  test("--version with an issue, or a ref of an issue, and no --artifact is refused before any request, since a version belongs to one document", async () => {
     forms["ACME-5-spec"] = formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 1 });
     forms["ACME-5-verification"] = formRead(
       "ACME-5-verification",
@@ -529,6 +529,8 @@ describe("dispatch spec-form", () => {
     for (const argv of [
       ["spec-form", "ACME-5", "--version", "1"],
       ["spec-form", "--issue", "ACME-5", "--version", "1"],
+      ["spec-form", "--ref", "dispatch://ACME-5", "--version", "1"],
+      ["spec-form", "--issue", "ACME-5", "--ref", "dispatch://ACME-5", "--version", "1"],
     ]) {
       requests.length = 0;
       const { code, stdout } = await run(argv);

@@ -115,10 +115,11 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 
 // The red team's inputs of a form inside a longer word, through the approval request route: a
 // colour, the scope of a package, an SSH address in each of its forms, in words and in code font,
-// a path whose first part starts with a stop or a dash, and a person's name joined to a digit
-// open, and the number of a pull request, a handle, an email address and a person's name alone
-// are still refused, also with a letter of another script in them. A bare id names a record, and
-// the refusal says so.
+// the user and host of a remote path before any path of a command, a path whose first part starts
+// with a stop or a dash, and a person's name joined to a digit open, and the number of a pull
+// request, a handle, an email address and a person's name alone are still refused, also with a
+// letter of another script in them, and so is an autolink of a record or of a pull request that a
+// word joins. A bare id names a record, and the refusal says so.
 func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -160,6 +161,26 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 			reads: specform.KindStatement},
 		{name: "the control: a name of a person", spec: formRequirement("name", "Dispatch asks Ada Lovelace about each change."),
 			want: []string{"statement name person"}},
+		{name: "an scp address before a path in double quotes", spec: formRequirement("scp-double", "Legion runs `scp report.txt deploy@build.example.com:\"/srv/my reports/\"` each day."),
+			reads: specform.KindStatement},
+		{name: "an scp address before a path in single quotes", spec: formRequirement("scp-single", "Legion runs `scp report.txt deploy@build.example.com:'/srv/my reports/'` each day."),
+			reads: specform.KindStatement},
+		{name: "an rsync address before a path from a variable", spec: formRequirement("rsync-home", "Legion runs `rsync -a dist/ deploy@build.example.com:$HOME/app/` each day."),
+			reads: specform.KindStatement},
+		{name: "an scp address before a pattern", spec: formRequirement("scp-glob", "Legion runs `scp deploy@build.example.com:*.log logs/` each day."),
+			reads: specform.KindStatement},
+		{name: "an rsync address before a module", spec: formRequirement("rsync-module", "Legion reads `ops@backup.example.com::backups` before each run."),
+			reads: specform.KindStatement},
+		{name: "the control: an email address, then a colon and a word", spec: formRequirement("mail-please", "Dispatch mails ada@example.com: please read each change."),
+			want: []string{"statement mail-please person"}},
+		{name: "an autolink of a record that a word joins", spec: formRequirement("record-glued", "Dispatch stores each comment, as <dispatch://ACME-1>xyz shows."),
+			want: []string{"statement record-glued dispatch-link"}},
+		{name: "a link of a record whose words are its address, that a word joins", spec: formRequirement("record-words-glued",
+			"Dispatch stores each comment, as [dispatch://ACME-1](dispatch://ACME-1)xyz shows."), want: []string{"statement record-words-glued dispatch-link"}},
+		{name: "an autolink of a pull request that a word joins", spec: formRequirement("pull-glued", "Dispatch stores each comment, as <https://github.com/acme/widgets/pull/12>x shows."),
+			want: []string{"statement pull-glued pull-request"}},
+		{name: "the control: an autolink of a record", spec: formRequirement("record-autolink", "Dispatch stores each comment, as <dispatch://ACME-1> shows."),
+			want: []string{"statement record-autolink dispatch-link"}},
 	})
 	const id = "12345678-1234-1234-1234-123456789abc"
 	issue := createFormIssue(t, tree.handler, tree.root, "A bare id", "# Spec\n\n"+formRequirement("id", "Dispatch stores the value `"+id+"`."))
