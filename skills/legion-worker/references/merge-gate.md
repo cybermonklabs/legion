@@ -145,7 +145,7 @@ as the fingerprint decides (*The reviewer*, below, and
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
-  That `entry` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of your session gave you (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits: by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from (the next item).
+  That `entry` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of your session (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits: by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from (the next item).
   It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and the daemon then sets the review aside, while a quoted value that is no number costs the entry alone.
   A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.
   A `COMMENT` decides nothing. After a

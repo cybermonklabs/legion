@@ -77,13 +77,13 @@ const (
 // instructions (shimwire.Compact), and a worker resumed on images needs a vision model to read
 // its own past, so these instructions are what make the summary text.
 //
-// They keep word for word the newest sentence that names a reviewer's entry by a number
-// (reviewround.EntryLabel): the reviewer copies that number into the footer of its review, and a
-// summary that dropped it leaves the reviewer no entry to write, so its review moves no commit
-// (workflow's review). A task can end with `Review entry: none.` after one that named the round's
-// number (supervise's Delivery.message, workflow's namingTheReviewRound), and `none` does not
-// change the entry of the round, so the sentence kept is the newest that names a number, not the
-// newest that starts with the label.
+// They keep word for word the reviewer's entry (reviewround.EntryLabel): the reviewer copies its
+// number into the footer of its review, and a summary that dropped it leaves the reviewer no entry
+// to write, so its review moves no commit (workflow's review). Only the last sentence of a task is
+// the daemon's (reviewround.Sentences, supervise's Delivery.message): a task's own text can quote
+// `Review entry: 2.` above it, and a task can end with `Review entry: none.`, which does not change
+// the entry of the round. So the instruction first takes the last sentence of each task, and then
+// keeps the newest of those that names a number.
 //
 // A model reads it, so it follows ASD-STE100: one instruction per sentence, active voice, and no
 // word with a second reading.
@@ -91,7 +91,8 @@ const compactInstructions = "Write the summary as text. " +
 	"Keep what the rest of this task needs: the task itself, the decisions you made, the files you changed, " +
 	"the commands you ran and what they answered, and what is still open. " +
 	"Keep every issue key, file path, branch name, commit id and pull request number you still need. " +
-	"Keep word for word the newest sentence in the tasks you were given that starts \"" + reviewround.EntryLabel + ":\" and names a number. " +
+	"Find the last sentence of each task you were given. " +
+	"Of these sentences, keep word for word the newest that starts \"" + reviewround.EntryLabel + ":\" and names a number. " +
 	"Drop the full text of a file you read and the full output of a command that passed."
 
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors

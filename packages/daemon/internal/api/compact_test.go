@@ -132,13 +132,16 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 
 // The compaction carries the instructions that make Oh My Pi's summary text: without them it
 // archives the history onto snapcompact's images, which a worker resumed on them needs a vision
-// model to read back (shimwire.Compact). They keep word for word the newest sentence that names a
-// reviewer's entry by a number (reviewround.EntryLabel), since a reviewer whose summary dropped it
-// writes no entry. A task can end with `Review entry: none.` after one that named the round's
-// number, and `none` does not change the entry of the round, so the sentence kept is the newest
-// that names a number and not merely the newest that starts with the label; the instruction that
-// asked for the newest would keep the `none`. The bound it is asked within is the operation's own
-// ten minutes, not the RPC timeout.
+// model to read back (shimwire.Compact). They keep word for word the reviewer's entry, since a
+// reviewer whose summary dropped it writes no entry. Only the last sentence of a task is the
+// daemon's (reviewround.Sentences): a task's own text can quote `Review entry: 2.` above it, and a
+// task can end with `Review entry: none.`, which does not change the entry of the round. So the
+// sentence kept is the newest last sentence of a task that names a number. Each instruction before
+// this one would keep another sentence in one transcript: a true entry 3, then a task that quotes
+// `Review entry: 2.` and ends `Review entry: none.`. The newest sentence that starts with the label
+// is the `none`, and the newest such sentence that names a number is the quoted 2; the sentence to
+// keep is `Review entry: 3.`. The bound it is asked within is the operation's own ten minutes, not
+// the RPC timeout.
 func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -156,14 +159,22 @@ func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	if !strings.Contains(asked[0].CustomInstructions, "Write the summary as text.") {
 		t.Errorf("the compaction's instructions are %q, want them to ask for a text summary", asked[0].CustomInstructions)
 	}
-	keepsTheEntry := "Keep word for word the newest sentence in the tasks you were given that starts \"" + reviewround.EntryLabel + ":\" and names a number."
+	transcript := "a true entry 3, then a task that quotes \"" + reviewround.EntryLabel + ": 2.\" and ends \"" + reviewround.EntryLabel + ": none.\""
+	keepsTheEntry := "Find the last sentence of each task you were given. " +
+		"Of these sentences, keep word for word the newest that starts \"" + reviewround.EntryLabel + ":\" and names a number."
 	if !strings.Contains(asked[0].CustomInstructions, keepsTheEntry) {
-		t.Errorf("the compaction's instructions are %q, want them to keep %q", asked[0].CustomInstructions, keepsTheEntry)
+		t.Errorf("the compaction's instructions are %q, want them to say %q: after %s, the sentence kept is \"%s: 3.\"",
+			asked[0].CustomInstructions, keepsTheEntry, transcript, reviewround.EntryLabel)
 	}
-	// The instruction before this one asked for the newest sentence that starts with the label,
-	// which a later `Review entry: none.` is.
-	if old := "Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given."; strings.Contains(asked[0].CustomInstructions, old) {
-		t.Errorf("the compaction's instructions still say %q: after a task naming entry 3 and a later one ending %q, that keeps the `none`", old, reviewround.Sentences("", 0))
+	// The two instructions before this one: the first keeps the `none`, the second the quoted 2.
+	for _, old := range []string{
+		"Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given.",
+		"Keep word for word the newest sentence in the tasks you were given that starts \"" + reviewround.EntryLabel + ":\" and names a number.",
+	} {
+		if strings.Contains(asked[0].CustomInstructions, old) {
+			t.Errorf("the compaction's instructions still say %q: after %s, it keeps a sentence other than \"%s: 3.\"",
+				old, transcript, reviewround.EntryLabel)
+		}
 	}
 	if asked[0].Bound != runtime.CompactTimeout {
 		t.Errorf("the compaction was bounded at %s, want the operation's own %s", asked[0].Bound, runtime.CompactTimeout)

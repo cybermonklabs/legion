@@ -598,7 +598,8 @@ test("each reviewer text says the last two sentences of each task are always the
 });
 
 // The reviewer's review names the entry of its round in its Legion footer, the number of the
-// newest ` Review entry: <n>.` sentence that a task or a wake of its session gave it, because a
+// newest ` Review entry: <n>.` sentence that is the last sentence of a task or a wake of its
+// session (a task's own text can quote the same words above it), because a
 // review moves the commit a later round reads from only when its footer names the entry on the
 // reviewer's row: a review of an earlier round, from before a new generation or a carried
 // hand-over's promotion entered the reviewer again, names another. A review with no entry still
@@ -617,7 +618,7 @@ test("the reviewer's review footer names the entry of its round", () => {
   const gaps = [
     ...[
       withEntry,
-      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of its session gave it, in quotes, so that a placeholder left in it cannot make the footer invalid JSON: such a footer loses its session and its head too and is set aside.",
+      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of its session, in quotes, so that a placeholder left in it cannot make the footer invalid JSON: such a footer loses its session and its head too and is set aside.",
       "A comment, and a review of any other role, carry no entry, since no other role's task names one.",
       "The task a wake gives you says which wake brought the pod back, and the reviewer's, in a review round, ends with the round's entry too, `Review entry: <n>.`, as each of its tasks there does.",
       "The daemon tells a review of the reviewer's round from a review of an earlier round by that entry",
@@ -627,16 +628,19 @@ test("the reviewer's review footer names the entry of its round", () => {
       .map((s) => `legion-worker/SKILL.md lacks: ${s}`),
     ...[
       withEntry,
-      "That `entry` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of your session gave you (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits:",
+      "That `entry` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of your session (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits:",
       "It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and the daemon then sets the review aside, while a quoted value that is no number costs the entry alone.",
       "by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
       "A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
     ]
       .filter((sentence) => !mergeGate.includes(sentence))
       .map((s) => `merge-gate.md lacks: ${s}`),
-    ...['"head":"<the head you reviewed>"} -->`),']
+    ...['"head":"<the head you reviewed>"} -->`),', "sentence that a task or a wake of your session gave you"]
       .filter((sentence) => mergeGate.includes(sentence))
       .map((s) => `merge-gate.md says: ${s}`),
+    ...["sentence that a task or a wake of its session gave it"]
+      .filter((sentence) => worker.includes(sentence))
+      .map((s) => `legion-worker/SKILL.md says: ${s}`),
   ];
   expect(gaps).toEqual([]);
 });

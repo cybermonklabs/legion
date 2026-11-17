@@ -654,7 +654,8 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 // fault the rule exists to stop — the read that tells the reviewer a push landed under it
 // (`--json headRefOid`), the reason GitHub's own `commit_id` cannot stand in for the footer, and
 // what a wrong head costs. The same footer names the entry of the reviewer's round, the number of
-// the newest ` Review entry: <n>.` sentence that a task or a wake of its session gave it, since only
+// the newest ` Review entry: <n>.` sentence that is the last sentence of a task or a wake of its
+// session (a task's own text can quote the same words above it), since only
 // a review whose footer names the entry on the reviewer's row moves the commit a later round reads
 // from: the shape with the entry in both the template and the rule, the rule whole in the daemon
 // part (a message that names no entry changes none, and the field is left out only where nothing in
@@ -678,23 +679,25 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 		"rather than renaming the footer to a head you have not read",
 		"GitHub rewrites `commit_id` to the pull request's current head",
 		"A review whose footer names another head, or no head, decides no round",
-		"The footer's `entry` is the entry of your round, the number of the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you (the daemon part below gives the rule whole), written in quotes as a string of digits, `\"entry\":\"7\"`:",
+		"The footer's `entry` is the entry of your round, the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of this session (the daemon part below gives the rule whole), written in quotes as a string of digits, `\"entry\":\"7\"`:",
 		"It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and Legion then sets the review aside, while a quoted value that is no number costs the entry alone.",
 		"by it Legion tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
 		"A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
 		"The `<entry>` is the entry of your round, in digits, as the next paragraph says; a review with no entry, or with another one, decides the round as any other, but moves no commit.",
-		"The entry of your round is the number of the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you. A message that names none, such as a notice, a reminder or an Envoy card, does not change it. Leave the `entry` field out of your footer only where nothing in this session named one.",
+		"The entry of your round is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of this session. A message that names none, such as a notice, a reminder or an Envoy card, does not change it. Leave the `entry` field out of your footer only where nothing in this session named one.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	for _, retired := range []string{
-		`"phase":"review","head":"<the head you reviewed>"} -->`,
-		`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`,
+	for _, retired := range []struct{ phrase, why string }{
+		{`"phase":"review","head":"<the head you reviewed>"} -->`, "a footer with no entry"},
+		{`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`, "a footer with no entry"},
+		{"the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you",
+			"an entry read from any sentence of a task, where a task's own text can quote `Review entry: 2.` above the daemon's last sentence"},
 	} {
-		if strings.Contains(text, retired) {
-			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry", retired)
+		if strings.Contains(text, retired.phrase) {
+			t.Errorf("the composed reviewer prompt still says %q, %s", retired.phrase, retired.why)
 		}
 	}
 }
