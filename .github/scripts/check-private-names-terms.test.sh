@@ -738,6 +738,28 @@ key_run
 check "a net diff listed short of the pull request's totals exits 2" "$(is "$status" 2)"
 check "says UNKNOWN for the net diff" "$(contains "$out" 'UNKNOWN: #7 holds 1 merge commit(s), so its net diff is read')"
 
+echo "case: a commit dated before the cutoff is read after all when the pull request holds a forward merge"
+# The one exception to "a commit dated before the cutoff is not read": the net diff is the whole
+# pull request's. D1 and D2 are the same branch, opened after the cutoff, whose commit dated
+# before it adds a key line; D2 also holds a clean forward merge after the cutoff.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits old-sha 2026-11-19T00:00:00Z "fix: keep the order"
+commit_file old-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
+key_run
+check "D1, the old commit alone, is not read: exits 0" "$(is "$status" 0)"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits old-sha 2026-11-19T00:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "Merge main forward"
+as_merge merge-sha
+commit_file old-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+old '"$planted_key"' line'
+key_run
+check "D2, the same branch with a clean forward merge, is read through its net diff: exits 1" "$(is "$status" 1)"
+check "names the net diff's line" "$(contains "$out" "files:docs/notes.md:2: $key_refused")"
+
 echo "case: the tree outside a pull request's new text is not held to the issue-key rule"
 root=$(fixture key-tree)
 printf 'From before the rule: %s.\n' "$planted_key" > "$root/docs/notes.md"

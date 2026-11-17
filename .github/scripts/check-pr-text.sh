@@ -197,10 +197,13 @@ fi
 # branch forward is everything the base branch changed since the branch left it, other pull
 # requests' text among it: so a merge's message is read, its own diff is not, and the pull
 # request's net diff (the pulls files route, the lines the pull request adds to its base) is read
-# once instead, which holds any line typed while resolving a conflict. A commit or a net diff whose
-# patch GitHub does not return whole is UNKNOWN, and refused. The branch name is not read by this
-# rule: the daemon names an issue's branch after its key today, and the change that names
-# branches another way adds the branch to this rule.
+# once instead, which holds any line typed while resolving a conflict. The net diff is the whole
+# pull request's, so it also holds the lines of its commits dated before the cutoff: a pull request
+# opened after the cutoff that holds a forward merge is read whole, those older lines included.
+# That exception errs toward reading more, and each of those lines lands on main as new text
+# anyway. A commit or a net diff whose patch GitHub does not return whole is UNKNOWN, and
+# refused. The branch name is not read by this rule: the daemon names an issue's branch after its
+# key today, and the change that names branches another way adds the branch to this rule.
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
