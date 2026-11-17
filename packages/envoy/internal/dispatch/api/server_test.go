@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -136,6 +137,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
+	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
+	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
+	duplicateBound time.Duration
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -256,14 +261,19 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyTimeout:           options.envoyTimeout,
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
-		OIDC:                   options.oidc,
-		BrokerTokens:           brokerTokens,
-		AgentStream:            options.agentStream,
-		Embedder:               options.embedder,
-		Answerer:               options.answerer,
-		Files:                  options.files,
-		DashboardEntry:         options.dashboardEntry,
-		BuildCommit:            options.buildCommit,
+		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
+		// warning must arrive inside that wait's patience rather than at the production five and
+		// thirty seconds.
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
+		OIDC:              options.oidc,
+		BrokerTokens:      brokerTokens,
+		AgentStream:       options.agentStream,
+		Embedder:          options.embedder,
+		Answerer:          options.answerer,
+		Files:             options.files,
+		DashboardEntry:    options.dashboardEntry,
+		BuildCommit:       options.buildCommit,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -275,6 +285,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.agentWatchInterval != 0 {
 		served.agentWatchInterval = options.agentWatchInterval
 	}
+	served.duplicateBound = options.duplicateBound
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,

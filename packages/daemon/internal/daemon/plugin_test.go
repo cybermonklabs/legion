@@ -36,7 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -719,7 +719,7 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 		cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
 
 		p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})
@@ -737,7 +737,7 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 
 		p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})
 		if err != nil {

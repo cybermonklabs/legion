@@ -23,6 +23,12 @@ type Rig = internal.Rig
 // in as legion-daemon with its token.
 const DaemonAccount = internal.DaemonAccount
 
+// ExchangeRolesAccount is internal/broker/brokertest.ExchangeRolesAccount: the account the Rig's
+// exchange lists with no fixed session, whose pods trade only for a session registered for them.
+// Rig.MintAccountPodToken mints the token a registration presents for one of its pods, and
+// Rig.MintSubjectToken the token that pod trades.
+const ExchangeRolesAccount = internal.ExchangeRolesAccount
+
 // NewRig forwards to internal/broker/brokertest.NewRig, including its own skip when
 // BROKER_TEST_DATABASE_URL is unset.
 func NewRig(t *testing.T) *Rig {

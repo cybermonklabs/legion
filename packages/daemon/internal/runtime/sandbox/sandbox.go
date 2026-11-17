@@ -165,6 +165,12 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
+	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
+	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
+	// with the watch's record when the process is let go or the claim's next launch begins
+	// (forget, forgetIf). Memory only; a restarted daemon answers none.
+	sessions map[claim.Token]launchedSession
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -338,9 +344,12 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: no token audience")
 		case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
+		case a.ExchangeAudience == a.Audience:
+			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
+	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -383,6 +392,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}

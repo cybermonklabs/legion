@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // plannerSessionID is the session whose conversation the agent views below watch: an agent view
@@ -409,9 +410,7 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 // it skipped in one WARN when it ends, the count alone and never the bytes.
 func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`replay-secret not json`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
