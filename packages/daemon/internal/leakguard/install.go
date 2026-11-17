@@ -3,6 +3,7 @@ package leakguard
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -393,14 +394,10 @@ func verifyServed(ctx context.Context, start procgroup.Starter, check, parent st
 	cmd.Dir = parent
 	var printed strings.Builder
 	cmd.Stdout, cmd.Stderr = &printed, &printed
-	// A context that ended killed the run itself, so its end is the cause, not the kill; any other
-	// kill is named as one (procgroup.Err), rather than read as a check that printed nothing.
 	runErr := procgroup.Err(procgroup.Run(cmd, start))
-	if err := ctx.Err(); err != nil {
+	// A context that ended killed the run itself, so its end, not the kill, is the cause.
+	if err := cmp.Or(ctx.Err(), runErr); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
-	}
-	if runErr != nil {
-		return fmt.Errorf("the served check could not be run: %w", runErr)
 	}
 	answer := printed.String()
 	for _, shape := range []string{"check-public-text", "gh-guard"} {

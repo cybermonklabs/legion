@@ -936,8 +936,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	// grace is the budget killing it, judged below like any other budget kill, not a probe that
 	// could not be run.
 	timedOut := killed()
-	// procgroup.Err keeps a signal's death as an error, the *exec.ExitError that names the signal;
-	// here it is a run to judge, since Oh My Pi dying after it answered is transient (probeLoad).
+	// Err's only *exec.ExitError is a signal's death, which is judged below (the doc above).
 	var died *exec.ExitError
 	if runErr := procgroup.Err(err); runErr != nil && !timedOut && !errors.As(runErr, &died) {
 		return ran{}, runErr
