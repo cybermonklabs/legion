@@ -280,8 +280,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(conn, opts.replicas)
-	s.bucketMissing.Store(errors.Is(err, bus.ErrBucketMissing))
+	kv, err := s.openBucket(conn)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -297,6 +296,15 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 // requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
 func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
+}
+
+// openBucket makes one attempt to open the bucket on conn (openKnownBucket) and records whether
+// it found the bucket missing (bucketMissing), which a write then reads: the start's attempt and
+// the background repair's alike.
+func (s *KnownSessions) openBucket(conn *nats.Conn) (bus.KeyValue, error) {
+	kv, err := openKnownBucket(conn, s.replicas)
+	s.bucketMissing.Store(errors.Is(err, bus.ErrBucketMissing))
+	return kv, err
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn. The bucket is one a listener
@@ -492,8 +500,7 @@ func (s *KnownSessions) attemptRepair() (repairResult, error) {
 	s.openMu.RUnlock()
 	switch {
 	case watcher == nil:
-		kv, err := openKnownBucket(conn, s.replicas)
-		s.bucketMissing.Store(errors.Is(err, bus.ErrBucketMissing))
+		kv, err := s.openBucket(conn)
 		if err != nil {
 			return repairNothing, err
 		}

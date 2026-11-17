@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -11,8 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -96,9 +93,7 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 		t.Fatalf("the store's open returned (%v) while its bucket is missing, want it waiting", got.err)
 	case <-time.After(3 * bucketWaitInterval):
 	}
-	if _, err := js.KeyValue(bus.SessionBucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
-		t.Fatalf("the session bucket while the open waits: %v, want it missing: something created it", err)
-	}
+	requireBucketMissing(t, js, bus.SessionBucket, "while the open waits")
 	if !strings.Contains(logs.String(), missingBucketLine) {
 		t.Fatalf("the wait never logged %q:\n%s", missingBucketLine, logs.String())
 	}

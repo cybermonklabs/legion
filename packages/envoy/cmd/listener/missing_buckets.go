@@ -87,9 +87,30 @@ func (m *missingBuckets) list() []string {
 	return slices.Clone(m.names)
 }
 
-// holds reports whether the latest check found bucket missing.
-func (m *missingBuckets) holds(bucket string) bool {
-	return slices.Contains(m.list(), bucket)
+// holdsAnyOf reports whether the latest check found one of buckets missing, read under the lock
+// with no copy of the set: every self-health tick asks it for each cache.
+func (m *missingBuckets) holdsAnyOf(buckets []string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return anyOf(buckets, m.names)
+}
+
+// count is how many buckets the latest check found missing: the envoy_kv_buckets_missing gauge.
+func (m *missingBuckets) count() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.names)
+}
+
+// anyOf reports whether a and b share a bucket.
+func anyOf(a, b []string) bool {
+	return slices.ContainsFunc(a, func(bucket string) bool { return slices.Contains(b, bucket) })
 }
 
 // err is the missing buckets as the error /healthz and the self-health monitor report, nil when none.
@@ -246,9 +267,7 @@ func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.Jet
 			return err
 		}
 		missing.observe(reads)
-		if _, ungranted := reads.unread[bus.KnownSessionBucket]; ungranted {
-			delete(reads.unread, bus.KnownSessionBucket)
-		}
+		delete(reads.unread, bus.KnownSessionBucket)
 		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil
 		}

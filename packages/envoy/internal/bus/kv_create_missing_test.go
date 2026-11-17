@@ -25,48 +25,6 @@ func serverJetStream(t *testing.T, uri string) (*nats.Conn, nats.JetStreamContex
 	return conn, js
 }
 
-// streamWrites records the stream API requests that change a stream - its create, update, delete
-// and purge - as each reaches the server, whichever client of the account sends it.
-type streamWrites struct {
-	conn *nats.Conn
-	sub  *nats.Subscription
-}
-
-func watchStreamWrites(t *testing.T, uri string) *streamWrites {
-	t.Helper()
-	conn := testnats.Connect(t, uri)
-	t.Cleanup(conn.Close)
-	sub, err := conn.SubscribeSync("$JS.API.STREAM.>")
-	if err != nil {
-		t.Fatalf("watch the stream requests: %v", err)
-	}
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("watch the stream requests: %v", err)
-	}
-	return &streamWrites{conn: conn, sub: sub}
-}
-
-// take returns the subjects of the writes since the last take. The flush, a round trip after the
-// call ended, leaves every request that reached the server queued here.
-func (w *streamWrites) take(t *testing.T) []string {
-	t.Helper()
-	if err := w.conn.Flush(); err != nil {
-		t.Fatalf("flush the stream request watch: %v", err)
-	}
-	var writes []string
-	for {
-		msg, err := w.sub.NextMsg(50 * time.Millisecond)
-		if err != nil {
-			return writes
-		}
-		for _, verb := range []string{"CREATE", "UPDATE", "DELETE", "PURGE"} {
-			if strings.HasPrefix(msg.Subject, "$JS.API.STREAM."+verb+".") {
-				writes = append(writes, msg.Subject)
-			}
-		}
-	}
-}
-
 // A create-only open creates a missing copied bucket with the configuration CreateCopiedBucket
 // creates it with, and answers with a handle that reads and writes its keys. Each runs on a server
 // of its own, so the two streams are compared whole.
@@ -116,13 +74,13 @@ func TestCreateMissingCopiedBucketLeavesABucketItFindsAsItIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the bucket: %v", err)
 	}
-	writes := watchStreamWrites(t, uri)
+	writes := testnats.WatchStreamWrites(t, uri, "DELETE", "PURGE")
 
 	_, err = CreateMissingCopiedBucket(conn, js, SessionBucket, 3)
 	if !errors.Is(err, ErrBucketExists) || !strings.Contains(err.Error(), stream+" STREAM.INFO") {
 		t.Fatalf("a create-only open of a bucket its lookup finds = %v, want ErrBucketExists named for the lookup", err)
 	}
-	if got := writes.take(t); len(got) != 0 {
+	if got := writes.Take(t); len(got) != 0 {
 		t.Fatalf("the create-only open wrote %v", got)
 	}
 	after, err := js.StreamInfo(stream)
@@ -133,7 +91,7 @@ func TestCreateMissingCopiedBucketLeavesABucketItFindsAsItIs(t *testing.T) {
 	if _, err := CreateCopiedBucket(conn, js, SessionBucket, 3); err != nil {
 		t.Fatalf("control: CreateCopiedBucket of the bucket at three copies: %v", err)
 	}
-	if got := writes.take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.UPDATE."+stream {
+	if got := writes.Take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.UPDATE."+stream {
 		t.Fatalf("control: CreateCopiedBucket wrote %v, want the update that raises the copies", got)
 	}
 	if raised, err := js.StreamInfo(stream); err != nil || raised.Config.Replicas != 3 {

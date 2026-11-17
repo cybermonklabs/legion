@@ -124,7 +124,12 @@ type listenerCache struct {
 // cache is then neither rewatched nor rebuilt, since only the operator's `envoy-infra buckets`
 // brings a bucket back, and no listener creates one.
 func (c listenerCache) bucketMissing() bool {
-	return slices.ContainsFunc(c.buckets, c.missing.holds)
+	return c.missing.holdsAnyOf(c.buckets)
+}
+
+// readsAnyOf reports whether the cache reads one of buckets.
+func (c listenerCache) readsAnyOf(buckets []string) bool {
+	return anyOf(c.buckets, buckets)
 }
 
 // listenerCaches lists the caches the listener keeps. It is the one place that names them, so
@@ -638,11 +643,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 		// fails. Only once they all pass does a missing bucket answer 200 "degraded": no listener
 		// creates one, so a restart or a rotation out of the balancer would repair nothing.
 		held := missing.list()
-		reads := func(c listenerCache) bool {
-			return slices.ContainsFunc(c.buckets, func(b string) bool { return slices.Contains(held, b) })
-		}
 		for _, c := range d.caches {
-			if reads(c) {
+			if c.readsAnyOf(held) {
 				continue
 			}
 			if err := c.cache.WatchErr(); err != nil {
@@ -651,7 +653,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 			}
 		}
 		for _, c := range d.caches {
-			if reads(c) {
+			if c.readsAnyOf(held) {
 				continue
 			}
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
@@ -1169,7 +1171,7 @@ func main() {
 	// names and this gauge counts: no listener creates one, so it stays above 0 until the operator
 	// recreates the bucket.
 	missing := &missingBuckets{}
-	met.NewGaugeFunc("envoy_kv_buckets_missing", "Copied KV buckets the listener last found missing; no listener creates one", func() int64 { return int64(len(missing.list())) })
+	met.NewGaugeFunc("envoy_kv_buckets_missing", "Copied KV buckets the listener last found missing; no listener creates one", func() int64 { return int64(missing.count()) })
 
 	// Phase 3: Build HTTP mux.
 	mux := http.NewServeMux()
@@ -1258,8 +1260,12 @@ func main() {
 	// between this wait and its open, rather than ending the start.
 	// No configuration makes the listener create one: a test or a dev rig provisions its own
 	// server before it starts the listener (internal/bustest, the fixturebuckets command).
+	// The copied buckets this listener opens, which the start's wait and every self-health tick
+	// read: the CI state bucket only beside the GitHub webhook route, whose CI store a start that
+	// cannot open it ends (log.Fatalf below), so ciStore is set exactly when this names it.
+	copied := listenerCopiedBuckets(webhookCfg.GitHub != nil)
 	awaitBuckets := func() error {
-		return awaitCopiedBuckets(context.Background(), logger, client.JS(), listenerCopiedBuckets(webhookCfg.GitHub != nil), missing)
+		return awaitCopiedBuckets(context.Background(), logger, client.JS(), copied, missing)
 	}
 	if err := awaitBuckets(); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)
@@ -1428,7 +1434,8 @@ func main() {
 	// (session.OpenKnownSessions), so a grant applied after this start is picked up with no
 	// restart. This line is the one failure that leaves no store at all, a connection that gives
 	// no JetStream context, which answers as an empty store does.
-	known, knownErr := session.OpenKnownSessions(client.Conn,
+	known, knownErr := session.OpenKnownSessions(
+		client.Conn,
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),
 	)
@@ -1842,7 +1849,7 @@ func main() {
 				// bucket is gone is left out of the checks and the rebuild (bucketMissing), and
 				// logs missingBucketLine for the alarm while it stays gone. A read that fails
 				// keeps that bucket's last result (checkCopiedBuckets).
-				checkCopiedBuckets(monitorCtx, logger, client.JS(), listenerCopiedBuckets(ciStore != nil), missing)
+				checkCopiedBuckets(monitorCtx, logger, client.JS(), copied, missing)
 				if err := checkSelfHealth(caches, probeDurable); err != nil {
 					return err
 				}
