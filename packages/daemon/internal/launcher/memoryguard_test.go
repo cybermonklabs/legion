@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2044,6 +2045,69 @@ func TestControllerPodMemoryGuardEndsAGrowerStartedSinceTheBandsLastReadingBefor
 	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, 64*guardMiB, guardHigh)
 	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
 		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
+// At the first reading at the mark, the guard reads the processes started since the band's last
+// reading the newest first, within half an interval of the reading at the mark by its clock, one at
+// least, and ends the largest of those it read (INFRA-3531 R1 of spec version 28). A Python pool's
+// workers sleep through the band beside Oh My Pi; as the reading reaches the mark the shell command
+// starts pid 1710, of 300 MiB, and then pid 1711, of 100 MiB. Where the reading at the mark itself
+// takes 80 ms by the guard's clock, past the budget of 50 ms, as on a pod whose CPU the host
+// throttles, the guard reads pid 1711 alone and ends it, passing over the larger, older pid 1710;
+// where it takes no time, the guard reads both and ends pid 1710. The rig moves the clock on at the
+// reading (the guard's Observe), the one seam of the guard's loop a launcher test reaches.
+func TestControllerPodMemoryGuardReadsTheNewestStartedSinceTheBandWithinHalfAnIntervalAndEndsTheLargestItRead(t *testing.T) {
+	const pool, block, older, newer = 1700, 1536 * guardMiB, 1710, 1711
+	for _, tc := range []struct {
+		name string
+		mark time.Duration
+		want int
+		size uint64
+	}{
+		{"the reading at the mark past the budget", 80 * time.Millisecond, newer, 100 * guardMiB},
+		{"no time at the reading at the mark", 0, older, 300 * guardMiB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+			for i := range 4 {
+				parent := ctlCommand
+				if i > 0 {
+					parent = pool
+				}
+				pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+			}
+			rig := useGuardPod(t, pod, nil)
+			var atMark atomic.Int64
+			built := newMemoryGuard
+			newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+				cfg.Observe = func(time.Time, uint64, uint64) { rig.clock.advance(time.Duration(atMark.Load())) }
+				return built(cfg)
+			}
+			t.Cleanup(func() { newMemoryGuard = built })
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			for _, reading := range []uint64{3300, 3320} {
+				pod.setAnon(reading * guardMiB)
+				rig.tick()
+			}
+
+			command := func(pid int, anon uint64) guardProcess {
+				return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: anon}
+			}
+			pod.add(command(older, 300*guardMiB), command(newer, 100*guardMiB))
+			pod.setAnon(guardHigh)
+			atMark.Store(int64(tc.mark))
+			rig.tick()
+			if kills := rig.signal.kills(); !slices.Equal(kills, []int{tc.want}) {
+				t.Fatalf("at the mark the guard killed %v, want %d; its log:\n%s", kills, tc.want, rig.log())
+			}
+			ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", tc.want, tc.size, guardHigh)
+			if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+				t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+			}
+		})
 	}
 }
 
