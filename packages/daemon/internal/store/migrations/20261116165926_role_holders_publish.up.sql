@@ -3,10 +3,10 @@
 --
 -- Dispatch holds, per issue, the session that holds each Legion role (issue_role_holders). A later
 -- release of Dispatch takes the role of a result from that record. The daemon is the one party
--- that gives a session a role, so it writes the record: at a claim's boot ready, at each claim
--- write that changes the session holding a role, an end among them, and at each boot
--- (internal/daemon's roleHoldersChanged, claimHolderChanged and queueRoleHoldersPublish). Each is
--- a row of this kind on the issue's board lane.
+-- that gives a session a role, so it writes the record: at a claim's boot ready, in the
+-- transaction of each claim write that changes the session holding a role, an end among them, and
+-- at each boot (internal/store's putClaim, internal/daemon's roleHoldersChanged and
+-- queueRoleHoldersPublish). Each is a row of this kind on the issue's board lane.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261114031356 did:
 -- that migration's twenty-four kinds, which are the kinds the daemon writes, and this one. Its
@@ -21,7 +21,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish'));
 
 -- One publish row per issue, which is what lets the enqueue be an upsert
--- (record.Postgres.EnqueueRoleHolders): the row names the issue alone, and the executor reads the
+-- (store.EnqueueRoleHolders): the row names the issue alone, and the executor reads the
 -- live set when it runs, so a second claim change while the row waits makes the one row due again
 -- rather than queueing beside it. The index holds role_holders_publish rows alone, so no other
 -- kind's insert conflicts on it. The kind is new in this migration, so there is nothing to

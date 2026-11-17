@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -59,6 +60,9 @@ const (
 // caller holding one gets (ErrNestedAcquire).
 type Store struct {
 	pool *Pool
+	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
+	// daemon turns the publication on, and while it is nil no claim write queues one.
+	roleHoldersQueued atomic.Pointer[func(issue string)]
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that

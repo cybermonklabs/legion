@@ -390,8 +390,8 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// (permanentRefusal): an issue Dispatch does not know, a WARN, since nothing of this
 		// daemon is wrong; and a 400 that refuses the set, an ERROR, since this daemon read a set
 		// from its own claims that Dispatch will never take. The issue's next ready, end or other
-		// change of a claim queues a fresh publication of the live set (roleHoldersChanged,
-		// claimHolderChanged).
+		// change of a claim queues a fresh publication of the live set (roleHoldersChanged, the
+		// store's putClaim).
 		// permanentRefusal ended the row only on a coded *dispatch.Error, so refusal is set.
 		var refusal *dispatch.Error
 		errors.As(cause, &refusal)

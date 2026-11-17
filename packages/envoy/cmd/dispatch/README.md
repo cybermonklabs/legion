@@ -4369,7 +4369,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
 
-  Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`.
+  Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
   The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
@@ -4392,13 +4392,12 @@ Each item below names a path with its method and identity, then its purpose.
     A claim change while the daemon's write of that issue is in flight leaves the older set stored until that row's lease of 30 s ends, and the row then runs again with the live set.
 
   - **When the daemon publishes.**
-    The daemon publishes the set when a claim readies, at each boot, and at each claim write that lands and changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
-    An end whose own write the store did not take is told when the daemon makes that write, at the claim's next decision, and not before: until then the store still holds the claim live.
-    The session of an ended claim keeps its role until the next publication lands.
-    The daemon queues the publication on a goroutine, and it only logs a queue that fails.
-    Such a change reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of it.
-    Otherwise it reaches Dispatch at the next ready, end or other change of a claim on the same issue, and until then the session stays listed.
-    In that time, a process whose stop failed can still write with the pane's Dispatch bearer, and its session keeps its role.
+    The daemon publishes the set when a claim readies, at each boot, and at each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+    The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
+    An end whose own write the store did not take is published when the daemon makes that write, at the claim's next decision, and not before: until then the store still holds the claim live.
+    The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
+    A suspension whose write the database refused, and a stop whose retirement of its round's ask failed, leave the daemon's store behind its memory, and the set follows the store, so the session stays listed until a later claim write lands (dispatch://INFRA-4099 owns both).
+    The boot publishes each issue with a live claim or a claim that changed in the last seven days, for the claims that an earlier release changed and did not publish.
     The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready, end or other change of a claim on the issue queues a fresh publication of the live set.
     A live claim whose session this route refuses stops each publication of its issue in that way, with one ERROR line each time, until that claim ends.
 

@@ -549,25 +549,26 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	return nil
 }
 
-// roleHoldersPublishWindow is how far back the boot looks for a claim change it may not have
-// published (queueRoleHoldersPublish): a claim whose last write is older and that is not live is
-// not read. No plan gives the number a reason beyond bounding the boot's read. Each issue inside
-// it costs the boot one outbox row and its lane one PUT, so a longer window costs a boot one more
-// of each for every issue whose claims last changed inside the longer span.
+// roleHoldersPublishWindow is how far back the boot looks for a claim change that a release
+// before this one made and did not publish (queueRoleHoldersPublish): a claim whose last write is
+// older and that is not live is not read. No plan gives the number a reason beyond bounding the
+// boot's read. Each issue inside it costs the boot one outbox row and its lane one PUT, so a
+// longer window costs a boot one more of each for every issue whose claims last changed inside the
+// longer span.
 const roleHoldersPublishWindow = 7 * 24 * time.Hour
 
 // queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
 // a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
-// in one transaction. A daemon that starts over running sessions has published nothing for them
-// yet, and a change whose queue failed (claimHolderChanged) or that a crash lost before its queue
-// is published here, at the next boot, when that boot comes within roleHoldersPublishWindow of
-// the change (the claim's last write). This pass is the one path that publishes such a change
-// when no later ready, end or other change of a claim on the same issue comes first; an ended
-// session older than the window stays listed on Dispatch until the next one of those on its issue.
-// A boot that cannot write the rows fails the boot, as the design-gates pass does, and queueing
-// rather than writing means a Dispatch that is down refuses no boot. The lane is woken on commit
-// (projectRecords), which before attach reaches nothing: the outbox's first sweep runs whatever
-// this pass left.
+// in one transaction. Every claim write of this release that changes a holder queues its own
+// publication in its own transaction (store's putClaim), so this pass recovers no change of this
+// release. It publishes what a release that published nothing left: a daemon that upgrades from
+// such a release starts over running sessions that Dispatch has never been told of, and a roll
+// forward after a rollback to one finds the claims that release changed. A claim that release
+// ended longer than roleHoldersPublishWindow before the roll forward stays listed on Dispatch
+// until the next change of a claim on its issue. A boot that cannot write the rows fails the boot,
+// as the design-gates pass does, and queueing rather than writing means a Dispatch that is down
+// refuses no boot. The lane is woken on commit (enqueueRoleHolders), which before attach reaches
+// nothing: the outbox's first sweep runs whatever this pass left.
 func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	scoped, committed := intake.WithCommitHooks(ctx)
@@ -577,7 +578,7 @@ func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 			return err
 		}
 		for _, issue := range issues {
-			if err := w.records.EnqueueRoleHolders(scoped, tx, issue, now); err != nil {
+			if err := w.enqueueRoleHolders(scoped, tx, issue, now); err != nil {
 				return err
 			}
 		}
@@ -589,54 +590,31 @@ func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 	return nil
 }
 
-// queueRoleHolders queues the publication of issue's role sessions in a transaction of its own,
-// which owns the commit hook its write registers, so the board lane is woken once it commits.
-func (w *workflowRuntime) queueRoleHolders(ctx context.Context, issue string) error {
+// roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
+// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
+// a transaction of its own, which owns the commit hook its write registers, so the board lane is
+// woken once it commits. An error is the route's to answer: it refuses the ready with 503, so no
+// task goes first.
+func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		return w.records.EnqueueRoleHolders(scoped, tx, issue, time.Now().UTC())
+		return w.enqueueRoleHolders(scoped, tx, c.Issue, time.Now().UTC())
 	}); err != nil {
-		return fmt.Errorf("queue the role-holder publication of %s: %w", issue, err)
+		return fmt.Errorf("queue the role-holder publication of %s: %w", c.Issue, err)
 	}
 	committed()
 	return nil
 }
 
-// roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
-// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready. An
-// error is the route's to answer: it refuses the ready with 503, so no task goes first.
-func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
-	return w.queueRoleHolders(ctx, c.Issue)
-}
-
-// claimHolderChanged queues the publication of c's issue's role sessions once a claim write has
-// landed that changed the session c's row names as the holder of its role (supervise's
-// Deps.RoleHolderChanged): the agent registered, or the claim left a state that holds its role —
-// retired, failed, suspended, or launching again — or its session changed. An ended session so
-// leaves the set Dispatch holds, and that is told when the end's write lands, whether the end's
-// own write or the repair of it at the claim's next decision. The machine calls it inside its own
-// decision, so the queue runs on a goroutine of its own, bounded by readyReleaseTimeout. A queue
-// that fails is logged and nothing else: no caller is there to refuse. Such a change reaches
-// Dispatch at the next boot (queueRoleHoldersPublish) only when that boot comes within
-// roleHoldersPublishWindow (seven days) of it, or else at the next ready, end or other change of
-// a claim on the same issue. Until then an ended session keeps its role on Dispatch, and the
-// process of a failed or suspended claim whose stop the runtime refused can still run and write
-// with the pane's Dispatch bearer. A claim on no issue, and the controller, hold no role of an
-// issue.
-func (w *workflowRuntime) claimHolderChanged(c supervise.Claim) {
-	if c.Issue == "" || c.Role == claim.RoleController {
-		return
+// enqueueRoleHolders queues the publication of issue's role sessions in tx
+// (store.EnqueueRoleHolders), and wakes the issue's board lane once tx commits, through the commit
+// scope of ctx (intake.WithCommitHooks), which both callers open.
+func (w *workflowRuntime) enqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
+	if err := store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
+		return err
 	}
-	go func() {
-		// This goroutine runs beside the machine that started it and every other, so it takes a
-		// hold mark of its own (store.ForConcurrentWorker).
-		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
-		defer cancel()
-		if err := w.queueRoleHolders(ctx, c.Issue); err != nil {
-			w.log.Warn("queue the role-holder publication of a claim whose role holder changed; a boot within seven days, or the next ready, end or other change of a claim on the issue, publishes it",
-				"claim", c.Token, "issue", c.Issue, "state", c.State, "error", err)
-		}
-	}()
+	intake.OnCommit(ctx, func() { w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
+	return nil
 }
 
 // wakeOutbox is the records' wake (projectRecords.wake): it reaches the outbox attach stored, and

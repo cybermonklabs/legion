@@ -19,7 +19,7 @@ const roleHoldersPublishVersion = 20261116165926
 // whole and a kind left out would stop its own effect. A kind that is none is still refused.
 //
 // The partial index is the other half: one publish row per issue is what lets the enqueue make the
-// pending row due again rather than queue beside it (record.Postgres.EnqueueRoleHolders). It holds
+// pending row due again rather than queue beside it (EnqueueRoleHolders). It holds
 // this kind's rows alone, so another issue's publish and another kind's second row of the same issue
 // are both untouched by it.
 func TestTheOutboxTakesTheRoleHoldersPublishKindWith20261116165926(t *testing.T) {

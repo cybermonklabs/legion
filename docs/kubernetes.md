@@ -1970,7 +1970,7 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
-The daemon queues one at the boot ready of a claim, at each boot, and at each claim write that lands and changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
@@ -1980,11 +1980,10 @@ A `400` from the route is final: the daemon ends the row and logs one ERROR line
 
 **The session of an ended claim keeps its role for a time.**
 It keeps its role until the daemon's publication of the end lands.
+The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
 An end whose own write the store did not take is published only when the daemon makes that write, at the claim's next decision, because until then the store still holds the claim live.
-The daemon queues the publication on a goroutine, and it only logs a queue that fails.
-Such an end reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end, because the boot reads only the claims that are live or that changed in the last seven days.
-Otherwise it reaches Dispatch at the next ready, end or other change of a claim on the same issue, and until then the session stays listed.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
+A suspension whose write the database refused, and a stop whose retirement of its round's ask failed, leave the daemon's store behind its memory, and the set follows the store, so the session stays listed until a later claim write lands (dispatch://INFRA-4099 owns both).
 
 **Who can write the set.**
 The route takes a write that names the actor `legion-daemon:<project>`.
@@ -1995,7 +1994,7 @@ The airlock closes that case.
 An earlier release puts the kind in no outbox lane, so it never runs such a row.
 Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
 At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
-The boot of this release queues every recent issue in any case.
+The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
 To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql

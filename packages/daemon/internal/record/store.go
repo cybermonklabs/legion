@@ -2330,32 +2330,6 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 	return nil
 }
 
-// EnqueueRoleHolders writes the one role_holders_publish row of issue, due at nextAt. The payload
-// names the issue alone, since the executor reads the live set when the row runs, so a row the
-// outbox already holds is made due again rather than queued beside: its next_at moves to the
-// earlier of the two, and its attempts and its last error stay. The unique partial index of
-// 20261116165926_role_holders_publish makes one row per issue the table's rule.
-//
-// A lane that holds the row now may be inside the PUT with a set it read before the claim change
-// that queues this call. So the lease token is rotated, as EnqueueDesignGates rotates it: that
-// worker's finish and its retry match nothing, and the row runs again, with the newer set, once
-// the lease expires.
-func (s *Postgres) EnqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
-	row, err := NewOutboxRow(issue, RoleHoldersPublish{Issue: issue}, nextAt)
-	if err != nil {
-		return fmt.Errorf("enqueue the role-holders publish of %s: %w", issue, err)
-	}
-	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-		values ($1, $2, $3::jsonb, 0, $4, '')
-		on conflict (issue) where kind = 'role_holders_publish'
-		do update set next_at = least(outbox.next_at, excluded.next_at),
-			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end`,
-		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
-		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
-	}
-	return nil
-}
-
 // liveClaimStates are the claim states in which a claim's session holds its role: the states
 // supervise.HoldsCapability answers true for, a registered agent with a running process. A
 // suspended, a failed and a retired claim hold none, and neither does one still launching.
@@ -2391,9 +2365,10 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 
 // RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
 // that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
-// claim write sets), in key order. The boot publishes each of them: the live ones because a daemon
-// that starts over running sessions has published nothing for them yet, and the recent ones
-// because an end whose publication was never queued is published only at a boot.
+// claim write sets), in key order. The boot publishes each of them, for what a release that
+// published nothing left: the live ones because a daemon that starts over running sessions has
+// published nothing for them yet, and the recent ones because that release ended claims and
+// published none of those ends.
 func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error) {
 	rows, err := tx.Query(ctx, `select distinct issue from claims
 		where starts_with(issue, $1 || '-') and (updated_at >= $2 or state = any($3))

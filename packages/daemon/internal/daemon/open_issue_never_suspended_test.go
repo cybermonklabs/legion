@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -308,8 +309,8 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 
 		rig.w.releaseIdlePods(ctx)
 
-		if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", got)
+		if got, want := rig.rows(t), []string{string(record.OutboxKindRoleHoldersPublish), "issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(got, want) {
+			t.Fatalf("queued rows = %v, want the publication of the seeded implementer's role, then the save, the role stop and the teardown and nothing else", got)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

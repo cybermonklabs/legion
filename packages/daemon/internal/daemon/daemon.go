@@ -377,7 +377,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
-		plan.roleHolderChanged = workflow.claimHolderChanged
+		// From here on, a claim write that changes a role holder queues its issue's publication in
+		// its own transaction, and the store tells the issue once that commits, so its lane is woken
+		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
+		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
+		// on before supervision restores a claim, so no claim write of this boot is left out.
+		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The memory guards' kill holder is filled here, once the workflow is open
 		// (memoryGuardKills).
@@ -722,10 +727,6 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
-	// roleHolderChanged tells the workflow each claim whose landed write changed the session its
-	// row names as the holder of its role, so it publishes the issue's role sessions again; nil
-	// without a workflow, where nothing is published.
-	roleHolderChanged func(c supervise.Claim)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -1468,7 +1469,6 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
-		RoleHolderChanged:       p.roleHolderChanged,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
@@ -2617,17 +2617,6 @@ func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publi
 		return err
 	}
 	s.wakeOnCommit(ctx, record.OutboxRow{Issue: publish.Issue, Kind: record.OutboxKindDesignGatesPublish})
-	return nil
-}
-
-// EnqueueRoleHolders wakes the issue's board lane as Enqueue does. The enqueue writes its row with
-// a statement of its own rather than through Enqueue (record.Postgres.EnqueueRoleHolders), so this
-// is the one place that can tell the lane a claim change left a publication due.
-func (s projectRecords) EnqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
-	if err := s.Store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
-		return err
-	}
-	s.wakeOnCommit(ctx, record.OutboxRow{Issue: issue, Kind: record.OutboxKindRoleHoldersPublish})
 	return nil
 }
 

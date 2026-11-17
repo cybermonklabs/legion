@@ -67,21 +67,25 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // launch; runtime work happens after this transaction commits. The project controller's claim
 // (`controller: daemon`) belongs to no tree, so it binds no lifecycle: it is written at epoch zero.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	var queued bool
+	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
 			c.TreeEpoch = 0
-			return putClaim(ctx, tx, c)
+			queued, err = s.putClaim(ctx, tx, c)
+			return err
 		}
 		epoch, err := treelifecycle.BindWork(ctx, tx, c.Project, c.Tree)
 		if err != nil {
 			return err
 		}
 		c.TreeEpoch = epoch
-		return putClaim(ctx, tx, c)
+		queued, err = s.putClaim(ctx, tx, c)
+		return err
 	})
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("admit claim %s: %w", c.Token, err)
 	}
+	s.committedClaim(c, queued)
 	return c, nil
 }
 

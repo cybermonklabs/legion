@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // roleHoldersPublished is one publication of an issue's role sessions as Dispatch received it.
@@ -99,7 +98,8 @@ func (r *roleHoldersRig) seedClaim(issue string, role claim.Role, session string
 	return token
 }
 
-// moveClaim puts the claim in state, as a decision of its machine does.
+// moveClaim puts the claim in state with a statement of its own, which queues nothing: the
+// executor's rows below are queued by hand (enqueue).
 func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState) {
 	r.t.Helper()
 	if _, err := r.pool.Exec(r.ctx, `update claims set state = $2, updated_at = now() where token = $1`, string(token), string(state)); err != nil {
@@ -110,7 +110,7 @@ func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState
 func (r *roleHoldersRig) enqueue(issue string) {
 	r.t.Helper()
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.EnqueueRoleHolders(r.ctx, tx, issue, r.clock())
+		return store.EnqueueRoleHolders(r.ctx, tx, issue, r.clock())
 	}); err != nil {
 		r.t.Fatalf("enqueue the role-holder publication of %s: %v", issue, err)
 	}
@@ -167,50 +167,28 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 	}
 }
 
-// recordingWakes is a projectRecords whose lane wake is counted: what the commit of a queued row
-// wakes.
-func recordingWakes(store record.Store) (projectRecords, func() int) {
-	var mu sync.Mutex
-	wakes := 0
-	records := projectRecords{Store: store, project: gatePublishProject, log: slog.New(slog.DiscardHandler), wake: func(string, record.OutboxKind) {
-		mu.Lock()
-		defer mu.Unlock()
-		wakes++
-	}}
-	return records, func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return wakes
-	}
-}
-
-// A claim whose role holder changed — here its end — queues the publication of its issue
-// (Deps.RoleHolderChanged, the workflow's claimHolderChanged), on a goroutine of its own, and
-// wakes the board lane once the row commits. A second change of the same issue queues no second
-// row: the one row is made due again. A claim with no issue and the controller have no role to
-// publish.
-func TestAClaimWhoseRoleHolderChangedQueuesItsIssue(t *testing.T) {
+// The ready route queues the publication of its claim's issue (roleHoldersChanged) in a
+// transaction of its own, and a second ready of the same issue queues no second row: the one row
+// is made due again.
+func TestTheReadysQueueOfTheRolePublicationKeepsOneRowAnIssue(t *testing.T) {
 	pool := isolatedOutboxPool(t)
-	records, wakes := recordingWakes(record.NewStore())
-	w := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject, log: quietLogger()}
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), dispatchProject: gatePublishProject, log: quietLogger()}
 	tester := supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester}
-
-	w.claimHolderChanged(supervise.Claim{Token: claim.ControllerToken("legion"), Project: "legion", Role: claim.RoleController})
-	w.claimHolderChanged(tester)
-	testwait.Eventually(t, "the ended claim's publication to commit and wake its lane", func() bool { return wakes() == 1 })
-	w.claimHolderChanged(tester)
-	testwait.Eventually(t, "the second end's publication to commit and wake its lane", func() bool { return wakes() == 2 })
-
-	issues, rows := queuedRoleHolders(t, pool)
-	if rows != 1 || issues[0] != "LEGION-208" {
+	for range 2 {
+		if err := w.roleHoldersChanged(context.Background(), tester); err != nil {
+			t.Fatalf("the ready's queue of the role-holder publication: %v", err)
+		}
+	}
+	if issues, rows := queuedRoleHolders(t, pool); rows != 1 || issues[0] != "LEGION-208" {
 		t.Fatalf("the outbox holds %d role-holder publications for %v, want the one of LEGION-208", rows, issues)
 	}
 }
 
 // Each boot queues the publication of every issue of the project that has a live claim, or a claim
-// that changed in the last seven days: a daemon that starts over running sessions publishes them,
-// and an end that a crash lost before its queue is published at the restart. A claim that changed
-// longer ago and a claim of another project are left out.
+// that changed in the last seven days: a daemon that upgrades from a release that published
+// nothing starts over running sessions Dispatch has never been told of, and a roll forward finds
+// the claims that release ended. A claim that changed longer ago and a claim of another project
+// are left out.
 func TestBootQueuesEveryRecentIssue(t *testing.T) {
 	r := newRoleHoldersRig(t)
 	r.seedClaim("LEGION-1", claim.RoleTester, "ses-1", supervise.StateIdle, 30*24*time.Hour)
@@ -237,79 +215,85 @@ func TestBootQueuesEveryRecentIssue(t *testing.T) {
 
 // The boot itself runs the pass: a daemon that starts over a running session queues the
 // publication of its issue in openWorkflow, before the outbox attaches, so the first sweep sends
-// it. A boot that skips the pass, or a pass that queues nothing, leaves the session unpublished
-// until its next ready or end.
+// it. The session is seeded with a statement of its own, as a release that published nothing
+// leaves it, so no claim write queued its row. A boot that skips the pass, or a pass that queues
+// nothing, leaves the session unpublished until the next change of a claim on its issue.
 func TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedSilentPhaseWorker(t, pool, "CAPTURE-701", time.Now().UTC())
+	if issues, rows := queuedRoleHolders(t, pool); rows != 0 {
+		t.Fatalf("control: the seed left role-holder publications for %v, want none, so only the boot can queue one", issues)
+	}
 	bootedTickWorkflow(t, pool)
 	if issues, rows := queuedRoleHolders(t, pool); rows != 1 || issues[0] != "CAPTURE-701" {
 		t.Fatalf("after the boot the outbox holds role-holder publications for %v, want the one of CAPTURE-701, whose implementer runs", issues)
 	}
 }
 
-// failingRoleHolders is a record whose queue of a role-holder publication fails, as a store that
-// refuses the write does.
-type failingRoleHolders struct {
-	record.Store
-}
+// An end whose own write the store did not take is owed, not lost (supervise's writeOwed): the
+// claim's next decision makes the write, and that write queues the issue's publication in its own
+// transaction (store's putClaim), so the ended session leaves Dispatch's set at the repair, with
+// no restart and no other claim's change. Until then the store holds the claim live, so nothing is
+// queued, and nothing should be: a publication would read the session as holding its role. Each
+// end is driven from an idle claim through its machine over the real store: a stop and a
+// suspension.
+func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
+	for _, end := range []struct {
+		state supervise.ClaimState
+		event func(claim.Token) supervise.Event
+	}{
+		{supervise.StateRetired, func(token claim.Token) supervise.Event { return supervise.RequestStop{Claim: token} }},
+		{supervise.StateSuspended, func(token claim.Token) supervise.Event {
+			return supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}
+		}},
+	} {
+		t.Run(string(end.state), func(t *testing.T) {
+			rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleTester, supervise.StateIdle})
+			// The store of a daemon with a workflow, which publishes (store.PublishRoleHolders).
+			rig.st.PublishRoleHolders(nil)
+			client := &roleHoldersDispatch{}
+			lane := &outbox{pool: rig.pool, records: record.NewStore(), dispatch: client, dispatchProject: gatePublishProject,
+				now: func() time.Time { return time.Now().UTC() }, log: quietLogger()}
+			published := func() []roleHoldersPublished {
+				t.Helper()
+				if drained, _ := lane.drain(rig.ctx, "", []record.OutboxKind{record.OutboxKindRoleHoldersPublish}); !drained {
+					t.Fatal("the role-holders lane did not drain")
+				}
+				return client.taken()
+			}
+			// The boot over the running tester publishes it (queueRoleHoldersPublish).
+			booted := &workflowRuntime{pool: rig.pool, records: record.NewStore(), dispatchProject: gatePublishProject, log: quietLogger()}
+			if err := booted.queueRoleHoldersPublish(rig.ctx); err != nil {
+				t.Fatalf("the boot's queue of the role-holder publications: %v", err)
+			}
+			live := []roleHoldersPublished{{Issue: owedIssue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses_tester"}}}}
+			if got := published(); !reflect.DeepEqual(got, live) {
+				t.Fatalf("the booted tester published %+v, want %+v", got, live)
+			}
 
-func (failingRoleHolders) EnqueueRoleHolders(context.Context, pgx.Tx, string, time.Time) error {
-	return errors.New("the store refused the outbox write")
-}
+			rig.refuse(claim.RoleTester, brokenConnection())
+			if err := rig.handle(claim.RoleTester, end.event(rig.token(claim.RoleTester))); err == nil {
+				t.Fatal("the end whose claim write the store refused returned no error")
+			}
+			if held, stored := rig.held(claim.RoleTester), rig.stored(claim.RoleTester); held != end.state || stored != supervise.StateIdle {
+				t.Fatalf("control: after the refused end memory holds %s and the row %s, want %s over the idle row", held, stored, end.state)
+			}
+			if issues, rows := queuedRoleHolders(t, rig.pool); rows != 0 {
+				t.Fatalf("the refused end queued role-holder publications for %v, want none while the row is live", issues)
+			}
 
-// warnings is a log handler that keeps the message of each record at Warn or above.
-type warnings struct {
-	mu       *sync.Mutex
-	messages *[]string
-}
-
-func newWarnings() warnings { return warnings{mu: &sync.Mutex{}, messages: &[]string{}} }
-
-func (warnings) Enabled(_ context.Context, level slog.Level) bool { return level >= slog.LevelWarn }
-func (h warnings) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	*h.messages = append(*h.messages, r.Message)
-	return nil
-}
-func (h warnings) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h warnings) WithGroup(string) slog.Handler      { return h }
-
-func (h warnings) logged() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return slices.Clone(*h.messages)
-}
-
-// claimHolderChanged only logs a queue that fails, since it runs beside the machine's decision and
-// has no caller to refuse. So the end of such a claim reaches Dispatch at the next boot alone, or
-// at the next ready, end or other change on the same issue: the boot pass publishes it, because
-// the claim changed less than seven days ago.
-func TestBootPublishesAnEndWhoseQueueFailed(t *testing.T) {
-	r := newRoleHoldersRig(t)
-	token := r.seedClaim("LEGION-4", claim.RoleTester, "ses-4", supervise.StateReady, time.Minute)
-	failing, wakes := recordingWakes(failingRoleHolders{Store: r.records})
-	warned := newWarnings()
-	w := &workflowRuntime{pool: r.pool, records: failing, dispatchProject: gatePublishProject, log: slog.New(warned)}
-	r.moveClaim(token, supervise.StateRetired)
-
-	w.claimHolderChanged(supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-4", Issue: "LEGION-4", Role: claim.RoleTester})
-	testwait.Eventually(t, "the refused queue to be logged", func() bool { return len(warned.logged()) == 1 })
-	if _, rows := queuedRoleHolders(t, r.pool); rows != 0 || wakes() != 0 {
-		t.Fatalf("a queue the store refused left %d rows and %d wakes, want none", rows, wakes())
-	}
-
-	booted := &workflowRuntime{pool: r.pool, records: r.records, dispatchProject: gatePublishProject, log: quietLogger()}
-	if err := booted.queueRoleHoldersPublish(r.ctx); err != nil {
-		t.Fatalf("the boot's queue: %v", err)
-	}
-	if issues, _ := queuedRoleHolders(t, r.pool); !slices.Equal(issues, []string{"LEGION-4"}) {
-		t.Fatalf("the boot queued %v, want LEGION-4, whose end nothing else published", issues)
-	}
-	want := []roleHoldersPublished{{Issue: "LEGION-4", Holders: []dispatch.RoleHolder{}}}
-	if got := r.published(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("published %+v, want %+v: the retired tester holds no role", got, want)
+			rig.answers()
+			if err := rig.handle(claim.RoleTester, rig.nudge(claim.RoleTester)); err != nil {
+				t.Fatalf("the decision after the database answered again = %v, want none", err)
+			}
+			if stored := rig.stored(claim.RoleTester); stored != end.state {
+				t.Fatalf("the repair left the row %s, want %s", stored, end.state)
+			}
+			ended := []roleHoldersPublished{{Issue: owedIssue, Holders: []dispatch.RoleHolder{}}}
+			if got := published(); !reflect.DeepEqual(got, ended) {
+				t.Fatalf("after the repair landed the lane published %+v, want %+v: the ended tester holds no role", got, ended)
+			}
+		})
 	}
 }
 

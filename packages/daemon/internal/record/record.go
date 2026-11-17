@@ -1878,10 +1878,6 @@ type Store interface {
 	// a run of changes queues no second row, a row that already says this set is left as it is,
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
-	// EnqueueRoleHolders writes the one role_holders_publish row of issue, due at nextAt, or makes
-	// the row the outbox already holds due again (20261116165926_role_holders_publish). The row
-	// names the issue alone: the executor reads the live set when it runs.
-	EnqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error
 	// LiveRoleHolders is the session of each live claim of issue, by role: the set a role-holder
 	// publication sends.
 	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)

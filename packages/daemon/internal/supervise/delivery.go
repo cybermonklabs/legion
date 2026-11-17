@@ -1119,9 +1119,7 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // refusal; the claim decides the next and every one after it.
 //
 // A retirement that landed is the repair of any claim write the machine owed: the store wrote
-// the claim beside the delete, so the row is no longer behind memory (settleOwedWrite), and the
-// daemon is told when that row's role holder changed (landed). A refusal of a retirement already
-// made rolled the claim write back with the delete, so it lands nothing.
+// the claim beside the delete, so the row is no longer behind memory (settleOwedWrite).
 func (m *Machine) retirePending(ctx context.Context) error {
 	p := m.claim.Pending
 	// The ladder's wait is this task's, so it ends with it (providererror.go).
@@ -1158,7 +1156,6 @@ func (m *Machine) retirePending(ctx context.Context) error {
 		return nil
 	}
 	m.settleOwedWrite("RetireDelivery")
-	m.landed(retired)
 	return nil
 }
 

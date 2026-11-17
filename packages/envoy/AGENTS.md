@@ -361,15 +361,14 @@ Each item below names a task and where its code is, then notes on it.
   The Legion daemon publishes the live role sessions of an issue with `PUT /api/v1/issues/{key}/role-holders`, as session `legion-daemon:<project>`.
   Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
   Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name the daemon's session; the airlock closes that case.
-  The body is the issue's whole set, and the write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  The body is the issue's whole set, each pair naming both its role and its session, and the write replaces the stored set, so a session that the body does not name holds no role of the issue.
   Each session is a session id (`text.IsSessionID`) of at most 256 bytes; any other body is `400 INVALID_ROLE_HOLDER` and stores nothing.
   A write locks the issue row (`for no key update`), so two writes of one issue store one whole set, the set of the one that finishes last, and each answers the set that it stored.
   The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
   `heldRole` is the read that a later release of the results route makes in its own write transaction.
-  The daemon publishes at each claim write that lands and changes the session that holds a role (`supervise`'s `Deps.RoleHolderChanged`), so an end whose own write the store did not take is published when the daemon makes that write at the claim's next decision.
-  The session of an ended claim keeps its role until the daemon's next publication lands.
-  A change whose queue failed reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of it, and otherwise at the next ready, end or other change of a claim on the same issue.
-  In that time, a process whose stop failed can still write with the pane's Dispatch bearer.
+  The daemon queues the publication in the transaction of each claim write that changes the session that holds a role (`internal/store`'s `putClaim`), so the change and its publication commit together, and an end whose own write the store did not take is published when the daemon makes that write at the claim's next decision.
+  The session of an ended claim keeps its role until the daemon's next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
+  A suspension whose write the database refused, and a stop whose retirement of its round's ask failed, leave the daemon's store behind its memory, and the set follows the store, so the session stays listed until a later claim write lands (dispatch://INFRA-4099 owns both).
 
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
