@@ -93,7 +93,8 @@ sign-off then waits for its last round, whose head carries their merges
 (`skill://legion-architect`, sections 3 and 4). When a person sets your issue back to `todo` while
 it runs or is held, you stay live: your issue goes back to `admitted`, and while Dispatch shows an
 open child under it, its first phase waits and the `children-first` notice of that wait comes to
-you. No first phase of a child of yours starts while Dispatch shows an open child under it, and a
+you, unless the daemon already sent one for your issue in this run of the tree. No first phase of
+a child of yours starts while Dispatch shows an open child under it, and a
 `children-first` notice names each one with the Dispatch status that holds it: file every child at
 once, release every child that should run, and move each other child as section 3 of
 `skill://legion-architect` says. Park between event-driven wakes; do not poll or manufacture

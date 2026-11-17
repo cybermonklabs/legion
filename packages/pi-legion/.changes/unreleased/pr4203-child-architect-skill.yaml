@@ -6,8 +6,9 @@ body: |-
   gate. The architect above it hears the child's `child-status` and `child-closed`, and that
   architect's `worker-died` and `worker-stalled`. It also hears every other notice of the child
   while that architect does not hold its role: it failed, an operator stopped or suspended it,
-  or the child left the workflow. The `legion` tool's description of `handoff_complete` now says
-  that phase workers alone send it, since the daemon refuses an architect's completion. Each
+  its own exit retired it, or the child left the workflow. The `legion` tool's description of
+  `handoff_complete` now says that phase workers alone send it, since the daemon refuses an
+  architect's completion. Each
   parent reviews every version of a child's spec and Verification document with a fresh reader
   and posts its verdict on the child. A child's architect sends each question for a person
   to the architect above it. The question goes up to the root architect, which asks it on the
