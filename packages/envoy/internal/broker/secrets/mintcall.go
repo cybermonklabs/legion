@@ -240,22 +240,32 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	return body, nil
 }
 
-// ownTransport is the transport a minter sends through when it names no HTTP client: a clone of
-// http.DefaultTransport made when this package starts, held here alone, so no code outside it can
-// register a protocol on it (http.Transport.RegisterProtocol) or wrap what it does. Its trace is
-// net/http's own: GetConn before it asks for a connection and GotConn before it writes a byte,
-// on HTTP/1 and HTTP/2. net/http's own HTTP/2, which it registers for https, reports GotConn and
-// no GetConn for a connection it already holds, so such a call is read by its error alone.
+// ownTransport is the transport a minter sends through when it names no HTTP client, built by
+// this package alone and held here (newOwnTransport), so no code outside it can register a
+// protocol on it (http.Transport.RegisterProtocol), give it a callback for a negotiated protocol
+// (TLSNextProto) or wrap what it does. Its trace is net/http's own: GetConn before it asks for a
+// connection and GotConn before it writes a byte, on HTTP/1 and on the HTTP/2 net/http sets up
+// itself, a connection it already holds included.
 var ownTransport = newOwnTransport()
 
 // ownClient sends through ownTransport.
 var ownClient = &http.Client{Transport: ownTransport}
 
+// newOwnTransport builds a transport with the settings net/http documents for
+// http.DefaultTransport, rather than a clone of it: a clone carries whatever other code set on
+// http.DefaultTransport before this package started, TLSNextProto callbacks among them, and
+// those can send a request in a way no trace reports.
 func newOwnTransport() *http.Transport {
-	if standard, isStandard := http.DefaultTransport.(*http.Transport); isStandard {
-		return standard.Clone()
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
 }
 
 // tracedTransports is every transport whose trace mintAttempt reads (tracesConnections):
