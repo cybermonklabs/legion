@@ -25,7 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -341,9 +340,11 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
-	// role is every forward the role's holder received, in arrival order.
+	// role is every forward the role's holder received, in arrival order, and marks the markers
+	// it took (markers.await).
 	roleMu sync.Mutex
 	role   []int64
+	marks  markers
 }
 
 // outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
@@ -445,6 +446,9 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
 	if _, err := reader.Subscribe(contracts.AgentSubject(throughputHolder), func(message *natsgo.Msg) {
+		if rig.marks.took(message) {
+			return
+		}
 		id := envelopeEventID(t, message.Data)
 		rig.roleMu.Lock()
 		rig.role = append(rig.role, id)
@@ -633,12 +637,10 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					}
 					// Each event is marked published once the stream acknowledged its sends, and the
 					// holder is handed its forward on a connection of its own, which can take the
-					// last of them just after that acknowledgement on a busy machine
-					// (handedNow): the holder is read once it has taken one per routed event.
+					// last of them just after that acknowledgement on a busy machine: the holder is
+					// read once it has taken every forward the outbox sent it (markers.await).
+					rig.marks.await(t, rig.client, contracts.AgentSubject(throughputHolder))
 					routed := load.routed(count)
-					testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
-						return len(rig.roleArrivals()) >= routed
-					})
 					roles := rig.roleArrivals()
 					arrivals := map[string][]int64{}
 					for _, id := range roles {

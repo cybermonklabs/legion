@@ -25,7 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holding returns an outbox on deps whose instance holds the publisher hold's row for the next
@@ -261,8 +260,12 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		arrivals []int64
+		marks    markers
 	)
 	sub, err := rig.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
+		if marks.took(msg) {
+			return
+		}
 		id := envelopeEventID(t, msg.Data)
 		mu.Lock()
 		arrivals = append(arrivals, id)
@@ -323,11 +326,9 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	// Each event is marked published once the stream acknowledged its forward to S, and S is
 	// handed the same message on its own connection, which can arrive just after that
-	// acknowledgement on a busy machine (handedNow): S is read once it has taken all three.
-	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
-		got := taken()
-		return slices.Contains(got, first.ID) && slices.Contains(got, second.ID) && slices.Contains(got, third.ID)
-	})
+	// acknowledgement on a busy machine: S is read once it has taken every forward sent to it
+	// (markers.await).
+	marks.await(t, rig.client, contracts.AgentSubject(holder))
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {

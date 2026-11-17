@@ -296,30 +296,21 @@ type receiver struct {
 	mu       sync.Mutex
 	forwards []contracts.Envelope
 	arrived  chan contracts.Envelope
-	// markers counts the markers receivedNow has sent, and marked holds each one the
-	// subscription has taken.
-	markers int
-	marked  map[string]bool
+	marks    markers
 }
-
-// receiverMarker begins the event id of every marker receivedNow sends; the subscription records
-// a marker apart from the copies it takes.
-const receiverMarker = "receiver-marker-"
 
 func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	t.Helper()
-	recv := &receiver{subject: contracts.AgentSubject(holder), arrived: make(chan contracts.Envelope, 64), marked: map[string]bool{}}
+	recv := &receiver{subject: contracts.AgentSubject(holder), arrived: make(chan contracts.Envelope, 64)}
 	sub, err := r.conn.Subscribe(recv.subject, func(msg *natsgo.Msg) {
+		if recv.marks.took(msg) {
+			return
+		}
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
 			return
 		}
 		recv.mu.Lock()
-		if strings.HasPrefix(item.EventID, receiverMarker) {
-			recv.marked[item.EventID] = true
-			recv.mu.Unlock()
-			return
-		}
 		recv.forwards = append(recv.forwards, item)
 		recv.mu.Unlock()
 		recv.arrived <- item
@@ -332,6 +323,69 @@ func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return recv
+}
+
+// markers is what a test's subscription keeps of the markers sent to it (markers.await). Its zero
+// value is ready to use.
+type markers struct {
+	mu    sync.Mutex
+	sent  int
+	taken map[string]bool
+}
+
+// markerHeader carries a marker's id. A subscription's callback hands every message to took
+// first and drops the ones it reports as markers.
+const markerHeader = "Envoy-Test-Marker"
+
+// took records msg as taken when it is a marker, and reports whether it was one.
+func (m *markers) took(msg *natsgo.Msg) bool {
+	id := msg.Header.Get(markerHeader)
+	if id == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.taken == nil {
+		m.taken = map[string]bool{}
+	}
+	m.taken[id] = true
+	return true
+}
+
+// await returns once the subscription has taken every message client sent to subject before the
+// call. A scan or fallback pass returns once the stream has acknowledged each copy it sent to a
+// session's agent subject: a role forward's request and a session copy's publish both answer
+// with the stream's PubAck (roleForward.forward, bus's window.PublishAsync). The subscription is
+// handed the same message on its own connection, which can arrive just after that
+// acknowledgement on a busy machine (handedNow), so a read made the moment the outbox returns can
+// miss a copy it sent.
+//
+// await publishes a marker on client's connection, the one the outbox's sends went out on, and
+// waits under the shared bound for the subscription to take it. NATS hands one connection's
+// messages to a subscription in the order they were published, and the subscription takes them
+// one at a time, so once it has taken the marker it has taken every copy sent before it, a copy
+// the outbox sent twice or out of order included. The marker names a stream that does not exist
+// (Nats-Expected-Stream), so the stream, which captures the agent subjects, refuses to store it
+// and a read of the stream does not see it; the subscription is handed it all the same.
+func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
+	t.Helper()
+	m.mu.Lock()
+	m.sent++
+	id := fmt.Sprint(m.sent)
+	m.mu.Unlock()
+	msg := natsgo.NewMsg(subject)
+	msg.Header.Set(markerHeader, id)
+	msg.Header.Set(natsgo.ExpectedStreamHdr, "no-stream-stores-a-test-marker")
+	if err := client.Connection().PublishMsg(msg); err != nil {
+		t.Fatalf("publish a marker to %s: %v", subject, err)
+	}
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.taken[id]
+	}) {
+		t.Fatalf("the subscription to %s never took the marker published behind the outbox's sends", subject)
+	}
 }
 
 // narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
@@ -374,45 +428,11 @@ func (recv *receiver) received() []contracts.Envelope {
 	return append([]contracts.Envelope(nil), recv.forwards...)
 }
 
-// receivedNow is every copy recv has taken of what client sent its holder before the call. A scan
-// or fallback pass returns once the stream has acknowledged each copy it sent to a session's
-// agent subject: a role forward's request and a session copy's publish both answer with the
-// stream's PubAck (roleForward.forward, bus's window.PublishAsync). The holder's own subscription
-// is handed the same message on its own connection, which can arrive just after that
-// acknowledgement on a busy machine (handedNow), so a read made the moment the outbox returns can
-// miss a copy it sent.
-//
-// receivedNow publishes a marker on client's connection, the one the outbox's sends went out on,
-// and waits under the shared bound for the subscription to take it. NATS hands one connection's
-// messages to a subscription in the order they were published, and the subscription takes them
-// one at a time, so once it has taken the marker it has taken every copy sent before it: what
-// receivedNow returns is all of them, and a copy the outbox sent twice or out of order is in it.
-// The marker names a stream that does not exist (Nats-Expected-Stream), so the stream, which
-// captures the agent subject, refuses to store it and a read of the stream does not see it; the
-// subscription is handed it all the same.
+// receivedNow is every copy recv has taken of what client sent its holder before the call
+// (markers.await).
 func (recv *receiver) receivedNow(t *testing.T, client *bus.Client) []contracts.Envelope {
 	t.Helper()
-	recv.mu.Lock()
-	recv.markers++
-	marker := fmt.Sprintf("%s%d", receiverMarker, recv.markers)
-	recv.mu.Unlock()
-	data, err := json.Marshal(contracts.Envelope{EventID: marker})
-	if err != nil {
-		t.Fatalf("encode the marker: %v", err)
-	}
-	msg := natsgo.NewMsg(recv.subject)
-	msg.Data = data
-	msg.Header.Set(natsgo.ExpectedStreamHdr, "no-stream-stores-a-receiver-marker")
-	if err := client.Connection().PublishMsg(msg); err != nil {
-		t.Fatalf("publish the marker to %s: %v", recv.subject, err)
-	}
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
-		recv.mu.Lock()
-		defer recv.mu.Unlock()
-		return recv.marked[marker]
-	}) {
-		t.Fatalf("%s's subscription never took the marker published behind the outbox's copies", recv.subject)
-	}
+	recv.marks.await(t, client, recv.subject)
 	return recv.received()
 }
 
