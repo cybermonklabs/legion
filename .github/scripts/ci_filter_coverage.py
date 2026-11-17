@@ -2435,8 +2435,10 @@ def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
     """The files go list compiles in `dirs`, each named as a directory and not as a pattern, under
     the Run's platform and `tags`, as repository paths: GoFiles, CgoFiles and the test files,
     which a vet reads too. A directory whose every file is excluded is still listed, with an
-    error -e keeps. `-find` lists the directories alone and resolves no import, as
-    go_build_tags.compiled does: the file lists are the same, and the rule reads nothing else."""
+    error -e keeps. `-find`, as go_build_tags.compiled runs it too, keeps go list from loading the
+    packages the listed ones import (Imports, Deps and DepsErrors stay empty), though in module
+    mode go still resolves each import: the file lists are the same, and the rule reads nothing
+    else."""
     args = ["list", "-e", "-find", "-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles"]
     if tags:
         args += ["-tags", tags]
