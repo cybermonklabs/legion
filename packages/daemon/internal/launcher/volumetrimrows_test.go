@@ -4,6 +4,7 @@ package launcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -387,5 +388,68 @@ func TestAReportedSweepWhoseFirstLineAfterItPanicsHasBeenReadForARise(t *testing
 	assertRises(t, f, "the floor of the last two reported sweep starts, 91.0% and 92.0%, is 91.0%, 5.0 points above the 86.0%")
 	if faults := f.reports()[1].Faults; len(faults) != 1 || !strings.HasPrefix(faults[0], fell) {
 		t.Errorf("the report carries the faults %q, want the panic of the second sweep's line", faults)
+	}
+}
+
+// A held report whose resend panics at three intervals in a row switches the trimmer off in the
+// sweep row, and R1 then has the trimmer send one last report saying so. The resend here panics
+// on the held report alone (a report that is not the switched-off one), so the switched-off
+// report can be sent whatever the fix. At c31c1148 switchOff hands its report to deliver, whose
+// flush tries the held report first: that resend panics again, run's last contain ends the
+// trimmer, and the switched-off report is never tried (INFRA-2009, tester's round 36).
+func TestAHeldReportWhoseResendPanicsLeavesTheSwitchedOffReportSent(t *testing.T) {
+	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	f.refuseSends(errors.New("no daemon connection is up to carry it"))
+	tr := f.trimmer()
+	const fell = "the connection fell over resending the held report"
+	var falling atomic.Bool
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if falling.Load() && !report.SwitchedOff {
+			panic(fell)
+		}
+		return f.send(report)
+	}
+	_, done := f.start(tr)
+	f.tick("the sweep ended")
+	testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+		return f.logged("holding it for the next attempt") == 1
+	})
+
+	falling.Store(true)
+	f.refuseSends(nil)
+	for range volumeFaultLimit {
+		f.tick("recovered a panic")
+	}
+	testwait.Eventually(t, "the trimmer to switch itself off", func() bool {
+		return f.logged("in a row of sweeps and reports: the trimmer is off") == 1
+	})
+	testwait.Eventually(t, "the switched-off report to be sent, or the trimmer to end", func() bool {
+		for _, report := range f.reports() {
+			if report.SwitchedOff {
+				return true
+			}
+		}
+		select {
+		case <-done:
+			return true
+		default:
+			return f.logged("the last report of the switched-off trimmer panicked") > 0
+		}
+	})
+	var last *shimwire.LauncherVolumeReport
+	for _, report := range f.reports() {
+		if report.SwitchedOff {
+			last = &report
+		}
+	}
+	switch {
+	case last == nil:
+		t.Fatalf("the trimmer sent %d reports and none was the switched-off report, want the last report saying it switched itself off: the held report's resend took its send", len(f.reports()))
+	case !strings.Contains(last.StopReason, "in a row of sweeps and reports"):
+		t.Errorf("the switched-off report says %q, want the sweep row named", last.StopReason)
+	case len(last.Faults) != volumeFaultLimit || !strings.HasPrefix(last.Faults[0], fell):
+		t.Errorf("the switched-off report carries the faults %q, want the %d panics of the resend", last.Faults, volumeFaultLimit)
 	}
 }
