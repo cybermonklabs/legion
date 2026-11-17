@@ -459,7 +459,8 @@ git_fixture() {
 # repository at $work/remote/example/repo whose main holds a commit, the commit that adds the
 # cutoff marker and three later commits, with lightweight tags legion-v8.9.9 on the first,
 # legion-v9.0.0, legion-v9.1.0 and legion-v10.0.0 on the later three, and another package's
-# pi-envoy-v20.0.0 beside legion-v9.0.0. Sets marker_sha to the marker commit.
+# pi-envoy-v20.0.0 beside legion-v9.0.0. The marker commit's id is kept beside the fixture, in
+# $work/history-marker, as it was made; sets marker_sha to it.
 history_remote() {
   local src="$work/history-src" bare="$work/remote/example/repo"
   if [ ! -d "$bare" ]; then
@@ -470,6 +471,7 @@ history_remote() {
     : > "$src/.github/issue-key-cutoff"
     git_fixture "$src" add .github/issue-key-cutoff
     git_fixture "$src" commit -q -m "add the marker"
+    git_fixture "$src" rev-parse HEAD > "$work/history-marker"
     for tags in "legion-v9.0.0 pi-envoy-v20.0.0" legion-v9.1.0 legion-v10.0.0; do
       git_fixture "$src" commit -q --allow-empty -m "after the marker"
       for tag in $tags; do git_fixture "$src" tag "$tag"; done
@@ -478,7 +480,7 @@ history_remote() {
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git clone -q --bare "$src" "$bare"
     git_fixture "$bare" config uploadpack.allowFilter true
   fi
-  marker_sha=$(git_fixture "$bare" rev-parse 'main~3')
+  marker_sha=$(< "$work/history-marker")
 }
 # release <tag> <published at>: the release route's answer for that tag.
 release() { jq -nc --arg tag "$1" --arg at "$2" '{tag_name: $tag, published_at: $at, draft: false}' > "$work/release.$1"; }
