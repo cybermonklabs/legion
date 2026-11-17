@@ -382,13 +382,14 @@ type batchEvent struct {
 }
 
 // blocker is what held an event's send to a destination back: an earlier event of its owner that
-// had that destination unreached, or whose list is incomplete and neither names nor reached it. It
-// is either an event of the batch, whose outcome then says when the held one is tried again - its
-// send to the destination failed, its recipient read did, or its copy for that destination waits
-// on a mention - or one that is not due, until its nextAttempt. It is never the held event
-// itself: the copies of one event have no order among themselves, so the batch reads a blocker
-// only for the owner's later events, and the outcome read of one is always an outcome the batch
-// has settled already (planChains, holdBack).
+// had that destination unreached, or, on any key, the owner's topic family unreached; or whose list
+// is incomplete and neither names nor reached it. It is either an event of the batch, whose
+// outcome then says when the held one is tried again - its send to the destination failed, or its
+// topic send that this one waited for (chainSend.after), its recipient read failed, or its copy
+// for that destination waits on a mention - or one that is not due, until its nextAttempt. It is
+// never the held event itself: the copies of one event have no order among themselves, so the
+// batch reads a blocker only for the owner's later events, and the outcome read of one is always
+// an outcome the batch has settled already (planChains, holdBack).
 type blocker struct {
 	event *batchEvent
 	until *time.Time
@@ -410,7 +411,7 @@ const (
 	// it landed is unknown and no fault of the event.
 	lost
 	// held: an earlier send of the chain failed, or the earlier event's topic send this one waited
-	// for (chainSend.after) did not reach the topic family, so this one was not made.
+	// for (chainSend.after) failed or was held back itself, so this one was not made.
 	held
 )
 
