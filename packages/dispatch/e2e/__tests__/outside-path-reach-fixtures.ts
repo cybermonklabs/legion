@@ -230,18 +230,21 @@ export function holdingTarget(port = 0) {
 }
 
 /** The bash wrapper `drive` runs to give the script its target list. Its arguments: how the list
- *  is given (`stdin`, `fifo` or `substitution`), the list's first part, the part written 2 s after
- *  it (none when empty), whether the list is then held open with nothing more until the script
- *  exits (any word for yes, empty for no), the paths of sleep and mkfifo, the named pipe's path,
- *  the path the wrapper creates once the script exits, then the shell and the script. The writer
- *  of a named pipe is stopped once the script exits, in case the script stopped before it opened
- *  the pipe, and a held list's writer stops once the test process, the wrapper's parent, has gone. */
+ *  is given (`stdin`, `fifo` or `substitution`), the list's first part, its last part (none when
+ *  empty), the seconds to wait before the last part, whether the list is then held open with
+ *  nothing more until the script exits (any word for yes, empty for no), the paths of sleep and
+ *  mkfifo, the named pipe's path, the path the wrapper creates once the script exits, then the
+ *  shell and the script. Before a last part it writes a comment line of 131072 spaces, twice the
+ *  64 KiB a new pipe holds on Linux, under gVisor and on macOS, so that write returns only once the
+ *  script has read past the first part. The writer of a named pipe is stopped once the script
+ *  exits, in case the script stopped before it opened the pipe, and a held list's writer stops
+ *  once the test process, the wrapper's parent, has gone. */
 const listFeeder = [
-  "via=$1 first=$2 later=$3 hold=$4 sleep=$5 mkfifo=$6 fifo=$7 ended=$8",
-  "shift 8",
+  "via=$1 first=$2 later=$3 pause=$4 hold=$5 sleep=$6 mkfifo=$7 fifo=$8 ended=$9",
+  "shift 9",
   "feed() {",
   '  printf "%s" "$first"',
-  '  [ -z "$later" ] || { "$sleep" 2; printf "%s" "$later"; }',
+  '  [ -z "$later" ] || { printf "#%*s\\n" 131072 ""; "$sleep" "$pause"; printf "%s" "$later"; }',
   '  [ -z "$hold" ] || until [ -e "$ended" ]; do kill -0 "$PPID" 2>/dev/null || exit 70; "$sleep" 0.05; done',
   "}",
   "case $via in",
@@ -269,8 +272,10 @@ export function reachFixtures() {
 
   /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
    *  given, PATH the host's unless given, and run by bash unless `shell` names another program.
-   *  With `stdin`, the target list is `stdin`, then `stdinLater` 2 s after it, held open with
-   *  nothing more until the script exits when `stdinHeld` is set, and the run sets
+   *  With `stdin`, the target list is `stdin`. With `stdinLater`, it goes on with a comment that
+   *  overfills the pipe, whose write returns only once the script is reading the list, and then,
+   *  `stdinPause` seconds (0 unless given) after that write returned, `stdinLater`. With
+   *  `stdinHeld`, the list is then held open with nothing more until the script exits. The run sets
    *  OUTSIDE_PATH_TARGETS to where it is given: `/dev/stdin` on a pipe (the default), a named pipe
    *  in the scratch directory, or a process substitution. Bun hands a child's stdin over as a memfd
    *  or a socket, neither of which reads as a pipe does, so a bash wrapper makes each of them; it
@@ -283,6 +288,7 @@ export function reachFixtures() {
       shell?: string;
       stdin?: string;
       stdinLater?: string;
+      stdinPause?: string;
       stdinHeld?: boolean;
       via?: "stdin" | "fifo" | "substitution";
     } = {}
@@ -303,6 +309,7 @@ export function reachFixtures() {
             options.via ?? "stdin",
             options.stdin,
             options.stdinLater ?? "",
+            options.stdinPause ?? "0",
             options.stdinHeld === true ? "held" : "",
             hostSleep,
             hostTool("mkfifo") ?? "mkfifo",
