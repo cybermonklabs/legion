@@ -71,6 +71,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	gotFailed, wantFailed := got.FailedAt, want.FailedAt
 	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
+	// The handshake's two moments are timestamptz columns too, compared the same way.
+	gotHandshake, wantHandshake := got.Handshake, want.Handshake
+	got.Handshake.QueuedAt, got.Handshake.ConfirmedAt = time.Time{}, time.Time{}
+	want.Handshake.QueuedAt, want.Handshake.ConfirmedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
@@ -79,6 +83,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	}
 	if !gotFailed.Equal(wantFailed) {
 		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
+	}
+	if !gotHandshake.QueuedAt.Equal(wantHandshake.QueuedAt) || !gotHandshake.ConfirmedAt.Equal(wantHandshake.ConfirmedAt) {
+		t.Errorf("the claim's handshake was queued at %v and confirmed at %v, want %v and %v",
+			gotHandshake.QueuedAt, gotHandshake.ConfirmedAt, wantHandshake.QueuedAt, wantHandshake.ConfirmedAt)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)

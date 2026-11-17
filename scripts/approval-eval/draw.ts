@@ -952,6 +952,16 @@ async function draw(flags: Flags): Promise<number> {
     `the rule's calls  ${asked} asked, ${cached} from the cache, ` +
       `${holds.length - asked - cached} settled by the issue's facts`
   );
+  // Which model each answer of the rule says served it, over every case it read: admitted, held
+  // and unreadable alike, and whether or not a cache was kept.
+  const servedModels: Record<string, number> = {};
+  for (const hold of holds) {
+    const name = hold.source === "issue-facts" ? "the issue's facts" : (hold.servedModel ?? "none");
+    servedModels[name] = (servedModels[name] ?? 0) + 1;
+  }
+  for (const [name, count] of Object.entries(servedModels).sort()) {
+    console.log(`  served by ${name.padEnd(30)}${count}`);
+  }
   console.log(
     `the rule's tokens ${holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0)} read, ` +
       `${holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0)} written`
@@ -1022,6 +1032,13 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
+      servedModels,
+      // One line per case the rule read, so each answer's served model is kept with the draw.
+      answers: rendered.cases.map((one) => ({
+        caseId: one.row.caseId,
+        source: one.hold.source,
+        servedModel: one.hold.servedModel,
+      })),
       renderingCheck: renderingCheckOf(rendered.checks, DRAW_GUARD),
     },
     excluded: {

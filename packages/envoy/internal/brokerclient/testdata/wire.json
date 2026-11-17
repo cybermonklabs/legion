@@ -16,6 +16,7 @@
     "${subject_token}": "the token the exchange's subject source answered at this trade",
     "${actor_token}": "the token the actor source answered at this trade",
     "${session}": "the session name the client was configured with, as the entry's session names it",
+    "${projects}": "the projects the client was configured with, as the entry's projects names them, joined by one space",
     "${token_endpoint}": "the stub broker's own origin followed by endpoint.path, with no query and no fragment",
     "${jti}": "a value this request alone carries: non-empty, and never equal to another request's",
     "${iat}": "the time the proof was signed, in whole seconds, within a minute of the suite's clock",
@@ -191,6 +192,57 @@
           "expires_in": 3600,
           "credential_id": "cred-signin-1",
           "credential_expires_at": "2026-12-03T00:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "a person's session trades their sign-in naming its projects",
+      "about": "A session started with AGENT_SECRETS_PROJECTS names the projects it works on, and its person's trade sends them as the broker's projects parameter: the keys sorted, each once, joined by one space. The broker mints a token naming them only when Dispatch says the person may see each one. A trade naming no project sends no projects parameter at all, which is every other entry here; a machine trading for itself never sends one, since its entry decides its project.",
+      "subject": {
+        "kind": "person-device-sign-in",
+        "token": "person.google.identity.token",
+        "token_type": "urn:envoy:params:oauth:token-type:person-google-identity"
+      },
+      "actor": {
+        "kind": "google-metadata",
+        "token": "google.machine.identity.token",
+        "token_type": "urn:envoy:params:oauth:token-type:machine-google-identity"
+      },
+      "session": "ada-box-2",
+      "projects": ["PRIV", "PUB"],
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:envoy:params:oauth:token-type:person-google-identity",
+        "actor_token": "${actor_token}",
+        "actor_token_type": "urn:envoy:params:oauth:token-type:machine-google-identity",
+        "session": "${session}",
+        "projects": "${projects}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 200,
+        "body": {
+          "access_token": "not-a-secret-broker-access-token-naming-projects",
+          "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+          "token_type": "DPoP",
+          "expires_in": 3600,
+          "credential_id": "cred-signin-2",
+          "credential_expires_at": "2026-12-04T00:00:00Z"
+        }
+      },
+      "expect": {
+        "outcome": "accept",
+        "token": {
+          "access_token": "not-a-secret-broker-access-token-naming-projects",
+          "token_type": "DPoP",
+          "expires_in": 3600,
+          "credential_id": "cred-signin-2",
+          "credential_expires_at": "2026-12-04T00:00:00Z"
         }
       }
     },

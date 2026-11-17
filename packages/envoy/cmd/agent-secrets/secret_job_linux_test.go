@@ -4,11 +4,9 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,279 +15,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-// promptShell gives the prompt a parent interactive shell in the same session, so
-// its process group is not orphaned and the kernel really stops it on Ctrl-Z.
-type promptShell struct {
-	t          *testing.T
-	controller *os.File
-	ctlFd      int // controller's fd, read once: (*os.File).Fd() would switch it to
-	// blocking mode, silently breaking every later SetReadDeadline on controller.
-	terminal int
-	bash     *exec.Cmd
-	out      bytes.Buffer
-	pid      int
-	history  string
-	env      string // variables start sets for the helper, each followed by a space
-}
-
-// rawFd answers f's file descriptor through its SyscallConn, which, unlike
-// (*os.File).Fd(), never switches f to blocking mode.
-func rawFd(f *os.File) (int, error) {
-	raw, err := f.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var fd int
-	if ctlErr := raw.Control(func(sysfd uintptr) { fd = int(sysfd) }); ctlErr != nil {
-		return 0, ctlErr
-	}
-	return fd, nil
-}
-
-func newPromptShell(t *testing.T) *promptShell {
-	t.Helper()
-	controller, terminal := openPTY(t)
-	ctlFd, err := rawFd(controller)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fd, err := unix.Dup(terminal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tty := os.NewFile(uintptr(fd), "terminal")
-	defer tty.Close()
-	home := t.TempDir()
-	cmd := exec.Command("bash", "--norc", "--noprofile", "-i")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "HISTFILE=" + filepath.Join(home, "history"), "PS1=PROMPT$ ", "TERM=dumb"}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	s := &promptShell{t: t, controller: controller, ctlFd: ctlFd, terminal: terminal, bash: cmd, history: filepath.Join(home, "history")}
-	t.Cleanup(func() {
-		if s.pid != 0 {
-			_ = syscall.Kill(s.pid, syscall.SIGKILL)
-		}
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
-	s.wait("PROMPT$ ")
-	return s
-}
-
-func (s *promptShell) send(text string) {
-	s.t.Helper()
-	if _, err := s.controller.Write([]byte(text)); err != nil {
-		s.t.Fatal(err)
-	}
-}
-
-func (s *promptShell) wait(want string) {
-	s.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	buf := make([]byte, 4096)
-	for !strings.Contains(s.out.String(), want) {
-		if time.Now().After(deadline) {
-			s.t.Fatalf("waiting for %q; terminal showed %q", want, s.out.String())
-		}
-		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-		n, _ := s.controller.Read(buf)
-		s.out.Write(buf[:n])
-	}
-}
-
-func (s *promptShell) start(wrapper bool, background bool) {
-	s.t.Helper()
-	command := s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
-	if background {
-		// fg hands the job the terminal in the state bash hands every foreground
-		// job, which is what the prompt must restore: not what the terminal holds
-		// while the job waits behind bash's line editor.
-		command = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " " + command
-	}
-	if wrapper {
-		command = "bash -c " + shellWord("trap '' TSTP; "+command+"; echo WRAPPER_DONE")
-	}
-	if background {
-		command += " &"
-	}
-	s.out.Reset()
-	s.send(command + "\r")
-	s.wait("HELPER_PID=")
-	s.wait("\r\nHELPER_READY\r\n")
-	start := strings.Index(s.out.String(), "HELPER_PID=") + len("HELPER_PID=")
-	pid, err := strconv.Atoi(strings.Fields(s.out.String()[start:])[0])
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	s.pid = pid
-	if background {
-		s.wait("PROMPT_STARTING")
-	} else {
-		// The label shows once the prompt holds the terminal in its own mode: a stop
-		// before it discards nothing, so each test's stop comes after it.
-		s.wait("Value for DEMO_KEY: ")
-	}
-	s.out.Reset()
-}
-
-// foregroundState is the terminal state, as termiosKey writes it, that bash hands a
-// foreground job: what a fresh foreground command reads at its start.
-func (s *promptShell) foregroundState() string {
-	s.t.Helper()
-	s.out.Reset()
-	s.send("AGENT_SECRETS_JOB_HELPER=1 AGENT_SECRETS_JOB_PROBE=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'\r")
-	s.wait("FOREGROUND_STATE=")
-	s.wait(" END")
-	s.wait("PROMPT$ ")
-	start := strings.Index(s.out.String(), "FOREGROUND_STATE=") + len("FOREGROUND_STATE=")
-	return strings.Fields(s.out.String()[start:])[0]
-}
-
-// termiosKey is every field of t, as one shell-safe word.
-func termiosKey(t *unix.Termios) string {
-	return fmt.Sprintf("%x.%x.%x.%x.%x.%x.%x.%x", t.Iflag, t.Oflag, t.Cflag, t.Lflag, t.Line, t.Cc[:], t.Ispeed, t.Ospeed)
-}
-
-func (s *promptShell) waitForeground(pid int) {
-	s.t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-		foreground, err := unix.IoctlGetInt(s.ctlFd, unix.TIOCGPGRP)
-		if err != nil {
-			s.t.Fatal(err)
-		}
-		if foreground == pid {
-			return
-		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("terminal foreground group = %d, want %d", foreground, pid)
-		}
-	}
-}
-
-func (s *promptShell) noShellValue(markers ...string) {
-	s.t.Helper()
-	s.wait("PROMPT$ ")
-	s.wait("RESTORED=true LABEL_HELD=true")
-	s.send("history -w; printf 'HISTORY_%s\\n' SAVED\r")
-	s.wait("HISTORY_SAVED")
-	history, err := os.ReadFile(s.history)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	for _, marker := range markers {
-		if strings.Contains(s.out.String(), marker) || bytes.Contains(history, []byte(marker)) {
-			s.t.Fatalf("value reached the screen or shell history: terminal=%q history=%q", s.out.String(), history)
-		}
-	}
-}
-
-// labelCheck passes the prompt's writes to stderr and records whether its label
-// reached the terminal only while the prompt held it: in the foreground, echo off.
-type labelCheck struct {
-	shown, held bool
-}
-
-func (c *labelCheck) Write(p []byte) (int, error) {
-	if bytes.HasPrefix(p, []byte("Value for ")) {
-		foreground, fgErr := unix.IoctlGetInt(0, unix.TIOCGPGRP)
-		tio, tioErr := unix.IoctlGetTermios(0, unix.TCGETS)
-		c.held = (!c.shown || c.held) && fgErr == nil && tioErr == nil &&
-			foreground == unix.Getpgrp() && tio.Lflag&unix.ECHO == 0
-		c.shown = true
-	}
-	return os.Stderr.Write(p)
-}
-
-func TestPromptJobHelper(t *testing.T) {
-	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
-		t.Skip("subprocess helper")
-	}
-	if os.Getenv("AGENT_SECRETS_JOB_PROBE") != "" {
-		tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fmt.Printf("FOREGROUND_STATE=%s END\n", termiosKey(tio))
-		return
-	}
-	fmt.Printf("HELPER_PID=%d\nHELPER_READY\n", os.Getpid())
-	if bound := os.Getenv("AGENT_SECRETS_JOB_PASTE_BOUND"); bound != "" {
-		d, err := time.ParseDuration(bound)
-		if err != nil {
-			t.Fatal(err)
-		}
-		maxPasteDrain = d
-	}
-	if os.Getenv("AGENT_SECRETS_JOB_FAIL_DISCARD") != "" {
-		discardInput = func(int) error { return errors.New("TIOCFLUSH failed") }
-	}
-	reference := os.Getenv("AGENT_SECRETS_JOB_REFERENCE")
-	if reference == "" {
-		// Started in the foreground: bash has already handed it the terminal.
-		saved, err := unix.IoctlGetTermios(0, unix.TCGETS)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reference = termiosKey(saved)
-	} else {
-		// Started with &: start the prompt only once bash's line editor holds the
-		// terminal (canonical mode off), which a prompt in the background must
-		// neither take as its baseline nor show its label over.
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-			tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tio.Lflag&unix.ICANON == 0 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("bash's line editor never took the terminal")
-			}
-		}
-		fmt.Println("PROMPT_STARTING")
-		if os.Getenv("AGENT_SECRETS_JOB_AFTER_SHELL_EXIT") != "" {
-			// Reach the prompt only once the shell's exit has taken the terminal from the
-			// session, as a prompt descheduled that long on a loaded machine would.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-				if _, err := unix.IoctlGetInt(0, unix.TIOCGPGRP); errors.Is(err, unix.ENOTTY) {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the shell's exit never took the terminal")
-				}
-			}
-		}
-	}
-	real := readTerminal
-	quiet, readSome := false, false
-	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
-		if timeout >= 0 && !quiet {
-			quiet = true
-			fmt.Println("QUIET_READY")
-			if os.Getenv("AGENT_SECRETS_JOB_HOLD_QUIET") != "" {
-				// Hold the first quiet window open until input comes, so what the test sends
-				// after QUIET_READY arrives inside it however slowly this process runs.
-				timeout = -1
-			}
-		}
-		n, err := real(fd, wake, buf, timeout)
-		if n > 0 && !readSome {
-			readSome = true
-			fmt.Println("READ_SOME")
-		}
-		return n, err
-	}
-	label := &labelCheck{}
-	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", label)
-	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)
-	fmt.Printf("RETURNED %v MATCH=%t EMPTY=%t RESTORED=%t LABEL_HELD=%t\n", err, value == "headtail", value == "",
-		restoreErr == nil && termiosKey(restored) == reference, label.shown && label.held)
-}
 
 func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
 	for _, background := range []bool{false, true} {
@@ -344,23 +69,6 @@ func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
 	s.send("headtail\r")
 	s.wait("RETURNED <nil> MATCH=true")
 	s.noShellValue("head", "tail")
-}
-
-// jobStopped waits until bash's job table shows job 1 stopped: fg sends SIGCONT only to a
-// job bash has already seen stop.
-func (s *promptShell) jobStopped() {
-	s.t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		s.out.Reset()
-		s.send("jobs %1\r")
-		s.wait("PROMPT$ ")
-		if strings.Contains(s.out.String(), "Stopped") {
-			return
-		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("bash never saw the job stop: %q", s.out.String())
-		}
-	}
 }
 
 // A prompt whose process group is orphaned (the subshell that started it has exited) can
@@ -459,36 +167,6 @@ func TestPromptJobOrphanedByItsShellsExitLeavesTheTerminalAlone(t *testing.T) {
 	if strings.Contains(s.out.String(), "\x1b[?2004l") {
 		t.Fatalf("the orphaned prompt wrote to the terminal the outer shell holds: %q", s.out.String())
 	}
-}
-
-// processState is the state letter /proc gives process pid ("T" while stopped).
-func processState(t *testing.T, pid int) string {
-	t.Helper()
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+2:]))[0]
-}
-
-// catches reports whether process pid has a handler of its own installed for sig.
-func catches(t *testing.T, pid int, sig syscall.Signal) bool {
-	t.Helper()
-	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(string(status), "\n") {
-		if mask, ok := strings.CutPrefix(line, "SigCgt:"); ok {
-			bits, err := strconv.ParseUint(strings.TrimSpace(mask), 16, 64)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return bits&(1<<(uint(sig)-1)) != 0
-		}
-	}
-	t.Fatalf("no SigCgt line in /proc/%d/status", pid)
-	return false
 }
 
 func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
@@ -792,6 +470,105 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 	s.noShellValue("LEAKED_18", "LEAKED_$((")
 }
 
+// A value deadline that passes while a bracketed paste is open refuses the entry, but the prompt
+// keeps the terminal and reads the paste on through its closing mark before it gives the terminal
+// back, so the paste's rest, arriving after the deadline, is discarded rather than run by the
+// shell. The helper places the deadline inside the paste (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY):
+// the paste begins before the deadline, or only after it (sent once the helper has said the
+// deadline passed), and the paste's rest goes only once the prompt has either read on past it or
+// given the terminal back to the shell, so a prompt that gives the paste up shows that rest
+// running there. The notice says the paste must end first: inside it Ctrl-C is pasted text, which
+// deletes nothing.
+func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
+			s := newPromptShell(t)
+			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
+			s.start(false, false)
+			if after {
+				s.wait("DEADLINE_REACHED")
+			}
+			s.send("\x1b[200~pastehead")
+			s.wait("DEADLINE_PASSED")
+			if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
+				s.wait("PROMPT$ ")
+			}
+			s.send("\recho PASTE_$((2+3))\r\x1b[201~")
+			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+			// The prompt said at the deadline that the entry is refused, and that the empty secret
+			// stays until the paste and then the entry end, so the person knows to stop.
+			notice := s.out.String()
+			if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
+				!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
+				t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
+			}
+			// Clear the shell's line, where a leaked paste mark would leave text that breaks the
+			// history check's own command, so a leak shows as the markers below.
+			s.send("\x15")
+			s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+		})
+	}
+}
+
+// TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry: the notice a value deadline
+// gives with a typed entry under way says what ends the entry, which is when a create deletes its
+// empty secret: Enter, and, at once, the interrupt key where it ends the process. Where SIGINT is
+// live, the notice says Ctrl-C deletes the secret now, and a Ctrl-C ends the process by SIGINT,
+// running the cleanup that deletes it (DEATH_HOOK_RAN). With SIGINT inherited as ignored the key
+// does nothing, so the notice names Enter and ending the process instead, never Ctrl-C, and a
+// Ctrl-C leaves the entry open until Enter. (The paste case is
+// TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd.)
+func TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry(t *testing.T) {
+	const notice, live, end = "The value deadline passed with an entry under way", "Ctrl-C deletes it now", "Then run agent-secrets secret set DEMO_KEY again"
+	t.Run("the interrupt key live", func(t *testing.T) {
+		s := newPromptShell(t)
+		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
+		s.start(false, false)
+		s.send("head")
+		s.wait(notice)
+		s.wait(end)
+		if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
+			t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
+		}
+		s.send("\x03")
+		s.wait("DEATH_HOOK_RAN")
+		s.wait("PROMPT$ ")
+		s.send("echo STATUS_$?\r")
+		s.wait("STATUS_130")
+	})
+	t.Run("SIGINT inherited ignored", func(t *testing.T) {
+		s := newPromptShell(t)
+		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
+		s.wrapperIgnores = "INT"
+		s.start(true, false)
+		s.send("head")
+		s.wait(notice)
+		s.wait(end)
+		if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
+			t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
+		}
+		s.send("\x03")
+		s.send("tail\r")
+		s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+		s.wait("WRAPPER_DONE")
+		s.noShellValue("head", "tail")
+	})
+}
+
+// A prompt started with & that is never brought to the foreground gives up at its value deadline,
+// rather than waiting for fg past the time the broker holds a create's secret for: it ends with the
+// timeout, having shown no label and never taken the terminal.
+func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s "
+	s.start(false, true)
+	s.wait("RETURNED nothing was stored: no value came in time, within 1s")
+	s.wait("LABEL_HELD=false")
+	if strings.Contains(s.out.String(), "Value for") {
+		t.Fatalf("a prompt that never held the terminal showed its label: %q", s.out.String())
+	}
+}
+
 // A signal key that follows a paste's closing mark in the same read is a keypress: it acts as it
 // would in a read of its own, so the pasted value is not stored. Ctrl-C and Ctrl-\ end the
 // process by their signals; Ctrl-Z stops it, and after fg the entry is refused.
@@ -824,6 +601,68 @@ func TestPromptJobKeyAfterAPasteInOneWriteActs(t *testing.T) {
 		s.wait("MATCH=false EMPTY=true")
 		s.noShellValue("pastevalue")
 	})
+}
+
+// A signal that ends the prompt runs onSignalDeath first, which create sets while the secret it
+// made is empty: Ctrl-C and Ctrl-\ at the prompt, and a termination sent to the process, each run
+// it once, after the terminal is restored - the restore's bracketed-paste-off mark reaches the
+// terminal before the cleanup's line - and the shell still reports the signal's own status.
+// Create's own watch on the signals runs beside the prompt's (watchCreateSignals) and leaves a
+// signal that comes during the prompt to the prompt, so the cleanup runs once, and only once the
+// prompt has restored the terminal.
+func TestPromptJobSignalRunsTheDeathCleanupFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name, key string
+		sig       syscall.Signal
+		status    string
+	}{{"ctrl-c", "\x03", 0, "130"}, {"ctrl-backslash", "\x1c", 0, "131"}, {"sigterm", "", syscall.SIGTERM, "143"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newPromptShell(t)
+			s.env = "AGENT_SECRETS_JOB_DEATH_HOOK=1 "
+			s.start(false, false)
+			if tc.sig != 0 {
+				if err := syscall.Kill(s.pid, tc.sig); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				s.send(tc.key)
+			}
+			s.wait("DEATH_HOOK_RAN")
+			s.wait("PROMPT$ ")
+			s.send("echo STATUS_$?\r")
+			s.wait("STATUS_" + tc.status)
+			out := s.out.String()
+			if n := strings.Count(out, "DEATH_HOOK_RAN"); n != 1 || strings.Contains(out, "RETURNED") {
+				t.Fatalf("the cleanup ran %d times, terminal %q; want once, and the process ended by its signal", n, out)
+			}
+			if restored := strings.Index(out, string(bracketedPasteOff)); restored < 0 || restored > strings.Index(out, "DEATH_HOOK_RAN") {
+				t.Fatalf("terminal %q: want the prompt's restore before the cleanup ran", out)
+			}
+		})
+	}
+}
+
+// A second signal while the cleanup a signal at the prompt ran is still waiting - a store call in
+// flight that does not answer - ends the process at once, by that second signal, once the prompt
+// has restored the terminal, and prints create's line for it first: Ctrl-C at the prompt, then a
+// termination, and the shell reports the termination's status.
+func TestPromptJobSecondSignalEndsAWaitingCleanupAtOnce(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEATH_HOOK=hang "
+	s.start(false, false)
+	s.send("\x03")
+	s.wait("DEATH_HOOK_RAN")
+	if err := syscall.Kill(s.pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	s.wait("SECOND_SIGNAL_LINE terminated")
+	s.wait("PROMPT$ ")
+	s.send("echo STATUS_$?\r")
+	s.wait("STATUS_143")
+	out := s.out.String()
+	if restored := strings.Index(out, string(bracketedPasteOff)); restored < 0 || restored > strings.Index(out, "SECOND_SIGNAL_LINE") || strings.Contains(out, "RETURNED") {
+		t.Fatalf("terminal %q: want the prompt's restore before the second signal's line, and the process ended by that signal", out)
+	}
 }
 
 // A prompt started with & whose shell then exits has no shell to bring it forward, though the

@@ -323,6 +323,29 @@ const BrokerCallWait = 30 * time.Second
 // (DefaultFirstConfirmBound); the slow answers that were measured took 5 s and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
 
+// InstallRestartTimeout bounds the `systemctl --user restart` of the helper that
+// `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
+// SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
+// DefaultBrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
+// (Server.Serve): 21 s at the most. The start is done once systemd has forked the helper, since
+// the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to queue and fork on
+// a loaded machine. A restart still running at the bound is one install stops waiting for, and
+// systemd keeps its job: install reads the unit's main process, and sends undrain when the helper
+// it drained is still that process and no job for the unit is queued. While one is, the drain
+// ends with that restart or at DefaultDrainBound.
+const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
+
+// DefaultDrainBound is how long a drain holds before the helper ends it by itself
+// (Server.SetDrainBound): twice InstallRestartTimeout, a minute. Install sends SIGTERM through its
+// restart within moments of the drain's answer and waits at most InstallRestartTimeout for that
+// restart, then undoes a drain the restart did not end; the second half is room for the reads of
+// the unit's main process and the undrain around it. A helper still running and still draining
+// at the bound has a drain no install will end: the install that sent it died between the drain
+// and the restart, or its restart reached no process of this helper's (a test rig's systemctl, a
+// unit that runs another helper). Draining on, it would refuse every registration on the machine
+// until something restarts it, as one did for 36 minutes on 2026-11-16 (dispatch://INFRA-3950).
+const DefaultDrainBound = 2 * InstallRestartTimeout
+
 // ErrNoReply is in every Call error that comes after the helper was sent the whole request: the
 // helper gave no reply the client could read. No line came before the connection closed or the
 // timeout passed, or the line is not one JSON object. So the client does not know what the helper

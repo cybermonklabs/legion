@@ -6,11 +6,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
@@ -19,13 +21,23 @@ import (
 
 // installRig is a temp XDG config dir, a fake systemctl on PATH that appends its argv to a log
 // (all but is-active, which prints the unit's state: "active" unless a test writes another to
-// the active file, and logs nothing), and the helper socket path install checks for a running
-// helper.
+// the active file, and show, which prints the unit's main process from the pid file, or with
+// --property=Job the unit's queued job from the calls log's .job file and nothing without one;
+// neither logs anything), and the helper socket path install checks for a running helper. Its
+// restart gives the unit a new main process, unless the calls log's .same-process marker exists;
+// with .fail-restart it exits 1, and with .slow-restart it sleeps 20 s, changing no process and
+// leaving job 7 queued for the unit, as systemd keeps the job of a client killed while it waits,
+// unless .no-queued-job exists. Its environment names a socket and a runtime directory of its
+// own, and runAs refuses to run install against any socket outside the rig's directory
+// (foreignSocket).
 type installRig struct {
+	t      testing.TB
+	dir    string
 	env    map[string]string
 	unit   string
 	calls  string
 	active string
+	pid    string
 	sock   string
 	exe    string
 	stdout bytes.Buffer
@@ -44,13 +56,20 @@ func newInstallRig(t *testing.T) *installRig {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := &installRig{calls: filepath.Join(dir, "systemctl.log"), active: filepath.Join(dir, "active"), sock: filepath.Join(dir, "h.sock"), exe: filepath.Join(real, "agent-secrets-helper")}
+	r := &installRig{t: t, dir: dir, calls: filepath.Join(dir, "systemctl.log"), active: filepath.Join(dir, "active"), pid: filepath.Join(dir, "main-pid"), sock: filepath.Join(dir, "h.sock"), exe: filepath.Join(real, "agent-secrets-helper")}
 	if err := os.WriteFile(r.active, []byte("active\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(r.pid, []byte("4100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
+		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
+		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
 		"echo \"$*\" >> " + r.calls + "\n" +
-		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n"
+		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
+		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 20; fi\n" +
+		"if [ \"$2\" = restart ] && [ ! -e " + r.calls + ".same-process ]; then read -r pid < " + r.pid + "; echo $((pid + 1)) > " + r.pid + "; fi\n"
 	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -58,14 +77,76 @@ func newInstallRig(t *testing.T) *installRig {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	r.env = map[string]string{"HOME": dir, "XDG_CONFIG_HOME": filepath.Join(dir, "cfg"), "AGENT_SECRETS_HELPER_SOCK": r.sock}
+	// XDG_RUNTIME_DIR too, so a test that unsets the socket gets the rig's default socket and not
+	// the box's: with neither set, helper.DefaultSocket is /run/user/<uid>/agent-secrets/helper.sock,
+	// the socket of the helper this machine runs.
+	r.env = map[string]string{"HOME": dir, "XDG_CONFIG_HOME": filepath.Join(dir, "cfg"), "XDG_RUNTIME_DIR": filepath.Join(dir, "run"), "AGENT_SECRETS_HELPER_SOCK": r.sock}
 	r.unit = filepath.Join(dir, "cfg", "systemd", "user", "agent-secrets-helper.service")
 	return r
 }
 
 func (r *installRig) run(args ...string) error {
+	r.t.Helper()
+	return r.runAs(r.exe, args...)
+}
+
+// runAs runs install as the binary at exe in the rig's environment, and fails the test without
+// running it when the socket install would reach is not the rig's own (foreignSocket).
+func (r *installRig) runAs(exe string, args ...string) error {
+	r.t.Helper()
+	if err := r.foreignSocket(); err != nil {
+		r.t.Fatal(err)
+	}
 	r.stdout.Reset()
-	return install(args, env(r.env), r.exe, &r.stdout)
+	return install(args, env(r.env), exe, &r.stdout)
+}
+
+// foreignSocket names the socket install would reach when that is an absolute path outside the
+// rig's directory, and is nil otherwise. install answers the helper there, drains it, and runs
+// the rig's systemctl, which restarts nothing; so a drain of the machine's own helper leaves it
+// refusing every registration on the box. That happened on 2026-11-16 (dispatch://INFRA-3950):
+// the rig named no XDG_RUNTIME_DIR, and a test that unset the socket drained
+// /run/user/<uid>/agent-secrets/helper.sock. A relative socket can reach no other user's
+// directory and install refuses it before it calls any helper.
+func (r *installRig) foreignSocket() error {
+	cfg, err := loadConfig(env(r.env))
+	if err != nil {
+		// install refuses the same environment the same way, before it calls any helper.
+		return nil
+	}
+	if !filepath.IsAbs(cfg.Socket) {
+		return nil
+	}
+	if rel, err := filepath.Rel(r.dir, cfg.Socket); err != nil || !filepath.IsLocal(rel) {
+		return fmt.Errorf("install would reach %s, a socket this test did not create under %s", cfg.Socket, r.dir)
+	}
+	return nil
+}
+
+// TestInstallRigRefusesASocketItDidNotCreate: install drains the helper on the socket it reaches,
+// and the rig's systemctl restarts nothing, so a rig that reached the machine's own helper would
+// leave it refusing every registration on the box (dispatch://INFRA-3950). The rig's own socket,
+// and the default socket under its own runtime directory, pass; the default a rig with no runtime
+// directory reaches, /run/user/<uid>/agent-secrets/helper.sock, and any other socket outside the
+// rig's directory, are refused, naming the socket.
+func TestInstallRigRefusesASocketItDidNotCreate(t *testing.T) {
+	r := newInstallRig(t)
+	if err := r.foreignSocket(); err != nil {
+		t.Fatalf("the rig's own socket: %v", err)
+	}
+	delete(r.env, "AGENT_SECRETS_HELPER_SOCK")
+	if err := r.foreignSocket(); err != nil {
+		t.Fatalf("the default socket under the rig's own runtime directory: %v", err)
+	}
+	delete(r.env, "XDG_RUNTIME_DIR")
+	machines := helper.DefaultSocket(func(string) string { return "" })
+	if err := r.foreignSocket(); err == nil || !strings.Contains(err.Error(), machines) {
+		t.Fatalf("foreignSocket with no socket and no runtime directory: %v; want a refusal naming %s", err, machines)
+	}
+	r.env["AGENT_SECRETS_HELPER_SOCK"] = "/run/user/1/agent-secrets/helper.sock"
+	if err := r.foreignSocket(); err == nil || !strings.Contains(err.Error(), "/run/user/1/agent-secrets/helper.sock") {
+		t.Fatalf("foreignSocket with another directory's socket: %v; want a refusal naming it", err)
+	}
 }
 
 func (r *installRig) systemctlCalls(t *testing.T) []string {
@@ -156,7 +237,7 @@ func TestInstallResolvesSymlinksAndTakesTheURLFromTheEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.env["AGENT_SECRETS_URL"] = "https://env.example"
-	if err := install(nil, env(r.env), link, &r.stdout); err != nil {
+	if err := r.runAs(link); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(r.unit)
@@ -505,7 +586,7 @@ func TestInstallRefusesAnExecutablePathSystemdWouldSplit(t *testing.T) {
 	if err := os.WriteFile(spaced, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := install([]string{"--url", "https://s"}, env(r.env), spaced, &r.stdout); err == nil || !strings.Contains(err.Error(), spaced) {
+	if err := r.runAs(spaced, "--url", "https://s"); err == nil || !strings.Contains(err.Error(), spaced) {
 		t.Fatalf("install from %q: %v", spaced, err)
 	}
 }
@@ -555,6 +636,81 @@ func TestInstallUndrainsWhenTheRestartFails(t *testing.T) {
 	if strings.Join(*ops, ",") != "sessions,drain,undrain" {
 		t.Fatalf("ops asked: %q; want the running check, drain, then undrain", *ops)
 	}
+}
+
+// TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess: systemctl's restart answers success
+// but the unit's main process is the one it was before, so the restart reached no process of the
+// helper install drained: install sends undrain, so that helper takes sessions again, and returns
+// an error saying the helper was not restarted. Before, install returned nil and left the helper
+// refusing every registration (dispatch://INFRA-3950).
+func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
+	r := newInstallRig(t)
+	if err := os.WriteFile(r.calls+".same-process", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ops := r.fakeHelper(t, nil)
+	err := r.run("--url", "https://secrets.example")
+	if err == nil || !strings.Contains(err.Error(), "main process is still 4100") {
+		t.Fatalf("install whose restart left the main process: %v; want an error naming the unchanged process 4100", err)
+	}
+	if strings.Join(*ops, ",") != "sessions,drain,undrain" {
+		t.Fatalf("ops asked: %q; want the running check, drain, then undrain", *ops)
+	}
+}
+
+// TestInstallUndrainsWhenTheRestartOutlivesItsTimeout: a restart still running at its timeout
+// (helper.InstallRestartTimeout) is one install stops waiting for; with no job left queued for
+// the unit and its main process unchanged, install sends undrain and returns an error naming the
+// timeout, well before the restart would have returned.
+func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
+	r := newInstallRig(t)
+	shortenRestartTimeout(t)
+	for _, marker := range []string{".slow-restart", ".no-queued-job"} {
+		if err := os.WriteFile(r.calls+marker, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops := r.fakeHelper(t, nil)
+	started := time.Now()
+	err := r.run("--url", "https://secrets.example")
+	if took := time.Since(started); took > 10*time.Second {
+		t.Fatalf("install waited %s for a restart its timeout is 200ms", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
+		t.Fatalf("install whose restart outlived its timeout: %v; want an error naming the 200ms timeout", err)
+	}
+	if strings.Join(*ops, ",") != "sessions,drain,undrain" {
+		t.Fatalf("ops asked: %q; want the running check, drain, then undrain", *ops)
+	}
+}
+
+// TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued: killing systemctl at the timeout
+// leaves systemd's restart job queued for the unit. An undrain then would let a session register
+// on the helper that job is about to stop, and lose its grants when it does, which is what the
+// drain is for; so install sends no undrain while a job for the unit is queued, says so, and
+// leaves the drain to end with the restart or at the helper's own bound.
+func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
+	r := newInstallRig(t)
+	shortenRestartTimeout(t)
+	if err := os.WriteFile(r.calls+".slow-restart", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ops := r.fakeHelper(t, nil)
+	err := r.run("--url", "https://secrets.example")
+	if strings.Join(*ops, ",") != "sessions,drain" {
+		t.Fatalf("ops asked: %q; want the running check and drain, and no undrain while job 7 is queued", *ops)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") || !strings.Contains(err.Error(), "job 7") {
+		t.Fatalf("install whose timed-out restart is still queued: %v; want an error naming the timeout and the queued job 7", err)
+	}
+}
+
+// shortenRestartTimeout sets install's restart timeout to 200 ms for the test.
+func shortenRestartTimeout(t *testing.T) {
+	t.Helper()
+	previous := restartTimeout
+	restartTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { restartTimeout = previous })
 }
 
 // TestInstallNeverRestartsWhenASessionArrivesBeforeTheDrain: the running check finds no sessions,

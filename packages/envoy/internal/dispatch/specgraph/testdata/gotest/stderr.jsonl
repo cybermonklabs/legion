@@ -1,0 +1,15 @@
+{"Time":"2026-11-16T16:19:28.15514727Z","Action":"start","Package":"example.com/acme/gotest/stderr"}
+{"Time":"2026-11-16T16:19:28.175697212Z","Action":"run","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenFails"}
+{"Time":"2026-11-16T16:19:28.175765559Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenFails","Output":"=== RUN   TestPrintsTheKillLineOnStandardErrorThenFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:28.176286432Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenFails","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:28.176303468Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenFails","Output":"    stderr_test.go:13: fails for real\n","OutputType":"error"}
+{"Time":"2026-11-16T16:19:28.176312708Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenFails","Output":"--- FAIL: TestPrintsTheKillLineOnStandardErrorThenFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:28.17631672Z","Action":"fail","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:28.176323682Z","Action":"run","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenPasses"}
+{"Time":"2026-11-16T16:19:28.176326223Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenPasses","Output":"=== RUN   TestPrintsTheKillLineOnStandardErrorThenPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:28.17632996Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenPasses","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:28.176332603Z","Action":"output","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenPasses","Output":"--- PASS: TestPrintsTheKillLineOnStandardErrorThenPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:28.176337128Z","Action":"pass","Package":"example.com/acme/gotest/stderr","Test":"TestPrintsTheKillLineOnStandardErrorThenPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:28.176340167Z","Action":"output","Package":"example.com/acme/gotest/stderr","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:28.180521556Z","Action":"output","Package":"example.com/acme/gotest/stderr","Output":"FAIL\texample.com/acme/gotest/stderr\t0.025s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:28.180588094Z","Action":"fail","Package":"example.com/acme/gotest/stderr","Elapsed":0.025}

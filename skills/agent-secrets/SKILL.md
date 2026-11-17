@@ -74,12 +74,6 @@ agent-secrets LEGION_SLACK_BOT_TOKEN -- \
   sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
 
-The repository uses the same form for a GitHub App token in `docs/deployment.md`:
-
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason=… -- sh -c 'printf %s "$LEGION_IMPLEMENT_APP"'
-```
-
 ## A secret behind the airlock
 
 Your deployment can hold a secret's value back and give your command a stand-in. You see it in the
@@ -130,13 +124,42 @@ Your transcript keeps everything a command prints.
 
 - Never echo or print the value, and never run `curl -v`, `curl --trace` or a shell with `set -x`
   around it: each of those writes the header, and so the value, to your output.
-- Check a value's shape by its length and its prefix alone. For a secret behind the airlock, that
-  reads the placeholder's shape and not the value's:
+- Check a plain value's shape by its length and its prefix alone:
 
   ```sh
   agent-secrets NAME --reason 'check the shape of this credential' -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'
   ```
 
+- A value may be a JSON document, with the credential one level down or deeper: a GitHub App
+  secret asked for without `--github-token` is the JSON object of installations, and its tokens
+  are inside it. Check a JSON value's shape by its key paths and the length of each leaf, and
+  never by printing a leaf. A probe that masks one key prints every other key's value, the
+  nested ones too, so print no value at all, masked or not. These print the key paths, then each
+  leaf's path with its length. For a value that is not JSON, jq exits 5 and writes
+  `jq: error (at <unknown>): the value is not JSON` to stderr (jaq writes
+  `Error: "the value is not JSON"`), and nothing of the value: `try … catch` keeps jq's own parse
+  error out, which quotes the text (`… (while parsing '<the value>')`):
+
+  ```sh
+  agent-secrets NAME --reason 'check the shape of this credential' -- \
+    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") | join(".")]'
+  agent-secrets NAME --reason 'check the shape of this credential' -- \
+    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") as $p | {path: ($p | join(".")), length: (getpath($p) | tostring | length)}]'
+  ```
+
+- Take a credential out of a JSON value inside the command, and pass it on there without
+  printing it. `jq -e` exits 1 when the path holds nothing, so the command stops rather than
+  sending an empty credential:
+
+  ```sh
+  agent-secrets NAME --reason '…' -- sh -c '
+    token=$(printf %s "$NAME" | jq -er ".path.to.token" 2>/dev/null) || { echo "no token at .path.to.token" >&2; exit 1; }
+    curl -sS -H "Authorization: Bearer $token" https://api.example.com/'
+  ```
+
+  For a GitHub App secret, `--github-owner <account> --github-token` hands the command that one
+  account's token under the secret's name, with no JSON to take apart.
+- For a secret behind the airlock, every one of these reads the placeholder and not the value.
 - Compare two values only as equal or not equal. Never print, slice or diff their characters.
 
 ## Read the answer, not the status alone
@@ -155,9 +178,10 @@ after it means the command could not start, and the status is 1.
 Without the grant line the status is the client's own:
 
 - **1** — a refusal or a failure that the message names: a name the broker does not serve
-  (`UNKNOWN_SECRET`), a broker it cannot reach, a machine that is not logged in to the broker, a
-  request cancelled or expired, `REQUEST_PENDING`, a grant that is no longer live, or a command
-  that is not on `PATH`.
+  (`UNKNOWN_SECRET`), a secret that waits for its first value (`PENDING_VALUE`), a broker it cannot
+  reach, a machine that is not logged in to the broker, a request cancelled or expired,
+  `REQUEST_PENDING`, a grant that is no longer live, or a command that is not on `PATH`, which is
+  refused before the broker is asked anything, so it reaches no approver.
 - **2** — a usage error: no broker identity at all (no key in the key dir and no helper socket), no
   `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client refuses.
 - **75** — the request still waits for a person. The message names who decides it, where, and the
@@ -211,6 +235,17 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
   secret exists is recorded against your session with the reason you signed, and it reaches a
   person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
+- `PENDING_VALUE` is not final: the secret exists, and its owner is storing its value with
+  `agent-secrets secret create` now. No request was made and no approver asked. Ask again in a few
+  minutes. After ten minutes the broker stops calling it pending and refuses the name
+  `UNKNOWN_SECRET`: the create that made it deletes it when its prompt ends, at ten minutes or,
+  where its owner was still typing then, when that entry ends; a create that was killed deletes
+  nothing, and the secret stays in the store with no value. Tell its
+  owner, who sees it as `versions: none` in `agent-secrets secret show NAME`. The owner frees the
+  name with `gcloud secrets delete <id> --project <project number>` (`<id>` is the part after
+  `secrets/` of the `secret_name` that `show` prints), or stores the value with
+  `agent-secrets secret set NAME`. `agent-secrets secret delete NAME` only schedules the deletion
+  30 days out, and until then the name stays taken, so the next `secret create` of it is refused.
 - A secret that a service owns goes to that service's own pods and VMs and to nothing else:
   `Evaluate` in `packages/envoy/internal/broker/policy/policy.go` grants a service-owned secret at
   once when the session's own service is the secret's owner, and denies every other session, with
@@ -253,7 +288,10 @@ the Application Default Credentials, else the gcloud login; on AWS, `--profile`,
 the email of the person the credential names, and is refused where it names none, as a token
 minted for `cloud-platform` alone does: give `--owner <email>` there. Both read the value from
 standard input or from a prompt with echo off, never from an argument. Type it at the prompt, so it
-reaches no shell history.
+reaches no shell history. On Google Cloud, `create` makes the secret before it asks for the value,
+so a store that refuses the create asks for none. Until the value is added, a failure or a signal
+deletes that empty secret again, except where the store's answer leaves open whether it stored the
+value: then `create` keeps the secret, exits 1, and names `agent-secrets secret show NAME` to check.
 
 ## A worked example: one page of a Slack thread
 

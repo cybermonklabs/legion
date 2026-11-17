@@ -21,6 +21,7 @@ import {
   brokerTokenClient,
   IDENTITY_VAR,
   MACHINE_AUDIENCE_VAR,
+  PROJECTS_VAR,
   SESSION_VAR,
 } from "../environment";
 import { METADATA_HOST_VAR } from "../metadata-identity";
@@ -40,6 +41,7 @@ import {
   ACTOR_TOKEN_TYPE_MACHINE,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
   FORM_SESSION,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   SUBJECT_TOKEN_TYPE_PERSON,
@@ -149,6 +151,17 @@ test("with a sign-in, the trade is the person's: their subject, the machine's ac
   // The broker refuses a person's trade that declines, so the parameter is left out.
   expect(form?.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
   expect(form?.get(FORM_SESSION)).toBe("ses_01a9");
+});
+
+test("a person's trade names the projects AGENT_SECRETS_PROJECTS lists, sorted, and names none when it lists none", async () => {
+  const { broker, issuer } = await stubs();
+  const env = await box(broker.url, issuer.url, [await signedIn(PERSON, { client_id: CLIENT_ID })]);
+  await (await clientOf({ ...env, [PROJECTS_VAR]: " PUB  PRIV " }, "ses_01a9")).token();
+  await (await clientOf(env, "ses_01a9")).token();
+  expect(broker.trades.map((trade) => trade.form.get(FORM_PROJECTS))).toEqual(["PRIV PUB", null]);
+  // A list that is no list stops the factory, naming the variable, rather than trading for fewer
+  // projects than the session was started with.
+  expect((await refusalOf({ ...env, [PROJECTS_VAR]: "priv" }))?.message).toContain(PROJECTS_VAR);
 });
 
 test("with no session of its own, the person trades under the sign-in's name, never AGENT_SECRETS_SESSION", async () => {

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { CorpusError, listOf, recordOf, stringOf } from "./corpus-io";
 import type { ExcludedCase, SliceTargets, UndrawableKind } from "./draw";
-import type { IssueFacts } from "./never-decide";
+import type { IssueFacts, NeverDecideSource } from "./never-decide";
 import type { NearDuplicateJoin, ParentChange, TreeOutcome } from "./trees";
 
 /**
@@ -70,6 +70,14 @@ export interface DrawRule {
   cached: number;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * How many of the rule's answers each model gave, by the model each answer says served it:
+   * `the issue's facts` for the kind that takes no call, `none` for an answer naming no model.
+   * A draw written before draws recorded it has none.
+   */
+  servedModels?: Record<string, number>;
+  /** One line per case the rule read: where its answer came from and the model that served it. */
+  answers?: { caseId: string; source: NeverDecideSource; servedModel: string | null }[];
   /**
    * What was done to the text the rule was handed, and the bound under which that stops
    * holding. A reader of this draw meets the rule's answers in `excluded.held` and may take

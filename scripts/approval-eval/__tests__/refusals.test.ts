@@ -145,6 +145,7 @@ function endpoint(unreadable: string | null = null): (ask: ClaudeAsk) => Promise
       text,
       probabilities: null,
       confidence: null,
+      servedModel: ask.model,
       inputTokens: 900,
       outputTokens: 30,
       latencyMs: 5,

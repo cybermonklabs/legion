@@ -23,7 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -135,7 +135,7 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 // wants tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
-	return testpg.DatabaseOn(t, serverURL(t), "broker_test")
+	return testdb.DatabaseOn(t, serverURL(t), "broker_test")
 }
 
 func admin(t testing.TB, databaseURL, statement string) {

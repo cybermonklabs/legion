@@ -255,7 +255,9 @@ With `authCallout`, the server admits every client that is not one of its users 
 service (dispatch://INFRA-840), which reads the client's token and answers with that connection's
 grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
 block inside the authorization block, whose `auth_users` is the key of every user above, the
-session user's included (a hub with `authCallout` has no listener user, below). A static user
+session user's included (a hub with `authCallout` has no listener user, below). After the
+authorization block come the ping lines, `ping_interval: "20s"` and `ping_max: 2`, so a hung
+replica of the auth service leaves the callout's queue group within 80 s. A static user
 connects by its seed and the session user's client with no credential, and neither reaches the
 callout. The authorization block sets no `timeout`, so nats-server's
 default authorization timeout of 2 s stands, and the auth service must answer within 1.5 s:
@@ -979,19 +981,49 @@ The callout is the third exception. nats-server 2.15.1 refuses a whole reload th
 changes `auth_callout`, logging `config reload not supported for AuthCallout`
 (`gcp/clusteredhub_callout_live_test.go` measures it, with a grant change on the same server as the
 control that reloads), and `auth_users` lists every user's key, so adding or removing a user changes
-it too. The hub therefore writes the SHA-256 of `auth.conf`'s callout lines, the `auth_callout`
-block (there is no `timeout` line), into the hub pods' annotation
+it too. The ping lines that follow the authorization block beside a callout (the README's
+[NATS authorization](../README.md#nats-authorization)) come and go only with that block, so the one
+reload of them the server would take is an edit of their value (`server/reload.go:1751-1754`).
+`pingIntervalOption.Apply` only logs (`server/reload.go:670-672`), and `setPingTimer` reads the
+interval when it re-arms (`client.go:6037-6050`), so each connection would take such an edit at
+its timer's next re-arm, within one interval of 20 s. The hub writes the SHA-256 of `auth.conf`'s
+callout lines, `core.Authorization.CalloutLines()` (the `auth_callout` block, which has no
+`timeout` line, and the ping lines), into the hub pods' annotation
 `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the pods, by the
-same depends-on order as the session user's roll, on any such change: a pod restarted on the old
+same depends-on order as the session user's roll, on a change of either: a pod restarted on the old
 `auth.conf` would keep the old callout, and the reload that later brings the new one would be
-refused. A change of a user's grant or name alone leaves the lines and the pods as they were, and
-the reloader applies it.
+refused. The ping lines are in the digest so that every server applies an edit of them at one known
+moment, its pod's restart, with every connection's timer started fresh. The routes' own ping in
+`nats.conf`'s `cluster` block
+([below](#two-ports-guarded-by-the-networkpolicy-alone)) appears and goes with the callout, so it
+always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
+as they were, and the reloader applies it. A
+`gcp:NatsHub` needs none of this: its configuration is the instance template's `user-data`
+(`gcp/natshub.go:795`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
+`RECREATE`: `gcp/natshub.go:822-828`), so any configuration change restarts its server already.
 
 ### Two ports, guarded by the NetworkPolicy alone
 
 The servers' routes carry no credential: any process that reaches a hub pod's port 6222 can join
 the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the hub pods alone, and that is
 the routes' only guard.
+
+Beside a callout, the routes keep their own ping. The top-level `ping_interval` of 20 s the callout
+adds to `auth.conf` would also govern the routes, since a route reads `cluster.ping_interval` and
+falls back to the top-level value (`client.go:5957-5964`, `:6042-6049`, `:7124`). A route is pinged
+on every tick whether or not it carries traffic (`:5968-5970`), and a PING queues behind pending
+data. So a route whose queue takes longer than 2 to 3 intervals to drain is closed as stale and
+loses what is in transit: a measurement with a 3 s interval lost 30 of 40 MB. Beside a callout
+only, the hub's chart values therefore merge `ping_interval: "30s"` and `ping_max: 2` into
+`nats.conf`'s `cluster` block (`config.cluster.merge`). These are the routes' effective values
+without a callout: the 2-minute default capped at `routeMaxPingInterval`, 30 s
+(`server/route.go:144`, `:152`; `client.go:6005-6010`), and the default `ping_max` of 2
+(`const.go:123`; a route falls back to the top-level value, `client.go:5983-5986`). Only client
+connections get the 20 s ping. Without a callout the cluster block is as it was. `gcp:NatsHub` and
+the AWS service run one server each, with no routes. `gcp/clusteredhub_ping_live_test.go` runs two
+servers on the rendered configuration, the route through a proxy limited to 0.4 MB/s: with the pin,
+a 40 MB burst does not close the route as stale within 60 s of the burst's start, and without it
+the top-level 20 s ping does, within 60.5 s of the moment the sending server has queued the burst.
 
 The session listener's `/v1` on 9020 is the second port a policy guards. That listener carries
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no `ENVOY_API_TOKEN`, and the component takes no token

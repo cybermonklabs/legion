@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  The broker treats a secret `agent-secrets secret create` made and has not yet filled as waiting
+  for its value (`pending-value`), not as unservable: one that carries the create's
+  `agent-secrets-create` label, holds no version at all, and was created less than ten minutes ago.
+  It serves it to nobody, writes one INFO line, `agent secret policy waiting for a value`, when it
+  first finds it, and counts it in no `broker_unservable_secrets` series. A request for it is
+  refused `PENDING_VALUE` (400), which names the secret and says to ask again once its owner stores
+  the value, with no request recorded and no approver asked; `agent-secrets` exits 1 on it. A reread
+  of it answers `reason=pending-value`. Ten minutes after its creation the create that made it
+  gives up its read of the value and deletes it, or, where an entry was under way then, deletes it
+  when that entry ends: at Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C
+  typed outside a paste where it still sends SIGINT. A secret still without a value past the ten
+  minutes, and any secret without the label or with a version,
+  is refused `no-current-value`, with the ERROR line and the series that refusal has always had.
+  The broker deletes nothing itself: a create that was killed leaves its secret in the store with
+  no version, refused from then on, until its owner clears it or stores its value.

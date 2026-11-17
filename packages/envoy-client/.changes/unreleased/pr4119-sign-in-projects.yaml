@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  A session that trades a person's sign-in at the secrets broker names the projects
+  `AGENT_SECRETS_PROJECTS` lists, project keys separated by spaces, and the broker's token names
+  them only when Dispatch says the person may see each one. A trade naming one the person may not
+  see is refused, naming that project. A value that is no list fails the call naming the
+  variable. Unset, the trade names no project, as before; the machine's own trade never names one.
+custom:
+    Issue: pr4119

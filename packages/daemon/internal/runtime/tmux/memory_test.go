@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -87,25 +86,30 @@ func TestAMemoryGroupPaneNamesTheMemoryOverlaysLast(t *testing.T) {
 	if !slices.Contains(pairs, want) {
 		t.Errorf("the memory pane's pairs = %q, want %q", pairs, want)
 	}
-	command := argv[len(argv)-1]
-	if !strings.Contains(command, "$(cat "+instructions+")") {
-		t.Errorf("the memory pane's command =\n%s\nwant it to `cat` %s", command, instructions)
+	want = "You are the stand-in.\n\n# Memory instructions (omp)\n\nRead the tree's memory."
+	if prompt := panePrompt(t, claim.RoleTester, argv); prompt != want {
+		t.Errorf("the memory pane's system prompt =\n%s\nwant\n%s", prompt, want)
 	}
 }
 
 // A launch for an issue whose tree carries no memory group builds the pane command a deployment
-// with no memory block at all builds, byte for byte: the block reaches only the panes of the trees
-// the draw gave it, so moving a project onto memory changes no other pane. Memory before the
-// block and after it are the same pane.
+// with no memory block at all builds, byte for byte, and writes it the same system prompt: the
+// block reaches only the panes of the trees the draw gave it, so moving a project onto memory
+// changes no other pane. Memory before the block and after it are the same pane.
 func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePane(t *testing.T) {
 	stateDir := t.TempDir()
 	// One spec for both launches, so the two differ by the runtime's memory overlays alone.
 	spec := memoryRuntime(t, stateDir, nil).spec(t, claim.RoleTester)
 
+	// Both launches write the one prompt file of the claim, so each is read before the next.
 	without, withoutPairs := newWindow(t, memoryRuntime(t, stateDir, nil), spec)
+	withoutPrompt := panePrompt(t, claim.RoleTester, without)
 	with, withPairs := newWindow(t, memoryRuntime(t, stateDir, memoryOverlays), spec)
 	if !slices.Equal(with, without) {
 		t.Errorf("a no-memory tree's pane under the block =\n%q\nwant the one a daemon with no block builds:\n%q", with, without)
+	}
+	if withPrompt := panePrompt(t, claim.RoleTester, with); withPrompt != withoutPrompt {
+		t.Errorf("a no-memory tree's system prompt under the block =\n%s\nwant the one a daemon with no block writes:\n%s", withPrompt, withoutPrompt)
 	}
 	want := "PI_CONFIG_FILES=/etc/legion-operator/overlay.yml:/etc/legion-operator/tester.yml"
 	for _, pairs := range [][]string{withoutPairs, withPairs} {

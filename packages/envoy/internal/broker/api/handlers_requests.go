@@ -117,6 +117,11 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, policy.ErrUnknownSecret):
 		writeError(w, http.StatusBadRequest, "UNKNOWN_SECRET", err.Error())
 		return
+	case errors.Is(err, policy.ErrPendingValue):
+		// A secret `agent-secrets secret create` made and has not yet filled: not final, unlike
+		// UNKNOWN_SECRET, so the caller may ask again once the owner stores the value.
+		writeError(w, http.StatusBadRequest, "PENDING_VALUE", err.Error())
+		return
 	case writeNarrowingRefusal(w, err):
 		// Create refused the narrowing the request carries, before anybody was asked to approve
 		// it. The release route answers those refusals through the same helper.

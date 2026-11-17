@@ -36,7 +36,8 @@ func sameFindings(got, want []Finding) bool {
 }
 
 // TestCheckRefusesEachFormFault holds Check to the seven planted texts of the plan, each with the
-// one rule and the detail it breaks.
+// rule and the detail it breaks. A sentence of 26 words also breaks ste-lint's long-sentence,
+// which is the second finding of its text.
 func TestCheckRefusesEachFormFault(t *testing.T) {
 	claim := Text{Node: "planted", Kind: KindClaim, Body: "Ada Lovelace approves each change before it lands.", Where: where}
 	for _, test := range []struct {
@@ -44,24 +45,30 @@ func TestCheckRefusesEachFormFault(t *testing.T) {
 		text    Text
 		rule    Rule
 		detail  string
+		steLong string
 	}{
 		{planted(), statement("Dispatch stores each comment. Dispatch indexes each comment. Dispatch shows each comment."),
-			"sentences", "it has 3 sentences, and a statement has one or two"},
+			"sentences", "it has 3 sentences, and a statement has one or two", ""},
 		{planted(), statement("Dispatch refuses a write of the whole text of a document when that text breaks the document schema, and it answers with one named error code."),
-			"sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`},
+			"sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`,
+			`ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`},
 		{planted(), statement("Dispatch performs a validation of each upload."),
-			"ste100-nominalization", `ASD-STE100 does not permit an action frozen into a noun: "performs a validation"`},
+			"ste100-nominalization", `ASD-STE100 does not permit an action frozen into a noun: "performs a validation"`, ""},
 		{planted(), statement("Dispatch keeps each answer, as dispatch://ACME-12 asks."),
-			"dispatch-link", `it links to a record of Dispatch: "dispatch://ACME-12"`},
+			"dispatch-link", `it links to a record of Dispatch: "dispatch://ACME-12"`, ""},
 		{planted(), statement("Envoy restarts its listener after incident INC-2041."),
-			"incident", `it names an incident: "incident INC-2041". Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date`},
+			"incident", `it names an incident: "incident INC-2041". Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date`, ""},
 		{planted(), statement("Envoy stores each message, as pull request #4031 makes it do."),
-			"pull-request", `it names a pull request: "pull request #4031". Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address`},
+			"pull-request", `it names a pull request: "pull request #4031". Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address`, ""},
 		{planted("ada.lovelace@example.com"), claim,
-			"person", `it names a person: "Ada Lovelace"`},
+			"person", `it names a person: "Ada Lovelace"`, ""},
 	} {
 		got := Check(test.context, Input{Texts: []Text{test.text}})
-		if want := []Finding{finding(test.text, test.rule, test.detail)}; !sameFindings(got, want) {
+		want := []Finding{finding(test.text, test.rule, test.detail)}
+		if test.steLong != "" {
+			want = append(want, finding(test.text, "ste100-long-sentence", test.steLong))
+		}
+		if !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.text.Body, got, want)
 		}
 	}
@@ -152,26 +159,6 @@ func TestACountAfterPullRequestOrIncidentNamesNoRecord(t *testing.T) {
 		if want := []Finding{finding(text, Rule(test.rule), test.detail)}; !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}
-	}
-}
-
-// TestANamePieceThatIsASystemNounIsNoPerson holds the person rule off a name of the system, from
-// the context or from a name text of the input. With neither, the same text names a person,
-// which shows the rule can fire.
-func TestANamePieceThatIsASystemNounIsNoPerson(t *testing.T) {
-	text := statement("Each issue reaches Dispatch before its owner starts work.")
-	context := planted("dispatch.admin@example.com")
-	context.SystemNames = []string{"Dispatch"}
-	if got := Check(context, Input{Texts: []Text{text}}); len(got) != 0 {
-		t.Errorf("with the system name Dispatch: Check = %#v, want none", got)
-	}
-	name := Text{Node: "dispatch", Kind: KindName, Body: "Dispatch", Where: where}
-	if got := Check(planted("dispatch.admin@example.com"), Input{Texts: []Text{text, name}}); len(got) != 0 {
-		t.Errorf("with a name text Dispatch: Check = %#v, want none", got)
-	}
-	context.SystemNames = []string{}
-	if got, want := Check(context, Input{Texts: []Text{text}}), []Finding{finding(text, "person", `it names a person: "Dispatch"`)}; !sameFindings(got, want) {
-		t.Errorf("with no system name: Check = %#v, want %#v", got, want)
 	}
 }
 

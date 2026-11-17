@@ -585,10 +585,12 @@ type Registry struct {
 	// Save writes carries it, and SameBoot compares a record's against it; a test sets it
 	// before the registry is shared with any goroutine.
 	bootID string
-	// draining is set by Drain on a registry with no sessions and cleared only by Undrain: the
-	// helper is about to be restarted, and a session registered now would lose its grants to the
-	// restart.
+	// draining is set by Drain on a registry with no sessions and cleared by Undrain, or by
+	// EndDrain once that drain's bound passes: the helper is about to be restarted, and a session
+	// registered now would lose its grants to the restart. drain numbers the drains that set it,
+	// so a bound ends its own drain and never a later one.
 	draining bool
+	drain    uint64
 }
 
 func NewRegistry(path string) *Registry {
@@ -935,18 +937,21 @@ func (r *Registry) AdmitRoot(pid int, sessionID string, build func(rec Record, k
 
 // Drain returns the live sessions and, only when there are none, marks the registry draining,
 // atomically with the check, so no session can register between an empty answer and the
-// restart it licenses.
-func (r *Registry) Drain() []*Session {
+// restart it licenses. It also returns the token of the drain it started, which EndDrain takes,
+// and 0 when it found sessions and started none.
+func (r *Registry) Drain() (live []*Session, drain uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]*Session, 0, len(r.byPID))
+	live = make([]*Session, 0, len(r.byPID))
 	for _, s := range r.byPID {
-		out = append(out, s)
+		live = append(live, s)
 	}
-	if len(out) == 0 {
+	if len(live) == 0 {
+		r.drain++
 		r.draining = true
+		return live, r.drain
 	}
-	return out
+	return live, 0
 }
 
 // Undrain clears what Drain set, for a restart that did not happen.
@@ -954,6 +959,19 @@ func (r *Registry) Undrain() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.draining = false
+}
+
+// EndDrain clears what the drain whose token is drain set, when that drain is the one still
+// holding the registry, and reports whether it did: false once it was undrained, ended already,
+// or followed by another drain, whose own bound ends it.
+func (r *Registry) EndDrain(drain uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.draining || r.drain != drain {
+		return false
+	}
+	r.draining = false
+	return true
 }
 
 // Draining reports whether Drain has marked the registry draining.

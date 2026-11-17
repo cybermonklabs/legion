@@ -1,17 +1,21 @@
 package api
 
 import (
+	"net/http"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 // The carry of an approval writes an approval in the person's name, so the form gate that it asks
 // (carryBreaksForm) judges the terms of the version too (R50): a version that defines a term of
-// the list again, or that defines one term twice, takes no carried approval. A line in the form of
-// a term line is a definition anywhere outside a code fence, an option of a decision block among
-// them. Under Terms, the question of a decision block is a line that is no term line (rule
-// term-line), so the gate refuses such a version whatever its options say. Under another heading,
-// only the terms rule can refuse it, which is what the rows under "## Wind" show.
+// the list again, or that defines one term twice, takes no carried approval. A definition is a
+// term line under Terms, an option of a decision block under Terms among them. Under Terms, the
+// question of a decision block is a line that is no term line (rule term-line), so the gate
+// refuses such a version whatever its options say. Under another heading, an option in the form
+// of a term line is no definition, and only the terms rule refuses it, when it names a defined
+// term, which is what the rows under "## Wind" show.
 
 // carriedTermsBlock is a decision block whose options are the lines options.
 func carriedTermsBlock(question string, options ...string) string {
@@ -104,21 +108,23 @@ func TestTheAnswerCarryLetsNoSecondDefinitionOfAListedTermThrough(t *testing.T) 
 // The tester's TestTheCarryOfAnApprovalLetsNoDocumentDefineATermTwiceFresh: a decision block
 // whose two options are two definitions of one new term. The version that the answer writes
 // defines the term two times, so it takes no carried approval: under Terms, as the tester wrote
-// it, and under "## Wind". The control: under "## Wind", two options of two names carry the
-// approval as before.
+// it. Under "## Wind", an option that names a term that the spec defines under Terms carries no
+// approval either. The controls: under "## Wind", two options of one name that nothing defines
+// are prose, and two options of two names, carry the approval as before.
 func TestTheAnswerCarryApprovesNoVersionThatDefinesATermTwice(t *testing.T) {
 	cold := termLine("bora", "The cold wind that falls from one mountain.")
 	for _, c := range []struct {
-		why           string
+		why, term     string
 		second        string
 		wind, carries bool
 	}{
-		{"bora twice under Terms", termLine("bora", "The dry wind of one winter coast."), false, false},
-		{"bora twice under Wind", termLine("bora", "The dry wind of one winter coast."), true, false},
-		{"control, bora and foehn under Wind", termLine("foehn", "The dry wind of one winter coast."), true, true},
+		{"bora twice under Terms", "levanter", termLine("bora", "The dry wind of one winter coast."), false, false},
+		{"bora under Terms of the spec, and bora as an option under Wind", "bora", termLine("foehn", "The dry wind of one winter coast."), true, false},
+		{"control, bora twice under Wind, which nothing defines", "levanter", termLine("bora", "The dry wind of one winter coast."), true, true},
+		{"control, bora and foehn under Wind", "levanter", termLine("foehn", "The dry wind of one winter coast."), true, true},
 	} {
 		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
-		x := createFormIssue(t, tree.handler, tree.root, "Approved first", carriedSpec("levanter", "The east wind of one sea.", c.wind))
+		x := createFormIssue(t, tree.handler, tree.root, "Approved first", carriedSpec(c.term, "The east wind of one sea.", c.wind))
 		approveFormDocument(t, tree.handler, x.PrimaryArtifactID)
 		answerAtTheEnd(t, tree, x, "bora", cold, c.second)
 		if c.carries {
@@ -126,5 +132,75 @@ func TestTheAnswerCarryApprovesNoVersionThatDefinesATermTwice(t *testing.T) {
 			continue
 		}
 		requireNoCarryOverATerm(t, tree, x, c.why)
+	}
+}
+
+// The carry judges the terms of each document of the request that it would answer
+// (approvalDocuments). The person approves a spec and its Verification document outside every root,
+// and the Verification document defines a term under Terms. The agent changes the spec and
+// requests approval of both. Under the root, B is approved with lease, and the issue then moves
+// under the root, so the Verification document's lease is a second definition of a listed term.
+// The agent's edit puts the approved spec text back with a decision block, and the person answers
+// it: the carry would approve that version of the spec and answer the request, which names the
+// Verification document too. So it carries nothing, and the request stays open. The controls:
+// the person's own Approve of the request is refused for the Verification document, and the same
+// steps with a new term, sirocco, carry the spec's approval and answer the request.
+func TestTheCarryJudgesTheTermsOfEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
+	for _, test := range []struct {
+		term   string
+		breaks bool
+	}{
+		{"lease", true},
+		{"sirocco", false},
+	} {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
+		issue := createFormIssue(t, tree.handler, tree.outside, "Keep each message", carrySpec("Dispatch keeps each message."))
+		verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md",
+			"# Verification\n\n## Terms\n\n- "+termLine(test.term, otherLease)+"\n")
+		reviewDocument(t, tree.handler, issue.PrimaryArtifactID, "alice", "approved", "")
+		reviewDocument(t, tree.handler, verification.ID, "alice", "approved", "")
+		agentEdit(t, tree.handler, issue.PrimaryArtifactID, 2, replaceOp("Dispatch keeps each message.", "Dispatch stores each message."))
+		request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true})).Ask
+		if len(request.Approval.Documents) != 2 {
+			t.Fatalf("%s: the request names %+v, want the spec and the Verification document", test.term, request.Approval.Documents)
+		}
+		listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+		approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+		reparentFormIssue(t, tree.handler, issue.Key, tree.root)
+		if got, count := listedOf(t, tree.handler, listed.PrimaryArtifactID, "lease"); count != 1 || got.Issue != listed.Key {
+			t.Fatalf("%s: the list holds lease %d times, as %#v; want once, from %s", test.term, count, got, listed.Key)
+		}
+		if test.breaks {
+			refused := answerFormApproval(t, tree.handler, request.ID, docs.ApprovalOptionApprove, "")
+			if refused.Code != http.StatusConflict {
+				t.Fatalf("control: the person's own Approve of the request: status=%d body=%s, want 409", refused.Code, refused.Body.String())
+			}
+			body := decodeBody[specFormError](t, refused)
+			if body.Code != "SPEC_FORM" || len(body.Findings) != 1 || body.Findings[0].Document != "verification.md" ||
+				body.Findings[0].Rule != "term-second-definition" || body.Findings[0].Node != "lease" {
+				t.Fatalf("control: the person's own Approve of the request is refused with %+v, want the second definition of lease in verification.md", body)
+			}
+		}
+
+		agentEdit(t, tree.handler, issue.PrimaryArtifactID, 3, replaceOp("Dispatch stores each message.", "Dispatch keeps each message."),
+			map[string]string{"op": "insert", "after": "end", "markdown": waveAsk})
+		asks := indexedDecisionBlocks(t, tree.handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"wave": "How many regions take the first wave?"})
+		answerDecisionBlock(t, tree.handler, asks["wave"], "alice", []string{"Two"}, "", nil)
+		waitForArtifactVersion(t, tree.handler, issue.PrimaryArtifactID, 4)
+
+		state := readBlockAsk(t, tree.handler, request.ID).State
+		if !test.breaks {
+			requireCarriedReview(t, tree.handler, issue.PrimaryArtifactID, 4, 1, &request.ID)
+			if state != "answered" {
+				t.Fatalf("%s: the request after the carry is %q, want answered", test.term, state)
+			}
+			continue
+		}
+		if got := approvedVersions(t, tree, issue.PrimaryArtifactID); len(got) != 1 || got[0] != 1 {
+			t.Errorf("%s: the approved versions of the spec are %v; want only version 1, which the person approved", test.term, got)
+		}
+		if state != "open" {
+			t.Errorf("%s: the carry answered the request that names verification.md, which defines lease again: the request is %q, want open", test.term, state)
+		}
 	}
 }

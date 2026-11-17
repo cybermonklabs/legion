@@ -481,8 +481,9 @@ type PluginInstall struct {
 }
 
 // PromptParts are the pieces of the agent's system prompt, in the one order the runtime
-// concatenates them into exactly one `--append-system-prompt` word — one, because a second
-// occurrence of the flag replaces the first rather than adding to it: the role prompt files, the
+// concatenates them into exactly one text (ComposePrompt), which the agent reads from the one
+// file its one `--append-system-prompt` names — one, because a second occurrence of the flag
+// replaces the first rather than adding to it: the role prompt files, the
 // sentence that tells the agent which claim it is, the operator's deployment instructions, and
 // the instructions of each variant the launch runs in. VariantInstructionsPaths are the daemon's
 // own copies of those files, one per variant that names one, in the order the project's file

@@ -49,6 +49,13 @@ const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line
 // in any key. A refused authorization the caller fixes, not a mint failure the operator acts on.
 const NarrowingRefusedMessage = "broker: narrowing refused"
 
+// PendingLeftOutMessage is logged, at WARN, once for each pending record PendingForApprover
+// leaves out of an approver's list because its signed record does not verify for this broker:
+// most often "aud does not match", from a request signed for another BROKER_PUBLIC_URL, after
+// the public URL changed while it waited or when a second broker shares this database. It names
+// the record id and the reason. Every other record of the list is listed and can be decided.
+const PendingLeftOutMessage = "broker: a pending request's record does not verify for this broker; it is left out of the pending list"
+
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
 // rest.
@@ -1057,7 +1064,7 @@ type PendingSummary struct {
 // on), so that id is the one the enrollment holding the request names too. Which records are
 // pending comes from the requests rows, which move, so a moved card is listed once and the box it
 // moved off lists it no more.
-const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, '')
+const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, cr.expires_at, coalesce(req.session_id, ''), coalesce(enr.session_id, '')
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
@@ -1084,6 +1091,13 @@ const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, 
 // (store/migrations/0011_credential_requests_approver.up.sql): with 300,000 historical rows and
 // no index, this was one sequential scan of the whole table on every 15 s poll tick of every open
 // Dispatch tab (336 ms; LEGION-575's review).
+//
+// A record whose signed request does not verify for this broker — one signed for another
+// BROKER_PUBLIC_URL, after the public URL changed while it waited or when a second broker shares
+// this database — is left out of the list and logged once (leaveOut), and the list goes on. That
+// record can be decided by no broker that cannot verify it, and returning its error instead
+// answered 503 to the approval page and GET /v1/pending for every request of that approver until
+// the record expired, up to the whole pending window.
 func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]PendingSummary, error) {
 	rows, err := m.Store.Pool.Query(ctx, pendingForApproverQuery, record.CanonicalLogin(approver), record.AnyoneApprover)
 	if err != nil {
@@ -1093,21 +1107,14 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 	var out []PendingSummary
 	for rows.Next() {
 		var id, kind, canonical, requestSession, enrollmentSession string
-		var createdAt time.Time
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession); err != nil {
+		var createdAt, expiresAt time.Time
+		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &expiresAt, &requestSession, &enrollmentSession); err != nil {
 			return nil, err
 		}
-		body, err := record.ParseBody(canonical)
+		identifiers, err := m.requestedIdentifiers(canonical, createdAt)
 		if err != nil {
-			return nil, err
-		}
-		obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
-		if err != nil {
-			return nil, err
-		}
-		identifiers := make([]string, len(obj.Details))
-		for i, d := range obj.Details {
-			identifiers[i] = d.Identifier
+			m.leaveOut(id, kind, expiresAt, err)
+			continue
 		}
 		out = append(out, PendingSummary{
 			RecordID: id, Kind: kind, Identifiers: identifiers, RequestedAt: createdAt,
@@ -1115,6 +1122,63 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 		})
 	}
 	return out, rows.Err()
+}
+
+// requestedIdentifiers is what the record whose canonical body is canonical asks for, read from
+// the request object it embeds once that object verifies for this broker: its audience, its
+// signature and its time against when the record was written.
+func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) ([]string, error) {
+	body, err := record.ParseBody(canonical)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	if err != nil {
+		return nil, err
+	}
+	identifiers := make([]string, len(obj.Details))
+	for i, d := range obj.Details {
+		identifiers[i] = d.Identifier
+	}
+	return identifiers, nil
+}
+
+// leftOutRetention is how long past the last list that left a record out, and past the record's
+// own expiry, leaveOut remembers that it logged it. The list reads a pending record until the
+// sweeper ends it, which is after its expires_at, by up to BROKER_SWEEP_SECONDS (at most 60 s)
+// on a working sweeper, and the lists come every 15 s from each open Dispatch tab
+// (pendingForApproverQuery's doc comment). Ten minutes is far above both, so a record still being
+// listed is warned about once; a record listed again after ten quiet minutes is warned about once
+// more, which is news rather than noise.
+const leftOutRetention = 10 * time.Minute
+
+// leaveOut logs PendingLeftOutMessage for the record id the first time a list leaves it out, and
+// remembers it until the later of its expiry and leftOutRetention after this list, so a record
+// past its expiry that the sweeper has not ended yet is not warned about on every list. The
+// approval page polls every 15 s in every open tab, so a line per list would bury the one thing
+// it says. Each call first forgets the records past that time, which bounds what is kept by the
+// records left out within one pending window and the retention after it.
+func (m *Machine) leaveOut(id, kind string, expires time.Time, reason error) {
+	now := time.Now()
+	keep := now.Add(leftOutRetention)
+	if expires.After(keep) {
+		keep = expires
+	}
+	m.leftOutMu.Lock()
+	for logged, until := range m.leftOut {
+		if now.After(until) {
+			delete(m.leftOut, logged)
+		}
+	}
+	_, logged := m.leftOut[id]
+	if m.leftOut == nil {
+		m.leftOut = map[string]time.Time{}
+	}
+	m.leftOut[id] = keep
+	m.leftOutMu.Unlock()
+	if !logged {
+		slog.Warn(PendingLeftOutMessage, "record_id", id, "kind", kind, "reason", reason)
+	}
 }
 
 // RecordDecision is a decided credential-request record's own terminal event, for the broker's

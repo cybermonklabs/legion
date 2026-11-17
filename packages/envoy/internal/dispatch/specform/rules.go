@@ -27,20 +27,30 @@ const (
 // otherwise pass the rules of R49 unread.
 const ruleTermLine Rule = "term-line"
 
+// ruleUnreadable is the rule of a version that the parser refuses (UnreadableError.Finding): a
+// judgment that names the version cannot read its texts, so it refuses the version.
+const ruleUnreadable Rule = "unreadable"
+
 // termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
-// of a term line.
-const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+// of a term line, and the way out for a decision block, whose question line is such a line: the
+// block stands above the heading, and the chosen definition goes under it after the answer.
+const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+	`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
 const maxWords = 25
 
 // steRules is the words of each hard rule of ste-lint that the refusal names, by ste-lint's own
-// rule name. Its long-sentence is R49's sentence-words, and is not here.
+// rule name: all seven, so each hard finding of ste-lint is a finding of the form (R49). Its
+// long-sentence counts the words between two stops that white space follows, as ste-lint reads a
+// sentence, so it also refuses a text whose sentences sentence-words counts as short, such as two
+// sentences that a stop inside a quote ends.
 var steRules = map[string]string{
 	"semicolon":            "a semicolon",
 	"phrasal-verb":         "the phrasal verb",
 	"marketing-adjective":  "the marketing adjective",
 	"nominalization":       "an action frozen into a noun",
+	"long-sentence":        "a sentence of more than 25 words",
 	"synonym-rotation":     "two verbs for one action",
 	"dangling-conjunction": "a list item that ends with and or or",
 }
@@ -50,14 +60,20 @@ var (
 	// only dispatch:// and http(s):// references, so this one is this package's.
 	bareKey  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
 	recordID = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	// incident and pullRequest name a record only by a form that only a name has: "#" and digits,
-	// the word "number" and digits, an incident's key or date, and a pull request's
-	// <owner>/<repo>#<digits> or address. A bare number after the words is a count, such as
-	// "each pull request 10 minutes after", and names nothing.
-	incident    = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
-	pullRequest = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d+`)
-	email       = regexp.MustCompile(`[\w.+-]+@[\w-]+\.[\w.-]*[\w-]`)
-	handle      = regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`)
+	// incident and pullRequestName name a record only by a form that only a name has: "#" and
+	// digits, the word "number" and digits, an incident's key or date, and a pull request's
+	// <owner>/<repo>#<digits>. A bare number after the words is a count, such as "each pull request
+	// 10 minutes after", and names nothing. pullRequestAddress is the address of a pull request,
+	// the one form of a name that an address holds (its group 1): its host is github.com or
+	// www.github.com in any case, as a host has no case, at the start of the text or after a
+	// character that no host holds, so github.com at the end of another host names nothing.
+	incident           = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
+	pullRequestName    = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|#\d+`)
+	pullRequestAddress = regexp.MustCompile(`(?:^|[^\w.-])((?i:(?:www\.)?github\.com)/[\w.-]+/[\w.-]+/pull/\d+)`)
+	// email is an e-mail address: its domain's last label is letters, so a version after an at
+	// sign, as in "checker@v1.2.3", is no address.
+	email  = regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)
+	handle = regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`)
 )
 
 // incidentForms and pullRequestForms say, in a finding, which forms the two rules read as a name.
@@ -73,22 +89,34 @@ type broken struct {
 }
 
 // breaks is each rule of R49 that text breaks, once for each detail: the form rules for the
-// kinds that are prose of The Spec, then the four reference rules for every kind. A line under
-// Terms that is no term line (Kind line) breaks the one rule term-line, and a heading that reads
-// as Terms in another form (Kind heading) the one rule terms-heading, and no other.
-func breaks(c Context, people map[string]bool, text Text) []broken {
+// kinds that are prose of The Spec, on the words with code in code font (Body), then the four
+// reference rules for every kind, on the words exactly as the page shows them (Held.Shown), on
+// each title it holds, as words, and on each address it holds, as an address. A line under Terms
+// that is no term line (Kind line) breaks the one rule term-line, and a heading that reads as
+// Terms in another form (Kind heading) the one rule terms-heading, and no other. people is the
+// name of each signed-in person (peopleNames).
+func breaks(c Context, people [][]string, text Text) []broken {
 	switch text.Kind {
 	case KindLine:
 		return []broken{{ruleTermLine, termLineDetail}}
 	case KindHeading:
 		return []broken{{ruleTermsHeading, termsHeadingDetail}}
 	}
-	line := oneLine(text.Body)
 	var found []broken
-	if text.Kind != KindFailingExample && text.Kind != KindName {
-		found = append(found, formBreaks(text.Kind, line)...)
+	if text.Kind != KindFailingExample && text.Kind != KindName && text.Kind != KindTerm {
+		found = append(found, formBreaks(text.Kind, oneLine(text.Body))...)
 	}
-	found = append(found, referenceBreaks(c, people, line)...)
+	shown := text.Held.Shown
+	if shown == "" {
+		shown = text.Body
+	}
+	found = append(found, referenceBreaks(c, people, oneLine(shown), false)...)
+	for _, title := range text.Held.Titles {
+		found = append(found, referenceBreaks(c, people, oneLine(title), false)...)
+	}
+	for _, address := range text.Held.Addresses {
+		found = append(found, referenceBreaks(c, people, address, true)...)
+	}
 	seen := map[broken]bool{}
 	unique := found[:0]
 	for _, each := range found {
@@ -102,7 +130,7 @@ func breaks(c Context, people map[string]bool, text Text) []broken {
 
 // formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
 // sentence count of a statement and each sentence over maxWords, as sentencesOf reads the line,
-// and each hard finding of ste-lint.
+// and each hard finding of ste-lint, by its own rule name.
 func formBreaks(kind Kind, line string) []broken {
 	var found []broken
 	for _, word := range stopsWithNoSpace(line) {
@@ -119,9 +147,7 @@ func formBreaks(kind Kind, line string) []broken {
 		}
 	}
 	for _, finding := range ste.Lint(line) {
-		if words, ok := steRules[finding.Rule]; ok {
-			found = append(found, broken{Rule("ste100-" + finding.Rule), fmt.Sprintf("ASD-STE100 does not permit %s: %q", words, finding.Match)})
-		}
+		found = append(found, broken{Rule("ste100-" + finding.Rule), fmt.Sprintf("ASD-STE100 does not permit %s: %q", steRules[finding.Rule], finding.Match)})
 	}
 	return found
 }
@@ -138,8 +164,12 @@ type span struct {
 }
 
 // referenceBreaks is each link to a record of Dispatch, incident, pull request and person that
-// line names, rule by rule, each rule's in the order of the line.
-func referenceBreaks(c Context, people map[string]bool, line string) []broken {
+// line names, rule by rule, each rule's in the order of the line. A line that is an address (the
+// address of a link or an image) names a record only by the forms that an address holds: a
+// reference to a record of Dispatch, the address of a pull request and an email address. A form
+// of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
+// nor in a reference that words hold, such as "https://example.com/guide#12".
+func referenceBreaks(c Context, people [][]string, line string, address bool) []broken {
 	var references, links []span
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
 		raw := referenceAt(line, located.Offset)
@@ -149,12 +179,7 @@ func referenceBreaks(c Context, people map[string]bool, line string) []broken {
 		}
 	}
 	inReference := func(at int) bool {
-		for _, reference := range references {
-			if at >= reference.start && at < reference.end {
-				return true
-			}
-		}
-		return false
+		return inSpans(references, at)
 	}
 	for _, match := range bareKey.FindAllStringIndex(line, -1) {
 		key := line[match[0]:match[1]]
@@ -174,13 +199,37 @@ func referenceBreaks(c Context, people map[string]bool, line string) []broken {
 	for _, link := range links {
 		found = append(found, link.broken)
 	}
-	for _, match := range incident.FindAllString(line, -1) {
-		found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
+	if !address {
+		for _, match := range incident.FindAllString(line, -1) {
+			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
+		}
 	}
-	for _, match := range pullRequest.FindAllString(line, -1) {
-		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q. %s", match, pullRequestForms)})
+	var pullRequests []span
+	for _, match := range pullRequestAddress.FindAllStringSubmatchIndex(line, -1) {
+		pullRequests = append(pullRequests, span{start: match[2], end: match[3]})
 	}
-	for _, name := range personNames(people, line, inReference) {
+	if !address {
+		for _, match := range pullRequestName.FindAllStringIndex(line, -1) {
+			if !inReference(match[0]) && !inSpans(pullRequests, match[0]) {
+				pullRequests = append(pullRequests, span{start: match[0], end: match[1]})
+			}
+		}
+	}
+	sort.SliceStable(pullRequests, func(a, b int) bool { return pullRequests[a].start < pullRequests[b].start })
+	for _, each := range pullRequests {
+		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q. %s", line[each.start:each.end], pullRequestForms)})
+	}
+	var names []string
+	if address {
+		for _, match := range email.FindAllStringIndex(line, -1) {
+			if !inReference(match[0]) {
+				names = append(names, line[match[0]:match[1]])
+			}
+		}
+	} else {
+		names = personNames(people, line, inReference)
+	}
+	for _, name := range names {
 		found = append(found, broken{rulePerson, fmt.Sprintf("it names a person: %q", name)})
 	}
 	return found
@@ -212,10 +261,13 @@ func referenceAt(line string, offset int) string {
 	}
 }
 
-// personPieces is each name piece of a signed-in person's email: each part of its local part,
-// split at ".", "_" or "-", that holds at least three letters, in lower case. A piece that is a
-// word of a name of the system (the context's, a name text's or a term's) is no person.
-func personPieces(c Context, in Input) map[string]bool {
+// peopleNames is the name of each signed-in person: the parts of the local part of the person's
+// email, split at ".", "_" or "-", that hold at least three letters, in order and in lower case.
+// A part that is a word of a name that a person approved, one of the context's system names or a
+// term of the approved list, is no part of a name: such a word is a noun of the system. A name
+// that the judged text writes itself, a component's or a term's, is no such name, so it cannot
+// hide a person. One part alone is no name.
+func peopleNames(c Context, in Input) [][]string {
 	system := map[string]bool{}
 	addWords := func(name string) {
 		for _, word := range strings.FieldsFunc(name, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
@@ -225,42 +277,36 @@ func personPieces(c Context, in Input) map[string]bool {
 	for _, name := range c.SystemNames {
 		addWords(name)
 	}
-	for _, each := range in.Texts {
-		if each.Kind == KindName {
-			addWords(each.Body)
-		}
-	}
-	for _, term := range append(append([]Term(nil), in.Proposed...), in.List...) {
+	for _, term := range in.List {
 		addWords(term.Name)
 	}
-	pieces := map[string]bool{}
+	var names [][]string
 	for _, address := range c.PersonNames {
 		local, _, _ := strings.Cut(address, "@")
-		for _, piece := range strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' }) {
+		var name []string
+		for _, part := range strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' }) {
 			letters := 0
-			for _, r := range piece {
+			for _, r := range part {
 				if unicode.IsLetter(r) {
 					letters++
 				}
 			}
-			if piece = strings.ToLower(piece); letters >= 3 && !system[piece] {
-				pieces[piece] = true
+			if part = strings.ToLower(part); letters >= 3 && !system[part] {
+				name = append(name, part)
 			}
 		}
+		if len(name) > 1 {
+			names = append(names, name)
+		}
 	}
-	return pieces
-}
-
-// word is a run of letters of a line, and whether it is the first word of its sentence.
-type word struct {
-	start, end int
-	first      bool
+	return names
 }
 
 // personNames is each person line names, in the order of the line: an email address, an
-// @handle, two name pieces in a row, and a name piece that stands as a capitalized word that is
-// not the first word of a sentence. A reference holds none.
-func personNames(pieces map[string]bool, line string, inReference func(int) bool) []string {
+// @handle, and the name of one signed-in person (peopleNames), its parts in order as words that
+// only white space parts, each with a capital first letter as a name is written. A reference
+// holds none.
+func personNames(people [][]string, line string, inReference func(int) bool) []string {
 	var found []span
 	for _, match := range email.FindAllStringIndex(line, -1) {
 		if !inReference(match[0]) {
@@ -272,40 +318,37 @@ func personNames(pieces map[string]bool, line string, inReference func(int) bool
 			found = append(found, span{start: match[2], end: match[3]})
 		}
 	}
-	var words []word
-	sentenceStart, inWord := true, false
+	var words []span
+	inWord := false
 	for index, r := range line {
-		if unicode.IsLetter(r) {
-			if !inWord {
-				words = append(words, word{start: index, first: sentenceStart})
-				sentenceStart, inWord = false, true
-			}
-			words[len(words)-1].end = index + utf8.RuneLen(r)
+		if !unicode.IsLetter(r) {
+			inWord = false
 			continue
 		}
-		inWord = false
-		if r == '.' || r == '!' || r == '?' {
-			next, _ := utf8.DecodeRuneInString(line[index+1:])
-			if index+1 == len(line) || unicode.IsSpace(next) {
-				sentenceStart = true
+		if !inWord {
+			words = append(words, span{start: index})
+			inWord = true
+		}
+		words[len(words)-1].end = index + utf8.RuneLen(r)
+	}
+	writes := func(at int, name []string) bool {
+		for index, part := range name {
+			word := words[at+index]
+			first, _ := utf8.DecodeRuneInString(line[word.start:])
+			if !unicode.IsUpper(first) || strings.ToLower(line[word.start:word.end]) != part || inReference(word.start) {
+				return false
+			}
+			if index > 0 && strings.TrimFunc(line[words[at+index-1].end:word.start], unicode.IsSpace) != "" {
+				return false
 			}
 		}
+		return true
 	}
-	isPiece := func(w word) bool {
-		return pieces[strings.ToLower(line[w.start:w.end])] && !inReference(w.start) && !inSpans(found, w.start)
-	}
-	used := map[int]bool{}
-	for index := 0; index+1 < len(words); index++ {
-		if isPiece(words[index]) && isPiece(words[index+1]) {
-			found = append(found, span{start: words[index].start, end: words[index+1].end})
-			used[index], used[index+1] = true, true
-			index++
-		}
-	}
-	for index, w := range words {
-		first, _ := utf8.DecodeRuneInString(line[w.start:])
-		if !used[index] && !w.first && unicode.IsUpper(first) && isPiece(w) {
-			found = append(found, span{start: w.start, end: w.end})
+	for _, name := range people {
+		for at := 0; at+len(name) <= len(words); at++ {
+			if !inSpans(found, words[at].start) && writes(at, name) {
+				found = append(found, span{start: words[at].start, end: words[at+len(name)-1].end})
+			}
 		}
 	}
 	sort.SliceStable(found, func(a, b int) bool { return found[a].start < found[b].start })

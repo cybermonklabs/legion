@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -28,6 +29,30 @@ const RefusedMessage = "agent secret policy refused"
 // and now, which is servable when the policy serves it and absent when the store no longer holds
 // it (deleted, or scheduled for deletion).
 const ServableMessage = "agent secret policy no longer refused"
+
+// PendingMessage is the line Current writes, at INFO, when a secret starts waiting for its value
+// (ReasonPendingValue): name, reason, owner and first_load, as RefusedMessage carries them. The
+// operate guide documents its text, so the text changes only with that guide.
+const PendingMessage = "agent secret policy waiting for a value"
+
+// PendingValueWindow is how long after its creation a secret `agent-secrets secret create` made
+// before its value (secrets.Listing.Unfilled) is waiting for one (ReasonPendingValue) rather than
+// refused (ReasonNoCurrentValue). It is also the create's value deadline: a create with nothing of
+// the entry typed by then ends its read and discards the secret, so no secret is pending that its
+// create has given up on. A create whose entry is under way at the deadline reads on until the
+// entry ends - at Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed
+// outside a paste where it still sends SIGINT - and discards the secret only then, so the broker
+// may refuse it no-current-value before the create deletes it.
+const PendingValueWindow = 10 * time.Minute
+
+// pendingAt is the one statement of the window: whether a secret the store created at created,
+// made before its value, still waits for it at now. A secret whose creation time the store did
+// not name waits for nothing. Load and LoadOne weigh it at the loader's clock (Loader.clock), and
+// Current.PendingValue at Current's, which NewCurrent makes the loader's, so the load, the reread
+// and the PENDING_VALUE answer read one clock.
+func pendingAt(created, now time.Time) bool {
+	return !created.IsZero() && now.Sub(created) < PendingValueWindow
+}
 
 // LoadFailedMessage is written, at ERROR, by the reload NewCurrent runs every interval, on the
 // first reload of a run that fails while its context is live; the previous policy stays in force,
@@ -83,6 +108,13 @@ const (
 	// Checked after every other reason, which each name something its owner must fix before a
 	// value would make it servable.
 	ReasonNoCurrentValue = "no-current-value"
+	// ReasonPendingValue: a secret `agent-secrets secret create` made before its value
+	// (secrets.Listing.Unfilled: the create label and no version) that the store created less than
+	// PendingValueWindow ago, still waiting for that value. It is no refusal: the secret is in
+	// Set.Pending, not Set.Refused, so it is in no broker_unservable_secrets series, and Current
+	// writes PendingMessage for it, once. A request for it is refused ErrPendingValue. Once the
+	// window has passed, a secret still without a value is refused ReasonNoCurrentValue.
+	ReasonPendingValue = "pending-value"
 	// ReasonKindUnknown: the kind tag names no kind this broker can mint (ValidKind).
 	ReasonKindUnknown = "kind-unknown"
 	// ReasonMaxGrantMalformed: max-grant is not a Go duration of at least one second
@@ -192,20 +224,33 @@ type Loader struct {
 	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
 	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
+	// now is the clock the loader weighs a secret waiting for its value by (pendingAt): Current's
+	// own, which NewCurrent sets, and time.Now while it is nil, for a Loader no Current holds.
+	now func() time.Time
 }
 
-// Load reads the namespace into a Set: each secret it serves, and each it refuses with why
-// (Set.Refused, refusalOf), and the version of each served kind secret's value as the listing
-// names it, which Current decodes. It writes no line and reads no value: Current, which keeps the
-// set before, writes the lines a change of state calls for, and reads the values. A failed store
-// call fails the whole load.
+// clock is the time by l's clock (Loader.now).
+func (l Loader) clock() time.Time {
+	if l.now == nil {
+		return time.Now()
+	}
+	return l.now()
+}
+
+// Load reads the namespace into a Set: each secret it serves, each it refuses with why
+// (Set.Refused, refusalOf), each waiting for its value (Set.Pending) by the loader's clock
+// (pendingAt), and the version of each served kind secret's value as the listing names it, which
+// Current decodes. It writes no line and reads no value: Current, which keeps the set before,
+// writes the lines a change of state calls for, and reads the values. A failed store call fails
+// the whole load.
 func (l Loader) Load(ctx context.Context) (*Set, error) {
+	now := l.clock()
 	l.StoreReads.Inc(readList)
 	listings, err := l.Store.List(ctx, l.Prefix)
 	if err != nil {
 		return nil, err
 	}
-	served, refused, versions := map[string]Secret{}, map[string]Refusal{}, map[string]string{}
+	served, refused, pending, versions := map[string]Secret{}, map[string]Refusal{}, map[string]Pending{}, map[string]string{}
 	for _, ls := range listings {
 		// The namespace is the prefix as written: a name outside it is skipped, whatever the
 		// lister answered.
@@ -213,11 +258,16 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 		if !ok {
 			continue
 		}
-		secret, reason, err := l.secret(ctx, slug, ls)
+		secret, reason, err := l.secret(ctx, slug, ls, now)
 		if err != nil {
 			return nil, err
 		}
-		if reason != "" {
+		switch reason {
+		case "":
+		case ReasonPendingValue:
+			pending[ls.ID] = pendingOf(ls)
+			continue
+		default:
 			refused[ls.ID] = refusalOf(ls, reason)
 			continue
 		}
@@ -226,20 +276,28 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 			versions[secret.Name] = ls.Version
 		}
 	}
-	return setOf(served, refused, versions), nil
+	return setOf(served, refused, pending, versions), nil
 }
 
 // refusalOf is the Refusal of the secret ls lists for reason: its owner tag as the store holds
 // it, or "" for the two reasons that tag is itself the fault, missing or malformed.
 func refusalOf(ls secrets.Listing, reason string) Refusal {
-	if reason == ReasonOwnerTagMissing || reason == ReasonOwnerTagMalformed {
+	switch reason {
+	case ReasonOwnerTagMissing, ReasonOwnerTagMalformed:
 		return Refusal{Reason: reason}
 	}
 	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner]}
 }
 
+// pendingOf is the Pending of the secret ls lists waiting for its value: its owner tag and when
+// the store created it.
+func pendingOf(ls secrets.Listing) Pending {
+	return Pending{Owner: ls.Tags[TagOwner], Created: ls.Created}
+}
+
 // Lookup is LoadOne's answer: Served with the Secret; or Reason, a Reason* refusal constant, with
-// Owner as a Refusal carries it; or ReasonAbsent, which is no refusal.
+// Owner as a Refusal carries it; or ReasonAbsent or ReasonPendingValue, neither of which is a
+// refusal.
 type Lookup struct {
 	Secret Secret
 	Served bool
@@ -248,14 +306,24 @@ type Lookup struct {
 	// version is a served kind secret's value's version, as Set's versions holds it, and "" for
 	// every other answer.
 	version string
+	// created is, for ReasonPendingValue, when the store created the secret.
+	created time.Time
 }
 
-// refusal is the Refusal lk answers, and the zero Refusal for a secret served or absent.
+// refusal is the Refusal lk answers, and the zero Refusal for a secret served, absent or pending.
 func (lk Lookup) refusal() Refusal {
-	if lk.Served || lk.Reason == ReasonAbsent {
+	if lk.Served || lk.Reason == ReasonAbsent || lk.Reason == ReasonPendingValue {
 		return Refusal{}
 	}
 	return Refusal{Reason: lk.Reason, Owner: lk.Owner}
+}
+
+// pending is the Set.Pending entry lk answers, and the zero Pending for a secret not pending.
+func (lk Lookup) pending() Pending {
+	if lk.Reason != ReasonPendingValue {
+		return Pending{}
+	}
+	return Pending{Owner: lk.Owner, Created: lk.created}
 }
 
 // secretName is the one place that answers whether name can name a secret under the prefix: its
@@ -291,9 +359,13 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	case err != nil:
 		return Lookup{}, err
 	}
-	secret, reason, err := l.secret(ctx, slug, ls)
+	secret, reason, err := l.secret(ctx, slug, ls, l.clock())
 	if err != nil {
 		return Lookup{}, err
+	}
+	if reason == ReasonPendingValue {
+		waiting := pendingOf(ls)
+		return Lookup{Reason: reason, Owner: waiting.Owner, created: waiting.Created}, nil
 	}
 	if reason != "" {
 		refusal := refusalOf(ls, reason)
@@ -306,10 +378,10 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	return lk, nil
 }
 
-// secret reads one secret under the prefix, answering the reason it is refused when it is. It asks
-// the store whether the secret is on the agent-secrets key only after every tag check, so a secret
-// refused for its name or tags costs no key lookup; a failed lookup is an error.
-func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Secret, string, error) {
+// secret reads one secret under the prefix at now, answering the reason it is refused when it is.
+// It asks the store whether the secret is on the agent-secrets key only after every tag check, so
+// a secret refused for its name or tags costs no key lookup; a failed lookup is an error.
+func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now time.Time) (Secret, string, error) {
 	if !slugPattern.MatchString(slug) {
 		return Secret{}, ReasonNameMalformed, nil
 	}
@@ -405,6 +477,14 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 		return Secret{}, reason, nil
 	}
 	if !ls.HasCurrentValue {
+		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
+		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose
+		// comment says when the create deletes it; past the window it is refused here
+		// no-current-value until then. Any other secret without a value, and one whose creation
+		// time the store did not name, is refused so at once.
+		if ls.Unfilled && pendingAt(ls.Created, now) {
+			return Secret{}, ReasonPendingValue, nil
+		}
 		return Secret{}, ReasonNoCurrentValue, nil
 	}
 	// The airlock names a secret by its policy name, the uppercased one Secret.Name holds.
