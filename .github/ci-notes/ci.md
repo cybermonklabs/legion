@@ -1545,7 +1545,8 @@ container-backed NATS matrix and the integration suite) is one of the nine slow 
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-binary of every package of the envoy module).
+binary of every package of the envoy module). It also runs the guard that no CI file of this
+repository compares the spec files with the approved spec.
 
 ## What the envoy-go job runs
 

@@ -173,6 +173,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PI_LEGION_VERSION: ${{ steps.plugin_versions.outputs.pi_legion_version }}
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
+          http_proxy: http://127.0.0.1:1
+          HTTP_PROXY: http://127.0.0.1:1
         run: .github/scripts/release-build-legion.sh
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
@@ -1010,7 +1012,7 @@ jobs:
 
   # why: .github/ci-notes/release.md#why-the-image-attestation-is-a-second-call-of-worker-imageyaml
   worker_image_attest:
-    needs: [worker_image, publish, no_such_job]
+    needs: [worker_image, publish]
     if: always() && needs.worker_image.result == 'success'
     uses: ./.github/workflows/worker-image.yaml
     # The same scopes as worker_image, for the same reason: the grant must cover every

@@ -1740,6 +1740,12 @@ envoy_go_checks:
   - '.github/scripts/build-envoy-command.sh'
   # why: .github/ci-notes/ci.md#envoy_go_checks-those-two-steps-judge-the-files-at-the-actions-default-paths
   - '.dispatch/**'
+  # The step "Check that no CI file of this repository compares the spec files" reads
+  # every file under these four.
+  - '.github/workflows/**'
+  - '.github/actions/**'
+  - '.github/scripts/**'
+  - 'scripts/**'
 # why: .github/ci-notes/ci.md#text_checks-the-text-checks-of-the-three-go-modules-the-dispatch
 text_checks:
   - *ci_router
