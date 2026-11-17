@@ -2100,6 +2100,45 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 	}
 }
 
+// After a kill of the rise, the largest process the guard did not read at the reading before is
+// ended before a larger process it did read that did not grow, and before one that grew only since
+// the kill; where nothing grew and nothing is new, the largest is ended (INFRA-3531 R1 of spec
+// version 27). The shell command Oh My Pi ran runs four Python processes. At the first reading, at
+// the mark, the guard read nothing before, and it ends the largest, pid 1700. 400 ms later, the
+// reading not fallen, pid 1710 has grown 64 MiB since that kill, which has the guard go on, and two
+// processes have started, pids 1720 and 1721, of 200 and 100 MiB; pid 1701 sleeps at 900 MiB. Over
+// the window nothing grew, and the guard ends pid 1720, the larger of the two started since. At
+// the next reading, fallen but still at the mark, nothing grew and nothing started, and the guard
+// ends pid 1701, the largest.
+func TestControllerPodMemoryGuardEndsTheLargestNewProcessAfterAKillBeforeALargerIdleOneOrAGrowerAndTheLargestWhereNoneApplies(t *testing.T) {
+	const first, idle, grower, newer, newest = 1700, 1701, 1710, 1720, 1721
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	command := func(pid int, anon uint64) guardProcess {
+		return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "work.py"}, anon: anon}
+	}
+	pod.add(command(first, 1000*guardMiB), command(idle, 900*guardMiB), command(grower, 300*guardMiB))
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	step := func(what string, reading uint64, extra time.Duration, want ...int) {
+		t.Helper()
+		pod.setAnon(reading)
+		rig.tickAfter(extra)
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("%s: the guard killed %v, want %v; its log:\n%s", what, kills, want, rig.log())
+		}
+	}
+	step("at the first reading at the mark", guardHigh, 0, first)
+
+	pod.add(command(grower, 364*guardMiB), command(newer, 200*guardMiB), command(newest, 100*guardMiB))
+	step("400 ms after the kill", guardHigh, 300*time.Millisecond, first, newer)
+	step("at the next reading, fallen and with nothing grown or started", 3550*guardMiB, 0, first, newer, idle)
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+}
+
 // Oh My Pi growing past the mark beside an idle Python kernel and an idle JavaScript kernel, which
 // hold more than the floor between them and each on its own, costs one kernel: at the mark nothing
 // the guard may end has grown, so it ends the larger, the JavaScript kernel. That kill lowers
