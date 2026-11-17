@@ -2,7 +2,7 @@
 // constants a statement is assembled from, and the text of such a statement. It carries no
 // build tag and declares no test of its own, and each of those is deliberate.
 //
-// No tag, because its callers are on both sides of one. The seven static guards, and
+// No tag, because its callers are on both sides of one. The eight static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
 // race job (lock_level_test.go's header says what), while one test main added to this package
 // uses a declaration of this file untagged and runs in the race job: ask_asked_of_test.go:480
@@ -10,7 +10,7 @@
 // race build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the fifteen tests of those eight files are the text-check job's to run, once
+// included - and the seventeen tests of those nine files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is this one compile:
 // nothing here walks or parses anything until a test calls it, and under `-race` that one
 // read of sqlWhitespace is the only call any of it gets.

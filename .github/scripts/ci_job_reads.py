@@ -392,7 +392,9 @@ MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 wal
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
                              "the tests that ask it for the module's sources: lock_level_test.go:89, "
                              "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
-                             "review_write_guard_test.go:51, one_expression_guard_test.go:66")
+                             "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
+                             "issue_route_writer_guard_test.go:105; issue_route_writer_guard_test.go:124 "
+                             "also walks packages/envoy and reads every non-test file of it as text")
                   for path in files_but_tests(ENVOY, tree=True)]
 
 
@@ -693,6 +695,7 @@ RULES = {
          "emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
+    f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
     # main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
     # the race job was the only one that ran it and the module walk under it was declared by
@@ -1529,14 +1532,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The eight static checks of internal/dispatch/api, keyed by their path in this repository: the
-# seven source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
+# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all fifteen of their tests in the plain step; they are left out of it instead,
+# below would put all seventeen of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# sixteenth such test cannot quietly rejoin the plain step: a file named here that does not
-# carry the tag is refused, a file whose tests are not exactly the names here is refused
+# tells nobody anything. The exemption is held to the files it is about in three ways, so an
+# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
 # none of this: they stay in the plain step.
@@ -1550,6 +1552,9 @@ TEXT_CHECK_TESTS = {
         "TestTheGuardReadsABodyStringOffARequestType"},
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
         "TestOnlyTheBrokerInsertsEvents"},
+    f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestOnlyTheIssuePatchWritesTheRoute",
+        "TestTheRouteWriterGuardSeesAPlantedWriter"},
     f"{ENVOY}/internal/dispatch/api/keyed_write_guard_test.go": {
         "TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks",
         "TestTheKeyedWriteGuardSeesWhatItGuards"},
@@ -1697,12 +1702,12 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the fifteen tests of the Dispatch API's
-# eight static checks - its seven source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
+# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those fifteen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
