@@ -403,9 +403,8 @@ func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
 // The resume launches an operator's spawn of another project's root architect that the pause
 // stopped owing a launch (resumeOwedSpawns), and that launch's ready reads the root's record by
 // key (workflow's claimReady). On a database shared with another project's daemon that record is
-// that daemon's, and it is no record of this daemon's, as it is for the pause's stop
-// (projectPause.pauseIssue), for a wake (wakeReleased) and for a worker's ready
-// (readyWorkerTask): a catch-up built from it would be a row keyed by an issue whose rows the
+// that daemon's, and it is no record of this daemon's: the daemon's records answer it as none
+// (projectRecords.Issue). A catch-up built from it would be a row keyed by an issue whose rows the
 // other project's daemon runs, and its drop of the root's queued catch-ups would delete that
 // daemon's own. So after the resume the relaunched spawn's ready queues no row keyed by the other
 // project's issue and deletes none of that daemon's rows.
@@ -613,5 +612,86 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 				t.Errorf("the daemon wrote %v of the fact, want one %q naming %s", lines, tc.logged, issue)
 			}
 		})
+	}
+}
+
+// A role-holder change of an operator's spawn of another project's issue — its agent's ready, and
+// the pause's stop of it — touches no role_holders_publish row of that issue. That row is keyed by
+// the issue, which the other project's daemon records, so only that daemon's outbox runs it and
+// this daemon's never does (record's DueRows reads the rows of its own project's keys): a row this
+// daemon writes there is a row of another project's issue, and a write that meets that daemon's
+// own row while that daemon runs it changes the lease that daemon holds. The spawn's stop by the
+// pause is a claim write that changes the role's holder (the store's putClaim), so it is where the
+// pause meets this row.
+func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfThatProject(t *testing.T) {
+	r := newPauseDaemonRig(t, nil)
+	r.boot()
+	const issue = "OTHERPROJECT-9"
+	recorded := r.root(issue, phase.Planning)
+	recorded.Project = "OTHERPROJECT"
+	if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
+	}
+	holderRows := func() (int, string) {
+		t.Helper()
+		var n int
+		var lease *string
+		if err := r.pool.QueryRow(r.ctx, `select count(*), max(lease_token) from outbox where kind = 'role_holders_publish' and issue = $1`,
+			issue).Scan(&n, &lease); err != nil {
+			t.Fatal(err)
+		}
+		if lease == nil {
+			return n, ""
+		}
+		return n, *lease
+	}
+	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+	testwait.Eventually(t, "the spawn to launch", func() bool { return len(r.rt.launchesOf(token)) == 1 })
+	launched := r.claim(token)
+	const session = "ses-other-architect"
+	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
+	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
+	testwait.Eventually(t, "the spawn's agent to be ready", func() bool {
+		state := r.claim(token).State
+		return state == supervise.StateReady || state == supervise.StateIdle
+	})
+	if n, _ := holderRows(); n != 0 {
+		t.Errorf("the spawn's ready left %d role_holders_publish rows keyed %s, want none: this daemon's outbox runs no row of another project's issue",
+			n, issue)
+	}
+
+	// The other project's daemon is running its own publication of the issue: it holds the row's
+	// lease when the pause stops this daemon's spawn.
+	if _, err := r.pool.Exec(r.ctx, `delete from outbox where kind = 'role_holders_publish' and issue = $1`, issue); err != nil {
+		t.Fatal(err)
+	}
+	const theirLease = "otherproject-lease"
+	var theirs int64
+	if err := r.pool.QueryRow(r.ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+		values ('role_holders_publish', $1, jsonb_build_object('issue', $1::text), 0, now(), '', $2, now() + interval '5 minutes')
+		returning id`, issue, theirLease).Scan(&theirs); err != nil {
+		t.Fatalf("queue the other project's daemon's role-holders row of %s: %v", issue, err)
+	}
+	before := r.outboxRows(issue)
+	r.pauseProject()
+	r.awaitState(token, supervise.StateSuspended, "the pause stops the ready spawn")
+	// The stop's claim write and its publication are one transaction, committed before the claim
+	// reads suspended; a second of settling is for nothing else.
+	time.Sleep(time.Second)
+
+	if n, lease := holderRows(); n != 1 || lease != theirLease {
+		t.Errorf("after the pause's stop of the spawn the role_holders_publish rows keyed %s = %d with lease %q, want the other project's daemon's one row with its lease %q",
+			issue, n, lease, theirLease)
+	}
+	after := r.outboxRows(issue)
+	if _, kept := after[theirs]; !kept {
+		t.Errorf("the other project's daemon's role-holders row %d keyed %s is gone after the pause's stop", theirs, issue)
+	}
+	for id, what := range after {
+		if _, had := before[id]; !had {
+			t.Errorf("the pause's stop of the spawn queued outbox row %d (%s) keyed %s, want none", id, what, issue)
+		}
 	}
 }
