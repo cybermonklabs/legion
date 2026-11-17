@@ -1,58 +1,86 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
-  expectNoMissingHelpers,
-  nameMissingHelpers,
-  scriptAssignments,
-  scriptFunctions,
-} from "./script-functions";
+  inOwnGroup,
+  type KillPoint,
+  liveDaemonStandIns,
+  type StopSignal,
+} from "./live-daemon-proof-fixture";
 
-// live-daemon-proof.sh's last line, printed by its EXIT trap (cleanup), taken from the lib by name.
+// live-daemon-proof.sh's last line, printed by its EXIT trap (cleanup) through lib/run-verdict.sh.
 // bash runs an EXIT trap with status 0 when a signal (TERM, INT or HUP) ends the shell, so the
 // status alone reads a killed run as a pass. cleanup prints PASS only for a run that reached
-// live_daemon_proof's last statement (run_ended) and exits 0; every other run reads FAIL at the
-// check it stopped in.
+// live_daemon_proof's last statement (run_end) and exits 0; every other run reads FAIL at the
+// check it stopped in. Each row drives the real live_daemon_proof, its real end mark and the real
+// lib, over stand-ins of go, the nats-server, python3 and the driver
+// (lib/live-daemon-proof-fixture.ts): moving run_end above the proof check, or the lib's mark
+// itself, makes a killed row print PASS.
 
-const lib = join(import.meta.dir, "live-daemon-proof.sh");
-const fn = scriptFunctions(lib);
-const assignment = scriptAssignments(lib);
-const helperGuard = nameMissingHelpers(lib);
+const root = join(import.meta.dir, "..", "..", "..");
+const scratch = temporaryDirectories("live-daemon-proof-test");
+const withoutSetsid = skipWithout("setsid");
 
-/** Runs BODY in a bash whose EXIT trap is the lib's cleanup, over the state cleanup reads as a run
- * standing in its `proof` check leaves it, with no broker and no work directory, and the end mark
- * as the lib first assigns it. */
-function cleanupRun(body: string) {
-  const result = Bun.spawnSync([
-    "bash",
-    "-c",
-    `set -euo pipefail
-${helperGuard}
-${fn("cleanup")}
-${assignment("run_ended")}
-proof_label='child adoption' evidence=/evidence work='' nats_pid='' check=proof started=$SECONDS
-trap cleanup EXIT
-${body}`,
-  ]);
-  const out = result.stdout.toString();
-  const err = result.stderr.toString();
-  expectNoMissingHelpers(out, err);
-  return { code: result.exitCode, signal: result.signalCode, out, err };
+const testName = "TestAFixtureProofLive";
+// What a driver whose one test passed prints.
+const passingDriver = [
+  `=== RUN   ${testName}`,
+  "== the-fixture-step",
+  "ok the-fixture-step",
+  `--- PASS: ${testName} (0.01s)`,
+  "PASS",
+];
+
+/** Runs the real live_daemon_proof over stand-ins, stopped at KILL when given, in a process group
+ * of its own. The lib's transcript sends stderr to stdout, so `out` holds every line. */
+function fixtureProof(kill?: { at: KillPoint; signal: StopSignal }) {
+  const dir = scratch();
+  const env = liveDaemonStandIns(dir, { driverOutput: passingDriver, kill });
+  const evidence = join(dir, "evidence");
+  const run = inOwnGroup(
+    [
+      "bash",
+      "-c",
+      `set -euo pipefail
+root=${JSON.stringify(root)}
+. "$root/scripts/e2e/lib/live-daemon-proof.sh"
+live_daemon_proof 'fixture proof' fixture-proof ${testName} ${JSON.stringify(evidence)}`,
+    ],
+    env
+  );
+  return { ...run, evidence };
 }
 
-describe("the run's last line", () => {
-  test("reads FAIL at the check a SIGTERM ended the run in, though bash gives the trap status 0", () => {
-    const run = cleanupRun("kill -TERM $$\nsleep 5\nrun_ended=1");
-    expect(run.out).toBe("");
-    expect(run.err).toMatch(
-      /^child adoption e2e: FAIL at proof after \d+s: the run ended before its last check, by a signal or an exit of its own \(evidence: \/evidence\)\n$/
-    );
+const stopped =
+  "the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass";
+
+describe.skipIf(withoutSetsid)("the run's last line", () => {
+  for (const signal of ["TERM", "HUP", "INT"] as const) {
+    test(`reads FAIL at the proof check a group SIG${signal} ended the run in`, () => {
+      const run = fixtureProof({ at: "proof", signal });
+      expect(run.out).toContain("ok driver (");
+      expect(run.out).not.toContain("e2e: PASS");
+      expect(run.out).toMatch(/\nfixture proof e2e: FAIL at proof after \d+s \(evidence: .*\)\n$/);
+      expect(run.code === 0 && run.signal === null).toBe(false);
+    });
+  }
+
+  test("reads FAIL at the driver check for a run a group SIGTERM ended in its setup", () => {
+    const run = fixtureProof({ at: "build", signal: "TERM" });
+    expect(run.out).toContain("ok broker (");
+    expect(run.out).not.toContain("e2e: PASS");
+    expect(run.out).toContain(`${stopped}\n`);
+    expect(run.out).toMatch(/\nfixture proof e2e: FAIL at driver after \d+s \(evidence: .*\)\n$/);
     expect(run.code === 143 || run.signal === "SIGTERM").toBe(true);
   });
 
   test("reads PASS for a run that reached its end and exits 0", () => {
-    const run = cleanupRun("run_ended=1\nexit 0");
+    const run = fixtureProof();
     expect(run.code).toBe(0);
-    expect(run.err).toBe("");
-    expect(run.out).toMatch(/^child adoption e2e: PASS in \d+s \(evidence: \/evidence\)\n$/);
+    expect(run.out).toContain("ok proof (");
+    expect(run.out).not.toContain("FAIL");
+    expect(run.out).toMatch(/\nfixture proof e2e: PASS in \d+s \(evidence: .*\)\n$/);
+    expect(run.out).toContain(`(evidence: ${run.evidence})`);
   });
 });

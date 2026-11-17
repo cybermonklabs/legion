@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
+import {
+  inOwnGroup,
+  type KillPoint,
+  liveDaemonStandIns,
+  type StopSignal,
+} from "./live-daemon-proof-fixture";
 import {
   expectNoMissingHelpers,
   nameMissingHelpers,
@@ -16,9 +26,10 @@ import {
 // killed run. Part two's count of each arm (part_two_step) counts only runs that reached the
 // step's assertion: a run that stopped at its setup is named and not counted, so it never makes
 // the control bite, and a head run that stopped there is no pass. The last line (finish, the
-// script's EXIT trap) reads PASS or the control's verdict only for a run that reached one of the
-// script's ends: a signal ends a shell with its EXIT trap reading status 0, so a killed run must
-// read FAIL.
+// script's EXIT trap, through lib/run-verdict.sh) reads PASS or the control's verdict only for a
+// run that reached one of the script's ends: a signal ends a shell with its EXIT trap reading
+// status 0, so a killed run must read FAIL. The script's run of part one is driven whole, so its
+// own end mark is the one under test.
 
 const script = join(import.meta.dir, "..", "approved-version-news.sh");
 const assignment = scriptAssignments(script);
@@ -26,6 +37,8 @@ const fn = scriptFunctions(script);
 const note = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("note");
 const helperGuard = nameMissingHelpers(script);
 const dir = temporaryDirectory("approved-version-news-verdicts-test");
+const scratch = temporaryDirectories("approved-version-news-run-test");
+const withoutSetsid = skipWithout("setsid");
 
 let files = 0;
 /** A driver output file holding LINES, one a line; null writes no file at all. */
@@ -242,17 +255,19 @@ describe("part two's count of each arm", () => {
   });
 });
 
-/** Runs BODY in a bash whose EXIT trap is the script's finish, over the state finish reads as a
- * run of part one alone leaves it standing in its `driver` check with 3 of its 52 checks counted,
- * and the end mark as the script first assigns it; VERDICT is the control's, "" for none. */
+/** Runs BODY in a bash whose EXIT trap is the script's finish, with the real lib/run-verdict.sh,
+ * over the state finish reads as a run of part one alone leaves it standing in its `driver` check
+ * with 3 of its 52 checks counted; VERDICT is the control's, "" for none. BODY calls run_end where
+ * the script reaches one of its ends; the rows of "the script's run of part one" below drive the
+ * script's own run_end. */
 function finishRun(body: string, verdict = "") {
   const result = Bun.spawnSync([
     "bash",
     "-c",
     `set -euo pipefail
 ${helperGuard}
+. ${JSON.stringify(join(import.meta.dir, "run-verdict.sh"))}
 ${fn("finish")}
-${assignment("version_news_ended")}
 parts=one base_tree='' prompts_tree='' counted=3 expected=52 part_two_said=''
 verdict=${JSON.stringify(verdict)} version_news_evidence=/evidence version_news_started=$SECONDS check=driver
 trap finish EXIT
@@ -264,37 +279,127 @@ ${body}`,
   return { code: result.exitCode, signal: result.signalCode, out, err };
 }
 
-// The line finish prints for a run that ended before either of the script's ends with status 0.
-const interrupted =
-  /^approved version news e2e: FAIL at driver after \d+s: the run ended before its last check, by a signal or an exit of its own \(assertions: 3\/52; part one alone, part two did not run, evidence: \/evidence\)\n$/;
+// What finish prints for a run that ended before either of the script's ends with status 0:
+// lib/run-verdict.sh's line that says so, then the FAIL line.
+const stopped =
+  "the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass";
+const interrupted = new RegExp(
+  `^${stopped}\\napproved version news e2e: FAIL at driver after \\d+s \\(assertions: 3/52; part one alone, part two did not run, evidence: /evidence\\)\\n$`
+);
 
 describe("the last line", () => {
-  test("reads FAIL at the check a SIGTERM ended the run in, though bash gives the trap status 0", () => {
-    const run = finishRun("kill -TERM $$\nsleep 5\nversion_news_ended=1");
+  test("prints no control verdict for a control run a SIGTERM ended before its exit", () => {
+    const run = finishRun(
+      "kill -TERM $$\nsleep 5\nrun_end",
+      "control bites at a2 against a97cd593"
+    );
     expect(run.out).toBe("");
     expect(run.err).toMatch(interrupted);
     expect(run.code === 143 || run.signal === "SIGTERM").toBe(true);
   });
 
-  test("prints no control verdict for a control run a SIGTERM ended before its exit", () => {
-    const run = finishRun("kill -TERM $$\nsleep 5", "control bites at a2 against a97cd593");
-    expect(run.out).toBe("");
-    expect(run.err).toMatch(interrupted);
-  });
-
-  test("reads FAIL for an exit 0 the script makes before either of its ends", () => {
-    const run = finishRun("exit 0");
-    expect(run.code).toBe(0);
-    expect(run.out).toBe("");
-    expect(run.err).toMatch(interrupted);
-  });
-
-  test("reads PASS for a run that reached its end and exits 0", () => {
-    const run = finishRun("version_news_ended=1\nexit 0");
+  test("prints the control's verdict for a control run that reached its end", () => {
+    const run = finishRun("run_end\nexit 0", "control bites at a2 against a97cd593");
     expect(run.code).toBe(0);
     expect(run.err).toBe("");
     expect(run.out).toMatch(
-      /^approved version news e2e: PASS in \d+s \(assertions: 3\/52; part one alone, part two did not run\)\n$/
+      /^approved version news e2e: control bites at a2 against a97cd593 in \d+s \(assertions: 3\/52; part one alone, part two did not run, evidence: \/evidence\)\n$/
+    );
+  });
+
+  test("reads FAIL, and exits 1, for an exit 0 the script makes before either of its ends", () => {
+    const run = finishRun("exit 0");
+    expect(run.code).toBe(1);
+    expect(run.out).toBe("");
+    expect(run.err).toMatch(interrupted);
+  });
+});
+
+// Part one's steps and the checks each makes, read from the script's own part_one_checks, so the
+// stand-in driver below prints what the script counts.
+const partOneChecks = (
+  /^part_one_checks=\(\n([\s\S]*?)\n\)$/m.exec(readFileSync(script, "utf8"))?.[1] ?? ""
+)
+  .trim()
+  .split(/\s+/)
+  .map((entry) => {
+    const [step, checks] = entry.split(":");
+    return { step, checks: Number(checks) };
+  });
+const expectedChecks = partOneChecks.reduce((sum, { checks }) => sum + checks, 0);
+// What part one's driver prints when every step held: each step's checks and its ok line.
+const partOneDriver = [
+  `=== RUN   ${driverTest}`,
+  ...partOneChecks.flatMap(({ step, checks }) => [
+    `== ${step}`,
+    ...Array.from({ length: checks }, (_, n) => `   assert ${step}: check ${n + 1} held`),
+    `ok ${step} (1s)`,
+  ]),
+  `--- PASS: ${driverTest} (8.00s)`,
+  "PASS",
+];
+
+/** Runs the script with --part one over lib/live-daemon-proof-fixture.ts's stand-ins, stopped at
+ * KILL when given, in a process group of its own. Every line, its stderr's included, is in `out`:
+ * the script's transcript sends both there. */
+function partOneRun(kill?: { at: KillPoint; signal: StopSignal }) {
+  const dir = scratch();
+  const env = liveDaemonStandIns(dir, { driverOutput: partOneDriver, kill });
+  env.APPROVED_VERSION_NEWS_EVIDENCE_DIR = join(dir, "evidence");
+  return inOwnGroup(["bash", script, "--part", "one"], env);
+}
+
+// The script's run and its two ends, driven whole: part one's run is lib/live-daemon-proof.sh's
+// over stand-ins, and the script's own run_end, its own finish and the real lib print the last
+// line. A run a signal ends in part one reads FAIL at part-one; moving the script's run_end above
+// part one makes it print PASS. A signal to the group ends part one's subshell too, and the two
+// shells print their FAIL lines in either order.
+describe.skipIf(withoutSetsid)("the script's run of part one", () => {
+  test("reads each step of part_one_checks and the checks it makes", () => {
+    expect(partOneChecks.length).toBeGreaterThan(0);
+    for (const { step, checks } of partOneChecks) {
+      expect(step).toMatch(/^[a-z0-9-]+$/);
+      expect(checks).toBeGreaterThan(0);
+    }
+  });
+
+  for (const signal of ["TERM", "HUP", "INT"] as const) {
+    test(`reads FAIL at part-one for a run a group SIG${signal} ended in part one's driver`, () => {
+      const run = partOneRun({ at: "proof", signal });
+      expect(run.out).toContain("approved version news part one e2e: FAIL at proof after ");
+      expect(run.out).not.toContain("e2e: PASS");
+      expect(run.out).not.toContain("control bites");
+      expect(run.out).toMatch(
+        new RegExp(
+          `\\napproved version news e2e: FAIL at (part-one|assertions) after \\d+s \\(assertions: \\d+/${expectedChecks}; part one alone, part two did not run, evidence: .*\\)\\n`
+        )
+      );
+      expect(run.code === 0 && run.signal === null).toBe(false);
+    });
+  }
+
+  test("reads FAIL at part-one for a run a group SIGTERM ended in part one's setup", () => {
+    const run = partOneRun({ at: "build", signal: "TERM" });
+    expect(run.out).toContain("approved version news part one e2e: FAIL at driver after ");
+    expect(run.out).not.toContain("e2e: PASS");
+    expect(run.out).toContain(`${stopped}\n`);
+    expect(run.out).toMatch(
+      new RegExp(
+        `\\napproved version news e2e: FAIL at part-one after \\d+s \\(assertions: 0/${expectedChecks}; part one alone, part two did not run, evidence: .*\\)\\n`
+      )
+    );
+    expect(run.code === 143 || run.signal === "SIGTERM").toBe(true);
+  });
+
+  test("reads PASS for a run of part one that reached its end", () => {
+    const run = partOneRun();
+    expect(run.code).toBe(0);
+    expect(run.out).toContain("approved version news part one e2e: PASS in ");
+    expect(run.out).not.toContain("FAIL");
+    expect(run.out).toMatch(
+      new RegExp(
+        `\\napproved version news e2e: PASS in \\d+s \\(assertions: ${expectedChecks}/${expectedChecks}; part one alone, part two did not run\\)\\n$`
+      )
     );
   });
 });

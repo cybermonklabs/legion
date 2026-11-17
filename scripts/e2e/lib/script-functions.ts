@@ -40,6 +40,24 @@ const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
 
 /**
+ * Every script among `paths`, and every library under scripts/e2e/lib one of them sources
+ * (`. "…/lib/<name>"`), and the libraries those source in turn, each path once. A harness reads
+ * the functions a script reaches through it, and a test the libraries a script runs with.
+ */
+export function sourcedLibraries(...paths: string[]): string[] {
+  const read = new Set<string>();
+  const pending = [...paths];
+  for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
+    if (read.has(path)) continue;
+    read.add(path);
+    for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
+      pending.push(join(import.meta.dir, found[1]));
+    }
+  }
+  return [...read];
+}
+
+/**
  * The shell a harness puts above the functions it extracts from `paths`, so that a helper one of
  * them calls that the harness neither extracts nor stubs is named rather than left as a bare
  * `exit 127` the caller must trace: bash's command_not_found_handle prints
@@ -48,19 +66,14 @@ const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
  * the harness's own stderr, saved in a file descriptor when the guard is set up, so a call the
  * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library under
  * scripts/e2e/lib a script among `paths` sources (`. "…/lib/<name>"`) counts as one of them, and
- * the libraries it sources in turn, so a harness passes only the scripts it extracts from.
- * `missingHelpers` reads those lines out of a run's output for the harness to fail on.
+ * the libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
+ * extracts from. `missingHelpers` reads those lines out of a run's output for the harness to fail
+ * on.
  */
 export function nameMissingHelpers(...paths: string[]): string {
   const names = new Set<string>();
-  const read = new Set<string>();
-  const pending = [...paths];
-  for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
-    if (read.has(path)) continue;
-    read.add(path);
-    const text = readFileSync(path, "utf8");
-    for (const found of text.matchAll(definition)) names.add(found[1]);
-    for (const found of text.matchAll(sourced)) pending.push(join(import.meta.dir, found[1]));
+  for (const path of sourcedLibraries(...paths)) {
+    for (const found of readFileSync(path, "utf8").matchAll(definition)) names.add(found[1]);
   }
   return `exec {harness_stderr}>&2
 command_not_found_handle() {

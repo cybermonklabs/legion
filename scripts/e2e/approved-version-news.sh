@@ -126,8 +126,9 @@
 # here or in the lib's prerequisites; exit 1 is every other failure. The run around each driver is
 # lib/live-daemon-proof.sh's, made in a subshell, so this script reads its outcome and the driver's
 # output and prints the last line. That line reads PASS, or the control's verdict, only for a run
-# that reached one of the script's two ends (version_news_ended): a signal that ends the script
-# leaves bash's EXIT trap a status of 0, and its line reads FAIL at the check it stopped in.
+# that reached one of the script's two ends, each of which calls run_end (lib/run-verdict.sh): a
+# signal that ends the script leaves bash's EXIT trap a status of 0, and its line reads FAIL at the
+# check it stopped in, with exit 1, or the signal's status.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -184,18 +185,17 @@ expected=0
 verdict=''
 part_two_said=''
 version_news_started=$SECONDS
-# version_news_ended is set at each of the script's two ends, the exit of a run of part one alone
-# and the last statement, and nowhere else: finish reads it to tell a run that reached an end from
-# one a signal or an early exit ended with status 0.
-version_news_ended=''
+# Each of the script's two ends, the exit of a run of part one alone and the last statement, calls
+# run_end (lib/run-verdict.sh, which lib/live-daemon-proof.sh sources), and nothing else marks the
+# run's end. The runs of part one and part two are made in subshells, whose marks are their own.
 
 # finish removes the scratch trees the run made, by their exact paths, and prints the run's last
-# line: what part one counted beside what it expects, what part two counted in each arm, or that
-# it did not run, and, for the control, whether it bit. A verdict or PASS needs status 0 and a run
-# that reached one of its ends; a run that ended before that with status 0, as a signal leaves the
-# EXIT trap, reads FAIL at the check it stopped in, and says so.
+# line through run_verdict: what part one counted beside what it expects, what part two counted in
+# each arm, or that it did not run, and, for the control, whether it bit. A verdict or PASS needs
+# status 0 and a run that reached one of its ends; a run that ended before that with status 0, as a
+# signal leaves the EXIT trap, reads FAIL at the check it stopped in, and says so.
 finish() {
-  local status=$? said
+  local status=$? said passed
   for tree in "$base_tree" "$prompts_tree"; do
     [ -z "$tree" ] || rm -rf "$tree"
   done
@@ -205,15 +205,11 @@ finish() {
   elif [ -n "$part_two_said" ]; then
     said="$said; part two: $part_two_said"
   fi
-  if [ "$status" -eq 0 ] && [ -n "$version_news_ended" ] && [ -n "$verdict" ]; then
-    echo "approved version news e2e: $verdict in $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)"
-  elif [ "$status" -eq 0 ] && [ -n "$version_news_ended" ]; then
-    echo "approved version news e2e: PASS in $((SECONDS - version_news_started))s ($said)"
-  elif [ "$status" -eq 0 ]; then
-    echo "approved version news e2e: FAIL at $check after $((SECONDS - version_news_started))s: the run ended before its last check, by a signal or an exit of its own ($said, evidence: $version_news_evidence)" >&2
-  else
-    echo "approved version news e2e: FAIL at $check after $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)" >&2
-  fi
+  passed="approved version news e2e: PASS in $((SECONDS - version_news_started))s ($said)"
+  [ -z "$verdict" ] ||
+    passed="approved version news e2e: $verdict in $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)"
+  run_verdict "$status" "$passed" \
+    "approved version news e2e: FAIL at $check after $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)"
 }
 
 # control_verdict PROOF STATUS is part one's negative control, read from the base run's driver
@@ -461,7 +457,7 @@ if [ "$parts" = one ]; then
   begin part-two
   note "part two did not run: --part one, --control and --base-commit run part one alone"
   pass
-  version_news_ended=1
+  run_end
   exit 0
 fi
 
@@ -506,4 +502,4 @@ calls=$(grep -m1 -E '^model calls: ' "$proof" 2>/dev/null || true)
 [ -z "$head_short" ] || fail "the head arm did not reach its assertion and pass in every run: ${head_short#; }"
 [ "$part_two_status" -eq 0 ] || fail "part two failed (status $part_two_status); $proof keeps each run's evidence"
 pass
-version_news_ended=1
+run_end

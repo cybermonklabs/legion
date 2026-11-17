@@ -4904,9 +4904,10 @@ Part two's eighteen runs took 103 s to 178 s each, 2645 s in all, and made 248 m
 The negative control took 276 s, and two minutes of that was the bounded wait that its failure ends.
 The run around each driver is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s four checks.
 The script makes that run in a subshell of its own, so that it can read the run's outcome and the driver's output.
-The script prints the last line itself.
-That line reads PASS, or the control's verdict, only for a run that reached one of the script's two ends: the exit of a run of part one alone, or the script's last statement.
-A run a signal ended reads `FAIL at <check>`, naming the check it stopped in, since bash runs the exit trap with status 0 then.
+The script prints the last line itself, through [`lib/run-verdict.sh`](#librun-verdictsh).
+That line reads PASS, or the control's verdict, only for a run that reached one of the script's two ends, each of which calls `run_end`: the exit of a run of part one alone, or the script's last statement.
+A run a signal ended reads `FAIL at <check>`, naming the check it stopped in, since bash runs the exit trap with status 0 then, and keeps the signal's status;
+an `exit 0` before either end reads FAIL and exits 1.
 A refusal inside the lib, exit 2, is the script's exit 2 too.
 
 | check | what it holds |
@@ -6008,6 +6009,65 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 - The `tee` is one of the run's processes: its argv names `FILE`, and its working directory is the caller's at the call.
   [`lib/rig.sh`](#librigsh)'s `run_processes` matches `$work` in either, so a caller keeps both outside `$work`, or opens `FILE` on a descriptor and passes `/dev/fd/N`, as Stage 2 and `stage3-4b13b-acceptance.sh` do with their transcript under `$work`.
 
+## lib/run-verdict.sh
+
+A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints a verdict.
+Sourced by each of them, never run.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+
+```sh
+. "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
+cleanup() {
+  local status=$?
+  …                                          # the teardown
+  run_verdict "$status" "<label>: PASS in …" "<label>: FAIL at $check after …"
+}
+trap cleanup EXIT
+…                                            # the checks
+run_end                                      # the statement after the last check
+```
+
+bash runs the `EXIT` trap of a shell that a signal ends (a closed pane's `HUP`, a Ctrl-C's `INT` or `timeout`'s `TERM`, none of them trapped) with `$?` at the status of the last command it finished, which is often 0.
+A trap that reads the status alone then prints PASS for a run that never reached its last check.
+So a run passes only when it also reached its end:
+the script calls `run_end` as the statement after its last check, nothing else sets the mark, and nothing but the shell's end, a function's closing brace or an `exit 0` follows it.
+A run a signal ends never reaches that statement, so the mark alone keeps it from passing.
+
+The lib sets no signal trap, and a script needs none for this rule.
+bash runs a trapped signal's handler only once the foreground command returns, and a proof runs its driver in the foreground for up to an hour, so a trap would make a killed proof wait for its driver:
+measured in a Legion pod, a `TERM` trap held a shell's exit for 6069 ms behind a 6 s `sleep`, against 1217 ms with no trap.
+`dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh` and [`lib/two-builds.sh`](#libtwo-buildssh) trap `INT` and `TERM` for their own teardown, and pass the signal's status (130, 143) to `run_verdict`;
+a `HUP`, which none of them traps, reaches their `EXIT` trap as status 0 and reads FAIL by the mark.
+
+Each item below names a function, then what it does.
+
+- `run_end`
+
+  marks the run as having reached its end
+
+- `run_passed STATUS`
+
+  answers 0 when STATUS is 0 and the run reached its end: the one rule the two below read
+
+- `run_status STATUS`
+
+  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`, `share-volumes-kind.sh`'s `release_shares`), so a killed run keeps its evidence too
+
+- `run_verdict STATUS PASSED FAILED`
+
+  the `EXIT` trap's last command: prints PASSED on stdout and exits 0 for a run that passed;
+  prints `the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass`, then FAILED, on stderr and exits 1 for a status of 0 with no mark;
+  prints FAILED on stderr and exits with STATUS otherwise.
+  A shell a signal ended keeps that signal's status (129, 130, 143) whatever the trap exits with:
+  bash ends it with the signal once the trap returns
+
+The mark is the shell's own variable.
+A subshell starts with the value the shell had when it forked, so a run made in a subshell (`lib/live-daemon-proof.sh`'s, inside `approved-version-news.sh` and `busy-relaunch-delivery.sh`'s negative control) sets its own mark, and the script around it calls its own `run_end`.
+
+`lib/run-verdict.test.ts` drives the real lib with a fixture proof killed by `TERM`, `INT` and `HUP` between its checks, killed in its setup, ended by an `exit 0` of its own, and run to its end, and only the last prints PASS.
+It also holds every script here to the rule: no `EXIT` trap prints PASS but through `run_verdict`, a script whose trap does reaches a `run_end`, and each `run_end` stands where nothing but the shell's end follows it.
+`lib/live-daemon-proof.test.ts` and `lib/approved-version-news-verdicts.test.ts` drive the real `live_daemon_proof` and the real `approved-version-news.sh --part one` over stand-ins of `go`, the `nats-server`, `python3` and the driver (`lib/live-daemon-proof-fixture.ts`), killed in their setup and in their driver by a signal to the whole process group, and run to their end.
+
 ## lib/rig.sh
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
@@ -6128,8 +6188,9 @@ Each proof keeps its own header, its own ports, its own seed and its own cases.
 . "$root/scripts/e2e/lib/two-builds.sh"     # sourced, never run
 ```
 
-It sources [`lib/rig.sh`](#librigsh) itself, so a proof sources this file alone and gets both.
+It sources [`lib/rig.sh`](#librigsh) and [`lib/run-verdict.sh`](#librun-verdictsh) itself, so a proof sources this file alone and gets all three.
 Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports.
+The proof's last statement is `run_end`, after its last check: `cleanup` prints PASS only for a run that reached it, so a `HUP`, which no trap of the harness catches, reads FAIL.
 
 Each item below names a function, then what it does.
 
@@ -6157,7 +6218,7 @@ Each item below names a function, then what it does.
 
 - `call METHOD PATH [BODY]`, `json_field FIELD`, `cleanup RC`
 
-  the HTTP call as an agent bearer against `target_url`, waiting `call_seconds` (20 here; a proof whose reads take longer sets its own), one string member of a JSON object on stdin, and the teardown the three traps run
+  the HTTP call as an agent bearer against `target_url`, waiting `call_seconds` (20 here; a proof whose reads take longer sets its own), one string member of a JSON object on stdin, and the teardown the three traps run, which prints the last line through `run_verdict`
 
 - `sign_in LOGIN`, `call_person METHOD PATH [BODY]`
 
@@ -6694,7 +6755,7 @@ A throwaway kind cluster running Agent Sandbox's controller under gVisor, for a 
 . "$root/scripts/e2e/lib/kind-sandbox.sh"     # sourced, never run
 ```
 
-The caller defines `note` and `fail`, which exits, and calls `kind_sandbox_teardown` from its `EXIT` trap.
+The caller defines `note` and `fail`, which exits, and calls `kind_sandbox_teardown` from its `EXIT` trap, with the status [`lib/run-verdict.sh`](#librun-verdictsh)'s `run_status` gives the run, so a run a signal ended keeps the cluster's evidence as a failed run does.
 `LEGION_E2E_KIND` names the kind binary when it is not on `PATH`.
 
 Each item below names a function, then what it does.
@@ -6753,10 +6814,10 @@ The refusal line tells that case apart, and names libpq and the package to insta
 That guard reads the caller's DSN in the shell, and it reaches no further.
 The `driver` check then builds the test binary (`go test -c -tags e2e ./internal/daemon`), and that binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx before anything connects or creates, which is the second of the two frames that hold the run to the server its caller named.
 `DatabaseURL` in `packages/daemon/internal/testpg/testdb/testdb.go` is where that frame is written, and the comment above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh) is where this one is.
-On any exit it stops the `nats-server`, removes the work directory and prints its last line.
-That line is `LABEL e2e: PASS in <n>s (evidence: <dir>)` only when `live_daemon_proof` reached its own last statement and the shell exits 0.
+On any exit it stops the `nats-server`, removes the work directory and prints its last line through [`lib/run-verdict.sh`](#librun-verdictsh).
+That line is `LABEL e2e: PASS in <n>s (evidence: <dir>)` only when `live_daemon_proof` reached its own last statement, `run_end`, and the shell exits 0.
 Every other exit prints `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
-A run that ended before its last check with status 0 says so after the check: bash runs the exit trap with status 0 when a signal (TERM, INT or HUP) ends the shell, so the status alone would read such a run as a pass.
+A run that ended before its last check with status 0 says so on the line before, and exits 1, or with the signal's status when a signal (TERM, INT or HUP) ended it: bash runs the exit trap with status 0 then, so the status alone would read such a run as a pass.
 
 | argument | is |
 | :--- | :--- |
