@@ -133,11 +133,15 @@ func (c listenerCache) readsAnyOf(buckets []string) bool {
 }
 
 // listenerCaches lists the caches the listener keeps. It is the one place that names them, so
-// rewatch, self-health, /healthz and shutdown each reach every cache. ciStore is nil on a listener
-// that mounts no GitHub webhook route, and then no site reaches a CI cache.
+// rewatch, self-health, /healthz and shutdown each reach every cache. The interest registry's two
+// watchers are two caches, each over its one bucket (store.Registry.InterestCache,
+// RoleClaimCache), so a missing role bucket leaves the interest watcher checked, rewatched and
+// rebuilt, and a missing interest bucket leaves the role claim watcher so. ciStore is nil on a
+// listener that mounts no GitHub webhook route, and then no site reaches a CI cache.
 func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry, ciStore *cistore.Store, missing *missingBuckets) []listenerCache {
 	caches := []listenerCache{
-		{name: "interest", cache: registry, buckets: []string{bus.InterestBucket, bus.RoleClaimBucket}, missing: missing},
+		{name: "interest", cache: registry.InterestCache(), buckets: []string{bus.InterestBucket}, missing: missing},
+		{name: "role claim", cache: registry.RoleClaimCache(), buckets: []string{bus.RoleClaimBucket}, missing: missing},
 		{name: "session", cache: sessions, buckets: []string{bus.SessionBucket}, missing: missing},
 	}
 	if ciStore != nil {
@@ -686,9 +690,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
 				if answered && errors.Is(err, nats.ErrStreamNotFound) && len(c.buckets) > 0 {
 					// Deleted since the monitor last looked: named now, not at its next check, and
-					// only the buckets a read of their streams finds missing, since a cache that reads
-					// two buckets fails its ping when either is gone. None of c.buckets is in held
-					// (reads, above), so none is named twice.
+					// only the buckets a read of their streams finds missing, should a cache read more
+					// than one. None of c.buckets is in held (reads, above), so none is named twice.
 					if gone := readBuckets(ctx, d.client.JS(), c.buckets).missing; len(gone) > 0 {
 						held = append(held, gone...)
 						continue

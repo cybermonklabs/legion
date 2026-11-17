@@ -4871,10 +4871,10 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 	}
 }
 
-// TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator deletes envoy_roles, the one
-// listener bucket no watcher reads, under a monitor that runs as the listener's does: its probe
-// reads the copied buckets first (checkCopiedBuckets) into the tracker the caches share
-// (listenerCaches), so the interest cache, which reads that bucket, is left out of the checks. No
+// TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator deletes envoy_roles under a
+// monitor that runs as the listener's does: its probe reads the copied buckets first
+// (checkCopiedBuckets) into the tracker the caches share (listenerCaches), so the role claim cache,
+// which reads that bucket, is left out of the checks, and the interest cache is checked. No
 // listener creates a bucket it copies, and a restart would only wait for it at the start's gate,
 // so the monitor neither rebuilds nor restarts over it: every probe answers bucketsMissingError
 // naming the bucket, which /healthz and the alarm's ERROR line carry until the operator creates
@@ -4901,7 +4901,7 @@ func TestRunSelfHealthMonitor_LeavesAMissingRoleBucketToTheOperator(t *testing.T
 	}
 
 	missing := &missingBuckets{}
-	caches := listenerCaches(registry, nil, nil, missing)[:1]
+	caches := listenerCaches(registry, nil, nil, missing)[:2]
 	logger := logging.NewWithWriter("test", &cmdtest.LockedBuffer{})
 	var rebuilds, probes atomic.Int32
 	var last atomic.Pointer[error]
