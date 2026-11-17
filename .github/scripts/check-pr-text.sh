@@ -215,14 +215,25 @@ if [ -z "$skill_commit" ]; then
   echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
 else
   skill_date=$(jq -s -r '[.[][]] | last | .commit.committer.date' "$work/cutoff-commits")
-  # The releases, 100 a page, in the one order that makes stopping early safe: GraphQL's, sorted
+  # The releases, 100 a page, in the one order that lets the paging stop early: GraphQL's, sorted
   # by creation time, newest first. (The REST releases route is not in that order: it lists one day
   # at a time and, within a day, one package after another, so a page can reach an early-morning
   # release of another package before that day's later legion-v releases, and a stop there moved
-  # the cutoff from run to run.) A release is created before it is published, and one that
-  # contains the marker commit is created after that commit is, so once a page reaches a release
-  # created before the marker commit, no later page holds a candidate, and the paging stops there
-  # rather than reading every release the repository ever published (some thousands, at every run).
+  # the cutoff from run to run.) A release's creation time is the committed date of the commit it
+  # tags, and that date is not in commit order: the merge queue dates a commit when it builds it,
+  # which can be before its parent lands, so a release of a commit that contains the marker can be
+  # dated before the marker commit. The paging therefore stops only after a page that reaches a
+  # release created more than release_date_margin before the marker commit's date, rather than
+  # reading every release the repository ever published (some thousands, at every run).
+  # The candidates below are filtered by publish time, which is when the release really happened:
+  # a release that contains the marker is published after the marker lands, and a commit is never
+  # dated after it lands, so that filter keeps every one.
+  # release_date_margin: two days, in seconds. The largest gap found on main between a commit's
+  # date and the date of a commit it follows is 791 minutes (13.2 hours, a merge-queue commit
+  # dated before its parent); two days stays above that, and costs about two pages more.
+  release_date_margin=$((2 * 24 * 60 * 60))
+  stop_before=$(jq -rn --arg date "$skill_date" --argjson margin "$release_date_margin" \
+    '$date | fromdateiso8601 - $margin | todateiso8601')
   # shellcheck disable=SC2016 # $owner, $name and $cursor are GraphQL's variables, not the shell's
   releases_query='query($owner: String!, $name: String!, $cursor: String) {
     repository(owner: $owner, name: $name) {
@@ -244,7 +255,7 @@ else
       "$work/releases-page" >> "$work/releases"
     page_oldest=$(jq -r '[.data.repository.releases.nodes[].createdAt] | min // empty' "$work/releases-page")
     more=$(jq -r '.data.repository.releases.pageInfo.hasNextPage' "$work/releases-page")
-    if [ "$more" != true ] || { [ -n "$page_oldest" ] && [[ $page_oldest < $skill_date ]]; }; then
+    if [ "$more" != true ] || { [ -n "$page_oldest" ] && [[ $page_oldest < $stop_before ]]; }; then
       break
     fi
     release_cursor=$(jq -r '.data.repository.releases.pageInfo.endCursor' "$work/releases-page")

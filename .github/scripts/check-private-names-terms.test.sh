@@ -518,14 +518,16 @@ key_run
 check "with a marker commit and no release that contains it, the key still passes" "$(is "$status" 0)"
 check "says no release contains it" "$(contains "$out" 'no legion-v\* release contains the commit')"
 
-echo "case: the releases are read in creation order, newest first, and stop at the first page older than the marker"
+echo "case: the releases are read in creation order, newest first, and stop at the first page past the margin"
 # GitHub's REST releases route lists one day at a time and, within a day, one package after
 # another (pi-legion, pi-envoy, legion, ...), so its first page can reach an early-morning release
 # of another package before that day's earlier legion-v releases: a stop on that page picked a
 # later cutoff, and each new release moved it. Here the marker commit is dated 10:00 on the 16th;
 # that day holds 45 pi-legion and 45 pi-envoy releases every half hour from 00:00, then 20 legion
 # releases hourly from 03:30, of which legion-v20.7.0 at 10:30 is the first to contain the marker
-# and sits on the REST route's second page. GraphQL sorts them by creation time, newest first.
+# and sits on the REST route's second page. GraphQL sorts them by creation time, newest first, and
+# the paging stops at the first page that reaches a release created more than two days before the
+# marker: the 13th's.
 release_day() { # release_day <day> <package> <count> <first minute> <step minutes> <version prefix>
   jq -nc --arg day "$1" --arg pkg "$2" --argjson n "$3" --argjson start "$4" --argjson step "$5" --arg v "$6" '
     def two: tostring | if length < 2 then "0" + . else . end;
@@ -533,7 +535,7 @@ release_day() { # release_day <day> <package> <count> <first minute> <step minut
       | {tag_name: "\($pkg)-v\($v).\($k).0", draft: false,
          published_at: "2026-11-\($day)T\(($m / 60 | floor) | two):\(($m % 60) | two):00Z"}]'
 }
-day_by_package() { # day_by_package [newer]: the 16th and the 15th, in the REST route's order
+day_by_package() { # day_by_package [newer]: the 16th and the 13th, in the REST route's order
   {
     if [ "${1:-}" = newer ]; then
       release_day 17 pi-legion 20 0 60 21
@@ -543,7 +545,7 @@ day_by_package() { # day_by_package [newer]: the 16th and the 15th, in the REST 
     release_day 16 pi-legion 45 0 30 20
     release_day 16 pi-envoy 45 0 30 20
     release_day 16 legion 20 210 60 20
-    release_day 15 pi-envoy 100 720 0 19
+    release_day 13 pi-envoy 100 720 0 19
   } | jq -s -c 'add' > "$work/releases"
   for k in 7 8 9 10 11 12 13 14 15 16 17 18 19; do echo ahead > "$work/contains.legion-v20.$k.0"; done
   for k in 0 1 2 3 4 5 6 7 8 9; do echo ahead > "$work/contains.legion-v21.$k.0"; done
@@ -554,14 +556,39 @@ day_by_package
 key_run
 check "finds the first release that contains the marker, at 10:30" \
   "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v20.7.0, published 2026-11-16T10:30:00Z$')"
-check "reads one page, in GraphQL's creation order" "$(is "$(grep -c '^api graphql' "$work/calls")" 1)"
+check "reads two pages, the second reaching releases past the margin, and never the third" \
+  "$(is "$(grep -c '^api graphql' "$work/calls")" 2)"
 check "never reads the REST route's order" "$(is "$(grep -c 'releases?per_page=' "$work/calls")" 0)"
 day_by_package newer
 key_run
 check "with 40 newer releases on top, the same cutoff" \
   "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v20.7.0, published 2026-11-16T10:30:00Z$')"
-check "and two pages, the second asked for after the first's cursor" \
+check "and two pages again, the second asked for after the first's cursor, never the third" \
   "$(is "$(grep -c '^api graphql' "$work/calls"):$(grep -c 'cursor=c1' "$work/calls")" 2:1)"
+
+echo "case: a release that contains the marker can be dated before it, and the paging still finds it"
+# A release's creation time is the date of the commit it tags, and the merge queue can date a
+# commit up to 13 hours before its parent. Here the first release that contains the marker
+# (dated 10:00 on the 16th), legion-v20.7.0, published at 10:30, tags a commit dated 21:00 the day
+# before; the first page holds 98 releases created after the marker, legion-v20.8.0 at 12:30,
+# which contains it too, and one release created at 09:30, before the marker. A stop at the first
+# page older than the marker read that page alone and gave 12:30; the margin reads the next.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-16T10:00:00Z"}}}]' > "$work/cutoff-commits"
+{
+  release_day 16 pi-legion 98 605 1 22
+  jq -nc '[{tag_name: "legion-v20.8.0", published_at: "2026-11-16T12:30:00Z", draft: false},
+    {tag_name: "pi-envoy-v20.0.0", published_at: "2026-11-16T09:30:00Z", draft: false},
+    {tag_name: "legion-v20.7.0", created_at: "2026-11-15T21:00:00Z", published_at: "2026-11-16T10:30:00Z", draft: false}]'
+  release_day 13 pi-envoy 20 720 0 19
+} | jq -s -c 'add' > "$work/releases"
+echo ahead > "$work/contains.legion-v20.7.0"
+echo ahead > "$work/contains.legion-v20.8.0"
+key_run
+check "finds legion-v20.7.0 at 10:30, not the later legion-v20.8.0" \
+  "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v20.7.0, published 2026-11-16T10:30:00Z$')"
+check "reads the second page, where the release dated before the marker sits" \
+  "$(is "$(grep -c '^api graphql' "$work/calls")" 2)"
 
 echo "case: once a release carries the marker commit, a pull request opened before it is not read"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
