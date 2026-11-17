@@ -110,6 +110,8 @@ GET /api/v1/issues/{key}/messages/{id} any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
+GET /api/v1/issues/{key}/role-holders any
+PUT /api/v1/issues/{key}/role-holders any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any

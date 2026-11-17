@@ -1105,8 +1105,8 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	// A person at a browser is the person, so their cookie holds every scope and names no agent
-	// that acted for them.
-	return model.Actor{Kind: "user", ID: login, Credential: personCredential}, true, nil
+	// that acted for them. The cookie proved the login, so the actor is Proven.
+	return model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}, true, nil
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
@@ -1189,7 +1189,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
-		// actor decoded from JSON carries none (model.Actor.Recorded).
+		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
+		// brokerTokenActor set, since the credential, not the body, named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1210,6 +1211,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
+		// Not Proven: the body named this session and the credential proved none.
 	}, nil
 }
 
@@ -1408,13 +1410,18 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			session = named
 		}
 		act = &model.ActorAct{
-			Session:   session,
-			TokenID:   credential.TokenID,
-			TokenName: credential.TokenName,
-			Scopes:    credential.Scopes,
+			Session: session,
+			// Only the session the credential itself proved; one a personal token's `?session=`
+			// names is the caller's word.
+			SessionProven: session != "" && session == credential.Session,
+			TokenID:       credential.TokenID,
+			TokenName:     credential.TokenName,
+			Scopes:        credential.Scopes,
 		}
 	}
-	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act}, true
+	// Proven: every credential that holds the person scope proves its person - the cookie its
+	// login, a personal or broker-issued token the owner it names.
+	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act, Proven: true}, true
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
@@ -1425,7 +1432,9 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
 // broker-issued token - decides it, and a body naming another session is the disagreement
 // bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for.
+// write recorded as a session the caller merely asked for. The act keeps SessionProven only
+// when the body names the session the credential proved; a session the body alone names is not
+// proven.
 //
 // Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
 // whose input struct does not declare one is a 400, and four of the mutating rows a person's
@@ -1446,6 +1455,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 	}
 	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.
 	act := *actor.Act
+	act.SessionProven = act.SessionProven && act.Session == named
 	act.Session = named
 	actor.Act = &act
 	return actor, true

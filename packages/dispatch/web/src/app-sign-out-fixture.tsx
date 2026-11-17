@@ -1,6 +1,6 @@
 import { spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
@@ -95,24 +95,33 @@ export function aliceWrite(
   label: string,
   refuse = false
 ): Promise<unknown> {
-  return writesOf(queryClient)
-    .run({
-      detail: null,
-      kind: plainWrite,
-      label,
-      method: "PATCH",
-      presentation: "indicator",
-      write: (bounds) => {
-        attempts.push(label);
-        bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
-        return Promise.reject(
-          refuse
-            ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
-            : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
-        );
-      },
-    })
-    .catch((error: unknown) => error);
+  // The press is the person's: what it starts on the page lands inside `act`, as a press does.
+  let pressed: Promise<unknown> = Promise.resolve();
+  act(() => {
+    pressed = writesOf(queryClient)
+      .run({
+        detail: null,
+        kind: plainWrite,
+        label,
+        method: "PATCH",
+        presentation: "indicator",
+        write: (bounds) => {
+          attempts.push(label);
+          bounds.sent?.({
+            body: { status: "done" },
+            method: "PATCH",
+            path: "/api/v1/issues/CORE-1",
+          });
+          return Promise.reject(
+            refuse
+              ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
+              : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+          );
+        },
+      })
+      .catch((error: unknown) => error);
+  });
+  return pressed;
 }
 
 /** The names of the writes this tab keeps across a reload. */

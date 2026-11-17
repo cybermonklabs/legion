@@ -855,7 +855,7 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	expires := clock.read().Add(time.Hour)
 	r := newRig(t, Options{Now: clock.read})
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: firstToken}, Expires: expires, Kind: "google-login"},
+		workerName: {Slots: map[string]string{requests.SlotValue: firstToken}, Expires: expires, Type: "google-login"},
 	})
 	client := r.client(workerPlaceholder)
 	call := func(path string) string {
@@ -875,7 +875,7 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	// the release checks are not run again.
 	clock.set(expires.Add(-6 * time.Minute))
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: secondToken}, Expires: expires.Add(time.Hour), Kind: "google-login"},
+		workerName: {Slots: map[string]string{requests.SlotValue: secondToken}, Expires: expires.Add(time.Hour), Type: "google-login"},
 	})
 	if got, want := call("/v1/second"), "Bearer "+firstToken; got != want {
 		t.Fatalf("the service saw Authorization %q six minutes before the expiry; want the held %q", got, want)
@@ -1074,11 +1074,11 @@ func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testi
 	r.grants.connections[acmeHolder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			appName: {Kind: "github-app", Slots: map[string]string{acmeSlot: acmeHolder, zedSlot: zedHolder}},
+			appName: {Type: "github-app", Slots: map[string]string{acmeSlot: acmeHolder, zedSlot: zedHolder}},
 		},
 	}
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		appName: {Kind: "github-app", Slots: map[string]string{acmeSlot: acmeToken, zedSlot: zedToken}},
+		appName: {Type: "github-app", Slots: map[string]string{acmeSlot: acmeToken, zedSlot: zedToken}},
 	})
 	client := r.client(acmeHolder)
 

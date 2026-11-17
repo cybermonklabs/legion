@@ -18,7 +18,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stored := policytest.KindSecret("AZURE_LOGIN", fixtureOperator, policy.TierHuman, policy.KindAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`)
+	stored := policytest.TypeSecret("AZURE_LOGIN", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`)
 	local := secrets.NewLocal(stored)
 	set, err := policytest.Loader(local).Load(t.Context())
 	if err != nil {
@@ -27,7 +27,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 	machine := &Machine{
 		Policy:  policytest.Current(t, local),
 		Secrets: policytest.Store(local),
-		Minters: map[string]Minter{policy.KindAzureLogin: (secrets.AzureLogin{TokenFile: file}).Mint},
+		Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file}).Mint},
 	}
 	secret := set.Secrets["AZURE_LOGIN"]
 	value, err := machine.release(t.Context(), requestedSecret{name: secret.Name, source: secret.Source, decision: policy.Approval}, secret, nil)
@@ -53,7 +53,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 		{"configured human secret", "AZURE_LOGIN", policy.TierHuman, policy.OwnerShared, policy.Approval, false, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			stored := policytest.KindSecret(row.secret, row.owner, row.tier, policy.KindAzureLogin,
+			stored := policytest.TypeSecret(row.secret, row.owner, row.tier, policy.TypeAzureLogin,
 				`{"tenant_id":"tenant","client_id":"client","name":"AZURE_LOGIN","human_tier":true}`)
 			if row.retagServiceGrant {
 				stored.Tags[policy.TagOwner] = fixtureService
@@ -89,7 +89,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 			machine := &Machine{
 				Policy:  policytest.Current(t, local, fixtureService),
 				Secrets: policytest.Store(local),
-				Minters: map[string]Minter{policy.KindAzureLogin: (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint},
+				Minters: map[string]Minter{policy.TypeAzureLogin: (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint},
 			}
 			value, err := machine.release(t.Context(), granted, secret, nil)
 			if row.allowed {

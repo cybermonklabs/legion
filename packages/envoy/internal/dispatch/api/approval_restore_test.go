@@ -105,7 +105,7 @@ func TestAVersionRestoringTheApprovedTextCarriesTheApproval(t *testing.T) {
 				AskID   *string `json:"ask_id"`
 			}](t, event)
 			if payload.Version == 3 {
-				if event.Actor != (model.Actor{Kind: "user", ID: "alice"}) || payload.Reason == nil || *payload.Reason != restoreSentence(1) || payload.AskID != nil {
+				if event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) || payload.Reason == nil || *payload.Reason != restoreSentence(1) || payload.AskID != nil {
 					t.Fatalf("restored artifact.approved = actor %#v payload %s", event.Actor, event.Payload)
 				}
 				approvedSeq = event.Seq

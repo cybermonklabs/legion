@@ -137,13 +137,14 @@ func (issuePod) labels(project string, l launch) map[string]string {
 // outlives a pod (INFRA-80). The disk itself is the pod's own, a generic ephemeral volume: the
 // kubelet creates its claim when the pod starts and deletes it when the pod goes, so a suspended,
 // relaunched or swept issue leaves no volume behind and every pod starts on a workspace its init
-// containers provision afresh. Its claim template carries no metadata at all: the pinned Sandbox
+// containers provision afresh. Its claim is on the launch's class (diskSpec: a microVM pod's is
+// the microVM block's). Its claim template carries no metadata at all: the pinned Sandbox
 // CRD declares the template's `metadata` a bare object with no properties and no
 // preserve-unknown-fields, so a label set there is pruned by the API server without a word
 // (TestManifestMatchesTheSandboxCRD).
-func (issuePod) disk(r *Runtime, _ launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
+func (issuePod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
 	return nil, corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
-		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec()},
+		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec(l)},
 	}}
 }
 
@@ -277,7 +278,10 @@ func (issuePod) initVolumes(r *Runtime, l launch) []corev1.Volume {
 // Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
 // own path, but the shared config home, whose place gets the role's own copy of it
 // (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
-// downward API's POD_UID), so they are set once.
+// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so (--microvm),
+// and, where the block names the metadata endpoint, is told the endpoint's pool and identity
+// provider and mounts the projected token it exchanges at WorkloadIdentityDir, under RolesDir,
+// where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	command := []string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name, "--roles-dir", RolesDir}
 	mounts := []corev1.VolumeMount{
@@ -310,6 +314,13 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 		// container keeps its cluster here; no role's namespace shows this mount.
 		command = append(command, "--test-postgres")
 		mounts = append(mounts, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
+	}
+	if l.microVM != nil {
+		command = append(command, "--microvm")
+		if endpoint := l.microVM.Metadata; endpoint != nil {
+			command = append(command, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
+			mounts = append(mounts, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: WorkloadIdentityDir, ReadOnly: true})
+		}
 	}
 	if r.agentSecrets != nil {
 		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
@@ -475,7 +486,7 @@ func (controllerPod) labels(project string, _ launch) map[string]string {
 func (controllerPod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
 	templates := []volumeClaimTemplate{{
 		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: r.labels(l)},
-		Spec:     r.diskSpec(),
+		Spec:     r.diskSpec(l),
 	}}
 	return templates, corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 		ClaimName: IssueClaimName(l.spec.Claim),
