@@ -66,9 +66,10 @@ in words and calls it a fast-follow (`refactor(cli): …, a fast-follow of the p
 the parent PR in the body, and the READY-format Verification block — `Threads: none`, `Thermo`
 left for the reviewer, the `E2E (implementer)` line written by the implementer when the pull
 request opens and the `E2E (tester)` line by the tester, `Fast-follow: none`, `Chain: not stacked`.
-The issue then links the pull request (`dispatch issue-update --issue <issue> --external-link
-'<the pull request URL>'`); in cybermonklabs/legion no title, body or commit message names a
-Dispatch key (`skills/legion-worker/SKILL.md`, *PR body, review, and the merge gate*). The phase
+Outside cybermonklabs/legion, `Dispatch: <KEY>` goes in the body too. The issue then links the
+pull request (`dispatch issue-update --issue <issue> --external-link '<the pull request URL>'`);
+in cybermonklabs/legion no title, body, comment, review or commit message names a Dispatch key or
+links into Dispatch (`skills/legion-worker/SKILL.md`, *PR body, review, and the merge gate*). The phase
 lifecycle (tester, reviewer, approval by SHA, retro, merger) runs on this branch exactly as on
 the parent, and each phase writes its handoff as a record on the Dispatch issue. Before
 sjawhar/legion#2354 the handoff file went on the new branch, and the lifecycle also carried the
