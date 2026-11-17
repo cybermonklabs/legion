@@ -227,8 +227,11 @@ func namedRequest(request string, err error) error {
 // operator creates such a bucket with `envoy-infra buckets` (CreateCopiedBucket). Every other
 // bucket is created when missing.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	_, fixture := fixtureConns.Load(conn)
-	return openKeyValue(conn, js, config, fixture || !slices.Contains(CopiedBuckets(), config.Bucket))
+	mode := openOnly
+	if _, fixture := fixtureConns.Load(conn); fixture || !slices.Contains(CopiedBuckets(), config.Bucket) {
+		mode = openOrCreate
+	}
+	return openKeyValue(conn, js, config, mode)
 }
 
 // fixtureConns are the connections a test fixture marked as its own (CreateCopiedBucketsOn).
@@ -246,6 +249,11 @@ func CreateCopiedBucketsOn(conn *nats.Conn) {
 // wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
 var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it, once every writer of it has ended: %w", nats.ErrBucketNotFound)
 
+// ErrBucketExists is a bucket a create-only open found there (CreateMissingCopiedBucket): at its
+// lookup, or in the answer "stream name already in use" to its create, when another client made
+// the bucket between the two. The open leaves it as it is.
+var ErrBucketExists = errors.New("bucket exists; a create-only open creates only a missing bucket, and leaves one that is there as it is")
+
 // CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
 // copies (CopiedBucketConfig), or opens it as it is when it exists: the operator's creation,
 // `envoy-infra buckets`, and a test fixture's (internal/bustest), on a server of its own.
@@ -254,12 +262,53 @@ func CreateCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string
 	if !ok {
 		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
 	}
-	return openKeyValue(conn, js, &config, true)
+	return openKeyValue(conn, js, &config, openOrCreate)
 }
 
-// openKeyValue is EnsureKeyValue and CreateCopiedBucket: creates says whether a bucket the server
-// does not hold is created or is ErrBucketMissing.
-func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, creates bool) (KeyValue, error) {
+// CreateMissingCopiedBucket creates bucket, one a listener copies, with its configuration at
+// replicas copies (CopiedBucketConfig), only when the server does not hold it: a bucket its lookup
+// finds, or one another client makes between that lookup and its create, is ErrBucketExists, and is
+// neither opened, raised nor updated (createOnly). As CreateCopiedBucket does, it sends a lookup or
+// a create the server leaves unanswered again (sentAgain), and opens the handle it answers with
+// once the member answering has applied the create (wrapKeyValue). `envoy-infra buckets create
+// --break-glass` calls it.
+func CreateMissingCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
+	config, ok := CopiedBucketConfig(bucket, replicas)
+	if !ok {
+		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
+	}
+	return openKeyValue(conn, js, &config, createOnly)
+}
+
+// bucketOpen is what openKeyValue does with a bucket the server holds and with one it does not.
+type bucketOpen int
+
+const (
+	// openOnly opens a bucket the server holds, raising its copies to the deployment's, and
+	// answers one it does not hold ErrBucketMissing: EnsureKeyValue's, for a bucket a listener
+	// copies.
+	openOnly bucketOpen = iota
+	// openOrCreate opens a bucket the server holds, raising its copies, and creates one it does
+	// not: EnsureKeyValue's for every other bucket, and CreateCopiedBucket's.
+	openOrCreate
+	// createOnly creates a bucket the server does not hold, and answers ErrBucketExists for one it
+	// holds, found by the lookup or made by another client between the lookup and the create,
+	// opening, raising and updating nothing: CreateMissingCopiedBucket's.
+	//
+	// Its create is nats.go's (CreateKeyValue), the normal path's. JetStream answers a create of
+	// a stream that exists with the same configuration as done, which changes nothing, and with
+	// another as "stream name already in use". nats.go follows that answer with an update only
+	// when the stream it then reads equals the configuration asked for in all but the discard
+	// policy and direct get, its metadata included (nats.go@v1.53.1 kv.go:525-545). nats-server
+	// 2.15.1, the hubs' version, answers every stream with metadata of its own (_nats.ver,
+	// _nats.level, _nats.req.level), which that configuration never carries, so there the update
+	// is never sent.
+	createOnly
+)
+
+// openKeyValue is EnsureKeyValue, CreateCopiedBucket and CreateMissingCopiedBucket: mode says
+// what it does with a bucket the server holds and with one it does not (bucketOpen).
+func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, mode bucketOpen) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -291,7 +340,7 @@ func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyVal
 	kv, err := lookUpBucket()
 	created := false
 	switch {
-	case errors.Is(err, nats.ErrBucketNotFound) && !creates:
+	case errors.Is(err, nats.ErrBucketNotFound) && mode == openOnly:
 		err = namedRequest(lookup, ErrBucketMissing)
 	case errors.Is(err, nats.ErrBucketNotFound):
 		// A create the server leaves unanswered is sent again, where an unanswered update is not
@@ -314,7 +363,13 @@ func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyVal
 		kv, err = sentAgain(create, func() (nats.KeyValue, error) {
 			return refusedSend(conn, createSubjects, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
 		})
-		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		switch {
+		case errors.Is(err, nats.ErrStreamNameAlreadyInUse) && mode == createOnly:
+			// Another client made the bucket between this call's lookup and its create, with
+			// another configuration: a create-only open leaves it as it is, and neither waits a
+			// member out for it nor opens it.
+			err = namedRequest(create, fmt.Errorf("%w: another client made it after the lookup: %w", ErrBucketExists, err))
+		case errors.Is(err, nats.ErrStreamNameAlreadyInUse):
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
 			// either: the lookup is taken again until it has. The copies are not raised here, as
@@ -327,10 +382,12 @@ func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyVal
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
 			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
-		} else {
+		default:
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil
+	case err == nil && mode == createOnly:
+		err = namedRequest(lookup, ErrBucketExists)
 	case err == nil:
 		var before int
 		before, err = raiseReplicas(js, config.Bucket, config.Replicas)

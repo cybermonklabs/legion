@@ -816,9 +816,9 @@ func (r *streamRequests) take(t *testing.T) []string {
 // listener's NATS user: here one holding exactly the grant the hub renders for the in-cluster gke
 // listener (core.ListenerHostPermissions), which receives its replies on the default _INBOX.
 // prefix. It creates the missing session bucket with the stream configuration the normal path
-// creates, sends the bucket's stream a read and a create and nothing else, takes no writer proof
-// (no kubectl or ssh call), prints no best-effort warning, and logs one line naming the operator,
-// the hub, the bucket and break-glass.
+// creates, sends the bucket's stream reads and one create and no update or delete, takes no writer
+// proof (no kubectl or ssh call), prints no best-effort warning, and logs one line naming the
+// operator, the hub, the bucket and break-glass.
 //
 // The control is the same user's create without the flag: the normal path takes its replies under
 // _INBOX_envoy_buckets, whose subscription the server refuses a listener's grant ("Permissions
@@ -874,7 +874,9 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 		!strings.Contains(logged[0], " "+bus.SessionBucket+" ") || !strings.Contains(logged[0], " on "+uri+",") {
 		t.Fatalf("create --break-glass logged %q, want one line naming break-glass, the operator, the bucket and the hub", stderr)
 	}
-	if got, want := requests.take(t), []string{"INFO." + stream, "CREATE." + stream}; !slices.Equal(got, want) {
+	// The run's read, the create's own lookup (bus.CreateMissingCopiedBucket), the create, and the
+	// handle open after it.
+	if got, want := requests.take(t), []string{"INFO." + stream, "INFO." + stream, "CREATE." + stream, "INFO." + stream}; !slices.Equal(got, want) {
 		t.Fatalf("create --break-glass sent %v to the bucket's stream, want %v", got, want)
 	}
 	created, err := js.StreamInfo(stream)

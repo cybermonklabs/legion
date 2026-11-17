@@ -351,10 +351,9 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 
 // breakGlassCreate is `create --break-glass`: it reads each of buckets' streams (STREAM.INFO
 // KV_<bucket>), and only when the server reports every one of them missing does it create each,
-// with its copied-bucket configuration (bus.CopiedBucketConfig) at replicas copies, after one line
-// on standard error naming the operator, the hub, the bucket and that the run is break-glass. A
-// bucket that exists, or whose read answers anything but "not found", refuses the run, and no
-// bucket is created.
+// with its copied-bucket configuration at replicas copies, after one line on standard error naming
+// the operator, the hub, the bucket and that the run is break-glass. A bucket that exists, or whose
+// read answers anything but "not found", refuses the run, and no bucket is created.
 //
 // It connects as the user the environment names (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), a
 // listener's until dispatch://INFRA-840's cutover, and takes its replies on nats.go's default
@@ -366,14 +365,11 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 // so a create while listeners run loses nothing more. And the proof cannot reach the production VM
 // hub's processes, so with it this path could not run there (dispatch://INFRA-4094, decisions.md).
 //
-// It only creates. It sends the create nats.go's KV makes (CreateKeyValue), with the configuration
-// the normal path passes it (bus.CreateCopiedBucket), but not through that path, which opens a
-// bucket it finds and raises its copies with a stream update. JetStream answers a create of a
-// stream that exists as done when the configurations are equal, which changes nothing, and
-// otherwise "stream name already in use", which nats.go follows with an update only when the two
-// differ in nothing but the discard policy and direct get (nats.go@v1.53.1 kv.go:525-545). So a
-// bucket another run makes between the read and the create keeps its data, and every setting but
-// those two.
+// It only creates: each create is bus.CreateMissingCopiedBucket's, which sends the normal path's
+// create (bus.CreateCopiedBucket) with its resend of an unanswered request and its wait for the
+// member answering to apply the create, and answers bus.ErrBucketExists, opening, raising and
+// updating nothing, for a bucket another client made after the read: found by its own lookup, or
+// in the answer to its create. The run then stops there, refused, and creates no bucket after it.
 func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, buckets []string, replicas int) int {
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
 	if err != nil {
@@ -400,9 +396,11 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 	}
 	hub := hubOf(natsURL)
 	for _, bucket := range buckets {
-		config, _ := bus.CopiedBucketConfig(bucket, replicas)
 		fmt.Fprintf(stderr, "envoy-infra buckets: break-glass: operator %s creates %s on %s, as the environment's NATS user and with no writer proof\n", operator, bucket, hub)
-		if _, err := js.CreateKeyValue(&config); err != nil {
+		if _, err := bus.CreateMissingCopiedBucket(nc.Conn, js, bucket, replicas); errors.Is(err, bus.ErrBucketExists) {
+			fmt.Fprintf(stderr, "envoy-infra buckets create --break-glass: refused: KV_%s was made by another client after the read, and is left as it is: %v\n", bucket, err)
+			return 1
+		} else if err != nil {
 			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
 			return 1
 		}
