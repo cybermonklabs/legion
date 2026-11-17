@@ -721,9 +721,9 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			settled(c.owner)
 		}
 	}
-	// holdBack ends c with the sends it has not made held back by the event whose failed send
+	// holdRest ends c with the sends it has not made held back by the event whose failed send
 	// stopped them (held, chainSend.heldBy).
-	holdBack := func(c *chain, by *batchEvent) {
+	holdRest := func(c *chain, by *batchEvent) {
 		for _, rest := range c.sends[c.next:] {
 			rest.state, rest.heldBy = held, by
 		}
@@ -774,9 +774,9 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			case after.state == reached:
 				issue(c)
 			case after.state == failed:
-				holdBack(c, after.event)
+				holdRest(c, after.event)
 			case after.state == held:
-				holdBack(c, after.heldBy)
+				holdRest(c, after.heldBy)
 			default:
 				parked = append(parked, c)
 			}
@@ -866,7 +866,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		c.next++
 		switch {
 		case send.state == failed:
-			holdBack(c, send.event)
+			holdRest(c, send.event)
 		case send.state != reached:
 			c.next = len(c.sends)
 			finish(c)

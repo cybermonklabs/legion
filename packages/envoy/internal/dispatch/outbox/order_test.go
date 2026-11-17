@@ -560,13 +560,15 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 // earlier event reached the topic family. The last event's own two copies may go either way round:
 // the order asked for is that each session takes an event once, a second copy dropped by its
 // dedupe key, and takes one issue's events in order, so the session takes that event once
-// whichever copy comes first and drops the other. Both copies carry the event's event_id
-// (dispatch-<event id>), which a host's dedupe (createDeliveryDedupe in envoy-client) drops a
-// repeat by whatever its key, and a dedupe key that names its event
-// (contracts.DedupeKeyNamesTheUpstreamEvent): dispatch-<event id> on every copy but a role
-// forward, whose key is that one behind the forward prefix. The last row has two earlier events,
-// so the session send waits on the second's topic send, which the first's failure held back and
-// which was never made.
+// whichever copy comes first and drops the other. Every copy the outbox sends of one event carries
+// the event's event_id (dispatch-<event id>), which a host's dedupe (createDeliveryDedupe in
+// envoy-client) drops a repeat by whatever its key. Its dedupe key names its event
+// (contracts.DedupeKeyNamesTheUpstreamEvent) but is not always that one: it is dispatch-<event id>
+// here, on the topic copy and on the session's, and on a role forward that key behind the forward
+// prefix, while a new comment's copy for a session whose mention of it failed carries that
+// mention's key (destinations.addSession), as do the forwards resolveRoleHolders keys by a
+// holder's own mention. The last row has two earlier events, so the session send waits on the
+// second's topic send, which the first's failure held back and which was never made.
 func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T) {
 	const topic = "notifications.dispatch.issue.T-1.message.created"
 	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
@@ -842,14 +844,20 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	})
 }
 
-// countingQueryer is loadLookups' queryer counting every statement it is handed, whatever its SQL.
+// countingQueryer is loadLookups' queryer counting every statement it is handed, whatever its SQL,
+// and keeping each statement's SQL.
 type countingQueryer struct {
 	queryer
 	statements int
+	sql        map[string]struct{}
 }
 
 func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	c.statements++
+	if c.sql == nil {
+		c.sql = map[string]struct{}{}
+	}
+	c.sql[sql] = struct{}{}
 	return c.queryer.Query(ctx, sql, args...)
 }
 
@@ -866,9 +874,12 @@ func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (p
 // primary documents (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own
 // read carries the issue's claim (readBatch). A document's writers are one kind, whether a comment
 // on it or an edit of it asks for them, so the edits add no statement. The statements are counted
-// where loadLookups hands each one to its queryer, for the batch the scan reads, so the count is of
-// every statement loadLookups runs, whatever its SQL: one more, or a kind the batch stops reading,
-// fails it.
+// twice. Once where loadLookups hands each one to its queryer, for the batch the scan reads, so
+// that count is of every statement one call of loadLookups runs, whatever its SQL: one more, or a
+// kind the batch stops reading, fails it. And once among every statement a real scan of that
+// batch runs (tracedStore), counting each whose SQL is one of the statements loadLookups ran,
+// the comment_fallback_copies read among them: a scan that read the lookups more than once - per
+// event, per owner, or once again - fails it.
 func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -960,8 +971,22 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	}
 	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), counted.statements)
 
+	tracer := &statementTracer{}
 	publisher := &recordingPublisher{}
-	holding(t, Deps{Store: database, Publisher: publisher}).scan(ctx, unfenced{})
+	holding(t, Deps{Store: tracedStore(t, database, tracer), Publisher: publisher}).scan(ctx, unfenced{})
+	scanned := 0
+	for _, statement := range tracer.matching() {
+		if _, ok := counted.sql[statement.sql]; ok {
+			scanned++
+		}
+	}
+	if _, ok := counted.sql[mentionFallbackHoldsQuery]; !ok {
+		t.Fatalf("loadLookups ran no read of comment_fallback_copies (mentionFallbackHoldsQuery), so the scan's count below cannot see it")
+	}
+	if scanned != 8 {
+		t.Fatalf("the scan of the batch ran %d lookup statements, want 8: it reads the batch's lookups once (resolveDestinations, loadLookups)", scanned)
+	}
+	t.Logf("the scan of the batch ran %d lookup statements", scanned)
 
 	for _, event := range seeded {
 		if publishedAt(t, database, event.ID) == nil {
