@@ -55,7 +55,9 @@ name: Dispatch unit suite repeated
 # command that runs it again from packages/dispatch, as packages/dispatch/AGENTS.md
 # ("## Commands") says: `bun run test:web <file> --seed=<n>` or
 # `bun run test:harness <file> --seed=<n>`. For a row that passed its first run, the command adds
-# `--rerun-each=<k>`, where k is the run it first failed on.
+# `--rerun-each=<k>`, where k is the run it first failed on. That repeats the order the row failed
+# in. A row that failed from the leg's load can pass there, and the same section of AGENTS.md says
+# what it needs.
 #
 # What it costs. One scheduled run a week of six legs, one run of six legs on each push to a pull
 # request that changes this file or the tool, and any `workflow_dispatch`. Every leg runs on a
