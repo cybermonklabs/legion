@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -273,7 +275,9 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // beside its other reads (readIssueDetails), and a read of its own sends them as a batch of its
 // own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
-// answers nothing itself, so the apply reports that refusal.
+// answers nothing itself, so the apply reports that refusal. For a reader that does not see every
+// object, a fourth statement reads which of the persons the asks wait on it sees, and the apply
+// leaves out the rest (askPersons).
 func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
@@ -282,6 +286,7 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 	events.QueueOpenedEventIDs(b, askIDs, readableEvents(who), openedEventIDs)
 	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, asks, partIDs)
+	seen := queueAskPersons(b, who, asks)
 	return func() error {
 		if countsErr != nil {
 			return countsErr
@@ -291,7 +296,60 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 		}
 		applyAskBacklinkCounts(asks, counts)
 		applyAskPartIDs(asks, partIDs)
+		leaveOutHiddenAskPersons(asks, seen)
 		return nil
+	}
+}
+
+// askPersons names the persons each ask names beside its row: the person it was handed to and the
+// person it waits on (askedOfPersonExpression), the one the issue's assignee or the project's
+// default may name.
+func askPersons(asks []*model.Ask) references {
+	named := references{}
+	for _, ask := range asks {
+		if ask.AskedOf != nil {
+			named.name(personReference, *ask.AskedOf)
+		}
+		named.name(personReference, ask.WaitingOnPerson)
+	}
+	return named
+}
+
+// queueAskPersons queues in b the read of which persons of asks who sees (seenReferencesSQL), and
+// answers the set the batch fills: nil for a reader that sees every object, or asks that name no
+// person, which queues nothing.
+func queueAskPersons(b *pgx.Batch, who model.Actor, asks []*model.Ask) references {
+	named := askPersons(asks)
+	if seesEveryObject(who) || named.empty() {
+		return nil
+	}
+	seen := references{}
+	b.Queue(seenReferencesSQL, []string{}, []string{}, []string{}, slices.Sorted(maps.Keys(named[personReference])),
+		refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+		var kind, id string
+		_, err := pgx.ForEachRow(rows, []any{&kind, &id}, func() error {
+			seen.name(referenceKind(kind), id)
+			return nil
+		})
+		return err
+	})
+	return seen
+}
+
+// leaveOutHiddenAskPersons writes asks as their reader reads them (the rule of references,
+// references_seen.go): a person the reader does not see, by seen, is left out - the ask's asked_of
+// null and its waiting_on_person empty. A nil seen is a reader that sees every person.
+func leaveOutHiddenAskPersons(asks []*model.Ask, seen references) {
+	if seen == nil {
+		return
+	}
+	for _, ask := range asks {
+		if ask.AskedOf != nil && !seen.holds(personReference, *ask.AskedOf) {
+			ask.AskedOf = nil
+		}
+		if ask.WaitingOnPerson != "" && !seen.holds(personReference, ask.WaitingOnPerson) {
+			ask.WaitingOnPerson = ""
+		}
 	}
 }
 
@@ -350,13 +408,25 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 
 // attachAskReadFields is what the read of one ask (getAsk) attaches beyond its row: its inbound
 // graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
-// with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
-// same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
+// with its part revision (attachAskPartIDs), and the persons it names left out where who does not
+// see them. A write attaches none of them. A list of asks reads the same fields, with their
+// identity events, in one batch instead (queueAskDetails, loadAskDetails).
 func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
-	return attachAskPartIDs(ctx, q, asks)
+	if err := attachAskPartIDs(ctx, q, asks); err != nil {
+		return err
+	}
+	if seesEveryObject(who) {
+		return nil
+	}
+	seen, err := seenReferences(ctx, q, who, askPersons(asks))
+	if err != nil {
+		return err
+	}
+	leaveOutHiddenAskPersons(asks, seen)
+	return nil
 }
 
 func (s *server) loadAskAnchorArtifact(

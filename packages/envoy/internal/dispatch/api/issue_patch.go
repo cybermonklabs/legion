@@ -231,7 +231,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Status != nil || parentProvided {
 		lock = lockPatchRowsAndParent
 	}
-	if err := lock(r.Context(), tx, key, named...); err != nil {
+	if err := lock(r.Context(), tx, who, key, named...); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -411,10 +411,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			}
 			// A URL links exactly one issue (issue_external_links_url). This issue's own
 			// links are already deleted above, so an owner found here is another issue
-			// (or the same URL repeated earlier in this request).
+			// (or the same URL repeated earlier in this request). The owner is named only
+			// where who reads it: an owner of a project who does not see is "another issue",
+			// the words the insert's own refusal below answers in. The 409 stands either way,
+			// since the URL cannot link two issues.
 			var owner string
-			err := tx.QueryRow(r.Context(), `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
+			var seen bool
+			err := tx.QueryRow(r.Context(), `
+				select l.issue_key, `+access.IssueProjectClause("l.issue_key", "$2")+`
+				from issue_external_links l where l.url = $1`, link.URL, refs.VisibilityArg(who)).Scan(&owner, &seen)
 			if err == nil {
+				if !seen {
+					owner = "another issue"
+				}
 				writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from %s", link.URL, owner))
 				return
 			}
@@ -438,6 +447,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		if err := ledger.Commit(r.Context()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &before, nil); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -615,6 +628,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).
 		// It runs after the publish so every event reaches subscribers in commit order.
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
+	}
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &after, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }

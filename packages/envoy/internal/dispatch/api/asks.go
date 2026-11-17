@@ -742,9 +742,11 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				-- The issue's own assignee beside its key and title, which is not the person the
 				-- question reaches: a question on an issue nobody holds carries a null assignee
 				-- here and the project's default in waiting_on_person below. The Inbox's rows
-				-- carry the pair the same way (inboxIssue, api/inbox.go).
+				-- carry the pair the same way (inboxIssue, api/inbox.go). Each is a person, named
+				-- only to a caller who sees them (the rule of references, references_seen.go).
 				case
-					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title, 'assignee', i.assignee))
+					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title,
+						'assignee', case when `+access.PersonClause("i.assignee", "$4")+` then i.assignee end))
 					else jsonb_build_object('document', jsonb_build_object('project', ar.project_key, 'slug', ar.slug, 'name', ar.name))
 				end as owner,
 				exists (
@@ -756,7 +758,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 					'created_at', lr.created_at
 				) end as last_reply,
 				`+waitingOnExpression+` as waiting_on,
-				`+askedOfPersonExpression+` as waiting_on_person
+				case when `+access.PersonClause(askedOfPersonExpression, "$4")+` then `+askedOfPersonExpression+` end as waiting_on_person
 			from mine a`+askedOfPersonJoins+lastReplyJoin+`
 			where a.state = 'open' and (i.key is null or i.closed_at is null)
 		)
@@ -960,6 +962,12 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	seenFollowers := map[string][]model.AskFollower{ask.ID: followers}
+	if err := leaveOutHiddenFollowers(r.Context(), s.deps.Store.Pool, who, seenFollowers); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	followers = seenFollowers[ask.ID]
 	reaches, err := s.loadAskReaches(r.Context(), who, []string{ask.ID})
 	if err != nil {
 		s.writeHandlerError(w, err)

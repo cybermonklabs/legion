@@ -169,7 +169,11 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	request, err := s.recordGoingRequest(r.Context(), actor, project, words)
+	// A project the asker does not see is recorded so (asked_unseen): the run reads as the asker,
+	// so it holds nothing of that project, and its author reads it as a run of a key no project
+	// holds, which is what a hidden key must answer as.
+	unseen := project != "" && !viewerSees(reader.Viewer, project)
+	request, err := s.recordGoingRequest(r.Context(), actor, project, words, unseen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

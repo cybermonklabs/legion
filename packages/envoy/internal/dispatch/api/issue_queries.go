@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // issueStatusOrderSQL derives the SQL ordering from Dispatch's canonical lifecycle.
@@ -329,12 +330,15 @@ var issueMovedJoin = parkedMoveLateral("i", `$14::boolean and i.status in (`+sql
 // state filter in its own where clause, so it matches the partial asks_open(issue_key) where
 // state = 'open' index instead of scanning asks, and the closed-issue rule stays in the select
 // list: a closed issue reports 0 open asks however many it has. The `advances` join is the one a
-// text may leave out (issueSummaryQuery's readAdvances), since nothing else reads its terms.
+// text may leave out (issueSummaryQuery's readAdvances), since nothing else reads its terms. A
+// blocker is another issue, so the listing names one only where the caller, its viewer at $15,
+// sees it (the rule of references, references_seen.go).
 func issueSummaryJoins(readAdvances bool) string {
 	joins := `left join (
 		select l.issue_key, array_agg(l.target_key order by l.target_key) as keys
 		from issue_links l
 		where l.kind = 'blocked_by' and l.issue_key in (select key from subjects)
+			and ` + access.IssueProjectClause("l.target_key", "$15") + `
 		group by l.issue_key
 	) blockers on blockers.issue_key = i.key
 	left join (
@@ -710,6 +714,10 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			issues[index].IssueRouteReach = roster.reach(issues[index].Route)
 		}
 	}
+	if err := leaveOutHiddenSummaryReferences(r.Context(), s.deps.Store.Pool, who, issues); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if routeStatus != "" {
 		issues = slices.DeleteFunc(issues, func(issue model.IssueSummary) bool {
 			return issue.RouteStatus == nil || *issue.RouteStatus != routeStatus
@@ -877,6 +885,10 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 		read.IssueRouteReach = roster.reach(read.Route)
 		read.IssueClaimLiveness = roster.claimLiveness(read.Claim, time.Now())
 	}
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &read.Issue, &read.IssueRouteReach); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -1027,10 +1039,95 @@ func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, re
 // loadIssue is one issue as who reads it: an issue of a project who does not see is
 // pgx.ErrNoRows, which every caller answers as it answers a key no issue carries. Every caller
 // binds a reader: a read the one readerOf answers, a write the one it resolved before it opened
-// its transaction.
+// its transaction. The issue is the row as it stands, every other row it names included, which a
+// write's event payload records whole; an answer to a reader leaves out what the reader does not
+// see (leaveOutHiddenIssueReferences).
 func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, error) {
 	issue, _, err := s.loadIssueWithProgress(ctx, q, who, key)
 	return issue, err
+}
+
+// leaveOutHiddenIssueReferences writes issue, and the route's reach beside it when reach is not
+// nil, as who reads them (the rule of references, references_seen.go): a blocker who does not see
+// is dropped, and an assignee, a route to a session, and the session a route reaches, that who does
+// not see are null. A reader that sees every object is answered the issue as it stands, with no
+// read.
+func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, reach *model.IssueRouteReach) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	named := references{}
+	for _, blocker := range issue.BlockedBy {
+		named.name(issueReference, blocker)
+	}
+	if issue.Assignee != nil {
+		named.name(personReference, *issue.Assignee)
+	}
+	if issue.Route != nil {
+		named.name(sessionReference, routeSession(*issue.Route))
+	}
+	if reach != nil && reach.RouteHolder != nil {
+		named.name(sessionReference, *reach.RouteHolder)
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	issue.BlockedBy = slices.DeleteFunc(slices.Clone(issue.BlockedBy), func(blocker string) bool {
+		return !seen.holds(issueReference, blocker)
+	})
+	if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+		issue.Assignee = nil
+	}
+	if issue.Route != nil && routeSession(*issue.Route) != "" && !seen.holds(sessionReference, routeSession(*issue.Route)) {
+		issue.Route = nil
+		if reach != nil {
+			*reach = model.IssueRouteReach{}
+		}
+	}
+	if reach != nil && reach.RouteHolder != nil && !seen.holds(sessionReference, *reach.RouteHolder) {
+		reach.RouteHolder = nil
+	}
+	return nil
+}
+
+// leaveOutHiddenSummaryReferences writes each listing row as who reads it, as
+// leaveOutHiddenIssueReferences writes one issue: an assignee, a route to a session and the
+// session a route reaches, that who does not see, are null. A row's blockers are left out in its
+// statement (issueSummaryJoins). One read answers every row.
+func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
+	if seesEveryObject(who) || len(issues) == 0 {
+		return nil
+	}
+	named := references{}
+	for _, issue := range issues {
+		if issue.Assignee != nil {
+			named.name(personReference, *issue.Assignee)
+		}
+		if issue.Route != nil {
+			named.name(sessionReference, routeSession(*issue.Route))
+		}
+		if issue.RouteHolder != nil {
+			named.name(sessionReference, *issue.RouteHolder)
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for index := range issues {
+		issue := &issues[index]
+		if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+			issue.Assignee = nil
+		}
+		if issue.Route != nil && routeSession(*issue.Route) != "" && !seen.holds(sessionReference, routeSession(*issue.Route)) {
+			issue.Route, issue.IssueRouteReach = nil, model.IssueRouteReach{}
+		}
+		if issue.RouteHolder != nil && !seen.holds(sessionReference, *issue.RouteHolder) {
+			issue.RouteHolder = nil
+		}
+	}
+	return nil
 }
 
 // issueClause is access.ProjectClause over the project of the issue keyExpr names, against the
@@ -1231,9 +1328,16 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // written. A key no issue carries, and an issue of a project the viewer does not see, return no
 // row, which is what the issue read's first batch requires of every statement beside the issue
 // row's.
+//
+// A gate is the issue's own row, but the document it names can be another project's (the write
+// stores the id and reads nothing of it): a gate naming a document its reader does not see is left
+// out, as the rule of references leaves out every such reference (references_seen.go). A gate
+// naming an id no document holds is answered as stored.
 var issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1 and ` + issueClause("$1", "$3") + `
-		order by array_position($2::text[], step)
+		select g.step, g.artifact_id from design_gates g where g.issue = $1 and ` + issueClause("$1", "$3") + `
+			and not exists (select 1 from artifacts gate_document where gate_document.id = ` + store.CastableUUID("g.artifact_id") + `
+				and not ` + documentClause("gate_document", "$3") + ` offset 0)
+		order by array_position($2::text[], g.step)
 	`
 
 // scanIssueDesignGates reads the rows issueDesignGatesStatement returns. An issue whose gates

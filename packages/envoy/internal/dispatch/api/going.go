@@ -83,15 +83,16 @@ type goingRunState struct {
 }
 
 // recordGoingRequest records one question: the asking actor, the project it was asked under (the
-// empty string for every project, as search reads its own filter) and the words of the question,
-// and answers the stored row. ends_at is created_at plus contracts.GoingRunWindow: both come
-// from one now(), the transaction's own, so the window is exactly that long.
+// empty string for every project, as search reads its own filter), the words of the question,
+// and unseen, that the asker did not see that project when it asked, and answers the stored row.
+// ends_at is created_at plus contracts.GoingRunWindow: both come from one now(), the
+// transaction's own, so the window is exactly that long.
 //
 // The insert is made in a transaction of the shared pool rather than as a bare statement, because
 // the POST that calls it is a keyed write: the commit step marks the request's Idempotency-Key
 // committed with the write itself, which is what answers a repeat after a crash KEY_COMMITTED
 // rather than recording the question a second time (keyed_write_guard_test.go).
-func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, project, words string) (goingRequest, error) {
+func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, project, words string, unseen bool) (goingRequest, error) {
 	stored, err := json.Marshal(author)
 	if err != nil {
 		return goingRequest{}, err
@@ -102,9 +103,9 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 	}
 	defer tx.Rollback(ctx)
 	request, err := scanGoingRequest(tx.QueryRow(ctx, `
-		insert into going_requests (author, project, words, ends_at)
-		values ($1::jsonb, $2::text, $3::text, now() + make_interval(secs => $4))
-		returning `+goingRequestColumns, stored, project, words, contracts.GoingRunWindow.Seconds()))
+		insert into going_requests (author, project, words, ends_at, asked_unseen)
+		values ($1::jsonb, $2::text, $3::text, now() + make_interval(secs => $4), $5)
+		returning `+goingRequestColumns, stored, project, words, contracts.GoingRunWindow.Seconds(), unseen))
 	if err != nil {
 		return goingRequest{}, err
 	}
@@ -116,16 +117,17 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 
 // readGoingRequest is one run by id as who reads it, pgx.ErrNoRows when the record holds none: a
 // run that was never asked, one the sweep has deleted past contracts.GoingRequestTTL, or one
-// asked of a project who does not see (access.ProjectClause), whose frames hold that project's
-// hits and so answer as a run nobody asked. A run asked of every project (""), or of a key no
-// project holds, which holds no project's content, is read by its author whatever it sees, as it
-// was before a project could be hidden. What a run the caller does not own answers is the
-// caller's to decide, which is why the row carries its Author: model.Actor.SameCredential
-// compares it with the reader's.
+// asked of a project its asker saw and who does not see now (access.ProjectClause), whose frames
+// hold that project's hits and so answer as a run nobody asked. A run asked of every project
+// (""), of a key no project holds, or of a project its asker could not see when it asked
+// (asked_unseen), holds no project's content, since its search read as the asker; it is read by
+// its author whatever it sees, so a run asked of a hidden project answers as one asked of a key no
+// project holds. What a run the caller does not own answers is the caller's to decide, which is
+// why the row carries its Author: model.Actor.SameCredential compares it with the reader's.
 func (s *server) readGoingRequest(ctx context.Context, who model.Actor, id string) (goingRequest, error) {
 	return scanGoingRequest(s.deps.Store.Pool.QueryRow(ctx, `
 		select `+goingRequestColumns+` from going_requests r
-		where r.id = $1::uuid and (r.project = '' or `+access.ProjectClause("r.project", "$2")+`
+		where r.id = $1::uuid and (r.project = '' or r.asked_unseen or `+access.ProjectClause("r.project", "$2")+`
 			or not exists (select 1 from projects asked where asked.key = r.project offset 0))
 	`, id, refs.VisibilityArg(who)))
 }

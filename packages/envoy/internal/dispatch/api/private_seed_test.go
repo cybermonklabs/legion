@@ -202,6 +202,12 @@ func (caller privateCaller) sees() []string {
 // nil sends none.
 func (s privateSeed) request(t *testing.T, caller privateCaller, method, target string, body any) *httptest.ResponseRecorder {
 	t.Helper()
+	return s.requestIn(t, context.Background(), caller, method, target, body)
+}
+
+// requestIn is request on ctx, so a tracer that watches a context (recordingKey) records it.
+func (s privateSeed) requestIn(t *testing.T, ctx context.Context, caller privateCaller, method, target string, body any) *httptest.ResponseRecorder {
+	t.Helper()
 	var payload []byte
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -210,7 +216,7 @@ func (s privateSeed) request(t *testing.T, caller privateCaller, method, target 
 		}
 		payload = encoded
 	}
-	request := httptest.NewRequest(method, target, bytes.NewReader(payload))
+	request := httptest.NewRequestWithContext(ctx, method, target, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	if login := caller.login(); login != "" {
 		request.Header.Set("X-Dispatch-User", login)

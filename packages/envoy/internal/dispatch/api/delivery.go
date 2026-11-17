@@ -434,6 +434,25 @@ func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, setti
 	if pop.issues, err = s.deliveryIssueFacts(ctx, viewer, issueKeys); err != nil {
 		return deliveryPopulation{}, err
 	}
+	// A pull request is credited to an issue of any project its repository ever mapped to, and
+	// the facts above are read only of the issues the reader sees: a credited issue the reader
+	// does not see is left out of the row as if it were credited to none (the rule of references,
+	// references_seen.go). A reader that sees every object is answered every key, read or not.
+	if !seesEveryObject(reader) {
+		unseen := func(pr *delivery.DeliveryPullRequest) {
+			if pr.IssueKey != nil {
+				if _, seen := pop.issues[*pr.IssueKey]; !seen {
+					pr.IssueKey = nil
+				}
+			}
+		}
+		for index := range pop.prs {
+			unseen(&pop.prs[index])
+		}
+		for index := range pop.waiting {
+			unseen(&pop.waiting[index].DeliveryPullRequest)
+		}
+	}
 	if pop.components, err = s.deliveryComponents(ctx, deliveryIssueProjects(pop.issues)); err != nil {
 		return deliveryPopulation{}, err
 	}

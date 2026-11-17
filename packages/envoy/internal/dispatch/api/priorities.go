@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -437,15 +438,18 @@ func priorityEvent(actor model.Actor, id, change string) model.Event {
 // each attribute the priority was written with and each `advances` relation an issue asserted or
 // retracted on it, with its writer and its moment — and no act of any other node.
 //
-// It is a read, so no write class stands on it (writeClasses, routes_table.go) and every
-// authenticated caller makes it, as the listing is read: a priority belongs to no project, so a
-// credential held to one reads this as it reads the listing.
+// It is a read, so no write class stands on it (writeClasses, routes_table.go): a priority belongs
+// to no project, so it is read as the listing is, by every caller its read class admits. An
+// `advances` act names the issue that states it, which is a project's: it is answered only to a
+// caller who sees that issue (the rule of references, references_seen.go), so the history reads,
+// to one who does not, as it read before that issue advanced the priority.
 //
 // An id no priority row carries is 404 PRIORITY_NOT_FOUND, in the wording the two writes of an
 // id answer (refusePriorityWrite). A priority somebody deleted still answers its history: the
 // row is there, and the delete is the last act of it.
 func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -458,7 +462,8 @@ func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
-	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id)
+	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id,
+		access.IssueProjectClause("advancing.from_id", "$2"), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

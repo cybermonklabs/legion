@@ -175,8 +175,8 @@ func TestAPriorityIsWrittenRenamedAndRetractedWithNoRowEverRewritten(t *testing.
 	}
 
 	// The whole history of the priority, newest first: the retraction, then the assertion, then
-	// the rename, and every attribute it was created with below them.
-	timeline, err := Timeline(ctx, pool, id)
+	// the rename, and every attribute it was created with below them. Every issue is seen here.
+	timeline, err := Timeline(ctx, pool, id, "true")
 	if err != nil {
 		t.Fatalf("read the priority's history: %v", err)
 	}

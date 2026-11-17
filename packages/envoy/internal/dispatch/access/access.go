@@ -129,7 +129,10 @@ func OpenClause(viewerParam string) string {
 // PersonClause passes a person, by login, to an open viewer; to any other viewer, when it is the
 // viewer's own person or a person of a project the viewer sees: one that the rule lets see it.
 // The projects are read from the viewer's own list, each by its key, so the clause probes the
-// projects primary key once per project the viewer sees rather than reading every project.
+// projects primary key once per project the viewer sees rather than reading every project. The
+// person's member kind is read under an alias of its own (person_kind), so a loginExpr that names
+// a column of the statement's own `people` row (people.email) is that row's and never the
+// subquery's.
 func PersonClause(loginExpr, viewerParam string) string {
 	return clause("PersonClause", fmt.Sprintf(`(%[2]s or %[3]s or (%[1]s) = %[4]s::jsonb->>'person'
 		or exists (
@@ -138,7 +141,7 @@ func PersonClause(loginExpr, viewerParam string) string {
 			where %[5]s
 			offset 0))`,
 		loginExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), viewerParam,
-		PersonSeesProjectSQL("("+loginExpr+")", "(select member_kind from people where email = ("+loginExpr+"))", "seen")))
+		PersonSeesProjectSQL("("+loginExpr+")", "(select person_kind.member_kind from people person_kind where person_kind.email = ("+loginExpr+"))", "seen")))
 }
 
 // SessionClause passes a session, by id, to an open viewer; to any other viewer, when it is the

@@ -114,7 +114,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		project, err := s.repoProject(r.Context(), externalRepo)
+		project, err := s.repoProject(r.Context(), who, externalRepo)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -553,6 +553,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	suggestions.TitleMatches = outcome.TitleMatches
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &issue, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
 }
 
@@ -672,6 +676,10 @@ func (s *server) respondWithExistingExternalIssue(
 		source:  suggestionSource{kind: "issue", issueKey: existingKey, actor: actor},
 		record:  true,
 	}, relatedReasonAlreadyExists, "Dispatch already holds this issue; nothing was created")
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &existing, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, withSuggestions(existing, advice, suggestions))
 }
 

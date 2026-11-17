@@ -12,8 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // An issue's claim is the session that intends to implement it, so two sessions never take
@@ -359,11 +361,13 @@ func issueClaimSession(claim *model.IssueClaim) string {
 // that connection, and take the liveness snapshot with nothing held — but only when the taking
 // rule says it needs one, which it establishes by asking that rule about what it just read
 // rather than by re-deriving when a holder must be judged. It decides nothing; claimBlockedBy
-// does, under the lock, against the row as it stands then.
+// does, under the lock, against the row as it stands then. The holder is read as who reads the
+// issue, so an issue of a project who does not see is no row: its holder is never read and the
+// listener is never asked about it, as for a key no issue holds.
 func (s *server) judgeHolder(
-	ctx context.Context, key string, actor model.Actor, rule personRule,
+	ctx context.Context, who model.Actor, key string, actor model.Actor, rule personRule,
 ) (judgement, error) {
-	holder, err := s.readIssueClaim(ctx, key)
+	holder, err := s.readIssueClaim(ctx, who, key)
 	if err != nil {
 		return judgement{}, err
 	}
@@ -378,12 +382,13 @@ func (s *server) judgeHolder(
 	return judged, nil
 }
 
-// readIssueClaim reads one issue's claim on a pooled connection.
-func (s *server) readIssueClaim(ctx context.Context, key string) (*model.IssueClaim, error) {
+// readIssueClaim reads one issue's claim on a pooled connection, as who reads the issue: one of a
+// project who does not see is pgx.ErrNoRows, as a key no issue holds is.
+func (s *server) readIssueClaim(ctx context.Context, who model.Actor, key string) (*model.IssueClaim, error) {
 	var claim claimScan
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select `+issueClaimColumns+` from issues i where i.key = $1
-	`, key).Scan(claim.targets()...); err != nil {
+		select `+issueClaimColumns+` from issues i where i.key = $1 and `+access.ProjectClause("i.project_key", "$2")+`
+	`, key, refs.VisibilityArg(who)).Scan(claim.targets()...); err != nil {
 		return nil, err
 	}
 	return claim.resolve(key)
@@ -545,7 +550,10 @@ func (s *server) claimWrite(
 		return claimApplied{}, err
 	}
 	defer tx.Rollback(ctx)
-	if err := tx.QueryRow(ctx, `select key from issues where key = $1 for no key update`, key).Scan(new(string)); err != nil {
+	// The row lock is taken as who reads the issue, so an issue of a project who does not see is
+	// neither read nor locked: it is the key no issue holds.
+	if err := tx.QueryRow(ctx, `select key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+` for no key update`,
+		key, refs.VisibilityArg(who)).Scan(new(string)); err != nil {
 		return claimApplied{}, err
 	}
 	before, err := s.loadIssue(ctx, tx, who, key)
@@ -616,7 +624,7 @@ func (s *server) claimCycle(
 	}
 	applied, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (judgement, error) {
-			return s.judgeHolder(ctx, key, actor, rule)
+			return s.judgeHolder(ctx, who, key, actor, rule)
 		},
 		func(ctx context.Context, judged judgement) (claimApplied, error) {
 			return s.claimWrite(ctx, who, key, actor, func(before model.Issue) (claimChange, error) {
@@ -626,7 +634,7 @@ func (s *server) claimCycle(
 		errClaimContended,
 	)
 	if errors.Is(err, errClaimContended) {
-		s.answerContendedClaim(w, r, key)
+		s.answerContendedClaim(w, r, who, key)
 		return
 	}
 	if err != nil {
@@ -635,6 +643,10 @@ func (s *server) claimCycle(
 	}
 	if applied.event.ID != 0 {
 		s.publish(r.Context(), applied.event)
+	}
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &applied.issue, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	WriteJSON(w, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus})
 }
@@ -697,9 +709,10 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 // answerContendedClaim ends the bounded cycle: the holder changed twice while this request
 // ran, so no verdict was applied. It is never ISSUE_CLAIMED — nothing on this path established
 // that the holder is running, and naming a live title would mean another listener call — so it
-// has its own code, and carries the claim the row shows for any caller that wants it.
-func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, key string) {
-	current, err := s.readIssueClaim(r.Context(), key)
+// has its own code, and carries the claim the row shows, as who reads the issue, for any caller
+// that wants it.
+func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, who model.Actor, key string) {
+	current, err := s.readIssueClaim(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

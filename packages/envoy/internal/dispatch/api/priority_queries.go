@@ -76,7 +76,10 @@ func sqlStringList(values []string) string {
 // relation. $1 is the live priority ids, so a priority whose state is `gone` is no priority and
 // the work under it advances none. It bounds the read by them rather than its answer: to_id is
 // part of the `distinct on` key, so the two are the same rows and the narrowing cuts what the
-// read sorts.
+// read sorts. $2 is the reader's visibility argument: a relation an issue of a project the reader
+// does not see states is no seed, as the statements below would narrow it away by the same clause
+// (priorityProjectFilter) - a child is in its parent's project, so nothing below a hidden issue is
+// seen either.
 //
 // Its answer is the seed every statement below takes, rather than each of them reading the log
 // again: the relations are hundreds of rows where the issues under them are thousands.
@@ -84,7 +87,7 @@ var priorityRelationsQuery = `select newest.from_id, newest.to_id
 	from (
 		` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and t.to_id = any($1::text[])`) + `
 	) newest
-	where newest.asserted
+	where newest.asserted and ` + access.IssueProjectClause("newest.from_id", "$2") + `
 	order by newest.from_id, newest.to_id`
 
 // priorityMemberTerms are the issues that advance each priority: the relations the request read
@@ -311,7 +314,7 @@ func (s *server) readPriorities(ctx context.Context, viewer any, projects []stri
 	}
 	seedKeys, seedIDs := []string{}, []string{}
 	if len(nodes) > 0 {
-		seedKeys, seedIDs, err = s.readPriorityRelations(ctx, ids)
+		seedKeys, seedIDs, err = s.readPriorityRelations(ctx, ids, viewer)
 		if err != nil {
 			return model.Priorities{}, err
 		}
@@ -360,10 +363,11 @@ func (s *server) readPriorities(ctx context.Context, viewer any, projects []stri
 }
 
 // readPriorityRelations reads the `advances` relations of every live priority as two lists in one
-// order, the issue key and the priority id of each: the pair of arrays the statements below take
-// as their seed, which `unnest` reads back as rows.
-func (s *server) readPriorityRelations(ctx context.Context, ids []string) ([]string, []string, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, priorityRelationsQuery, ids)
+// order, the issue key and the priority id of each, of the issues the reader whose visibility
+// argument is viewer sees: the pair of arrays the statements below take as their seed, which
+// `unnest` reads back as rows.
+func (s *server) readPriorityRelations(ctx context.Context, ids []string, viewer any) ([]string, []string, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, priorityRelationsQuery, ids, viewer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the advances relations: %w", err)
 	}

@@ -53,12 +53,17 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 //     with no owner (state.go, userAgentStateEvent), when its login is the viewer's person, or when
 //     the viewer is open and sees the session it names (access.SessionClause);
 //   - any other ownerless event (priority.updated, access_group.changed), to an open viewer alone.
+//
+// An event whose one subject is a session (sessionSubjectEvents) passes, beside that, only when the
+// viewer sees that session (access.SessionClause): a follow, a subscription, a delivery and its
+// acceptance are the session's, so to a viewer the session is hidden from they are absent, as the
+// session is (references_seen.go). An open viewer sees every session, so it reads every one.
 func eventReadableSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
 	project := `coalesce(` + e + `.project_key,
 		(select event_issue.project_key from issues event_issue where event_issue.key = ` + e + `.issue_key),
 		(select event_document.project_key from artifacts event_document where event_document.id = ` + e + `.artifact_id))`
-	return `(case
+	return `((case
 		when ` + e + `.issue_key is not null or ` + e + `.artifact_id is not null or ` + e + `.project_key is not null
 			then ` + access.ProjectClause(project, viewerParam) + `
 		when ` + e + `.type like 'message.%'
@@ -67,8 +72,16 @@ func eventReadableSQL(eventAlias, viewerParam string) string {
 			then coalesce(` + e + `.payload->>'login' = ` + viewerParam + `::jsonb->>'person', false)
 				or (` + access.OpenClause(viewerParam) + ` and ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
 		else ` + access.OpenClause(viewerParam) + `
-	end)`
+	end) and (` + e + `.type not in (` + sessionSubjectEvents + `)
+		or ((` + e + `.payload->>'session_id' is null or ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
+			and (coalesce(` + e + `.payload->>'target', '') not like 'session:%' or ` +
+		access.SessionClause(`substr(`+e+`.payload->>'target', 9)`, viewerParam) + `))))`
 }
+
+// sessionSubjectEvents is every event type whose one subject is the session its payload names,
+// by session_id or by a `session:<id>` target, as SQL literals.
+const sessionSubjectEvents = `'ask.follower_added', 'ask.follower_removed', 'subscription.remove_requested',
+	'subscription.removed', 'comment.delivery', 'message.delivery', 'message.accepted'`
 
 // readableEvents is eventReadableSQL for who as the events and delivery packages' statements bind
 // a read rule (events.Readable): over the events row named events, the viewer at $2.
@@ -467,6 +480,9 @@ func (s *server) readEventRows(ctx context.Context, who model.Actor, query strin
 		return nil, err
 	}
 	if err := s.attachAskEventFields(ctx, who, events); err != nil {
+		return nil, err
+	}
+	if err := s.leaveOutHiddenReferences(ctx, s.deps.Store.Pool, who, events); err != nil {
 		return nil, err
 	}
 	return events, nil

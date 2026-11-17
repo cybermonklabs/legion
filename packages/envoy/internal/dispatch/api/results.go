@@ -199,7 +199,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// so locking them in call order would let one transaction hold the child while waiting for
 	// the parent and another hold the parent while waiting for the child; lockIssueRows is the
 	// one key order every writer of two issue rows takes.
-	if _, err := lockIssueRows(r.Context(), tx, issueKey, check.IssueKey); err != nil {
+	if _, err := lockIssueRows(r.Context(), tx, who, issueKey, check.IssueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

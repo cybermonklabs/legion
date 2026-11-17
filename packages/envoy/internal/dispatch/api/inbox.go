@@ -115,9 +115,12 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	// The issue's assignee is a person, named only to a caller who sees them (the rule of
+	// references, references_seen.go); the ask's own persons are left out by loadAskDetails.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
-		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
+		       i.key, i.title, case when `+access.PersonClause("i.assignee", "$5")+` then i.assignee end,
+		       i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
 		`+askReadFrom+`
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4

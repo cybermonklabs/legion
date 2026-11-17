@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -919,6 +920,8 @@ func (s *server) readMessage(ctx context.Context, who model.Actor, issueKey, id 
 // replying to it, and the block each of those messages answers, read for who. Each side table is
 // read once over every root, never once per root, so a list of threads costs the same three
 // queries one does. trees is whether the caller asked for the display trees (wantsDisplayTrees).
+// A message's target and its delivery attempts name sessions, and one who does not see is left
+// out (leaveOutHiddenMessageSessions).
 //
 // Every read of a message passes here, so this is where a message's trees are taken from the
 // table and what the table did not hold is stored back (displayTreeReader).
@@ -938,16 +941,57 @@ func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roo
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, roots, replies); err != nil {
 		return nil, err
 	}
+	messages := make([]*model.Message, 0, len(roots))
+	for index := range roots {
+		roots[index].Deliveries = deliveries[roots[index].ID]
+		messages = append(messages, &roots[index])
+		for reply := range replies[roots[index].ID] {
+			messages = append(messages, &replies[roots[index].ID][reply])
+		}
+	}
+	if err := leaveOutHiddenMessageSessions(ctx, s.deps.Store.Pool, who, messages); err != nil {
+		return nil, err
+	}
 	reader := s.readDisplayTrees(ctx, trees)
 	reads := make([]messageRead, len(roots))
 	for index, root := range roots {
-		root.Deliveries = deliveries[root.ID]
 		reads[index].Message.Message = root
 		reads[index].Message.shape(reader)
 		reads[index].Replies = shapedMessages(replies[root.ID], reader)
 	}
 	reader.resolve()
 	return reads, nil
+}
+
+// leaveOutHiddenMessageSessions writes messages as who reads them (the rule of references,
+// references_seen.go): a `session:<id>` target of a session who does not see is null, and a
+// delivery attempt to such a session is left out.
+func leaveOutHiddenMessageSessions(ctx context.Context, q queryer, who model.Actor, messages []*model.Message) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	named := references{}
+	for _, message := range messages {
+		if message.Target != nil {
+			named.name(sessionReference, routeSession(*message.Target))
+		}
+		for _, delivery := range message.Deliveries {
+			named.name(sessionReference, delivery.SessionID)
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for _, message := range messages {
+		if message.Target != nil && routeSession(*message.Target) != "" && !seen.holds(sessionReference, routeSession(*message.Target)) {
+			message.Target = nil
+		}
+		message.Deliveries = slices.DeleteFunc(message.Deliveries, func(delivery model.MessageDelivery) bool {
+			return delivery.SessionID != "" && !seen.holds(sessionReference, delivery.SessionID)
+		})
+	}
+	return nil
 }
 
 // listIssueRootMessagesQuery is every root message of one issue, oldest first, when the viewer

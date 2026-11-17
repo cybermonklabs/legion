@@ -314,7 +314,7 @@ func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
 // dropped asks for.
 func TestGoingStreamReplaysStoredFramesAndResumes(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
-	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?")
+	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -408,7 +408,7 @@ func (s *goingStreamSink) text() string {
 func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
-	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 // one answer, word for word: an id tells a caller nothing it did not already know.
 func TestGoingStreamAnswersEveryRunItWillNotServeAlike(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
-	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?")
+	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestGoingRequestRefusesAnAskerThatNamesNobody(t *testing.T) {
 func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
 
-	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?")
+	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?", false)
 	if err != nil {
 		t.Fatalf("record a run naming nobody: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	}
 
 	subject := "system:serviceaccount:dispatch:answerer"
-	pod, err := rig.server.recordGoingRequest(context.Background(), model.Actor{Service: &subject}, "", "what is this pod running?")
+	pod, err := rig.server.recordGoingRequest(context.Background(), model.Actor{Service: &subject}, "", "what is this pod running?", false)
 	if err != nil {
 		t.Fatalf("record a pod's run: %v", err)
 	}
@@ -681,7 +681,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 func TestGoingStreamReadsAResumePointPastTheSequenceColumnAsNone(t *testing.T) {
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
-	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}

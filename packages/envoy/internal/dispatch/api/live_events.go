@@ -350,8 +350,25 @@ func (s *server) sendReadable(ctx context.Context, stream liveStreamer, sub stri
 }
 
 // sendRun sends sub each event of run that reader may read; false once the subscription has ended.
+// The relay encoded each event once as the server reads it (everyReader), which is every reader's
+// frame while the reader sees every object (seesEveryObject). Any other reader is sent the events
+// as it reads them (readerEvents): the fields a read fills for its reader (an ask's backlink count,
+// its documents) counted for it, and each reference to an object it does not see left out.
 func (s *server) sendRun(ctx context.Context, stream liveStreamer, sub string, reader model.Actor, run []relayedEvent) bool {
 	if len(run) == 0 {
+		return true
+	}
+	if !seesEveryObject(reader) {
+		readable, err := s.readerEvents(ctx, reader, run)
+		if err != nil {
+			endEventsAfterFailure(ctx, stream, sub, "read the events as the caller reads them", err)
+			return false
+		}
+		for _, event := range readable {
+			if stream.SendWait(ctx, liveEventFrame(sub, event)) != nil {
+				return false
+			}
+		}
 		return true
 	}
 	readable, err := s.readableEventIDs(ctx, reader, run)
@@ -372,6 +389,30 @@ func (s *server) sendRun(ctx context.Context, stream liveStreamer, sub string, r
 		}
 	}
 	return true
+}
+
+// readerEvents is every event of run that reader may read (eventReadableSQL), in id order, read
+// and encoded as reader reads it (readEventRows), for a reader that does not see every object.
+func (s *server) readerEvents(ctx context.Context, reader model.Actor, run []relayedEvent) ([]relayedEvent, error) {
+	ids := make([]int64, len(run))
+	for i, event := range run {
+		ids[i] = event.Event.ID
+	}
+	events, err := s.readEventRows(ctx, reader, eventSelect+`
+		where e.id = any($1) and `+eventReadableSQL("e", "$2")+` order by e.id
+	`, ids, refs.VisibilityArg(reader))
+	if err != nil {
+		return nil, err
+	}
+	encoded := make([]relayedEvent, len(events))
+	for i, event := range events {
+		frame, err := encodeLiveEvent(event)
+		if err != nil {
+			return nil, err
+		}
+		encoded[i] = relayedEvent{Event: event, Encoded: frame}
+	}
+	return encoded, nil
 }
 
 // readableEventIDs is the ids of the events of run that reader may read (eventReadableSQL), in id

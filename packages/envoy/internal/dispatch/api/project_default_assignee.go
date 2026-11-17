@@ -45,7 +45,9 @@ type projectDefaultAssigneeUpdated struct {
 
 // listProjectDefaultAssignees answers every project the caller sees with the person it defaults
 // to, by project key: the Settings page's one read. Every such project is listed, because every
-// project names a default, and no project at all is an empty list, never null.
+// project names a default, and no project at all is an empty list, never null. A default the
+// caller does not see is a person, named only to a caller who sees them (the rule of references,
+// references_seen.go): it reads as the empty string, as a project naming nobody would.
 func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
@@ -55,7 +57,7 @@ func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select key, default_assignee
+		select key, case when `+access.PersonClause("default_assignee", "$1")+` then default_assignee else '' end
 		from projects
 		where `+access.ProjectClause("key", "$1")+`
 		order by key

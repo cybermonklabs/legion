@@ -54,7 +54,8 @@ type askFollowersRead struct {
 }
 
 // GET /api/v1/asks/{id}/followers  (any authenticated actor; an ask of a project the caller does
-// not see answers as an id no ask holds)
+// not see answers as an id no ask holds, and a follower whose session the caller does not see is
+// left out, as the rule of references leaves out every such reference: references_seen.go)
 func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -77,7 +78,12 @@ func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, askFollowersRead{Followers: followers})
+	seen := map[string][]model.AskFollower{askID: followers}
+	if err := leaveOutHiddenFollowers(r.Context(), s.deps.Store.Pool, who, seen); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, askFollowersRead{Followers: seen[askID]})
 }
 
 // PUT /api/v1/asks/{id}/followers/{session_id}

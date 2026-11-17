@@ -917,7 +917,7 @@ func TestContendedClaimAnswerNamesNoLiveness(t *testing.T) {
 
 	server := directServer(deps)
 	recorder := httptest.NewRecorder()
-	server.answerContendedClaim(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+key+"/claim", nil), key)
+	server.answerContendedClaim(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+key+"/claim", nil), everyReader, key)
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", recorder.Code, recorder.Body.String())

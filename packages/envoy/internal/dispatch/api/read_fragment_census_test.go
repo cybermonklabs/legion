@@ -29,10 +29,12 @@ import (
 // projectOwnedTables are the tables whose rows belong to a project, to an issue or document of
 // one, or to a conversation: a statement that reads one answers a caller only through the
 // project clause (access.Marker) or the registry's visibility predicate (refs.VisibilityMarker).
+// priority_tuples is one of them: a priority belongs to no project, but every `advances` tuple
+// names the issue that states it, which does.
 var projectOwnedTables = []string{
 	"issues", "artifacts", "artifact_versions", "asks", "comments", "messages", "events", "check_results",
 	"handoffs", "components", "document_blocks", "user_issue_state", "projects", "embeddings", "repo_projects",
-	"architecture_sources",
+	"architecture_sources", "priority_tuples",
 }
 
 // projectOwnedRead matches a statement whose FROM or JOIN names one of projectOwnedTables, and

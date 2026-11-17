@@ -123,6 +123,9 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 	if err != nil {
 		return nil, err
 	}
+	if err := leaveOutHiddenFollowers(ctx, q, who, followers); err != nil {
+		return nil, err
+	}
 	reaches, err := s.loadAskReaches(ctx, who, askIDs)
 	if err != nil {
 		return nil, err
@@ -163,14 +166,14 @@ func (s *server) loadAskReaches(ctx context.Context, who model.Actor, askIDs []s
 		}
 	}
 	if !routed {
-		return reaches, nil
+		return reaches, leaveOutHiddenReaches(ctx, s.deps.Store.Pool, who, reaches)
 	}
 	roster := s.routeRosterOrUnknown(ctx)
 	for askID, reach := range reaches {
 		reach.IssueRouteReach = roster.reach(reach.Route)
 		reaches[askID] = reach
 	}
-	return reaches, nil
+	return reaches, leaveOutHiddenReaches(ctx, s.deps.Store.Pool, who, reaches)
 }
 
 // scanAskReaches reads every listed ask's claimant and route in one query and returns with the

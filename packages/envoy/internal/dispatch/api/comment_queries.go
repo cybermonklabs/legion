@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,18 +79,26 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	key := listAnswerKeyFor(r, commentListRoute, name, etag)
+	// The kept answer is filed under what the caller sees beside the owner (keptViewOf): a
+	// mention or a delivery names a session, which the answer leaves out for a caller that does
+	// not see it (leaveOutHiddenCommentSessions), so an answer kept for one reader is handed only to
+	// a reader who sees what it saw. A reader that sees every object files under the owner alone.
+	key := listAnswerKeyFor(r, commentListRoute, name+keptViewOf(who), etag)
 	if s.listAnswers.answer(w, key) {
 		return
 	}
-	// The answer is kept and handed to every reader whose request names this owner and ETag
-	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
-	// author must never be the answer kept for the next. An owner the check did not find holds no
-	// comment to read.
+	// The comments are read as everyReader: one reader's view of a block reserved for its author
+	// must never be the answer kept for the next. Only the sessions they name are left out for
+	// the caller, which the key above files. An owner the check did not find holds no comment to
+	// read.
 	comments := []model.Comment{}
 	if ownerHeld {
 		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
 		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := leaveOutHiddenCommentSessions(r.Context(), s.deps.Store.Pool, who, comments); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -203,13 +212,6 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Act
 		return nil, err
 	}
 	return s.hydrateCommentSideTables(ctx, q, who, comments)
-}
-
-func commentHasOwner(comment model.Comment, owner owner) bool {
-	if owner.IssueKey != nil {
-		return comment.IssueKey != nil && *comment.IssueKey == *owner.IssueKey
-	}
-	return owner.ArtifactID != nil && comment.ArtifactID != nil && *comment.ArtifactID == *owner.ArtifactID
 }
 
 // commentRead is the body GET /api/v1/comments/{id} answers.
@@ -349,12 +351,21 @@ func (s *server) loadCommentForUpdate(ctx context.Context, tx pgx.Tx, id string)
 }
 
 // loadOwnedCommentForUpdate locks a comment and refuses one that is not on this owner, with
-// the 400 every reply_to walk answers.
+// the 400 every reply_to walk answers. The owner is bound in the read itself, so a comment on
+// another owner - one of a project the writer does not see among them - is neither read nor
+// locked: it is refused exactly as an id no comment holds is.
 func (s *server) loadOwnedCommentForUpdate(
 	ctx context.Context, tx pgx.Tx, owner owner, id string,
 ) (model.Comment, error) {
-	comment, err := s.loadCommentForUpdate(ctx, tx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !commentHasOwner(comment, owner)) {
+	column, value := "issue_key", owner.IssueKey
+	if value == nil {
+		column, value = "artifact_id::text", owner.ArtifactID
+	}
+	comment, err := scanComment(tx.QueryRow(ctx, `
+		select `+commentColumns+`
+		from comments where id = $1 and `+column+` = $2 for update
+	`, id, value))
+	if err = malformedIDIsNoRow(err); errors.Is(err, pgx.ErrNoRows) {
 		return model.Comment{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
 	}
 	if err != nil {
@@ -419,7 +430,8 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 
 // hydrateCommentSideTables loads mentions, delivery attempts and the block each reply answers once
 // per comment page, avoiding a per-comment query while keeping all reads of a Comment's visible
-// delivery state consistent.
+// delivery state consistent. A mention or a delivery names a session, which is left out where who
+// does not see it (leaveOutHiddenCommentSessions).
 func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) ([]model.Comment, error) {
 	ids := make([]string, len(comments))
 	replies := make([]*model.Comment, len(comments))
@@ -442,7 +454,49 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 		comments[index].Mentions = mentions[comments[index].ID]
 		comments[index].Deliveries = deliveries[comments[index].ID]
 	}
-	return comments, nil
+	return comments, leaveOutHiddenCommentSessions(ctx, q, who, comments)
+}
+
+// leaveOutHiddenCommentSessions writes comments as who reads them (the rule of references,
+// references_seen.go): a mention or a delivery attempt naming a session who does not see - by the
+// session it resolved to or reached, or by a `session:<id>` target - is left out, as the comment
+// would read had it never named that session.
+func leaveOutHiddenCommentSessions(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	named := references{}
+	for _, comment := range comments {
+		for _, mention := range comment.Mentions {
+			named.name(sessionReference, routeSession(mention.Target))
+			if mention.SessionID != nil {
+				named.name(sessionReference, *mention.SessionID)
+			}
+		}
+		for _, delivery := range comment.Deliveries {
+			named.name(sessionReference, routeSession(delivery.Target))
+			if delivery.SessionID != nil {
+				named.name(sessionReference, *delivery.SessionID)
+			}
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	hidden := func(target string, session *string) bool {
+		return routeSession(target) != "" && !seen.holds(sessionReference, routeSession(target)) ||
+			session != nil && *session != "" && !seen.holds(sessionReference, *session)
+	}
+	for index := range comments {
+		comments[index].Mentions = slices.DeleteFunc(comments[index].Mentions, func(mention model.Mention) bool {
+			return hidden(mention.Target, mention.SessionID)
+		})
+		comments[index].Deliveries = slices.DeleteFunc(comments[index].Deliveries, func(delivery model.CommentDelivery) bool {
+			return hidden(delivery.Target, delivery.SessionID)
+		})
+	}
+	return nil
 }
 
 func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {

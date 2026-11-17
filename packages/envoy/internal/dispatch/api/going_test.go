@@ -36,7 +36,7 @@ var goingAsker = model.Actor{Kind: "user", ID: "alice"}
 // record stores one run, failing the test if it cannot.
 func (rig goingRig) record(t *testing.T, words string) goingRequest {
 	t.Helper()
-	request, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "TEST", words)
+	request, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "TEST", words, false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}

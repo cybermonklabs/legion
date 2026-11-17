@@ -92,8 +92,8 @@ func exactTopics(topics []string, base string) []string {
 
 // listIssueSubscribers answers the sessions subscribed to an issue's topics. An issue of a
 // project the caller does not see answers as a key no issue carries answers: a topic scoped to
-// that issue alone names it, so it is left out (writeSubscribers' hidden), and what a broader
-// wildcard delivers is listed as for any key.
+// that issue names it, so it is left out (writeSubscribers' hidden), and what a broader wildcard
+// delivers is listed as for any key.
 func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
@@ -114,6 +114,24 @@ func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 	s.writeSubscribers(w, r, viewer, issueSubscriberBase(key), hidden)
 }
 
+// otherIssueBase is the subject root of an issue no key names ("-" is no key's spelling): a topic
+// that delivers both its events and a given issue's is a broader wildcard, and one that delivers
+// the given issue's alone is scoped to that issue.
+var otherIssueBase = issueSubscriberBase("-")
+
+// keyScopedTopics returns the subset of topics that deliver base's events and not those of every
+// other issue: its exact forms, and every narrower wildcard naming it (`<base>.*`, `<base>.issue.>`),
+// which a broader wildcard (`notifications.dispatch.>`) is not.
+func keyScopedTopics(topics []string, base string) []string {
+	scoped := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		if routing.Match(topic, base+".marker") && !routing.Match(topic, otherIssueBase+".marker") {
+			scoped = append(scoped, topic)
+		}
+	}
+	return scoped
+}
+
 func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
@@ -132,9 +150,9 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 
 // writeSubscribers answers the sessions whose interests deliver an event published under base,
 // each one the viewer may see (seenSessions). hidden says base names an owner of a project the
-// viewer does not see: a topic scoped exactly to that owner (exactTopics) is its own, so it is
-// left out of every row, and a row left with no topic is dropped; the answer is then the one a
-// key nobody holds gets.
+// viewer does not see: every topic scoped to that owner (keyScopedTopics) names it, so it is left
+// out of every row, and a row left with no topic is dropped; the answer is then the one a key
+// nobody holds gets, which lists what the broader wildcards deliver.
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer any, base string, hidden bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
@@ -161,8 +179,8 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer
 	for _, interest := range interests {
 		matched := matchingTopics(interest.Topics, base)
 		if hidden {
-			exact := exactTopics(matched, base)
-			matched = slices.DeleteFunc(matched, func(topic string) bool { return slices.Contains(exact, topic) })
+			scoped := keyScopedTopics(matched, base)
+			matched = slices.DeleteFunc(matched, func(topic string) bool { return slices.Contains(scoped, topic) })
 		}
 		if len(matched) == 0 {
 			continue

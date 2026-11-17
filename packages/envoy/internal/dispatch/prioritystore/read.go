@@ -134,7 +134,12 @@ func List(ctx context.Context, q Queryer) ([]Node, error) {
 // the other excludes it and takes priority_tuples_current. The column is `not null`, so the two
 // are every row out of the node and no row twice. The third leg binds to_kind to KindPriority,
 // which implies the inbound index's own predicate.
-func Timeline(ctx context.Context, q Queryer, id string) ([]Tuple, error) {
+//
+// A priority belongs to no project, but each `advances` tuple into it names the issue at its far
+// end, which does: the third leg answers a tuple only where seen, the caller's predicate over that
+// issue's key (the column advancing.from_id), holds, with the caller's own arguments bound from $2.
+// The caller writes seen from its own text, never from a value a request carried.
+func Timeline(ctx context.Context, q Queryer, id, seen string, arguments ...any) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
 			select `+tupleColumns+`
@@ -146,11 +151,12 @@ func Timeline(ctx context.Context, q Queryer, id string) ([]Tuple, error) {
 			where from_kind = '`+KindPriority+`' and from_id = $1 and to_kind <> '`+KindValue+`'
 			union all
 			select `+tupleColumns+`
-			from priority_tuples
-			where to_kind = '`+KindPriority+`' and to_id = $1 and kind = '`+RelationAdvances+`'
+			from priority_tuples advancing
+			where advancing.to_kind = '`+KindPriority+`' and advancing.to_id = $1 and advancing.kind = '`+RelationAdvances+`'
+				and `+seen+`
 		) stated
 		order by seq desc
-	`, id)
+	`, append([]any{id}, arguments...)...)
 	if err != nil {
 		return nil, fmt.Errorf("read the history of priority %s: %w", id, err)
 	}
