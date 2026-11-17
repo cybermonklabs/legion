@@ -74,7 +74,7 @@ const (
 )
 
 // The Legion pool every pod runs on: its taint, tolerated, and its label, selected
-// (the cluster's `legion` NodePool). The gVisor RuntimeClass's own selector also
+// (the pool the operator labels for Legion). The gVisor RuntimeClass's own selector also
 // matches another pool, so the pool label is what keeps a pod on Legion's nodes.
 const (
 	poolKey   = "legion.dev/pool"

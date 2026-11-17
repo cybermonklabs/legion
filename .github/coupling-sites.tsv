@@ -68,7 +68,7 @@ state	devbox-pin-reason	D1	open
 row	admission-policy-claim	(?i)cluster'?s admission policy	docs/solutions/**,docs/plans/**,docs/superpowers/**	fix
 state	admission-policy-claim	D1	open
 row	nodepool-claim	(?i)cluster'?s `?legion`? NodePool	docs/solutions/**,docs/plans/**,docs/superpowers/**	fix
-state	nodepool-claim	D1	open
+state	nodepool-claim	D1	fixed
 row	operator-home-path	/home/(ubuntu|sami)([^[:alnum:]_-]|$)	docs/solutions/**,docs/plans/**,docs/superpowers/**,.superpowers/sdd/2026-09-10-dispatch-tree-server/task-3-report.md,.superpowers/sdd/2026-09-10-dispatch-tree-server/task-5-report.md,packages/daemon/internal/config/kubernetes_test.go,packages/daemon/internal/runtime/tmux/environment_test.go,packages/envoy/internal/store/kv_test.go,scripts/dispatch/__fixtures__/comment-delivery/receipts.tsv,scripts/dispatch/__tests__/comment-delivery.test.ts	fix
 state	operator-home-path	D1	open
 state	operator-home-path	D2	open
