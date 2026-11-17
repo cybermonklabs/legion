@@ -258,14 +258,14 @@ test("reads the proven mark of an actor and of its act's session, only as true",
     owner: "alice@example.com",
     proven: true,
   } satisfies Actor;
-  expect(ActorSchema.parse(session)).toEqual(session);
+  expect<Actor>(ActorSchema.parse(session)).toEqual(session);
   const person = {
     kind: "user",
     id: "alice@example.com",
     act: { session: "ses_1", session_proven: true, scopes: ["person"] },
     proven: true,
   } satisfies Actor;
-  expect(ActorSchema.parse(person)).toEqual(person);
+  expect<Actor>(ActorSchema.parse(person)).toEqual(person);
   // A claimed actor, and every actor written before the mark, carries none.
   expect(ActorSchema.parse({ kind: "session", id: "ses_2" })).toEqual({
     kind: "session",
