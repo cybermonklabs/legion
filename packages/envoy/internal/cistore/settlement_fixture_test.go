@@ -43,16 +43,25 @@ func (n *fixtureName) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// fixtureStatus is a status of a settlement as the shared fixture writes it, and as the
+// listener's payload carries it: decoded apart from cistore.StatusRef, so a field the listener
+// leaves out of its payload is one this test misses.
+type fixtureStatus struct {
+	Context   string `json:"context"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+}
+
 // The listener settles a head's check runs and commit statuses as the shared fixture
 // packages/contracts/fixtures/checks-settlement/listener-rules.json says: each run is delivered as
 // its check_run webhook through the real handler, configured with the fixture's reviewer App, into
 // the real CI store, each status the reconcile's mapping keeps is recorded by a writer of the same
 // bucket, and the summary loop's settlement names each check's highest-id run, its name cut as the
 // store keys it, the failed and cancelled checks, a tester or architect run only from the reviewer
-// App, and each terminal status with its state, apart from the check runs. The Legion daemon's pass
-// that built a settlement from this fixture went with its own periodic reads of GitHub
-// (dispatch://INFRA-714 R1). A rule changed here and not in the listener fails this test, and a
-// reader looking for the daemon's half of these rules will not find one.
+// App, and each terminal status with its state and its created_at, apart from the check runs. The
+// Legion daemon's pass that built a settlement from this fixture went with its own periodic reads
+// of GitHub (dispatch://INFRA-714 R1). A rule changed here and not in the listener fails this
+// test, and a reader looking for the daemon's half of these rules will not find one.
 func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "checks-settlement", "listener-rules.json"))
 	if err != nil {
@@ -67,9 +76,9 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 				Name fixtureName `json:"name"`
 				ID   uint64      `json:"id"`
 			} `json:"check_runs"`
-			Failed    []fixtureName       `json:"failed"`
-			Cancelled []fixtureName       `json:"cancelled"`
-			Statuses  []cistore.StatusRef `json:"statuses"`
+			Failed    []fixtureName   `json:"failed"`
+			Cancelled []fixtureName   `json:"cancelled"`
+			Statuses  []fixtureStatus `json:"statuses"`
 		} `json:"settlement"`
 	}
 	if err := json.Unmarshal(encoded, &fixture); err != nil {
@@ -90,6 +99,9 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	wantStatuses := fixture.Settlement.Statuses
 	if len(wantStatuses) == 0 {
 		t.Fatal("the shared fixture's settlement names no status")
+	}
+	if slices.ContainsFunc(wantStatuses, func(status fixtureStatus) bool { return status.CreatedAt == "" }) {
+		t.Fatalf("the shared fixture's settlement names a status with no created_at: %+v", wantStatuses)
 	}
 
 	ctx := context.Background()
@@ -177,6 +189,10 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	}
 
 	var last cistore.Summary
+	// settled is the same payload's statuses, read apart from cistore.StatusRef (fixtureStatus).
+	var settled struct {
+		Statuses []fixtureStatus `json:"statuses"`
+	}
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		msg, err := sub.NextMsg(time.Until(deadline))
 		if err != nil {
@@ -186,7 +202,11 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 		if err := json.Unmarshal(msg.Data, &env); err != nil {
 			t.Fatalf("checks envelope not JSON: %v", err)
 		}
+		last, settled.Statuses = cistore.Summary{}, nil
 		if err := json.Unmarshal([]byte(env.Payload), &last); err != nil {
+			t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
+		}
+		if err := json.Unmarshal([]byte(env.Payload), &settled); err != nil {
 			t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
 		}
 		if len(last.CheckRuns) == len(wantRuns) {
@@ -194,8 +214,8 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 		}
 	}
 	if !slices.Equal(last.CheckRuns, wantRuns) || !slices.Equal(last.Failed.Checks, wantFailed) || !slices.Equal(last.Cancelled.Checks, wantCancelled) ||
-		!slices.Equal(last.Statuses, wantStatuses) {
+		!slices.Equal(settled.Statuses, wantStatuses) {
 		t.Fatalf("the listener's settlement\nruns %v\nfailed %v\ncancelled %v\nstatuses %v\nwant the fixture's\nruns %v\nfailed %v\ncancelled %v\nstatuses %v",
-			last.CheckRuns, last.Failed.Checks, last.Cancelled.Checks, last.Statuses, wantRuns, wantFailed, wantCancelled, wantStatuses)
+			last.CheckRuns, last.Failed.Checks, last.Cancelled.Checks, settled.Statuses, wantRuns, wantFailed, wantCancelled, wantStatuses)
 	}
 }

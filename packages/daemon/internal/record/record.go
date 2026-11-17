@@ -55,19 +55,25 @@ const (
 )
 
 // CommitStatus is one commit status a CI settlement named for the head it was of: GitHub's
-// context, and the state the newest terminal status of that context came to, spelled as GitHub
-// spells it (CommitStatusSuccess, CommitStatusFailure, CommitStatusError). A status is an entry of
-// its own kind, apart from the check runs, so a context that shares its name with a check run is
-// never that run. Head is the head whose settlement named the status: the pull request keeps the
-// statuses of its checked head (PullRequest.Statuses), and each text names only those stamped with
-// the head it is about (workflow's settledChecks and headChecks), since a daemon of an earlier
-// release writes checked_head after a rollback and leaves this list as it was. A settlement's own
-// list (Settlement.Statuses) carries no stamp: the settlement names its head, and the stamp is put
-// on where the list is kept (classify.ApplySettlement).
+// context, the state the newest terminal status of that context came to, spelled as GitHub
+// spells it (CommitStatusSuccess, CommitStatusFailure, CommitStatusError), and GitHub's
+// created_at of that status. A status is an entry of its own kind, apart from the check runs, so
+// a context that shares its name with a check run is never that run. CreatedAt is what orders two
+// statuses of one context (classify.ClassifySettlement, ApplySettlement): a status has no id, and
+// the listener numbers the settlements of a record the bucket's TTL removed and wrote again
+// afresh, so its generation does not order them. It is a plain field, since every status a
+// settlement names carries one (intake's decodeChecks). Head is the head whose settlement named
+// the status: the pull request keeps the statuses of its checked head (PullRequest.Statuses),
+// and each text names only those stamped with the head it is about (workflow's settledChecks and
+// headChecks), since a daemon of an earlier release writes checked_head after a rollback and
+// leaves this list as it was. A settlement's own list (Settlement.Statuses) carries no stamp: the
+// settlement names its head, and the stamp is put on where the list is kept
+// (classify.ApplySettlement).
 type CommitStatus struct {
-	Context string            `json:"context"`
-	State   CommitStatusState `json:"state"`
-	Head    string            `json:"head,omitempty"`
+	Context   string            `json:"context"`
+	State     CommitStatusState `json:"state"`
+	CreatedAt time.Time         `json:"created_at"`
+	Head      string            `json:"head,omitempty"`
 }
 
 // CommitStatusState is the state a settlement names a commit status in. GitHub's other states,
@@ -778,16 +784,19 @@ type PullRequest struct {
 	CheckRuns  []AttemptRun
 	Generation int64
 	Snapshot   string
-	// Statuses are the commit statuses the last settlement applied for the checked head named,
-	// in context order, each stamped with that head (CommitStatus.Head). A settlement's list is the
-	// whole list the head's CI record holds, which can be fewer than GitHub holds: pending statuses
-	// are not recorded, a token without Commit statuses names none, and the record's size bound can
-	// drop them. Each applied settlement of the checked head replaces it, one that names none with
-	// an empty list (classify.ApplySettlement); a settlement the daemon does not apply leaves it as
-	// it is. A settlement of a new checked head, a reopen and a new generation clear it with the
-	// check runs (classify.SettlementFor, the reopen step of a head run, Store.ClearGeneration). A
-	// move of the head leaves it stamped with the head it was of, so no text names it for the new
-	// head (workflow's headChecks).
+	// Statuses are the commit statuses the settlements applied for the checked head named, the
+	// newest of each context, in context order and each stamped with that head
+	// (CommitStatus.Head). A settlement's list is the whole list the head's CI record holds, which
+	// can be fewer than GitHub holds: pending statuses are not recorded, a token without Commit
+	// statuses names none, the record's size bound can drop them, and a listener of an earlier
+	// release names none. So each applied settlement of the checked head is merged into it per
+	// context, the entry with the later created_at kept (classify.ApplySettlement): a context the
+	// settlement leaves out stays as it is kept, and an older status never puts back a state a
+	// newer one replaced. A settlement the daemon does not apply leaves it as it is. A settlement
+	// of a new checked head, a reopen and a new generation clear it with the check runs
+	// (classify.SettlementFor, the reopen step of a head run, Store.ClearGeneration). A move of the
+	// head leaves it stamped with the head it was of, so no text names it for the new head
+	// (workflow's headChecks).
 	Statuses []CommitStatus
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a

@@ -186,9 +186,9 @@ func TestReconcileRecordsTheTerminalStatusesOfAHead(t *testing.T) {
 				t.Errorf("the record holds checks %v and suites %v, want ci-ok and its suite alone: a status is no check run", state.Checks, state.Suites)
 			}
 			h.settlementNaming(settlements, "after a pass over a head with statuses", []cistore.StatusRef{
-				{Context: "ci/build", State: "success"},
-				{Context: "ci/license", State: "error"},
-				{Context: "ci/lint", State: "failure"},
+				{Context: "ci/build", State: "success", CreatedAt: "2026-11-17T05:01:00Z"},
+				{Context: "ci/license", State: "error", CreatedAt: "2026-11-17T05:03:00Z"},
+				{Context: "ci/lint", State: "failure", CreatedAt: "2026-11-17T05:02:00Z"},
 			})
 
 			queries := h.github.queriesAsked()
@@ -224,7 +224,7 @@ func TestReconcileRecordsAStatusThatAloneChanged(t *testing.T) {
 
 			h.pass()
 
-			h.settlementNaming(settlements, "after the first pass", []cistore.StatusRef{{Context: "ci/build", State: "failure"}})
+			h.settlementNaming(settlements, "after the first pass", []cistore.StatusRef{{Context: "ci/build", State: "failure", CreatedAt: "2026-11-17T05:01:00Z"}})
 			before := h.reconciler.heads[headKey]
 			counted := h.countWrites()
 			// The build runs again and passes: the status is all that changed on GitHub.
@@ -237,7 +237,7 @@ func TestReconcileRecordsAStatusThatAloneChanged(t *testing.T) {
 			if state == nil || state.Statuses["ci/build"].State != "success" || state.Statuses["ci/build"].CreatedAt != "2026-11-17T05:09:00Z" {
 				t.Fatalf("the record holds %+v after the second pass, want ci/build's newer success", state)
 			}
-			h.settlementNaming(settlements, "after the status alone changed", []cistore.StatusRef{{Context: "ci/build", State: "success"}})
+			h.settlementNaming(settlements, "after the status alone changed", []cistore.StatusRef{{Context: "ci/build", State: "success", CreatedAt: "2026-11-17T05:09:00Z"}})
 			line := h.passLine()
 			if got := number(t, line, "records"); got != 1 {
 				t.Errorf("the second pass changed %d records, want the head's: %v", got, line)

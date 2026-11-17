@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -13,23 +14,35 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// naming is fact, a settlement of settledAt or settledRunsAt, naming statuses: each a context and
-// its state, as the decoder reads the listener's field.
+// naming is fact, a settlement of settledAt or settledRunsAt, naming statuses: each a context, its
+// state and its created_at, as the decoder reads the listener's field.
 func naming(fact intake.Fact, statuses ...record.CommitStatus) intake.PullRequestChecks {
 	checks := fact.(intake.PullRequestChecks)
 	checks.Statuses = statuses
 	return checks
 }
 
-// status is the commit status context in state, as a settlement names it.
-func status(context string, state record.CommitStatusState) record.CommitStatus {
-	return record.CommitStatus{Context: context, State: state}
+// statusAt is the created_at of a commit status these tests name: minute minutes past a fixed
+// hour, in UTC as the decoder keeps it, so a later minute is a newer status of its context.
+func statusAt(minute int) time.Time { return time.Date(2026, 11, 17, 5, minute, 0, 0, time.UTC) }
+
+// status is the commit status context in state created at minute, as a settlement names it.
+func status(context string, state record.CommitStatusState, minute int) record.CommitStatus {
+	return record.CommitStatus{Context: context, State: state, CreatedAt: statusAt(minute)}
+}
+
+// keptStatus is that status as the pull request keeps it, stamped with the head it was settled at.
+func keptStatus(context string, state record.CommitStatusState, minute int, head string) record.CommitStatus {
+	kept := status(context, state, minute)
+	kept.Head = head
+	return kept
 }
 
 // The CI message names every commit status the settlement standing for the head names, each
 // with its state as GitHub spells it, in context order, after the check runs and apart from them:
 // one message to each of the three roles, as for a settlement that names none. A later settlement
-// that changes only a status's state says something new, and is told again.
+// in which only a status changed state, a newer status of its context, says something new, and is
+// told again.
 func TestTheCIMessageNamesEachStatus(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -44,9 +57,9 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 		fact    intake.Fact
 		settled string
 	}{
-		{naming(settledAt("head", 1, "unit"), status("sched-suite", "error"), status("ci/untested-draft", "failure"), status("deploy", "success")),
+		{naming(settledAt("head", 1, "unit"), status("sched-suite", "error", 1), status("ci/untested-draft", "failure", 1), status("deploy", "success", 1)),
 			`CI settled at head: "build" succeeded, "unit" failed; commit statuses: "ci/untested-draft" failure, "deploy" success, "sched-suite" error`},
-		{naming(settledAt("head", 2, "unit"), status("ci/untested-draft", "failure"), status("deploy", "failure"), status("sched-suite", "error")),
+		{naming(settledAt("head", 2, "unit"), status("ci/untested-draft", "failure", 1), status("deploy", "failure", 2), status("sched-suite", "error", 1)),
 			`CI settled at head: "build" succeeded, "unit" failed; commit statuses: "ci/untested-draft" failure, "deploy" failure, "sched-suite" error`},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
@@ -58,10 +71,10 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 			t.Fatalf("after settlement %d the issue is in %s, want testing", i+1, got)
 		}
 	}
-	want := []record.CommitStatus{{Context: "ci/untested-draft", State: "failure", Head: "head"},
-		{Context: "deploy", State: "failure", Head: "head"}, {Context: "sched-suite", State: "error", Head: "head"}}
+	want := []record.CommitStatus{keptStatus("ci/untested-draft", "failure", 1, "head"), keptStatus("deploy", "failure", 2, "head"),
+		keptStatus("sched-suite", "error", 1, "head")}
 	if got := recordedPR(t, pool, "LEGION-208").Statuses; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the pull request keeps %+v, want the last settlement's %+v, each stamped with the head", got, want)
+		t.Fatalf("the pull request keeps %+v, want the newest status of each context, each stamped with the head: %+v", got, want)
 	}
 }
 
@@ -79,7 +92,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		seedMergeStateRound(t, pool, record.MergeStateBlocked)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}),
-			status("deploy", "success"), status("ci", "failure")))
+			status("deploy", "success", 1), status("ci", "failure", 1)))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
@@ -92,10 +105,10 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		pool := migratedPool(t)
 		seedMergeStateRound(t, pool, record.MergeStateBlocked)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}), status("ci", "failure")))
+		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}), status("ci", "failure", 1)))
 		apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"})
 		apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})
-		if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got.Statuses, []record.CommitStatus{{Context: "ci", State: "failure", Head: headOne}}) {
+		if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got.Statuses, []record.CommitStatus{keptStatus("ci", "failure", 1, headOne)}) {
 			t.Fatalf("after the move the record keeps %+v, want ci failed at %s: this test proves nothing without it", got.Statuses, headOne)
 		}
 		apply("settled-new-head", settledRunsAt(headTwo, 1, []record.AttemptRun{{Name: "unit tests", ID: 3}}))
@@ -116,7 +129,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}, Cancelled: []string{},
 			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked,
 			CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}},
-			Statuses: []record.CommitStatus{{Context: "ci", State: "failure", Head: earlier}}})
+			Statuses: []record.CommitStatus{keptStatus("ci", "failure", 1, earlier)}})
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
@@ -154,7 +167,7 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 			if role := RoleFor(tc.from); role != "" && role != claim.RoleImplementer {
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
 			}
-			applyRefusingNothing(t, pool, mergingEngine(), naming(settledAt("head", 1), status("ci", "failure"), status("deploy", "error")))
+			applyRefusingNothing(t, pool, mergingEngine(), naming(settledAt("head", 1), status("ci", "failure", 1), status("deploy", "error", 1)))
 
 			if got := issuePhase(t, pool); got != tc.from {
 				t.Fatalf("after a settlement naming failed statuses the issue is in %s, want it left in %s", got, tc.from)
@@ -177,12 +190,12 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 	}
 }
 
-// A settlement's list is the whole list the head's CI record holds (which can be fewer than GitHub
-// holds, as record.PullRequest.Statuses says), so a later settlement that names a context as
-// success replaces the failure the record kept for it: the pull request keeps no failed status,
-// and the CI message names the context as success and nothing as failed. A settlement after it
-// whose list the daemon could not read keeps the green list as it is, so no red name comes back,
-// and says nothing new, so nobody is told again.
+// The pull request keeps the newest status of each context the settlements of the head named, by
+// created_at, so a later settlement that names a newer status of a context as success replaces the
+// failure the record kept for it: the pull request keeps no failed status, and the CI message
+// names the context as success and nothing as failed. A settlement after it whose list the daemon
+// could not read names no status, so the green list stays as it is and no red name comes back,
+// and it says nothing new, so nobody is told again.
 func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -201,13 +214,13 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 		settled string
 		kept    []record.CommitStatus
 	}{
-		{naming(settledAt("head", 1), status("ci", "failure")),
+		{naming(settledAt("head", 1), status("ci", "failure", 1)),
 			`CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" failure`,
-			[]record.CommitStatus{{Context: "ci", State: "failure", Head: "head"}}},
-		{naming(settledAt("head", 2), status("ci", "success")),
+			[]record.CommitStatus{keptStatus("ci", "failure", 1, "head")}},
+		{naming(settledAt("head", 2), status("ci", "success", 2)),
 			`CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" success`,
-			[]record.CommitStatus{{Context: "ci", State: "success", Head: "head"}}},
-		{unread, "", []record.CommitStatus{{Context: "ci", State: "success", Head: "head"}}},
+			[]record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
+		{unread, "", []record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
 		if step.settled != "" {
@@ -235,32 +248,48 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 
 // The task of a role that a settlement wakes names each commit status the settlement names failed,
 // in context order, after each of the three texts it gives today: the failed check runs, the
-// cancelled ones, and, where neither, that the head passed every check run. A settlement that names
-// no failed status gives today's text, "passed every check" included.
+// cancelled ones, and, where neither, that the head passed every check run. A settlement whose list
+// the daemon could not read names the failed statuses the pull request keeps for the head, which
+// applying it leaves as they are, rather than telling the role the head passed every check. A
+// settlement that names no failed status gives today's text, "passed every check" included.
 func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 	checks := func(failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)
 		fact.Cancelled, fact.Statuses = cancelled, statuses
 		return fact
 	}
+	unread := checks(nil, nil)
+	unread.Generation, unread.Snapshot, unread.StatusesUnread = 2, "head1-2", true
 	shapes := []struct {
 		name   string
 		fact   intake.PullRequestChecks
 		detail string
+		// kept is what the pull request keeps for head1 before the settlement, none when nil.
+		kept []record.CommitStatus
 	}{
-		{"a failed check run", checks([]string{"build"}, nil, status("deploy", "success"), status("ci", "failure")),
-			"head1 failed build; failed commit status ci"},
-		{"a cancelled check run", checks(nil, []string{"build"}, status("sched-suite", "error"), status("ci/untested-draft", "failure")),
-			"head1 had build cancelled; failed commit statuses ci/untested-draft, sched-suite"},
-		{"no failed check run", checks(nil, nil, status("ci/untested-draft", "failure")),
-			"head1 passed every check run; failed commit status ci/untested-draft"},
+		{"a failed check run", checks([]string{"build"}, nil, status("deploy", "success", 1), status("ci", "failure", 1)),
+			"head1 failed build; failed commit status ci", nil},
+		{"a cancelled check run", checks(nil, []string{"build"}, status("sched-suite", "error", 1), status("ci/untested-draft", "failure", 1)),
+			"head1 had build cancelled; failed commit statuses ci/untested-draft, sched-suite", nil},
+		{"no failed check run", checks(nil, nil, status("ci/untested-draft", "failure", 1)),
+			"head1 passed every check run; failed commit status ci/untested-draft", nil},
+		{"a list the daemon could not read", unread, "head1 passed every check run; failed commit status ci",
+			[]record.CommitStatus{keptStatus("ci", "failure", 1, "head1"), keptStatus("deploy", "success", 1, "head1")}},
 	}
 	for _, shape := range shapes {
 		t.Run(shape.name, func(t *testing.T) {
-			if got := settlementDetail(shape.fact); got != shape.detail {
-				t.Fatalf("settlementDetail = %q, want %q", got, shape.detail)
+			if !shape.fact.StatusesUnread {
+				if got := settlementDetail(shape.fact); got != shape.detail {
+					t.Fatalf("settlementDetail = %q, want %q", got, shape.detail)
+				}
 			}
 			rig := newWakeRig(t)
+			if shape.kept != nil {
+				seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+					Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1", Failing: []string{}, Cancelled: []string{},
+					CheckedHead: "head1", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1, Head: "head1", Conclusion: record.RunSucceeded}},
+					Generation: 1, Snapshot: "head1-snapshot", Statuses: shape.kept})
+			}
 			rig.apply("settled", shape.fact)
 			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "The wake is a CI settlement on your pull request's head: "+shape.detail)
 		})
@@ -270,9 +299,9 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 		fact   intake.PullRequestChecks
 		detail string
 	}{
-		{"no failed status", checks(nil, nil, status("deploy", "success")), "head1 passed every check"},
+		{"no failed status", checks(nil, nil, status("deploy", "success", 1)), "head1 passed every check"},
 		{"no status", checks(nil, nil), "head1 passed every check"},
-		{"a failed check run and no failed status", checks([]string{"build"}, nil, status("deploy", "success")), "head1 failed build"},
+		{"a failed check run and no failed status", checks([]string{"build"}, nil, status("deploy", "success", 1)), "head1 failed build"},
 		{"a cancelled check run and no status", checks(nil, []string{"build"}), "head1 had build cancelled"},
 	} {
 		if got := settlementDetail(today.fact); got != today.detail {

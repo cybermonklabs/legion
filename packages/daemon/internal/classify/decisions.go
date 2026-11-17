@@ -1004,11 +1004,13 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // are taken only from a settlement of the head the fence stands at (SettlementFor, which moves
 // that head to the candidate's whenever the candidate is the nearer one to the pull request's
 // head). A settlement of a head below it merges its runs and the conclusions of them, and leaves
-// the recorded head's numbering as it was. The commit statuses are taken the same way, and whole:
-// the candidate's list, each stamped with the candidate's head (stampedStatuses), replaces the
-// list the record keeps, since the candidate's list is the whole list the head's CI record holds
-// (which can be fewer than GitHub holds, as record.PullRequest.Statuses says), and a settlement
-// this does not apply leaves the kept list as it is.
+// the recorded head's numbering as it was. The commit statuses are taken from the same
+// settlements alone, and merged per context rather than replaced (mergedStatuses): for each
+// context the status with the later created_at stands, so a settlement that names fewer statuses
+// than the record keeps - the candidate's list is the whole list the head's CI record holds, which
+// can be fewer than GitHub holds, as record.PullRequest.Statuses says - leaves each context it
+// leaves out as it is, and an older settlement never puts back a status a newer one replaced. A
+// settlement this does not apply leaves the kept list as it is.
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	if ClassifySettlement(pr, candidate) != SettlementNewer {
 		return pr, false
@@ -1019,7 +1021,7 @@ func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (reco
 	if candidate.Head == pr.CheckedHead {
 		pr.Generation = candidate.Generation
 		pr.Snapshot = candidate.Snapshot
-		pr.Statuses = stampedStatuses(candidate)
+		pr.Statuses = mergedStatuses(pr, candidate)
 	}
 	pr.Failing = append([]string(nil), outcome.Failing...)
 	pr.Cancelled = append([]string(nil), outcome.Cancelled...)

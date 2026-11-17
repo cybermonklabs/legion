@@ -119,7 +119,7 @@ func TestAStatusIsAnEntryApartFromACheckRunOfItsName(t *testing.T) {
 	if len(sum.FailingChecks) != 1 || sum.FailingChecks[0].Name != "tester" {
 		t.Fatalf("failing_checks = %+v, want the check run tester alone", sum.FailingChecks)
 	}
-	want := []StatusRef{{"architect", "failure"}, {"ci", "failure"}, {"tester", "success"}}
+	want := []StatusRef{{"architect", "failure", "2026-11-17T05:00:00Z"}, {"ci", "failure", "2026-11-17T05:00:00Z"}, {"tester", "success", "2026-11-17T05:00:00Z"}}
 	if !slices.Equal(sum.Statuses, want) {
 		t.Fatalf("statuses = %+v, want %+v", sum.Statuses, want)
 	}
@@ -198,9 +198,10 @@ func TestTheNewestTerminalStatusOfAContextIsKept(t *testing.T) {
 
 // A commit status settles a head again as a late check run does: on a settled head a new context,
 // or a newer status of a context in another state, re-arms it and restarts its quiet period, and
-// the next settlement names the status with its state under a new generation and a new snapshot.
-// A newer status in the same state, with a new time, link and description, is recorded and moves
-// neither the generation, the snapshot nor the quiet period, so no settlement follows it.
+// the next settlement names the status with its state and its created_at under a new generation
+// and a new snapshot. A newer status in the same state, with a new time, link and description, is
+// recorded and moves neither the generation, the snapshot nor the quiet period, so no settlement
+// follows it.
 func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -251,14 +252,14 @@ func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 		return sum, line
 	}
 	second, line := settleAgain(t, "a new context", h.status("ci/preview", "success", "2026-11-17T05:01:00Z"), first)
-	if want := []StatusRef{{"ci/preview", "success"}}; !slices.Equal(second.Statuses, want) {
+	if want := []StatusRef{{"ci/preview", "success", "2026-11-17T05:01:00Z"}}; !slices.Equal(second.Statuses, want) {
 		t.Fatalf("a new context's settlement names statuses %+v, want %+v", second.Statuses, want)
 	}
 	if !strings.HasSuffix(line, ": 1 passed, 0 failed, 0 cancelled, 0 skipped; statuses: 1 passed, 0 failed (re-settled)") {
 		t.Fatalf("a new context's settlement reads %q", line)
 	}
 	third, line := settleAgain(t, "a newer status in another state", h.status("ci/preview", "failure", "2026-11-17T05:02:00Z"), second)
-	if want := []StatusRef{{"ci/preview", "failure"}}; !slices.Equal(third.Statuses, want) {
+	if want := []StatusRef{{"ci/preview", "failure", "2026-11-17T05:02:00Z"}}; !slices.Equal(third.Statuses, want) {
 		t.Fatalf("a changed state's settlement names statuses %+v, want %+v", third.Statuses, want)
 	}
 	if !strings.HasSuffix(line, ": 1 passed, 0 failed, 0 cancelled, 0 skipped; statuses: 0 passed, 1 failed; failing statuses: ci/preview (re-settled)") {
@@ -286,6 +287,86 @@ func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 	runSummaryTick(s, pub, 0, logger)
 	if pub.count() != published {
 		t.Fatalf("a newer status in the same state was followed by %d settlements, want none", pub.count()-published)
+	}
+}
+
+// A record the bucket's TTL removes and the reconcile writes again in full starts its generation
+// afresh, so a change of a status's state after it settles under a generation no higher than one
+// the head's earlier settlements carried, and a consumer that ordered statuses by the generation
+// would drop it. Each entry of the settlement's statuses carries the status's created_at, which
+// orders it whatever the generation says: the change after the recreation settles naming the
+// newer status with its later created_at.
+func TestARecreatedRecordSettlesAStatusChangeWithItsCreatedAt(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	s := openStore(t, conn)
+	pub := &recPub{}
+	h := statusHead
+	logger := logging.New("test")
+	const (
+		t1 = "2026-11-17T05:01:00Z"
+		t2 = "2026-11-17T05:02:00Z"
+		t3 = "2026-11-17T05:03:00Z"
+		t4 = "2026-11-17T05:04:00Z"
+	)
+	check := func() error {
+		return recordCheck(s, h.owner, h.repo, h.number, h.sha, "build", "41", "https://github.com/acme/widgets/runs/41", "completed", "success", "2026-11-17T05:00:00Z")
+	}
+	status := func(state, createdAt string) func() error {
+		return func() error {
+			changed, err := recordStatus(s, h.status("ci", state, createdAt))
+			if err == nil && !changed {
+				return errors.New("the status changed nothing")
+			}
+			return err
+		}
+	}
+	// settle makes each write in turn, then runs the summary loop once over the record the last
+	// one left, which must settle the head once.
+	settle := func(t *testing.T, what string, writes ...func() error) Summary {
+		t.Helper()
+		for _, write := range writes {
+			if err := write(); err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		}
+		written := getState(t, s, h.owner, h.repo, h.number, h.sha)
+		waitCached(t, s, h.key(), func(st State) bool {
+			return !st.SettledEmitted && st.Generation == written.Generation && st.Hash() == written.Hash()
+		})
+		published := pub.count()
+		runSummaryTick(s, pub, 0, logger)
+		if pub.count() != published+1 {
+			t.Fatalf("%s: the tick after it published %d settlements, want one", what, pub.count()-published)
+		}
+		sum, _ := lastSettlement(t, pub)
+		return sum
+	}
+
+	settle(t, "the head's check run and first status", check, status("success", t1))
+	settle(t, "a newer status that failed", status("failure", t2))
+	before := settle(t, "a newer status that succeeded", status("success", t3))
+	if want := []StatusRef{{"ci", "success", t3}}; !slices.Equal(before.Statuses, want) {
+		t.Fatalf("before the recreation the head settled naming statuses %+v, want %+v", before.Statuses, want)
+	}
+
+	if err := s.watcher.KV().Delete(h.key()); err != nil {
+		t.Fatalf("delete the record as its TTL would: %v", err)
+	}
+	waitCacheStateMissing(t, s, h.owner, h.repo, h.number, h.sha)
+	again := settle(t, "the head written again in full", check, status("success", t3))
+	if again.Generation >= before.Generation || !slices.Equal(again.Statuses, before.Statuses) {
+		t.Fatalf("the recreated record settled at generation %d naming %+v, want a generation below %d, numbered afresh, and %+v",
+			again.Generation, again.Statuses, before.Generation, before.Statuses)
+	}
+
+	changed := settle(t, "a newer status that failed after the recreation", status("failure", t4))
+	if want := []StatusRef{{"ci", "failure", t4}}; !slices.Equal(changed.Statuses, want) {
+		t.Fatalf("the status change after the recreation settled naming statuses %+v, want %+v, with its later created_at", changed.Statuses, want)
+	}
+	if changed.Generation > before.Generation {
+		t.Fatalf("the status change after the recreation settled at generation %d, past the %d before it: this test proves nothing without a generation an earlier settlement reached",
+			changed.Generation, before.Generation)
 	}
 }
 
@@ -323,11 +404,12 @@ const (
 	todaysLine = "checks settled on acme/widgets#7 @ 0123456: 1 passed, 1 failed, 1 cancelled, 1 skipped; failing: lint (re-settled)"
 )
 
-// Each settlement names each commit status of the record with its state, in a field of its own and
-// in context order. Its check_runs, failed and cancelled name check runs alone, and are the same
-// with and without statuses on the record; its one line counts the statuses and names the failed
-// ones after the failing check runs. A head with no status settles in the payload and the line of
-// the release before commit statuses, byte for byte, its snapshot included.
+// Each settlement names each commit status of the record with its state and its created_at, in a
+// field of its own and in context order. Its check_runs, failed and cancelled name check runs
+// alone, and are the same with and without statuses on the record; its one line counts the
+// statuses and names the failed ones after the failing check runs. A head with no status settles
+// in the payload and the line of the release before commit statuses, byte for byte, its snapshot
+// included.
 func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 	t.Run("a head with no status settles in today's bytes", func(t *testing.T) {
 		env, err := settlementEnvelope(todaysHead(), 1)
@@ -358,7 +440,7 @@ func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 		if err := json.Unmarshal([]byte(env.Payload), &sum); err != nil {
 			t.Fatalf("decode the settlement: %v", err)
 		}
-		want := []StatusRef{{"ci/license", "error"}, {"ci/preview", "success"}, {"test", "failure"}}
+		want := []StatusRef{{"ci/license", "error", "2026-11-17T06:01:00Z"}, {"ci/preview", "success", "2026-11-17T06:01:00Z"}, {"test", "failure", "2026-11-17T06:01:00Z"}}
 		if !slices.Equal(sum.Statuses, want) {
 			t.Fatalf("statuses = %+v, want %+v", sum.Statuses, want)
 		}
@@ -377,7 +459,8 @@ func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 		if err := json.Unmarshal([]byte(todaysPayload), &todays); err != nil {
 			t.Fatalf("decode today's settlement: %v", err)
 		}
-		if got := string(payload["statuses"]); got != `[{"context":"ci/license","state":"error"},{"context":"ci/preview","state":"success"},{"context":"test","state":"failure"}]` {
+		if got := string(payload["statuses"]); got != `[{"context":"ci/license","state":"error","created_at":"2026-11-17T06:01:00Z"},`+
+			`{"context":"ci/preview","state":"success","created_at":"2026-11-17T06:01:00Z"},{"context":"test","state":"failure","created_at":"2026-11-17T06:01:00Z"}]` {
 			t.Fatalf("the settlement's statuses field is %s", got)
 		}
 		delete(payload, "statuses")
@@ -396,7 +479,7 @@ func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 		// a failed status is named.
 		short := Summary{
 			Repo: "a/w", Number: "7", SHA: "0123456789abcdef", Passed: group([]string{"build"}), Failed: group([]string{"lint"}),
-			SupersededSettlement: "true", Statuses: []StatusRef{{"ci/preview", "success"}, {"x", "error"}},
+			SupersededSettlement: "true", Statuses: []StatusRef{{"ci/preview", "success", "2026-11-17T06:01:00Z"}, {"x", "error", "2026-11-17T06:01:00Z"}},
 		}
 		if got, want := settledPayloadSummary(short), "checks settled on a/w#7 @ 0123456: 1 passed, 1 failed, 0 cancelled, 0 skipped; failing: lint; statuses: 1 passed, 1 failed; failing statuses: x (re-settled)"; got != want {
 			t.Fatalf("a settlement of a passed and a failed status reads %q, want %q", got, want)
@@ -451,7 +534,7 @@ func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 		if strings.Contains(payloads[plain.number], `"statuses"`) {
 			t.Fatalf("the settlement of a head with no status names statuses: %s", payloads[plain.number])
 		}
-		if want := []StatusRef{{"ci/license", "error"}, {"ci/preview", "success"}, {"test", "failure"}}; !slices.Equal(withStatuses.Statuses, want) {
+		if want := []StatusRef{{"ci/license", "error", "2026-11-17T06:01:00Z"}, {"ci/preview", "success", "2026-11-17T06:01:00Z"}, {"test", "failure", "2026-11-17T06:01:00Z"}}; !slices.Equal(withStatuses.Statuses, want) {
 			t.Fatalf("the settlement names statuses %+v, want %+v", withStatuses.Statuses, want)
 		}
 		if !slices.Equal(withStatuses.CheckRuns, withNone.CheckRuns) || !reflect.DeepEqual(withStatuses.Failed, withNone.Failed) || !reflect.DeepEqual(withStatuses.Cancelled, withNone.Cancelled) {

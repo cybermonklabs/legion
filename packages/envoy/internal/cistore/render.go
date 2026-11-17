@@ -61,8 +61,9 @@ type FailingCheck struct {
 	URL  string `json:"url"`
 }
 
-// Summary is the JSON checks notification body. Every status is always present
-// (count 0, empty checks when none) so consumers see a stable schema.
+// Summary is the JSON checks notification body. Every check-run group is always present (count 0,
+// empty checks when none), and `Statuses` alone is left out when the record holds none, so
+// consumers see a stable schema.
 type Summary struct {
 	Kind   string `json:"kind"`
 	Repo   string `json:"repo"`
@@ -70,8 +71,8 @@ type Summary struct {
 	SHA    string `json:"sha"`
 	// CheckRuns is the settlement's attempt set: the latest check-run id per
 	// check name, sorted by name. Consumers order settlements of one commit by it
-	// (within one record per-name ids never decrease), then by Generation at an
-	// equal set.
+	// (within one record per-name ids never decrease) and by each status's
+	// created_at (Statuses), then by Generation where neither says which is newer.
 	CheckRuns            []CheckRunRef  `json:"check_runs"`
 	Generation           uint64         `json:"generation"`
 	Snapshot             string         `json:"snapshot"`
@@ -83,11 +84,14 @@ type Summary struct {
 	Cancelled            StatusGroup    `json:"cancelled"`
 	Skipped              StatusGroup    `json:"skipped"`
 	FailingChecks        []FailingCheck `json:"failing_checks"`
-	// Statuses names each commit status the record holds with its state, in context order, and
-	// is left out when the record holds none, so a head with no status settles in the same bytes
-	// as before the record held statuses. A status is no check run: check_runs, the groups from
-	// failed to skipped and failing_checks name check runs alone, and a check run and a status of
-	// one name are two entries.
+	// Statuses names each commit status the record holds with its state and GitHub's created_at,
+	// in context order, and is left out when the record holds none, so a head with no status
+	// settles in the same bytes as before the record held statuses. A status is no check run:
+	// check_runs, the groups from failed to skipped and failing_checks name check runs alone, and
+	// a check run and a status of one name are two entries. A status has no id, and a record the
+	// bucket's TTL removed numbers its settlements afresh when it is written again, so the
+	// generation does not order two statuses of one context across such a record: each entry's
+	// created_at does, as it orders them in the record (statusMayReplace).
 	Statuses []StatusRef `json:"statuses,omitempty"`
 }
 
@@ -97,10 +101,13 @@ type CheckRunRef struct {
 	ID   uint64 `json:"id"`
 }
 
-// StatusRef names one commit status and its state: success, failure or error.
+// StatusRef names one commit status, its state (success, failure or error) and GitHub's
+// created_at as the record keeps it (Status.CreatedAt), GitHub's RFC 3339 text. The snapshot
+// (State.Hash) takes the context and the state alone, so a new created_at alone settles nothing.
 type StatusRef struct {
-	Context string `json:"context"`
-	State   string `json:"state"`
+	Context   string `json:"context"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
 }
 
 // statusFailed reports whether a commit status in state failed: failure and error did, success
@@ -156,7 +163,8 @@ func renderSummary(s State) Summary {
 	if contexts := statusContexts(s.Statuses); contexts != nil {
 		sum.Statuses = make([]StatusRef, len(contexts))
 		for i, name := range contexts {
-			sum.Statuses[i] = StatusRef{Context: name, State: s.Statuses[name].State}
+			status := s.Statuses[name]
+			sum.Statuses[i] = StatusRef{Context: name, State: status.State, CreatedAt: status.CreatedAt}
 		}
 	}
 	if s.EmittedCount > 0 {

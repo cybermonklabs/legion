@@ -187,11 +187,13 @@ func redundantSettlement(steps []record.RunStep, settlement record.Settlement) b
 }
 
 // sameSettlement is whether a and b are the same report of the same settlement: every field of
-// each, the commit statuses with the rest. The listener numbers a record whose statuses changed
-// anew, so two settlements with one generation and snapshot name the same statuses; the one pair
-// that can differ in them alone is a redelivery whose list the daemon could not read, which took
-// the statuses the record keeps for the head (workflow's checks), and that pair is two steps,
-// the second of which replays as the duplicate it is (ClassifySettlement).
+// each, the commit statuses with the rest. Two settlements of one generation and snapshot can
+// differ in their statuses alone: a redelivery whose list the daemon could not read names none
+// (workflow's checks), and a record the bucket's TTL removed numbers its settlements afresh, so a
+// settlement of the record written again can carry a generation and snapshot an earlier one
+// carried, with a status created later. Each such pair is two steps, and the replay decides the
+// second by its statuses (ClassifySettlement): one that names no newer status replays as the
+// duplicate it is, and one that names a newer status as newer.
 func sameSettlement(a, b record.Settlement) bool {
 	return a.Head == b.Head && a.Generation == b.Generation && a.Snapshot == b.Snapshot && sameItems(a.CheckRuns, b.CheckRuns) &&
 		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled) && sameItems(a.Statuses, b.Statuses)

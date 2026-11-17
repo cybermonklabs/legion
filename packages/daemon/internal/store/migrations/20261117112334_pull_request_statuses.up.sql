@@ -1,15 +1,17 @@
 -- 20261117112334_pull_request_statuses.up.sql — the commit statuses of the checked head
 -- (dispatch://INFRA-1997 R7).
 --
--- pull_requests.statuses is record.PullRequest.Statuses: each commit status of the checked head
--- that the last settlement the daemon applied for that head named, with its context and its state
--- (success, failure or error), each stamped with that head (record.CommitStatus.Head). Each
--- settlement applied for the checked head replaces the whole list (classify.ApplySettlement), a
--- settlement of a new checked head and a reopen clear it with the check runs
--- (classify.SettlementFor, the reopen step of a head run), and a new generation clears it with them
--- (record.Store.ClearGeneration). The daemon names these statuses in its CI message, in the notice
--- of a head GitHub will not merge, and, for each failed one, in the task of a role that a settlement
--- wakes (workflow's settledChecks, headChecks and settlementDetail).
+-- pull_requests.statuses is record.PullRequest.Statuses: the newest commit status of each context
+-- that the settlements the daemon applied for the checked head named, with its context, its state
+-- (success, failure or error) and GitHub's created_at, each stamped with that head
+-- (record.CommitStatus.Head). Each settlement applied for the checked head is merged into the list
+-- per context, the status with the later created_at kept (classify.ApplySettlement), so a context
+-- a settlement leaves out stays as it is kept; a settlement of a new checked head and a reopen
+-- clear it with the check runs (classify.SettlementFor, the reopen step of a head run), and a new
+-- generation clears it with them (record.Store.ClearGeneration). The daemon names these statuses
+-- in its CI message, in the notice of a head GitHub will not merge, and, for each failed one, in
+-- the task of a role that a settlement wakes (workflow's settledChecks, headChecks and
+-- settlementDetail).
 --
 -- Every row the table already holds takes the default, the empty list, and nothing fills it: no
 -- release before this one kept a status, and the next settlement of each head names its own.
@@ -17,9 +19,15 @@
 -- The release before this one names each column it reads and writes (record's pullRequestColumns
 -- and PutPullRequest), so it neither reads nor writes this one, and every row it inserts takes the
 -- default. After a rollback that release still moves checked_head and the check runs and leaves
--- this list as this release left it, so a kept list can be older than checked_head. The stamp is
--- what keeps such a list out of the texts: each text names only the statuses stamped with the head
--- it is about, the checked head in the CI message and the current head in the notice.
+-- this list as this release left it, so a kept list can be older than checked_head. The stamp
+-- keeps a list of another head out of the texts: each text names only the statuses stamped with
+-- the head it is about, the checked head in the CI message and the current head in the notice.
+-- The stamp does not cover the checked head itself. After a rollback the earlier release can apply
+-- a newer settlement of the same checked head, or clear the generation and settle that head again
+-- (its clearGeneration does not touch this column), and the kept list then still carries the stamp
+-- of the head checked_head names. After the roll-forward the texts name each status of that list
+-- until a newer status of its context arrives, though the earlier release applied settlements it
+-- never read the statuses of. The way back below, run before the roll-forward, clears the list.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon

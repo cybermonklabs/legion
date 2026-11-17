@@ -31,14 +31,12 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// stands only for the commit it names: it is for the head only when it names the head. While a
 	// head run is open the settlement is recorded in it whether it stands or not
 	// (classify.ApplyCheckSettlement). A list of commit statuses the decoder could not read costs
-	// the settlement nothing else: the candidate takes the statuses the pull request keeps for that
-	// head instead, so applying it leaves them as they are (intake.PullRequestChecks.StatusesUnread).
-	statuses := fact.Statuses
-	if fact.StatusesUnread {
-		statuses = keptStatuses(*pr, fact.HeadSHA)
-	}
+	// the settlement nothing else: the fact names no status, and the pull request keeps the
+	// statuses it holds for the head, since a settlement's statuses are merged into those per
+	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
+	// intake.PullRequestChecks.StatusesUnread).
 	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
-		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: statuses}
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {

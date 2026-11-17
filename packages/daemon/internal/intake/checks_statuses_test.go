@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -59,23 +60,25 @@ func settledChecks(t *testing.T, decoded decodedMessage) PullRequestChecks {
 }
 
 // A settlement names each commit status of its head in a field of its own, `statuses`: each
-// context with its state, which the daemon reads in context order whatever order it arrives in,
-// and keeps apart from the check runs, so a status that shares its name with a failing check run
-// changes nothing of the runs, the failing names or the cancelled ones. A key of an entry the
-// daemon does not read is the listener's to add. A field left out, null or empty names no status,
-// and none of them is a list the daemon could not read.
+// context with its state and GitHub's created_at, which the daemon reads in context order whatever
+// order it arrives in, with the time in UTC whatever offset it is written at, and keeps apart from
+// the check runs, so a status that shares its name with a failing check run changes nothing of the
+// runs, the failing names or the cancelled ones. A key of an entry the daemon does not read is the
+// listener's to add. A field left out, null or empty names no status, and none of them is a list
+// the daemon could not read.
 func TestDecodeChecksReadsStatuses(t *testing.T) {
 	runs := []record.AttemptRun{{Name: "build", ID: 11}, {Name: "unit", ID: 12}}
 	payload := settlementPayload(runs, []string{"unit"}, []string{})
 	payload["statuses"] = []map[string]any{
-		{"context": "unit", "state": "success", "target_url": "https://example.test/statuses/1"},
-		{"context": "ci/untested-draft", "state": "failure"},
-		{"context": "deploy", "state": "error"},
+		{"context": "unit", "state": "success", "created_at": "2026-11-17T05:01:00Z", "target_url": "https://example.test/statuses/1"},
+		{"context": "ci/untested-draft", "state": "failure", "created_at": "2026-11-17T05:02:00Z"},
+		{"context": "deploy", "state": "error", "created_at": "2026-11-17T07:03:00+02:00"},
 	}
 	decoded := decodeSettlement(t, payload)
 	checks := settledChecks(t, decoded)
-	want := []record.CommitStatus{{Context: "ci/untested-draft", State: record.CommitStatusFailure},
-		{Context: "deploy", State: record.CommitStatusError}, {Context: "unit", State: record.CommitStatusSuccess}}
+	want := []record.CommitStatus{{Context: "ci/untested-draft", State: record.CommitStatusFailure, CreatedAt: time.Date(2026, 11, 17, 5, 2, 0, 0, time.UTC)},
+		{Context: "deploy", State: record.CommitStatusError, CreatedAt: time.Date(2026, 11, 17, 5, 3, 0, 0, time.UTC)},
+		{Context: "unit", State: record.CommitStatusSuccess, CreatedAt: time.Date(2026, 11, 17, 5, 1, 0, 0, time.UTC)}}
 	if !reflect.DeepEqual(checks.Statuses, want) || checks.StatusesUnread || len(decoded.Unread) != 0 {
 		t.Fatalf("statuses = %+v, unread %t, reported %q; want %+v read whole", checks.Statuses, checks.StatusesUnread, decoded.Unread, want)
 	}
@@ -129,11 +132,12 @@ func (n *fixtureName) UnmarshalJSON(data []byte) error {
 
 // The settlement of the shared fixture (packages/contracts/fixtures/checks-settlement), which
 // Envoy's listener test publishes from the fixture's check runs and statuses, names three statuses,
-// one of them `test` failing beside the passed check run `test`. The daemon reads its check runs,
-// its failing names and its cancelled names as it reads the same settlement without the field,
-// which is the settlement an earlier listener publishes, and as the fixture gives them: the field
-// adds the statuses and takes nothing from the rest, and the failing status named test is in no
-// list of check runs.
+// one of them `test` failing beside the passed check run `test`, each with its created_at. The
+// daemon reads its check runs, its failing names and its cancelled names as it reads the same
+// settlement without the field, which is the settlement an earlier listener publishes, and as the
+// fixture gives them: the field adds the statuses, each with its created_at, as the fixture writes
+// them, and takes nothing from the rest, and the failing status named test is in no list of check
+// runs.
 func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "checks-settlement", "listener-rules.json"))
 	if err != nil {
@@ -145,9 +149,9 @@ func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
 				Name fixtureName `json:"name"`
 				ID   int64       `json:"id"`
 			} `json:"check_runs"`
-			Failed    []fixtureName         `json:"failed"`
-			Cancelled []fixtureName         `json:"cancelled"`
-			Statuses  []record.CommitStatus `json:"statuses"`
+			Failed    []fixtureName   `json:"failed"`
+			Cancelled []fixtureName   `json:"cancelled"`
+			Statuses  json.RawMessage `json:"statuses"`
 		} `json:"settlement"`
 	}
 	if err := json.Unmarshal(encoded, &fixture); err != nil {
@@ -165,13 +169,19 @@ func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
 		runs = append(runs, record.AttemptRun{Name: string(run.Name), ID: run.ID})
 	}
 	failed, cancelled := names(fixture.Settlement.Failed), names(fixture.Settlement.Cancelled)
-	if len(runs) == 0 || len(failed) == 0 || len(cancelled) == 0 || len(fixture.Settlement.Statuses) != 3 {
-		t.Fatalf("the fixture's settlement holds %d runs, %d failed, %d cancelled and %d statuses; want some of each and its three statuses",
-			len(runs), len(failed), len(cancelled), len(fixture.Settlement.Statuses))
+	var statuses []record.CommitStatus
+	if err := json.Unmarshal(fixture.Settlement.Statuses, &statuses); err != nil {
+		t.Fatalf("decode the shared fixture's statuses: %v", err)
+	}
+	if len(runs) == 0 || len(failed) == 0 || len(cancelled) == 0 || len(statuses) != 3 ||
+		slices.ContainsFunc(statuses, func(status record.CommitStatus) bool { return status.CreatedAt.IsZero() }) {
+		t.Fatalf("the fixture's settlement holds %d runs, %d failed, %d cancelled and statuses %+v; want some of each and its three statuses, each with its created_at",
+			len(runs), len(failed), len(cancelled), statuses)
 	}
 
 	without := settlementPayload(runs, failed, cancelled)
 	with := settlementPayload(runs, failed, cancelled)
+	// The fixture's statuses, byte for byte as the fixture writes them, as the listener does.
 	with["statuses"] = fixture.Settlement.Statuses
 	today, withStatuses := decodeSettlement(t, without), decodeSettlement(t, with)
 	before, after := settledChecks(t, today), settledChecks(t, withStatuses)
@@ -187,9 +197,9 @@ func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
 	if slices.Contains(after.Failing, "test") {
 		t.Fatalf("failing %v names test, want the failing status named test kept out of the check runs", after.Failing)
 	}
-	if !reflect.DeepEqual(after.Statuses, fixture.Settlement.Statuses) || after.StatusesUnread || len(withStatuses.Unread) != 0 {
+	if !reflect.DeepEqual(after.Statuses, statuses) || after.StatusesUnread || len(withStatuses.Unread) != 0 {
 		t.Fatalf("the fixture's statuses decoded to %+v, unread %t, reported %q; want %+v", after.Statuses, after.StatusesUnread,
-			withStatuses.Unread, fixture.Settlement.Statuses)
+			withStatuses.Unread, statuses)
 	}
 	if len(before.Statuses) != 0 || before.StatusesUnread || len(today.Unread) != 0 {
 		t.Fatalf("the settlement without the field decoded statuses %+v, unread %t, reported %q; want none, read",
@@ -201,25 +211,30 @@ func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
 // failing and cancelled names, its head and its numbering decode as they do without the field,
 // the fact is marked so the pull request keeps the statuses it holds for the head
 // (PullRequestChecks.StatusesUnread), and the field is named in the decoded message's unread
-// list, which the consumer logs at WARN. Each shape below is one no listener writes: a field that
-// is no list, an entry with no context, a state GitHub has but the listener never records, one
-// that is not GitHub's at all, a context named twice, and an entry that is no object.
+// list, which the consumer logs at WARN. Each of the ten shapes below is one no listener writes: a
+// field that is a string, and one that is an object rather than a list; an entry with no context;
+// a state GitHub has but the listener never records; a state in capitals, which GraphQL uses and
+// the listener never writes; a context named twice; an entry that is no object; a context that is
+// no string; an entry with no created_at; and a created_at that is no RFC 3339 time.
 func TestDecodeChecksKeepsTheCheckRunsOfAnUnreadableStatusList(t *testing.T) {
 	runs := []record.AttemptRun{{Name: "build", ID: 11}, {Name: "unit", ID: 12}}
 	want := settledChecks(t, decodeSettlement(t, settlementPayload(runs, []string{"unit"}, []string{"build"})))
 	want.StatusesUnread = true
+	const at = "2026-11-17T05:01:00Z"
 	for _, tc := range []struct {
 		name  string
 		field any
 	}{
 		{"a string", "ci failure"},
-		{"an object", map[string]any{"context": "ci", "state": "failure"}},
-		{"an entry with no context", []map[string]any{{"context": "", "state": "failure"}}},
-		{"a pending status", []map[string]any{{"context": "ci", "state": "pending"}}},
-		{"a state in capitals", []map[string]any{{"context": "ci", "state": "FAILURE"}}},
-		{"a context twice", []map[string]any{{"context": "ci", "state": "failure"}, {"context": "ci", "state": "success"}}},
+		{"an object", map[string]any{"context": "ci", "state": "failure", "created_at": at}},
+		{"an entry with no context", []map[string]any{{"context": "", "state": "failure", "created_at": at}}},
+		{"a pending status", []map[string]any{{"context": "ci", "state": "pending", "created_at": at}}},
+		{"a state in capitals", []map[string]any{{"context": "ci", "state": "FAILURE", "created_at": at}}},
+		{"a context twice", []map[string]any{{"context": "ci", "state": "failure", "created_at": at}, {"context": "ci", "state": "success", "created_at": at}}},
 		{"an entry that is no object", []any{"ci"}},
-		{"a context that is no string", []map[string]any{{"context": 7, "state": "failure"}}},
+		{"a context that is no string", []map[string]any{{"context": 7, "state": "failure", "created_at": at}}},
+		{"an entry with no created_at", []map[string]any{{"context": "deploy", "state": "success", "created_at": at}, {"context": "ci", "state": "failure"}}},
+		{"a created_at that is no RFC 3339 time", []map[string]any{{"context": "ci", "state": "failure", "created_at": "2026-11-17 05:01:00"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := settlementPayload(runs, []string{"unit"}, []string{"build"})

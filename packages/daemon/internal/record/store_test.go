@@ -351,10 +351,11 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		HeadSHA: "b1c2d3", HeadUpdatedAt: updatedAt,
 		Failing: []string{"unit"}, Cancelled: []string{"e2e"}, CheckedHead: "b1c2d3",
 		CheckRuns: []AttemptRun{{Name: "unit", ID: 91}, {Name: "lint", ID: 92}}, Generation: 4,
-		// The commit statuses of the checked head read back in their order, each with the head it
-		// was stamped with; the run's anchor and its settlement step carry theirs through the JSON of
-		// the head run.
-		Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, Head: "b1c2d3"}, {Context: "test", State: CommitStatusSuccess, Head: "b1c2d3"}},
+		// The commit statuses of the checked head read back in their order, each with its
+		// created_at to the millisecond and the head it was stamped with; the run's anchor and its
+		// settlement step carry theirs through the JSON of the head run.
+		Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute), Head: "b1c2d3"},
+			{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute), Head: "b1c2d3"}},
 		Snapshot: "snapshot-4", Pushes: pushes, Moves: []Move{{Before: "9f8e7d", SHA: "a0b1c2"},
 			{Before: "a0b1c2", SHA: "b1c2d3", Pushed: true, Repeats: []ClassifiedPush{{SHA: "b1c2d3", Before: "a0b1c2", ByReviewApp: true}, {SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"}}}},
 		State: PullRequestMerged, MergeSHA: "d4e5f6",
@@ -376,11 +377,12 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
 				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3",
-				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, Head: "a0b1c2"}}},
+				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
 			Pushes: pushes[:1],
 			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
 				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"},
-				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError}, {Context: "test", State: CommitStatusSuccess}}}},
+				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute)},
+					{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute)}}}},
 				{Reopened: true}},
 		},
 	}
@@ -897,7 +899,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		Issue: issue.Key, Repo: "sjawhar/legion", Number: 1359, Branch: "legion/LEGION-285",
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []AttemptRun{},
-		Statuses: []CommitStatus{{Context: "ci", State: CommitStatusFailure, Head: "red-tests"}},
+		Statuses: []CommitStatus{{Context: "ci", State: CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
 		Run:      &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
 		State:    PullRequestOpen,
 	}

@@ -366,11 +366,13 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
 const brokerNoInstallation = "has no installation on"
 
-// brokerNarrowingRefused is the secrets broker's refusal of a narrowing GitHub answered 422
-// (packages/envoy/internal/broker/secrets/minterr.go, ErrMintNarrowingRefused), carried the same
-// way: a permission of the read-only release the installation is not granted, which is the key
-// mode's ErrNarrowingRefused by another road. The command is told no repository, so none is among
-// what the broker refuses. The broker's text never quotes GitHub's own and never a token.
+// brokerNarrowingRefused is the secrets broker's refusal of a narrowing: for a read-only release,
+// an installation whose listing does not hold contents, metadata or pull requests, which the
+// broker refuses before any token request, or GitHub's 422 when the grant changed between the
+// listing and the token request (packages/envoy/internal/broker/secrets/minterr.go,
+// ErrMintNarrowingRefused). It is carried the same way, and is the key mode's ErrNarrowingRefused
+// by another road. The command is told no repository, so none is among what the broker refuses.
+// The broker's text never quotes GitHub's own and never a token.
 const brokerNarrowingRefused = "the narrowing cannot be served"
 
 // mintFromCommand is mint in token mode: the command's release for the request's owner, narrowed

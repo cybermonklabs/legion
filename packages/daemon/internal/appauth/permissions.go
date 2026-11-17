@@ -30,10 +30,10 @@ import (
 // produces; metadata:read is every read of the repository itself, which GitHub requires of any
 // token. checks and statuses are the check runs and commit statuses of a head, and differ by App:
 // the review App's set asks for checks:write, its reviewer creating the check runs, and
-// statuses:read, because its roles read the commit statuses of a head and none of them posts one,
-// where the implement App's asks for checks:read, what its roles read of those check runs, and
-// statuses:write, the commit status its own tester posts
-// (docs/solutions/legion/one-role-keyed-table-decides-which-github-app-acts.md).
+// statuses:read, because its roles read the commit statuses of a head, where the implement App's
+// asks for checks:read, what its roles read of those check runs, and statuses:write, which is what
+// the implement App declares. No role of either App posts a commit status: a tester's verdict is a
+// check run and a comment (docs/solutions/legion/one-role-keyed-table-decides-which-github-app-acts.md).
 //
 // attestations:read is in both sets, because a role reads the attestations of an artifact, such
 // as to check that an image was built from the default branch, and no role makes one: a release
