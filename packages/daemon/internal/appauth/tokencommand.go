@@ -232,9 +232,8 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 		return nil, &TransientError{Err: fmt.Errorf("%s did not finish within %s: %w", field, tokenCommandLimit, ctx.Err())}
 	}
 	if err != nil {
-		// A signal's death fails it as an exit does, named by the signal: it has no status.
 		end := procgroup.Ended(err)
-		if end.String() == "" {
+		if end.Exited == nil && end.Signal == "" {
 			return nil, fmt.Errorf("%s could not run: %w", field, err)
 		}
 		failed := fmt.Errorf("%s failed (%s)", field, end)

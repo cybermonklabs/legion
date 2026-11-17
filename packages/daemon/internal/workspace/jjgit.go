@@ -142,8 +142,6 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 		report += "\n" + note
 	}
 	if runErr != nil && !timedOut {
-		// A signal's death is such an error (procgroup.Err), and a git or jj killed after it said
-		// why it was failing keeps that report, as a failed exit does.
 		if report != "" {
 			return "", fmt.Errorf("run %s: %w\n%s", command, runErr, report)
 		}
