@@ -87,7 +87,8 @@ jobs:
   # why: .github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
   changes:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    runs-on: ubuntu-24.04
+    # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
       # Each output reads the one dorny/paths-filter step below. Rule 19 of
@@ -226,7 +227,7 @@ jobs:
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
-    needs: [changes, no_such_job]
+    needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-the-lint-job-holds-each-of-its-scopes
     permissions:
@@ -805,7 +806,8 @@ jobs:
   # why: .github/ci-notes/ci.md#the-pr-title-job-what-it-checks-and-why-it-posts-nothing
   pr-title:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
@@ -839,7 +841,8 @@ jobs:
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
   cancel-started:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       actions: write
@@ -904,7 +907,8 @@ jobs:
       - worker-image
       - browser-image
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       checks: write

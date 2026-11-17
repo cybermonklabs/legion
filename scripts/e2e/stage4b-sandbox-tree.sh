@@ -1416,20 +1416,20 @@ read_bearers() {
 # line.
 scrub() {
   local args=() i names=(LEGION_E2E_DISPATCH_URL LEGION_E2E_ENVOY_URL LEGION_E2E_NATS_URL LEGION_E2E_MODEL_GATEWAY_URL) h
-  local person=${dispatch_default_assignee:-} spellings=() text spelling c
+  local person=${dispatch_default_assignee:-} spellings=() text spelling c bs=\\
   if [ -n "$person" ]; then
     # The Go-quoted email, then each of the two as JSON writes it inside a string.
-    text=${person//'\'/'\\'}
+    text=${person//"$bs"/"$bs$bs"}
     text=${text//'"'/'\"'}
     for spelling in "$text" "$person"; do
-      spelling=${spelling//'\'/'\\'}
+      spelling=${spelling//"$bs"/"$bs$bs"}
       spelling=${spelling//'"'/'\"'}
       spelling=${spelling//'&'/'\u0026'}
       spelling=${spelling//'<'/'\u003c'}
       spellings+=("${spelling//'>'/'\u003e'}")
     done
     for spelling in "${spellings[@]}" "$person"; do
-      spelling=${spelling//'\'/'\\'}
+      spelling=${spelling//"$bs"/"$bs$bs"}
       for c in '[' '.' '*' '^' '$' '#'; do spelling=${spelling//"$c"/"\\$c"}; done
       args+=(-e "s#$spelling#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
     done
@@ -1465,7 +1465,7 @@ nats_urls:
   - $nats_url
 dispatch_url: $dispatch_base
 dispatch_token_file: $work/dispatch-token
-# The project names no `production_check`, so the role a merge's check is handed to is the default,
+# The project names no production_check, so the role a merge's check is handed to is the default,
 # the tester: Stage 3's rig writes the word out and proves the setting is read, this one the default.
 projects:
   $project: {}
@@ -5706,9 +5706,12 @@ omp_invocation: mise x $pin -- omp
 state_dir: $work/controller-state
 EOF
 # LEGION_GH_PATH is the real gh the controller's `legion gh` runs, mise's: the devbox's gh on PATH
-# is a wrapper that replaces GH_CONFIG_DIR in an agent session.
+# is a wrapper that replaces GH_CONFIG_DIR in an agent session. The pane is the operator's shell
+# less the running session's own Oh My Pi and Envoy variables (omp_session_unsets, lib/omp-home.sh):
+# `legion controller start` hands Oh My Pi its caller's environment, so an operator session's
+# PI_CONFIG_FILES would lay that session's own settings overlays over the run's profile.
 tmux -L "legion-e2e4b-$$" new-session -d -s controller -x 200 -y 50 \
-  "cd '$work' && HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
+  "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
 until_true 300 "controllerLocator in the state" sh -c "'$work/legion' state --json --config '$work/legion.yaml' | jq -e '.controllerLocator.sessionId != null' >/dev/null"
 controller_session=$(daemon_state | jq -r .controllerLocator.sessionId)
 note "controllerLocator $(daemon_state | jq -c .controllerLocator)"
@@ -6429,13 +6432,6 @@ note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commi
 # the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
 # role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release
 # took for child 2, read the same way (child_parked).
-# child_parked ISSUE POD: the park left ISSUE no Sandbox and no pod, and POD no disk, read inside the
-# wait for the reason child2_parked gives. Each read is held to its exit status (see child1_released).
-child_parked() {
-  local out
-  out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$1" -o name) && [ -z "$out" ] &&
-    out=$(pod_disk "$2") && [ -z "$out" ]
-}
 for child in "$child3" "$child4"; do
   if [ "$child" = "$child3" ]; then child_pod=$child3_pod; else child_pod=$child4_pod; fi
   set_status "$child" backlog

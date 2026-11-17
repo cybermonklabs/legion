@@ -1091,6 +1091,13 @@ one that carries the ci-ok-report step: ci-ok.sh fails a result for a job CI_OK_
 cannot map. The list is written as CI_OK_SELECTED_BY above is, a JSON array over lines rather
 than one long one.
 
+## Why changes, pr-title, cancel-started and ci-ok run on arm64
+
+changes, pr-title, cancel-started and ci-ok run on arm64: each runs JavaScript actions and
+shell scripts over the image's own gh, jq, git and coreutils, and builds or fetches no binary,
+so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
+about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
+
 ## What the changes job selects, and the two terms every job carries
 
 Selects the jobs that read what this change touched. Skipped on a draft pull request, so no
