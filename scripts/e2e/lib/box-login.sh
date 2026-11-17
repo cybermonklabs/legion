@@ -11,15 +11,17 @@
 # XDG_RUNTIME_DIR and TMPDIR still move nothing.
 box_login_lock_file=${box_login_lock_file:-/tmp/legion-e2e-box-login.$(id -u).lock}
 #
-# box_login_pid_args PID prints PID's command line, as `ps -o args= -p PID` prints it, from that
-# one process's /proc/PID/cmdline, and fails when PID runs no command. procps-ng's ps reads every
-# process on the machine even for one -p (43,778 /proc reads for one pid at 21,742 processes),
-# about a second on a machine that runs that many. A host with no /proc (macOS) asks ps.
+# box_login_pid_args PID prints PID's command line, its words joined by spaces and each control
+# character as a space, as procps-ng's `ps -o args= -p PID` prints it, from that one process's
+# /proc/PID/cmdline, and fails when PID runs no command. procps-ng's ps reads every process on the
+# machine even for one -p (43,778 /proc reads for one pid at 21,742 processes), about a second on
+# a machine that runs that many. A host with no /proc (macOS) asks ps.
 box_login_pid_args() {
   local IFS=' ' args=()
   if [ -d /proc/self ]; then
     [ -r "/proc/$1/cmdline" ] && mapfile -d '' args <"/proc/$1/cmdline" 2>/dev/null || return 1
     [ "${#args[@]}" -gt 0 ] || return 1
+    args=("${args[@]//[[:cntrl:]]/ }")
     printf '%s\n' "${args[*]}"
   else
     ps -o args= -p "$1"

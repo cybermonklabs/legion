@@ -275,10 +275,12 @@ describe("the box-login lock", () => {
         env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(dir, "xdg-b") },
       });
       expect(second.exitCode).toBe(1);
-      expect(second.stderr.toString()).toContain(
-        `another box-login proof holds ${file}: pid ${holder.pid} (`
-      );
-      expect(second.stderr.toString()).toContain("one box-login proof runs at a time");
+      // The refusal names the holder's command as it runs now: `sleep 60`, or the holder's shell
+      // when the read comes before its `exec`. A lookup that found no such process says the holder
+      // "has exited", which this line refuses.
+      const held = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = `^take_box_login_lock: another box-login proof holds ${held}: pid ${holder.pid} \\((sleep 60|bash -c \\. .*exec sleep 60)\\); one box-login proof runs at a time$`;
+      expect(second.stderr.toString().trim()).toMatch(new RegExp(pattern));
     } finally {
       holder.kill();
       await holder.exited;
