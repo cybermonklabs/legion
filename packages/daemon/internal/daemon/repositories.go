@@ -92,12 +92,17 @@ type repositories struct {
 	// that answer and from the mapping (Accepted), and the repository caches and the
 	// repositories block of legion state from the mapping and the live records
 	// (workflowRuntime.cacheRepositories, served), neither from this set. So the cost is that
-	// admission, whose roles' next bundle build reads GitHub for the App again and fails on the
-	// default owner's own mint, naming that owner and GitHub's answer for it (mintBundle returns
-	// the named failure of the default owner rather than leaving it out). runtime.ErrNoGitHubOwner
-	// is another case and not this one: it is the App installed nowhere at all, which an issue
-	// that has a repository never reaches, since bundleDirs always holds a directory for that
-	// repository's own owner. No token reaches a repository because of any of it.
+	// admission, and what the roles meet next depends on what was uninstalled. The record's read
+	// is per repository (appauth's GET /repos/{owner}/{repo}/installation) and a role's mint is
+	// per owner (Manager.Token), so an App taken off ONE repository of a selected-repositories
+	// installation still mints for that owner, the bundle builds, and the roles meet GitHub's
+	// 404 at the repository, as the first paragraph says. An App taken off the WHOLE account
+	// fails the next bundle build on the default owner's own mint, naming that owner and
+	// GitHub's answer for it (mintBundle returns the named failure of the default owner rather
+	// than leaving it out). runtime.ErrNoGitHubOwner is neither case: it is the App installed
+	// nowhere at all, which an issue that has a repository never reaches, since bundleDirs always
+	// holds a directory for that repository's own owner. No token reaches a repository because
+	// of any of it.
 	recorded map[string]ghbranch.Repository
 	// live is each repository a live issue record of the project names, by its lowercased
 	// <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo): the

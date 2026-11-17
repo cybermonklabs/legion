@@ -131,11 +131,12 @@ func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testin
 	}
 }
 
-// bothInstalledGh runs the real `legion gh` over bothInstalledBundle by the name `gh`, as a pane
-// runs it, and answers its exit status and everything it printed. The gh `legion gh` runs
-// answers its help as the real gh, which the wrapper reads every command with; the leak guard's
-// visibility read as private; and every other call by printing the token of the directory
-// GH_CONFIG_DIR names, which is the pick these tests read.
+// bothInstalledGh runs the real `legion gh` over bothInstalledBundle through a `gh` script it
+// writes, started by that script's absolute path (the call below says why), with the child's
+// PATH holding that script first, as a pane's does; it answers its exit status and everything
+// it printed. The gh `legion gh` runs answers its help as the real gh, which the wrapper reads
+// every command with; the leak guard's visibility read as private; and every other call by
+// printing the token of the directory GH_CONFIG_DIR names, which is the pick these tests read.
 func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	gh := realGHForCapture(t)
