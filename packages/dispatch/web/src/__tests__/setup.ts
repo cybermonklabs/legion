@@ -14,6 +14,7 @@ import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
+import { failOnActMessages, installActMessageRecorder } from "./act-warnings";
 import { reportableJestDomMatchers } from "./jest-dom-matchers";
 import { forgetTestAnswers, requestsThatReachedNetwork } from "./network";
 import { resetRouteAnswers } from "./send-answers";
@@ -188,3 +189,18 @@ afterEach(resetReachability);
 afterEach(() => {
   jest.useRealTimers();
 });
+
+// A row in which React printed an act message fails by its own name, with what React printed
+// (`act-warnings.ts`). The hook order this rests on is measured on Bun 1.4.4: a row's `afterEach`
+// hooks of its own file run first and then this preload's, in the order they were registered, and
+// an `afterEach` that throws skips every `afterEach` after it for that row. So this one is the
+// preload's last, and its failure skips no other hook. A message printed by a file's `afterEach`
+// is charged to its row, since those run first; one printed between two rows, to the next row;
+// and one printed after a file's last row fails the file through the `afterAll`. Bun runs a
+// file's own `afterAll` before the preload's, and reports a preload `afterAll` that throws as
+// `(fail) (unnamed)` under the file. That `afterAll` runs once per file under `--parallel`, which
+// `test:web` passes; a plain `bun test` over several files runs it once, at the end of the run.
+// Keep this block the last of the file: a hook added later goes above it.
+installActMessageRecorder();
+afterEach(() => failOnActMessages("in this row"));
+afterAll(() => failOnActMessages("after this file's last row"));
