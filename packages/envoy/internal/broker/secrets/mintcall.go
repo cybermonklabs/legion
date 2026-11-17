@@ -63,11 +63,11 @@ type mintTransportError struct {
 	read bool
 	// sent is whether the request may have reached the upstream, and it is true for every failure
 	// but one known to come before the transport had a connection to the upstream (mintAttempt):
-	// one the trace shows came before a connection, such as a proxy's refused tunnel, or one whose
-	// error says so - a name that did not resolve, a dial that failed, a certificate the broker did
-	// not trust (beforeConnection). Either did nothing upstream. Any other failure may come after
-	// some or all of the request went out and was served, whatever the write reported. A read
-	// that failed is always sent.
+	// one the standard transport's trace shows came before a connection, such as a proxy's refused
+	// tunnel, or one whose error says so - a name that did not resolve, a dial that failed, a
+	// certificate the broker did not trust (beforeConnection). Either did nothing upstream. Any
+	// other failure may come after some or all of the request went out and was served, whatever
+	// the write reported. A read that failed is always sent.
 	sent bool
 	// status is the status that answer came with, for a read that failed; 0 where no answer
 	// arrived (answeredStatus).
@@ -193,13 +193,15 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 // context. A later attempt reads its body from the request's GetBody. A status other than want
 // carries the wait the answer names, read against now (serverWait). A call that failed says
 // whether its request may have reached the upstream (mintTransportError.sent): it did not where
-// the error says so (beforeConnection), or where the transport reported to the attempt's trace
-// that it went to get a connection (GetConn) and never reported one (GotConn). The standard
-// transport reports GotConn before it writes a byte, on HTTP/1 and HTTP/2, so a call it failed
-// before then - a proxy that refused the tunnel, a handshake that failed - sent nothing, whatever
-// the error's type. A transport that reports neither, as one a caller injects need not, is read by
-// its error alone. The trace's report of the write is not read: it can call a request the
-// upstream received whole failed, or come after Do has returned.
+// the error says so (beforeConnection), or, for a client whose transport is the standard one
+// (standardTransport), where that transport reported to the attempt's trace that it went to get a
+// connection (GetConn) and never reported one (GotConn). The standard transport reports both, and
+// GotConn before it writes a byte, on HTTP/1 and HTTP/2, so a call it failed before then - a proxy
+// that refused the tunnel, a handshake that failed - sent nothing, whatever the error's type. Any
+// other transport owes the trace nothing, and one that forwards some hooks and not others would
+// make that reading wrong, so such a call is read by its error alone. The trace's report of the
+// write is not read: it can call a request the upstream received whole failed, or come after Do
+// has returned.
 func mintAttempt(client *http.Client, request *http.Request, attempt int, now func() time.Time, what, who string, want int, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(request.Context(), mintAttemptTimeout)
 	defer cancel()
@@ -218,7 +220,7 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	}
 	response, err := client.Do(sent)
 	if err != nil {
-		noConnection := askedConnection.Load() && !gotConnection.Load()
+		noConnection := standardTransport(client) && askedConnection.Load() && !gotConnection.Load()
 		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
 	}
 	defer response.Body.Close()
@@ -235,6 +237,17 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 		return body, &mintStatusError{what: what, who: who, code: response.StatusCode, rateLimited: limited, wait: wait, waitNamed: named}
 	}
 	return body, nil
+}
+
+// standardTransport reports whether client sends through net/http's own Transport, the one whose
+// trace mintAttempt reads: its Transport, or http.DefaultTransport where it names none.
+func standardTransport(client *http.Client) bool {
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	_, standard := transport.(*http.Transport)
+	return standard
 }
 
 // classify is the one rule for what an attempt's failure was, as broker_mint_attempts_total

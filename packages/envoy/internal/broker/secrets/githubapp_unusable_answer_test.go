@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"syscall"
@@ -90,13 +91,16 @@ const pastTheCap = 8 << 20
 // through, which fails each answerUnreachable, answerUnresolved or answerUntrusted request before
 // it is sent and reports an error for the write of each answerWriteFails one; silentClient is the
 // same but for its last step, a transport of its own that tells a request's trace nothing, as a
-// transport a caller injects need not. Every other route is the stand-in's own. minted is every
-// token it minted, in order.
+// transport a caller injects need not; partialClient is client behind a wrapper that forwards
+// the standard transport's GetConn to the request's trace and not its GotConn, as a wrapper need
+// not forward every hook. Every other route is the stand-in's own. minted is every token it
+// minted, in order.
 type breakingGitHub struct {
-	service      *airlocktest.Service
-	client       *http.Client
-	silentClient *http.Client
-	faults       []tokenAnswerFault
+	service       *airlocktest.Service
+	client        *http.Client
+	silentClient  *http.Client
+	partialClient *http.Client
+	faults        []tokenAnswerFault
 	// received is told each time GitHub has received an answerWriteFails request whole.
 	received chan struct{}
 
@@ -127,6 +131,7 @@ func newBreakingGitHub(t *testing.T, refuseRevokes bool, faults ...tokenAnswerFa
 	t.Cleanup(transport.CloseIdleConnections)
 	g.client = &http.Client{Transport: unreachableFirst{github: g, next: transport}}
 	g.silentClient = &http.Client{Transport: unreachableFirst{github: g, next: silentTransport{}}}
+	g.partialClient = &http.Client{Transport: partialTrace{next: g.client.Transport}}
 	service.AnswerWith(func(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
 		if seen.Method == http.MethodDelete && seen.Path == "/installation/token" {
 			g.mu.Lock()
@@ -259,6 +264,31 @@ func (silentTransport) RoundTrip(request *http.Request) (*http.Response, error) 
 	}
 	response.Body = closingBody{ReadCloser: response.Body, connection: connection, stop: stop}
 	return response, nil
+}
+
+// partialTrace sends each request through next under a trace of its own that forwards the
+// caller's GetConn and not its GotConn: a wrapper owes the caller's trace none of its hooks.
+type partialTrace struct{ next http.RoundTripper }
+
+func (p partialTrace) RoundTrip(request *http.Request) (*http.Response, error) {
+	forwarded := &httptrace.ClientTrace{}
+	if trace := httptrace.ContextClientTrace(request.Context()); trace != nil {
+		forwarded.GetConn = trace.GetConn
+	}
+	return p.next.RoundTrip(request.WithContext(httptrace.WithClientTrace(withoutTrace{request.Context()}, forwarded)))
+}
+
+// withoutTrace is a context that hides the trace its parent carries, and nothing else.
+type withoutTrace struct{ context.Context }
+
+func (c withoutTrace) Value(key any) any {
+	if value := c.Context.Value(key); value != nil {
+		if _, isTrace := value.(*httptrace.ClientTrace); isTrace {
+			return nil
+		}
+		return value
+	}
+	return nil
 }
 
 // closingBody closes its connection once the answer's body is closed.
@@ -467,6 +497,8 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		refuseRevokes bool
 		// silent has the minter reach GitHub through a transport that tells the trace nothing.
 		silent bool
+		// partial has the minter reach GitHub through a wrapper that forwards GetConn alone.
+		partial bool
 		// deadline ends the caller's context that long after the run starts, and zero leaves it
 		// the test's own.
 		deadline time.Duration
@@ -533,6 +565,8 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 3, live: 3},
 		{name: "a token request that never reached GitHub through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
 			faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
+		{name: "an answer lost through a wrapper that forwards GetConn and not GotConn, to a check", check: true, narrowing: lean, partial: true,
+			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
 		{name: "an undecodable answer whose revoke GitHub refuses, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "an undecodable answer whose revoke GitHub refuses, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "a release of two accounts whose second answer is undecodable", faults: []tokenAnswerFault{answerWhole, answerUndecodable}, requests: 2},
@@ -547,6 +581,9 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			client := github.client
 			if tc.silent {
 				client = github.silentClient
+			}
+			if tc.partial {
+				client = github.partialClient
 			}
 			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: client, Retry: retry}
 
