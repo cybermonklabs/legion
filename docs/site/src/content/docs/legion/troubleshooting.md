@@ -656,9 +656,10 @@ stands:
 budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
 phase worker whose issue is held for that worker's own role by applying the held phase's retry,
 as its architect's `retry_or_escalate` would. It reaches a retired claim as well as a failed one,
-whatever retired it (`legion claims stop` retires the claim it stops): a stopped phase worker is
-started again on the task of the phase its issue stands in now. Every other state is refused and
-named: a queued claim is spawned rather than
+whatever retired it (`legion claims stop` retires the claim it stops), and how it starts a stopped
+phase worker is api's `retryStart` to decide (through the issue's phase by `restartWorkedPhase`
+where that phase is the worker's). Every other state is refused and named: a queued claim is
+spawned rather than
 retried, a suspended claim is resumed, and the daemon's own controller is its keeper's to retry,
 which the refusal says. A retry that leaves the issue held, as a lingering tree's does, is refused
 naming the issue.
