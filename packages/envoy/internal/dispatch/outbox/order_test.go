@@ -98,19 +98,6 @@ func (s *statementTracer) matching(fragments ...string) []tracedStatement {
 	return found
 }
 
-// matchingAny returns the statements recorded so far whose SQL holds any of fragments, each once.
-func (s *statementTracer) matchingAny(fragments ...string) []tracedStatement {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var found []tracedStatement
-	for _, statement := range s.statements {
-		if slices.ContainsFunc(fragments, func(fragment string) bool { return strings.Contains(statement.sql, fragment) }) {
-			found = append(found, statement)
-		}
-	}
-	return found
-}
-
 // tracedStore opens a store on database's database whose every statement tracer sees: one that
 // records them (statementTracer), or one that holds one of them up (heldRelease).
 func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *store.Store {
@@ -855,6 +842,17 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	})
 }
 
+// countingQueryer is loadLookups' queryer counting every statement it is handed, whatever its SQL.
+type countingQueryer struct {
+	queryer
+	statements int
+}
+
+func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	c.statements++
+	return c.queryer.Query(ctx, sql, args...)
+}
+
 // A batch of events of every kind whose destinations need a lookup - replies to comments that
 // mention their thread's author, resolutions of those threads, ask answers, replies to messages,
 // comments on documents and a person's settled edits of documents, on an issue a session holds the
@@ -867,8 +865,10 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 // the threads the replies are in (loadCommentRecipients) and the sessions of the unclaimed issues'
 // primary documents (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own
 // read carries the issue's claim (readBatch). A document's writers are one kind, whether a comment
-// on it or an edit of it asks for them, so the edits add no statement. The count is exact, so a
-// lookup statement added to loadLookups, or a kind the batch stops reading, fails it.
+// on it or an edit of it asks for them, so the edits add no statement. The statements are counted
+// where loadLookups hands each one to its queryer, for the batch the scan reads, so the count is of
+// every statement loadLookups runs, whatever its SQL: one more, or a kind the batch stops reading,
+// fails it.
 func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -930,9 +930,38 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 		}))
 	}
 
-	tracer := &statementTracer{}
+	// The batch the scan is about to read, read the same way, with its lookups run through a
+	// queryer that counts them (resolveDestinations): the scan's own statements are many more than
+	// its lookups, and no reading of their SQL tells a lookup from the rest.
+	ctx := context.Background()
+	reading := Deps{Store: database}
+	reading.lanes = newLanes(func() {})
+	pending, stopped, _, err := readBatch(ctx, reading)
+	if err != nil || stopped {
+		t.Fatalf("read the batch: stopped %v, %v", stopped, err)
+	}
+	if len(pending) != len(seeded) {
+		t.Fatalf("the batch read %d events, want all %d", len(pending), len(seeded))
+	}
+	want := newWanted()
+	for _, read := range pending {
+		item, err := envelope(read.event, read.slug)
+		if err != nil {
+			t.Fatalf("build event %d's envelope: %v", read.event.ID, err)
+		}
+		_, _, _ = eventDestinations(ctx, reading, &batchEvent{pendingEvent: read, item: item}, want)
+	}
+	counted := &countingQueryer{queryer: database.Pool}
+	if _, err := loadLookups(ctx, counted, want); err != nil {
+		t.Fatalf("read the batch's lookups: %v", err)
+	}
+	if counted.statements != 8 {
+		t.Fatalf("the batch of %d events ran %d lookup statements, want 8: one per kind and two for the mention read (loadLookups)", len(seeded), counted.statements)
+	}
+	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), counted.statements)
+
 	publisher := &recordingPublisher{}
-	holding(t, Deps{Store: tracedStore(t, database, tracer), Publisher: publisher}).scan(context.Background(), unfenced{})
+	holding(t, Deps{Store: database, Publisher: publisher}).scan(ctx, unfenced{})
 
 	for _, event := range seeded {
 		if publishedAt(t, database, event.ID) == nil {
@@ -956,18 +985,13 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	// not. Each comment on a document of the claimed issue reaches that document's author no
 	// more: on an issue a session claims, the credits of a document are no second reason to
 	// deliver what the claimant already hears on its own topic (addAuthorRoutes). The read of
-	// those credits is made all the same, so the statement count below is unchanged.
+	// those credits is made all the same, so the statement count above is unchanged.
 	if want := each * 5; claimant != want {
 		t.Fatalf("the batch reached the claimant %d times, want %d", claimant, want)
 	}
 	if want := each/2 + each*6 + each*5; agents != want {
 		t.Fatalf("the batch reached %d sessions' own subjects, want %d", agents, want)
 	}
-	lookups := tracer.matchingAny("ask_followers", "from comments", "from messages", "artifact_versions", "from comment_deliveries", "is_primary", mentionFallbackHoldsQuery)
-	if len(lookups) != 8 {
-		t.Fatalf("the batch of %d events ran %d lookup statements, want 8: one per kind and two for the mention read (loadLookups)", len(seeded), len(lookups))
-	}
-	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), len(lookups))
 }
 
 // One row no recipient read can take, among a batch's many ids of that read, fails only the event
