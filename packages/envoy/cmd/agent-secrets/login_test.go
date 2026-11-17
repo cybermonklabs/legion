@@ -44,6 +44,8 @@ type loginBroker struct {
 	// broker still holds; lapse() ends it, as BROKER_LEASE_SECONDS does.
 	enrollments int
 	live        string
+	// enrollmentID, when set, is the id every registration is answered with.
+	enrollmentID string
 }
 
 func newLoginBroker(t *testing.T) *loginBroker {
@@ -66,6 +68,9 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		b.mu.Lock()
 		b.enrollments++
 		b.live = fmt.Sprintf("enrollment-%d", b.enrollments)
+		if b.enrollmentID != "" {
+			b.live = b.enrollmentID
+		}
 		id := b.live
 		b.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -218,12 +219,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "CREDENTIAL_ID\tHOST\tAPPROVED_BY\tISSUED\tEXPIRES\tSTATE")
 	for _, m := range machines.Credentials {
-		state := "ok"
-		if m.Expired {
-			state = "expired"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.CredentialID, m.Host, orDash(m.ApprovedBy),
-			m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state)
+		fmt.Fprintln(tw, strings.Join(machineRow(m), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -236,6 +232,20 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "STATE expired: the login enrolls no more sessions, but sessions it enrolled still run until they end; revoking it ends them.")
 	}
 	return 0
+}
+
+// machineRow is one machine login's cells, in the table's column order: its credential id, its
+// host, who approved it ("-" for none), when it was issued and expires, and its state. The first
+// three are the broker's, so each prints on one line (redact.OneLine): as it came, or Go-quoted
+// where a control character in it, a tab among them, would start a line of its own or split the
+// cell.
+func machineRow(m OperatorMachine) []string {
+	state := "ok"
+	if m.Expired {
+		state = "expired"
+	}
+	return []string{redact.OneLine(m.CredentialID), redact.OneLine(m.Host), redact.OneLine(orDash(m.ApprovedBy)),
+		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 
 // cmdMachineRevoke implements "machine revoke CREDENTIAL_ID": it ends one of the operator's own
