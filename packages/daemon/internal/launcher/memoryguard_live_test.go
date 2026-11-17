@@ -130,10 +130,18 @@ const (
 	controllerLiveLineBytes = 64 << 10
 	// controllerLiveStamp is RFC 3339 with milliseconds, the time every line carries.
 	controllerLiveStamp = "2006-01-02T15:04:05.000Z07:00"
-	// controllerLiveOffPrefix starts each line of the guard that says it has turned off, and
-	// controllerLiveStartedPrefix the line that says it started.
+	// controllerLiveOffPrefix starts each line of the guard that says it has turned off,
+	// controllerLiveStartedPrefix the line that says it started, and controllerLiveEndedPrefix each
+	// line that says it ended a process (memoryguard's endedLine).
 	controllerLiveOffPrefix     = "launcher: memory guard: off"
 	controllerLiveStartedPrefix = "launcher: memory guard: started "
+	controllerLiveEndedPrefix   = "launcher: memory guard: ended "
+	// controllerLiveFirstKillIntervals is how many of the guard's intervals c-gvisor-real (its
+	// verification version 20) allows in each run from the guard's first reading at or above the
+	// mark to its first kill (markToKill): two. R1's one interval it counts across a wave, in 6 of
+	// the 7 runs of each pool at 4 GiB, from each run's `live: first kill` line (printFirstKill), so
+	// a run past one interval and within two is printed and not failed.
+	controllerLiveFirstKillIntervals = 2
 
 	controllerLiveDeadlineReason = "the test binary's deadline came first: run it with a longer -test.timeout"
 )
@@ -372,8 +380,9 @@ print("probe: done", flush=True)
 // the launcher sends. The guard the launcher builds also hands the test each reading it takes and
 // each kill, on its own loop (controllerLiveWatch): every scenario prints the time from the
 // guard's first reading at or above the mark to its first kill, or that none came, and one that
-// kills passes only where that time is within one interval, the settings' Interval; beside it the
-// line prints the kill's own processing, from the reading it acted on to the kill (markToKill).
+// kills passes only where that time is within two intervals, the settings' Interval twice, and
+// prints whether it came within one; beside it the line prints the kill's own processing, from the
+// reading it acted on to the kill (markToKill).
 //
 // `grow` is a python3 that adds 64 MiB every quarter second. It passes where the command ends by
 // SIGKILL (the agent's wait reads the status), the shim and the agent live, and exactly one
@@ -401,24 +410,28 @@ print("probe: done", flush=True)
 // within controllerLivePoolBound, a grower still alive there failing the run by its pid, so the pod
 // lived through the guard's end of the last of them, also where the guard ended the probe's parent
 // first (awaitGrowers); the pod lived to the verdict line and the shim and the agent live; the
-// guard's first kill came within one interval of its first reading at or above the mark
+// guard's first kill came within two intervals of its first reading at or above the mark
 // (markToKill); the guard went on as R1 says (judgeTrace): for each kill whose process had exited
 // before a later reading of the guard's at or above the mark and controllerLiveGrowerStep or more
 // above the reading at that kill, while a grower lived, the guard's next kill acted on the first
 // such reading; and each kill that followed a kill of the same rise (no reading of the guard's
 // below the mark between them), at a reading controllerLiveGrowerStep or more above that kill's
-// while a grower lived, ended a grower. In `latepool` the run's first kill, besides, ended a
-// grower: c-gvisor-real asks it of every latepool run at 4 GiB, and the guard ranks a process
-// started since its reading before right after growth over its window, the largest first, and at
-// the mark looks for those started since the band's last reading (R1 of spec version 27), so the
-// fresh growers go before the sleeping forks and the parent, which read larger. Otherwise the first
-// kill of a rise may end a sleeping fork or the parent: the guard orders by growth over its window,
-// then by start since its reading before, then by growth since the previous kill of the rise, then
-// by size, and a rise's first kill has no previous kill, so where no grower grew over the window
-// and none is new, as after a fall in sharedpool, the largest goes first. Each prints every kill
-// by what the probe says the process is and, beside the verdict, the kills by kind, with each that
-// ended no grower while a grower lived marked first-of-rise or after-a-kill (`live: kinds …`,
-// printKinds), and the run's highest readings (`live: highest …`, printHighest).
+// while a grower lived, ended a grower. What the first kill of a run ended fails no run, latepool's
+// included: c-gvisor-real counts across a wave the latepool runs at 4 GiB whose first kill ended a
+// grower within one interval (6 of 7), and asks the rule of each other's, so each traced scenario
+// prints its first kill, whether it came within one interval, what it ended and the rule and the
+// sizes the guard's ended line names (`live: first kill …`, printFirstKill). The guard ranks a
+// process started since its reading before right after growth over its window, the largest first,
+// and at the mark looks for those started since the band's last reading (R1 of spec version 27),
+// so latepool's fresh growers go before its sleeping forks and its parent, which read larger.
+// Otherwise the first kill of a rise may end a sleeping fork or the parent: the guard orders by
+// growth over its window, then by start since its reading before, then by growth since the
+// previous kill of the rise, then by size, and a rise's first kill has no previous kill, so where
+// no grower grew over the window and none is new, as after a fall in sharedpool, the largest goes
+// first. Each prints every kill by what the probe says the process is and, beside the verdict, the
+// kills by kind, with each that ended no grower while a grower lived marked first-of-rise or
+// after-a-kill (`live: kinds …`, printKinds), the first kill (`live: first kill …`) and the run's
+// highest readings (`live: highest …`, printHighest).
 //
 // `band` is a python3 that allocates until the pod's AnonPages is 5% of the limit below the mark,
 // in the middle of the band where the guard reads the sizes of what it may end at each reading,
@@ -502,6 +515,9 @@ type controllerLiveRun struct {
 	// guardStarted whether the guard has said it started.
 	guardOff     string
 	guardStarted bool
+	// ended holds, by pid, the rule and the sizes of the guard's first ended line of that pid
+	// (noteLine), which the first kill's line reads (printFirstKill).
+	ended map[int]controllerLiveEnded
 
 	shim, agent, command int
 }
@@ -736,10 +752,11 @@ func (r *controllerLiveRun) startGeneration() string {
 }
 
 // noteLine keeps the guard's first line that says it turned off, which ends every wait of the run,
-// and whether the guard said it started.
+// whether the guard said it started, and the rule and the sizes of each of its ended lines.
 func (r *controllerLiveRun) noteLine(line string) {
 	started, off := strings.HasPrefix(line, controllerLiveStartedPrefix), strings.HasPrefix(line, controllerLiveOffPrefix)
-	if !started && !off {
+	pid, ended, isEnded := controllerLiveEndedOf(line)
+	if !started && !off && !isEnded {
 		return
 	}
 	r.mu.Lock()
@@ -750,6 +767,43 @@ func (r *controllerLiveRun) noteLine(line string) {
 	if off && r.guardOff == "" {
 		r.guardOff = line
 	}
+	if _, seen := r.ended[pid]; isEnded && !seen {
+		if r.ended == nil {
+			r.ended = map[int]controllerLiveEnded{}
+		}
+		r.ended[pid] = ended
+	}
+}
+
+// controllerLiveEnded is what the guard's ended line says of why it ended a process: rule, the
+// tier of its order of ends that put the process first (grew, new, grew-since-kill or largest),
+// and sizes, where the sizes it chose the process by came from (band, reread, search or reading),
+// as memoryguard's lines.go names them.
+type controllerLiveEnded struct{ rule, sizes string }
+
+// controllerLiveEndedOf is the pid, the rule and the sizes the guard's ended line names, and false
+// for any other line. It reads only the fields before `executable="`: the executable comes last and
+// quoted, and its name may hold any text, a `rule=` among it.
+func controllerLiveEndedOf(line string) (int, controllerLiveEnded, bool) {
+	rest, ok := strings.CutPrefix(line, controllerLiveEndedPrefix)
+	if !ok {
+		return 0, controllerLiveEnded{}, false
+	}
+	rest, _, _ = strings.Cut(rest, ` executable="`)
+	pid := 0
+	var e controllerLiveEnded
+	for _, field := range strings.Fields(rest) {
+		key, value, _ := strings.Cut(field, "=")
+		switch key {
+		case "pid":
+			pid, _ = strconv.Atoi(value)
+		case "rule":
+			e.rule = value
+		case "sizes":
+			e.sizes = value
+		}
+	}
+	return pid, e, pid != 0
 }
 
 // awaitAgent waits for the pids the agent writes once it holds its memory and has started its
@@ -952,16 +1006,18 @@ func (r *controllerLiveRun) awaitShared() (pass, fail string) {
 // in the band and starts the probe's growers (awaitLateHold). It waits for the guard's first kill,
 // then for the exit of every grower the probe started and of the probe itself (awaitGrowers), and
 // prints every kill, each by what the probe says the process is, and, beside the verdict, the
-// kills by kind (printKinds) and, whatever the verdict, the run's highest readings (printHighest).
-// It passes where all of these hold, and fails naming the first that does not: every grower exited
-// within controllerLivePoolBound, so the pod lived through the guard's end of the last of them, and
-// lived to the verdict line, and the shim and the agent live; the guard's first kill came within
-// one interval of its first reading at or above the mark (markToKill); in latepool, that first
-// kill ended a grower, since the guard ranks a process started since its reading before above a
-// sleeping fork or the parent that did not grow; and the guard's trace holds, its go-on and its
-// order after a kill of the same rise (judgeTrace).
+// kills by kind (printKinds) and, whatever the verdict, the run's first kill (printFirstKill) and
+// highest readings (printHighest). It passes where all of these hold, and fails naming the first
+// that does not: every grower exited within controllerLivePoolBound, so the pod lived through the
+// guard's end of the last of them, and lived to the verdict line, and the shim and the agent live;
+// the guard's first kill came within two intervals of its first reading at or above the mark
+// (markToKill); and the guard's trace holds, its go-on and its order after a kill of the same rise
+// (judgeTrace). What the first kill ended fails no run, latepool's included.
 func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
-	defer r.printHighest()
+	defer func() {
+		r.printFirstKill()
+		r.printHighest()
+	}()
 	if r.scenario == "latepool" {
 		if reason := r.awaitLateHold(); reason != "" {
 			return "", reason
@@ -997,9 +1053,6 @@ func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
 		return "", fmt.Sprintf("the agent pid=%d is gone", r.agent)
 	case late != "":
 		return "", late
-	case r.scenario == "latepool" && names[first.PID] != "grower":
-		return "", fmt.Sprintf("the guard's first kill in latepool ended pid=%d, the probe's %s (executable=%q, size=%d), at a reading of %.2f%% of the limit, and not one of its fresh growers",
-			first.PID, controllerLiveName(names, first.PID), first.Executable, first.SizeBytes, controllerLivePercent(first.ReadingBytes, first.LimitBytes))
 	case wrong != "":
 		return "", wrong
 	}
@@ -1239,16 +1292,18 @@ func (r *controllerLiveRun) awaitFirstKill(what string) string {
 // them (controllerLiveWatch), or that no kill came, and answers that time and why it fails the
 // run, "" where it does not.
 //
-// The bound is one interval of the guard's (its settings' Interval, 100 ms), from that first
-// reading to the first kill's At, as R1 bounds the first kill. The kill's own processing, the time
+// The bound is controllerLiveFirstKillIntervals of the guard's intervals (its settings' Interval,
+// 100 ms), from that first reading to the first kill's At, as c-gvisor-real bounds each run. The
+// line says too whether the kill came within one interval (`within_one=`), R1's bound, which the
+// check counts across a wave rather than failing a run on. The kill's own processing, the time
 // from the reading it acted on to its At, in which the guard took that reading, scanned the
 // processes, read the sizes of those it may end, and opened, checked and signalled the one it
 // ended, counts within the bound, and the line prints it beside the bound, measured and not
 // assumed, since under gVisor and six growers the guard's work can take longer than at rest. The
 // guard waits one interval after a reading's work before it takes its next reading, so two of its
-// readings are always more than one interval apart: a first kill on any reading after the first
-// at or above the mark comes past the bound, and one on the first comes within it where its
-// processing took less than one interval.
+// readings are always more than one interval apart: a first kill within one interval is one on the
+// first reading at or above the mark whose processing took less than one interval, and one within
+// two acted on that reading or on the next.
 func (r *controllerLiveRun) markToKill() (took time.Duration, fail string) {
 	seen := r.watch.snapshot()
 	k := seen.firstKill
@@ -1268,16 +1323,44 @@ func (r *controllerLiveRun) markToKill() (took time.Duration, fail string) {
 	}
 	took = k.At.Sub(seen.firstAtMark)
 	processing := k.At.Sub(seen.killReadingAt)
-	bound := r.settings.Interval
-	r.out.printf("mark_to_kill %s bound=%s processing=%s first_at_mark=%s first_at_mark_reading=%d first_at_mark_share=%.2f%% kill_reading_at=%s kill_reading=%d readings_at_mark=%d kill_at=%s pid=%d",
-		took, bound, processing, controllerLiveTime(seen.firstAtMark), seen.firstAtMarkReading,
+	bound := controllerLiveFirstKillIntervals * r.settings.Interval
+	r.out.printf("mark_to_kill %s within_one=%v bound=%s interval=%s processing=%s first_at_mark=%s first_at_mark_reading=%d first_at_mark_share=%.2f%% kill_reading_at=%s kill_reading=%d readings_at_mark=%d kill_at=%s pid=%d",
+		took, took <= r.settings.Interval, bound, r.settings.Interval, processing, controllerLiveTime(seen.firstAtMark), seen.firstAtMarkReading,
 		controllerLivePercent(seen.firstAtMarkReading, r.limit), controllerLiveTime(seen.killReadingAt), k.ReadingBytes,
 		seen.atMark, controllerLiveTime(k.At), k.PID)
 	if took > bound {
-		return took, fmt.Sprintf("the guard's first kill came %s after its first reading at or above the mark, past one interval (%s): it acted at its reading number %d at or above the mark, and its own processing, from that reading to the kill, took %s",
-			took, bound, seen.atMark, processing)
+		return took, fmt.Sprintf("the guard's first kill came %s after its first reading at or above the mark, past %d intervals (%s): it acted at its reading number %d at or above the mark, and its own processing, from that reading to the kill, took %s",
+			took, controllerLiveFirstKillIntervals, bound, seen.atMark, processing)
 	}
 	return took, ""
+}
+
+// printFirstKill prints the run's first kill in one line, before a traced scenario's verdict:
+// `live: first kill +<ms>ms within_one=<true|false> kind=<kind> rule=<rule> sizes=<sizes>
+// pid=<pid>`, its time as the trace counts it (printTrace), whether it came within one interval of
+// the guard's first reading at or above the mark (markToKill), what the probe says the process is
+// (grower, sleeper, parent, or other where the probe's pids name it not), and the rule and the
+// sizes of the guard's ended line of it (noteLine), `-` where none came; or `live: first kill
+// none`. c-gvisor-real counts across a wave the runs whose first kill came within one interval,
+// the latepool runs at 4 GiB whose first kill ended a grower within one, and the rule of each that
+// did not, from these lines, so no run fails on them.
+func (r *controllerLiveRun) printFirstKill() {
+	seen := r.watch.snapshot()
+	k := seen.firstKill
+	if k == nil {
+		r.out.printf("first kill none")
+		return
+	}
+	names, _ := controllerLivePIDs(filepath.Join(r.dir, controllerLiveCommandPIDs))
+	r.mu.Lock()
+	ended, ok := r.ended[k.PID]
+	r.mu.Unlock()
+	if !ok {
+		ended = controllerLiveEnded{rule: "-", sizes: "-"}
+	}
+	within := !seen.firstAtMark.IsZero() && k.At.Sub(seen.firstAtMark) <= r.settings.Interval
+	r.out.printf("first kill +%dms within_one=%v kind=%s rule=%s sizes=%s pid=%d",
+		k.At.Sub(r.watch.traceCopy().first).Milliseconds(), within, controllerLiveName(names, k.PID), ended.rule, ended.sizes, k.PID)
 }
 
 // printKills prints each report the daemon end read, the process it names by what the scenario's
@@ -1373,8 +1456,8 @@ func (r *controllerLiveRun) printTrace() (stop func()) {
 // previous kill and the guard ranks growth since that kill before size. A first kill of a rise is
 // not judged here by what it ended: before it no process has grown since a kill, and where no
 // grower grew over the guard's window and none started since its reading before, its order puts
-// the largest first, a sleeping fork or the parent under gVisor; latepool's first kill of the run
-// is judged apart (awaitTraced). A kill after one, at a reading less than that above the kill's,
+// the largest first, a sleeping fork or the parent under gVisor; what a run's first kill ended
+// fails no run (printFirstKill). A kill after one, at a reading less than that above the kill's,
 // is not judged either, since the reading may have fallen and no grower need have grown.
 func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail string) {
 	t := r.watch.traceCopy()
