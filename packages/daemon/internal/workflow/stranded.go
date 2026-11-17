@@ -124,8 +124,9 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // a re-admission's start or the operator's retry. One that its own exit retired gets no
 // worker-died, and the reviveArchitect each phase start runs passes over it, since that acts on a
 // failed claim alone: it comes back only at the child's next first phase start, at a
-// re-admission's start while the child stands past admitted (admit's startMidPhaseMembers), or by
-// the operator's retry, and nothing reports it, this report included. In every case the architect
+// re-admission's start while the child stands past admitted (admit's startMidPhaseMembers), at the
+// admission of a hand-over that makes the child a root of its own (StartArchitect), or by the
+// operator's retry, and nothing reports it, this report included. In every case the architect
 // above it takes the child's notices meanwhile.
 // A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
 // moved out by a person, always lingers first (leave) — whose members its re-admission starts

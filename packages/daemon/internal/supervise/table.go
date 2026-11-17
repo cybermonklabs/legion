@@ -2462,8 +2462,9 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // person's answer resumes it: workflow's StartArchitect and ResumeAwaitedRoot), or a child's own
 // architect, which the daemon starts again at its child's next phase start when it failed, at the
 // child's next first phase start when an operator stopped it, its own exit retired it or the
-// child's close as done retired it, and at a re-admission of its tree while the child stands in a
-// phase (workflow's reviveArchitect and StartFirstPhase, admit's startMidPhaseMembers) — and for
+// child's close as done retired it, at a re-admission of its tree while the child stands in a
+// phase, and at the admission of a hand-over that makes the child a root of its own (workflow's
+// reviveArchitect, StartFirstPhase and StartArchitect, admit's startMidPhaseMembers) — and for
 // a phase worker whose issue works no phase of its role, which the route has already established
 // before it reaches the machine (api's retryStart starts the phase itself for every other one).
 // The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's

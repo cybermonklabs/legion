@@ -22,8 +22,9 @@ launch, once your session is ready, the daemon sends you a `catch-up` notice of 
 every issue under it. When your claim fails, the architect above you takes your child's notices
 until you run again: the child's next phase start starts you again, and so does an operator's
 retry. When you exit on your own, the daemon retires your claim, the architect above you takes
-your child's notices, and only your child's next first phase start, a re-admission of your tree,
-or an operator's retry starts you again. When your child leaves the workflow, the daemon suspends
+your child's notices, and your child's next first phase start, a re-admission of your tree, a
+hand-over of your child as a root of its own when the tree's linger ends, or an operator's retry
+starts you again. When your child leaves the workflow, the daemon suspends
 you with its workers, or closes you with them when your child is done, and the child's next start
 starts you again. A re-admission of your tree also starts you again while your child stands in a
 phase past `admitted`. Each of these starts resumes this session, unless a retry asks for a new
