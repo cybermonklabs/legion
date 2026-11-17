@@ -12,17 +12,27 @@
 // # The runs
 //
 // Conformance runs the binary, which bin names by a path (made absolute before the first run) or
-// by a name on PATH, many times, one run after another and never two at once, so a request the
-// recorder counts belongs to the run that made it. Each run:
+// by a name on PATH, many times, one run after another and never two at once. Each run:
 //
 //   - has an environment of PATH (the test process's), HOME and TMPDIR (two directories of the
 //     test's own), then Case.Env, a later entry winning over an earlier one of the same name.
 //     Nothing else of the test process's environment reaches the binary, so a setting in the
 //     shell that runs the tests cannot point the binary at a server the recorder does not see;
-//   - runs in HOME, reads an empty standard input, and is killed and reported when it has not
-//     exited within a minute;
+//   - runs in HOME and reads an empty standard input;
+//   - is, on a Unix system, a process group of its own, which ends when every process of the
+//     group has exited, the processes the binary leaves behind included. Elsewhere it ends when
+//     the binary's own process exits, and a process it leaves behind is not waited for;
+//   - is killed and reported when it has not ended within a minute, with every process of its
+//     group;
 //   - counts its output as standard output and standard error together, except where a check
-//     below names standard output alone.
+//     below names standard output alone;
+//   - is the only run a contact with the recorder is counted against when the contact came while
+//     it ran. A contact is a request the server read, or a connection made to the recorder, which
+//     is counted when the server takes it, so a TLS client counts though it sends no request the
+//     server reads. Once the run has ended, the harness connects to the recorder itself and waits
+//     until the server takes that connection: the server takes connections in the order they
+//     came, so every one made during the run has been counted by then. A request the server reads
+//     only after that, on a connection the run made, is listed against a later run.
 //
 // Where a check names a command, it is its words after the binary's name, as Case lists it:
 // "config check" is the words {"config", "check"}.
@@ -31,6 +41,11 @@
 //
 // Each kind of check is a subtest of the test Conformance is given, named as below, and each
 // failure names the run (the binary's name and its arguments) and what it printed.
+//
+// A usage error, as the checks below use the words, refuses one word: it exits 2; its output
+// names that word; its output holds no line that starts "panic: " or "fatal error: ", with which
+// the Go runtime starts its report when it ends a program, also with exit 2; and it makes no
+// contact with Case.Server.
 //
 // help: `bin -h`, `bin --help` and `bin help` exit 0 and print something. For each command of
 // Case.Commands, `bin <command> -h`, `bin <command> --help` and `bin help <command>` exit 0 and
@@ -45,17 +60,17 @@
 // standard error alike. A command that stops reading flags at its first positional, as Go's flag
 // package does, runs with --help as an argument instead.
 //
-// unknown-flag: for each command of Case.Commands, `bin <command> --clitest-unknown-flag` exits 2
-// and makes no request to Case.Server.
+// unknown-flag: `bin --clitest-unknown-flag`, and for each command of Case.Commands `bin <command>
+// --clitest-unknown-flag`, is a usage error that refuses the flag.
 //
-// usage-error: `bin completion clitest-unknown-shell` and `bin help clitest-unknown-topic` each
-// exit 2 and make no request to Case.Server. cobra's own commands answer both with help and exit
-// 0: completion has no Run, so Command.execute returns flag.ErrHelp, and help prints the root's
-// help when Find resolves no topic, which a root with an Args of its own makes it do without an
-// error.
+// usage-error: `bin completion clitest-unknown-shell` and `bin help clitest-unknown-topic` are
+// each a usage error that refuses the shell or the topic. cobra's own commands answer both with
+// help and exit 0: completion has no Run, so Command.execute returns flag.ErrHelp, and help prints
+// the root's help when Find resolves no topic, which a root with an Args of its own makes it do
+// without an error.
 //
-// typo: each command of either list, with one letter of its last word changed, exits 2 and makes
-// no request to Case.Server. For a command of Case.Commands, a line of the output is also that
+// typo: each command of either list, with one letter of its last word changed, is a usage error
+// that refuses the typed word. For a command of Case.Commands, a line of the output is also that
 // last word alone or the command's words alone, white space around it aside: cobra's suggestion
 // ("Did you mean this?" and then one name a line). A hidden command is not checked for that line,
 // since cobra suggests no hidden command. The changed letter is the last ASCII letter of the word
@@ -82,9 +97,10 @@
 //
 // Conformance refuses a Case it cannot check whole before it runs anything, and says why: one
 // that lists no command (there is nothing to check, which is UNKNOWN and no pass), one with no
-// Server (no request could be counted, also UNKNOWN), a command of Case.Commands whose group is
-// not in Case.Commands, a hidden command whose group is in neither list, a command listed twice,
-// a command with no words, and a word that is empty, starts with "-" or holds white space.
+// Server or with no value of Env that holds Server's host and port (no contact could be counted,
+// also UNKNOWN), a command of Case.Commands whose group is not in Case.Commands, a hidden command
+// whose group is in neither list, a command listed twice, a command with no words, and a word
+// that is empty, starts with "-" or holds white space.
 //
 // # What it does not check
 //
@@ -115,11 +131,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -138,9 +156,10 @@ type Case struct {
 	// lists them: {"worker-shim"}, {"workspace-init", "fetch"}.
 	Hidden [][]string
 	// Env is added to each run's environment after PATH, HOME and TMPDIR. It points every address
-	// the binary calls at Server.URL().
+	// the binary calls at Server.URL(), and one of its values holds Server's host and port.
 	Env []string
-	// Server is the recorder the binary's Env points it at.
+	// Server is the recorder the binary's Env points it at. It serves one Conformance call at a
+	// time.
 	Server *Recorder
 }
 
@@ -203,6 +222,12 @@ func (c Case) validate() error {
 	}
 	if c.Server == nil {
 		return errors.New("Case.Server is nil, so no request a typo makes can be counted: UNKNOWN")
+	}
+	if addr := c.Server.address(); !slices.ContainsFunc(c.Env, func(entry string) bool {
+		_, value, _ := strings.Cut(entry, "=")
+		return strings.Contains(value, addr)
+	}) {
+		return fmt.Errorf("Case.Env holds no value that names Case.Server's address %s, so no contact a run makes can be counted: UNKNOWN", addr)
 	}
 	visible := map[string]bool{}
 	listed := map[string]bool{}
@@ -284,15 +309,15 @@ func (h *harness) flagAfterPositional(t *testing.T) {
 }
 
 func (h *harness) unknownFlag(t *testing.T) {
-	for _, command := range h.commands {
-		h.wantUsageError(t, with(command, unknownFlag)...)
+	for _, command := range slices.Concat([][]string{nil}, h.commands) {
+		h.wantUsageError(t, unknownFlag, with(command, unknownFlag)...)
 	}
 }
 
 // builtinUsageErrors asks cobra's own completion and help commands for a word neither knows.
 func (h *harness) builtinUsageErrors(t *testing.T) {
-	h.wantUsageError(t, "completion", unknownShell)
-	h.wantUsageError(t, "help", unknownTopic)
+	h.wantUsageError(t, unknownShell, "completion", unknownShell)
+	h.wantUsageError(t, unknownTopic, "help", unknownTopic)
 }
 
 func (h *harness) typo(t *testing.T) {
@@ -314,7 +339,7 @@ func (h *harness) typoOf(t *testing.T, command []string, suggested bool) {
 		t.Errorf("clitest: %q has no ASCII letter that can become x, q or z without naming another command of its group", words(command))
 		return
 	}
-	r := h.wantUsageError(t, with(group, typed)...)
+	r := h.wantUsageError(t, typed, with(group, typed)...)
 	if suggested && !r.hasLine(word, words(command)) {
 		t.Errorf("%s: no line of its output is %q alone, as cobra's suggestion of it is%s", r.argv, word, r.output())
 	}
@@ -424,14 +449,25 @@ func (h *harness) siblings(group []string) map[string]bool {
 	return names
 }
 
-// wantUsageError runs args, which must be a usage error: exit 2, and no request to the recorder.
-func (h *harness) wantUsageError(t *testing.T, args ...string) result {
+// wantUsageError runs args, which must be a usage error that refuses word: exit 2, an output that
+// names word and holds no line the Go runtime starts a crash with, and no contact with the
+// recorder.
+func (h *harness) wantUsageError(t *testing.T, word string, args ...string) result {
 	t.Helper()
-	before := len(h.server.Requests())
 	r := h.run(args...)
-	r.wantExit(t, 2)
-	if made := h.server.Requests()[before:]; len(made) > 0 {
-		t.Errorf("%s: made %d request(s), want none: %s%s", r.argv, len(made), strings.Join(made, ", "), r.output())
+	if r.wantExit(t, 2) {
+		if r.crashed() {
+			t.Errorf("%s: the Go runtime ended it, with a panic or a fatal error, which exits 2 as a usage error does%s", r.argv, r.output())
+		}
+		if !strings.Contains(r.stdout+r.stderr, word) {
+			t.Errorf("%s: its output does not name %q, the word it refuses%s", r.argv, word, r.output())
+		}
+	}
+	switch {
+	case len(r.requests) > 0:
+		t.Errorf("%s: made %d request(s), want none: %s%s", r.argv, len(r.requests), strings.Join(r.requests, ", "), r.output())
+	case r.connections > 0:
+		t.Errorf("%s: opened %d connection(s) to the recorder, want none%s", r.argv, r.connections, r.output())
 	}
 	return r
 }
@@ -442,28 +478,52 @@ type result struct {
 	argv           string
 	code           int
 	stdout, stderr string
-	// failed is why the run has no exit code of its own: it did not start, did not exit within
-	// runTimeout, or was ended by a signal.
+	// failed is why the run has no exit code of its own: it did not start, it or a process of its
+	// group did not exit within runTimeout, it was ended by a signal, or the recorder's count
+	// after it could not be read.
 	failed string
+	// requests and connections are what the recorder took during the run: the requests it read,
+	// and how many connections were made to it.
+	requests    []string
+	connections int
 }
+
+// crashLine is the line the Go runtime starts its report with when it ends a program, with exit
+// 2, on an unrecovered panic or a fatal error.
+var crashLine = regexp.MustCompile(`(?m)^(panic|fatal error): `)
+
+// crashed answers whether the Go runtime ended the run.
+func (r result) crashed() bool { return crashLine.MatchString(r.stdout + "\n" + r.stderr) }
 
 func (h *harness) run(args ...string) result {
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
+	requests, connections := h.server.marks()
 	cmd := h.command(ctx, h.bin, args...)
+	inOwnGroup(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	exited := ctx.Err() == nil
+	groupEnded := cmd.Process == nil || waitGroup(ctx, cmd)
 	r := result{argv: h.display(args), stdout: stdout.String(), stderr: stderr.String()}
 	var exit *exec.ExitError
 	switch {
-	case ctx.Err() != nil:
+	case !exited:
 		r.failed = fmt.Sprintf("did not exit within %s", runTimeout)
+	case !groupEnded:
+		r.failed = fmt.Sprintf("exited, but a process it started was still running %s after the run began", runTimeout)
 	case err == nil:
 	case errors.As(err, &exit) && exit.ExitCode() >= 0:
 		r.code = exit.ExitCode()
 	default:
 		r.failed = err.Error()
+	}
+	settle, cancelSettle := context.WithTimeout(context.Background(), runTimeout)
+	defer cancelSettle()
+	r.requests, r.connections, err = h.server.contactsSince(settle, requests, connections)
+	if err != nil && r.failed == "" {
+		r.failed = fmt.Sprintf("the recorder's count after the run could not be read: %v: UNKNOWN", err)
 	}
 	return r
 }
@@ -585,19 +645,30 @@ func with(command []string, more ...string) []string {
 	return slices.Concat(command, more)
 }
 
-// Recorder is an HTTP server that answers every request 404 and records it, for a binary's
-// Case.Env to point each address it calls at, so Conformance counts what a run asked.
+// Recorder is an HTTP server that answers every request 404 and records it, and counts every
+// connection made to it, for a binary's Case.Env to point each address it calls at, so
+// Conformance counts what a run asked.
 type Recorder struct {
 	server   *httptest.Server
 	mu       sync.Mutex
 	requests []string
+	// connections is the client address of each connection the server took, in the order it took
+	// them, but for the ones contactsSince opened itself.
+	connections []string
+	// taken is closed, and a new one made, each time the server takes a connection.
+	taken chan struct{}
+	// beforeTake, when set, runs each time the server takes a connection, before it is counted: a
+	// test's hold on the count.
+	beforeTake func()
 }
 
 // NewRecorder starts a Recorder on a loopback port, closed when the test ends.
 func NewRecorder(t testing.TB) *Recorder {
 	t.Helper()
-	r := &Recorder{}
-	r.server = httptest.NewServer(http.HandlerFunc(r.record))
+	r := &Recorder{taken: make(chan struct{})}
+	r.server = httptest.NewUnstartedServer(http.HandlerFunc(r.record))
+	r.server.Config.ConnState = r.connState
+	r.server.Start()
 	t.Cleanup(r.server.Close)
 	return r
 }
@@ -608,6 +679,68 @@ func (r *Recorder) record(w http.ResponseWriter, req *http.Request) {
 	r.mu.Unlock()
 	http.Error(w, "clitest: the recorder serves nothing", http.StatusNotFound)
 }
+
+// connState counts each connection the server takes, whether or not it then reads a request on
+// it. The server takes its connections one at a time, in the order its listener queued them, and
+// calls this before it takes the next.
+func (r *Recorder) connState(c net.Conn, state http.ConnState) {
+	if state != http.StateNew {
+		return
+	}
+	r.mu.Lock()
+	hold := r.beforeTake
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connections = append(r.connections, c.RemoteAddr().String())
+	close(r.taken)
+	r.taken = make(chan struct{})
+}
+
+// marks is how many requests and connections the recorder has counted.
+func (r *Recorder) marks() (requests, connections int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.requests), len(r.connections)
+}
+
+// contactsSince answers the requests and the number of connections counted after the marks given,
+// once the server has taken every connection made to it before the call. It connects to the server
+// itself and waits until the server takes that connection: the server takes connections in the
+// order they came, so every earlier one has been counted by then. Its own connection is not
+// counted.
+func (r *Recorder) contactsSince(ctx context.Context, requests, connections int) ([]string, int, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", r.address())
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = conn.Close() }()
+	own := conn.LocalAddr().String()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for {
+		if i := slices.Index(r.connections[connections:], own); i >= 0 {
+			r.connections = slices.Delete(r.connections, connections+i, connections+i+1)
+			return slices.Clone(r.requests[requests:]), len(r.connections) - connections, nil
+		}
+		taken := r.taken
+		r.mu.Unlock()
+		select {
+		case <-taken:
+			r.mu.Lock()
+		case <-ctx.Done():
+			r.mu.Lock()
+			return nil, 0, ctx.Err()
+		}
+	}
+}
+
+// address is the recorder's host and port, 127.0.0.1:<port>.
+func (r *Recorder) address() string { return r.server.Listener.Addr().String() }
 
 // URL is the recorder's base URL, http://127.0.0.1:<port>.
 func (r *Recorder) URL() string { return r.server.URL }

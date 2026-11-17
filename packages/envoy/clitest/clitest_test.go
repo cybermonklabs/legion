@@ -1,9 +1,12 @@
 package clitest
 
 import (
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,6 +80,25 @@ const (
 	// checksItsRun: noDefect, refusing every run whose environment, directory or input is not the
 	// one the package documentation gives each run.
 	checksItsRun = "checks-its-run"
+	// helpUnknownTopicExits1: help refuses a topic Find does not resolve with an error that exits
+	// 1, not a usage error.
+	helpUnknownTopicExits1 = "help-unknown-topic-exits-1"
+	// panicsOnUsageError: every usage error dereferences nil, which the Go runtime ends with exit
+	// 2 and a trace that names no refused word.
+	panicsOnUsageError = "panics-on-usage-error"
+	// panicsNamingTheWord: every usage error is panic(err), whose exit is 2 and whose trace starts
+	// with the error, so it names the refused word.
+	panicsNamingTheWord = "panics-naming-the-word"
+	// rootFlagErrorExits1: an unknown flag exits 1 at the root and 2 under every command.
+	rootFlagErrorExits1 = "root-flag-error-exits-1"
+	// typoMakesATLSContact: each unknown word opens a TLS connection to the recorder first, which
+	// sends no request the recorder reads.
+	typoMakesATLSContact = "typo-makes-a-tls-contact"
+	// completionLeavesAnAsker: completion starts a process that asks the recorder 300 ms later,
+	// then refuses the unknown shell and exits.
+	completionLeavesAnAsker = "completion-leaves-an-asker"
+	// leftoverAsker is the process completionLeavesAnAsker leaves behind.
+	leftoverAsker = "leftover-asker"
 )
 
 func TestMain(m *testing.M) {
@@ -127,6 +149,32 @@ func TestRecorderCountsTheBinarysRequests(t *testing.T) {
 	if got, want := rec.Requests(), []string{"GET /v1/alpha?name=bob"}; !slices.Equal(got, want) {
 		t.Errorf("the recorder holds %q, want %q", got, want)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if made, opened, err := rec.contactsSince(ctx, 0, 0); err != nil || len(made) != 1 || opened != 1 {
+		t.Errorf("the recorder counts %q and %d connection(s) (%v), want the one request on 1 connection", made, opened, err)
+	}
+}
+
+// A connection the server has not taken yet when a run ends is counted against that run: the
+// count waits for it. The test holds the server's taking of each connection for 300 ms, so a count
+// read at once would read none.
+func TestTheRecorderCountsAConnectionItHasNotTakenYet(t *testing.T) {
+	t.Parallel()
+	rec := NewRecorder(t)
+	rec.mu.Lock()
+	rec.beforeTake = func() { time.Sleep(300 * time.Millisecond) }
+	rec.mu.Unlock()
+	conn, err := net.Dial("tcp", rec.address())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if made, opened, err := rec.contactsSince(ctx, 0, 0); err != nil || len(made) != 0 || opened != 1 {
+		t.Fatalf("the recorder counts %q and %d connection(s) (%v), want no request on 1 connection", made, opened, err)
+	}
 }
 
 // An unknown command that exits 1 fails the typo check, visible and hidden commands alike, and
@@ -175,12 +223,72 @@ func TestConformanceFailsWhenAHiddenCommandCompletes(t *testing.T) {
 	)
 }
 
-// An unknown flag that exits 1 fails the unknown-flag check.
+// An unknown flag that exits 1 fails the unknown-flag check, at the root and under each command.
 func TestConformanceFailsOnAFlagErrorThatExits1(t *testing.T) {
 	t.Parallel()
 	requireFails(t, flagErrorExits1, "", []string{"unknown-flag"},
+		"clitest.test --clitest-unknown-flag: exit 1, want 2",
 		"alpha --clitest-unknown-flag: exit 1, want 2",
 		"group child --clitest-unknown-flag: exit 1, want 2",
+	)
+}
+
+// A root whose own unknown flag exits 1, while every command's exits 2, fails the unknown-flag
+// check on the root's run alone.
+func TestConformanceFailsWhenOnlyTheRootsFlagErrorExits1(t *testing.T) {
+	t.Parallel()
+	out := requireFails(t, rootFlagErrorExits1, "", []string{"unknown-flag"},
+		"clitest.test --clitest-unknown-flag: exit 1, want 2",
+	)
+	if strings.Contains(out, "alpha --clitest-unknown-flag: exit") {
+		t.Errorf("the report on %s names alpha's run, whose flag error exits 2\n%s", rootFlagErrorExits1, out)
+	}
+}
+
+// A binary that the Go runtime ends on each word it should refuse exits 2 as a usage error does:
+// a nil dereference names no refused word, and every check that wants a usage error fails.
+func TestConformanceFailsOnAPanicThatExits2(t *testing.T) {
+	t.Parallel()
+	requireFails(t, panicsOnUsageError, "", []string{"typo", "unknown-flag", "usage-error"},
+		`clitest.test --clitest-unknown-flag: its output does not name "--clitest-unknown-flag"`,
+		`completion clitest-unknown-shell: its output does not name "clitest-unknown-shell"`,
+		`help clitest-unknown-topic: its output does not name "clitest-unknown-topic"`,
+		`internax: its output does not name "internax"`,
+		"alpha --clitest-unknown-flag: the Go runtime ended it",
+	)
+}
+
+// A panic whose value is the usage error names the refused word and exits 2; the Go runtime's
+// own first line is what fails it.
+func TestConformanceFailsOnAPanicThatNamesTheWord(t *testing.T) {
+	t.Parallel()
+	out := requireFails(t, panicsNamingTheWord, "", []string{"typo", "unknown-flag", "usage-error"},
+		"alpha --clitest-unknown-flag: the Go runtime ended it",
+		"completion clitest-unknown-shell: the Go runtime ended it",
+		"internax: the Go runtime ended it",
+	)
+	if strings.Contains(out, "its output does not name") {
+		t.Errorf("the report on %s says a run did not name its word, which each panic's value does\n%s", panicsNamingTheWord, out)
+	}
+}
+
+// A contact the recorder's handler never reads, a TLS connection, still fails each check that
+// wants no contact.
+func TestConformanceFailsOnATLSContactAfterATypo(t *testing.T) {
+	t.Parallel()
+	requireFails(t, typoMakesATLSContact, "", []string{"typo", "usage-error"},
+		"alphx: opened 1 connection(s) to the recorder, want none",
+		"internax: opened 1 connection(s) to the recorder, want none",
+		"completion clitest-unknown-shell: opened 1 connection(s) to the recorder, want none",
+	)
+}
+
+// A request that a process the binary left behind makes after the binary exited is counted
+// against the run that started it.
+func TestConformanceFailsOnARequestByAProcessLeftBehind(t *testing.T) {
+	t.Parallel()
+	requireFails(t, completionLeavesAnAsker, "", []string{"usage-error"},
+		"completion clitest-unknown-shell: made 1 request(s), want none: GET /v1/late",
 	)
 }
 
@@ -218,6 +326,14 @@ func TestConformanceFailsWhenAnUnknownHelpTopicExits0(t *testing.T) {
 	t.Parallel()
 	requireFails(t, helpUnknownTopicExits0, "", []string{"usage-error"},
 		"help clitest-unknown-topic: exit 0, want 2",
+	)
+}
+
+// A help topic that names no command and exits 1 fails the usage-error check.
+func TestConformanceFailsWhenAnUnknownHelpTopicExits1(t *testing.T) {
+	t.Parallel()
+	requireFails(t, helpUnknownTopicExits1, "", []string{"usage-error"},
+		"help clitest-unknown-topic: exit 1, want 2",
 	)
 }
 
@@ -375,14 +491,16 @@ func TestMisspellChangesOneLetterAndNamesNoOtherCommand(t *testing.T) {
 }
 
 // A Case that cannot be checked whole is refused before any run: one that lists nothing, one with
-// no recorder to count requests on, one whose command's group is missing, one whose hidden
-// command's group is in neither list, one that lists a command twice, one with a command of no
-// words, and one with a word that is no command's name.
+// no recorder to count requests on, one whose Env points the binary at no address of the
+// recorder, one whose command's group is missing, one whose hidden command's group is in neither
+// list, one that lists a command twice, one with a command of no words, and one with a word that
+// is no command's name.
 func TestConformanceRefusesACaseItCannotCheck(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ child, says string }{
 		{"case-without-commands", "Case.Commands lists no command, so there is nothing to check: UNKNOWN"},
 		{"case-without-server", "Case.Server is nil, so no request a typo makes can be counted: UNKNOWN"},
+		{"case-not-pointed-at-server", "Case.Env holds no value that names Case.Server's address 127.0.0.1:"},
 		{"case-without-group", `Case.Commands lists "group child" but not "group", the group it is in`},
 		{"case-hidden-under-nothing", `Case.Hidden lists "nowhere x", but neither list holds "nowhere", the group it is in`},
 		{"case-listing-twice", `"alpha" is listed twice`},
@@ -413,6 +531,8 @@ func TestConformanceChild(t *testing.T) {
 		c.Commands = nil
 	case "case-without-server":
 		c.Server = nil
+	case "case-not-pointed-at-server":
+		c.Env = []string{fakeEnv + "=" + noDefect}
 	case "case-without-group":
 		c.Commands = [][]string{{"alpha"}, {"group", "child"}}
 	case "case-hidden-under-nothing":
@@ -532,6 +652,10 @@ func runFake(defect string, args []string) int {
 		return 0
 	case defect == hangingHelp && slices.Equal(args, []string{"help", "pass"}):
 		time.Sleep(time.Hour)
+	case defect == leftoverAsker:
+		time.Sleep(300 * time.Millisecond)
+		_ = fetch("/v1/late")
+		return 0
 	}
 	root := fakeRoot(defect)
 	root.SetArgs(args)
@@ -542,6 +666,15 @@ func runFake(defect string, args []string) int {
 		return 0
 	case errors.As(err, &code):
 		return int(code)
+	}
+	if errors.As(err, new(usageError)) {
+		switch defect {
+		case panicsOnUsageError:
+			var none *usageError
+			fmt.Fprintln(os.Stderr, none.error) // a nil dereference, as a crash on a word does
+		case panicsNamingTheWord:
+			panic(err)
+		}
 	}
 	fmt.Fprintln(os.Stderr, "Error:", err)
 	if errors.As(err, new(usageError)) {
@@ -652,6 +785,11 @@ func fakeRoot(defect string) *cobra.Command {
 			Short: "Help about any command",
 			Run:   func(*cobra.Command, []string) { _ = root.Help() },
 		})
+	case rootFlagErrorExits1:
+		root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return err })
+		for _, c := range root.Commands() {
+			c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
+		}
 	case flagsBeforeArgumentsOnly:
 		walk(root, func(c *cobra.Command) { c.Flags().SetInterspersed(false) })
 		alpha.Args = cobra.ArbitraryArgs
@@ -670,7 +808,7 @@ func fakeRoot(defect string) *cobra.Command {
 	}
 	if defect != helpUnknownTopicExits0 {
 		root.InitDefaultHelpCmd()
-		subcommand(root, "help").Args = knownTopic
+		subcommand(root, "help").Args = knownTopic(defect)
 	}
 	return root
 }
@@ -686,20 +824,50 @@ func unknownCommand(defect string) cobra.PositionalArgs {
 		if names := cmd.SuggestionsFor(args[0]); len(names) > 0 {
 			err = fmt.Errorf("%w\n\nDid you mean this?\n\t%s", err, strings.Join(names, "\n\t"))
 		}
-		if defect == typoExits1 {
+		switch defect {
+		case typoExits1:
 			return err
+		case typoMakesATLSContact:
+			dialer := &net.Dialer{Timeout: 300 * time.Millisecond}
+			if conn, err := tls.DialWithDialer(dialer, "tcp", strings.TrimPrefix(os.Getenv(fakeURLEnv), "http://"), nil); err == nil {
+				_ = conn.Close()
+			}
+		case completionLeavesAnAsker:
+			if cmd.Name() == "completion" {
+				leaveAnAsker()
+			}
 		}
 		return usageError{err}
 	}
 }
 
+// leaveAnAsker starts this binary as leftoverAsker, which asks the recorder once this process has
+// exited, and does not wait for it.
+func leaveAnAsker() {
+	self, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	asker := exec.Command(self)
+	asker.Env = append(os.Environ(), fakeEnv+"="+leftoverAsker)
+	if err := asker.Start(); err != nil {
+		panic(err)
+	}
+}
+
 // knownTopic refuses, with a usage error, a help topic Find does not resolve to a command, for
 // which cobra's own help prints the root's help and exits 0.
-func knownTopic(cmd *cobra.Command, args []string) error {
-	if _, rest, err := cmd.Root().Find(args); err != nil || len(rest) > 0 {
-		return usageError{fmt.Errorf("unknown help topic %q for %q", strings.Join(args, " "), cmd.Root().CommandPath())}
+func knownTopic(defect string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if _, rest, err := cmd.Root().Find(args); err != nil || len(rest) > 0 {
+			err := fmt.Errorf("unknown help topic %q for %q", strings.Join(args, " "), cmd.Root().CommandPath())
+			if defect == helpUnknownTopicExits1 {
+				return err
+			}
+			return usageError{err}
+		}
+		return nil
 	}
-	return nil
 }
 
 // subcommand is root's command named name, which the fake has.
