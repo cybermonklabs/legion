@@ -88,10 +88,18 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // address — the two whose worker cannot be reached at all and the four driftedInPod reads, which
 // in a covered pod are a round's — and the shape its template was built from is read here
 // (shapeDrift, the one reading PodDrift takes of a covered pod's shape). A launch installing a
-// stale-plugin pair into such a pod keeps it, as it always did
-// (spec.Plugins, LEGION-164): the install, not a fresh pod on the configured image, is what brings
-// that agent onto the current plugin, and a pod replaced for any other reason in the same sweep
-// still is.
+// stale-plugin pair (spec.Plugins, LEGION-164) into such a pod, the project controller's, reads one
+// key of that shape alone, the image (podImageDrift). A controller pod built on another image is
+// replaced: the install puts the release's plugins under the agent and nothing more, so the kept
+// pod would go on running another release's legion launcher as its process 1 and another
+// release's Oh My Pi, where the fresh pod on the configured image carries the release's own of
+// each, and so nothing is installed into it. A controller pod whose other facets alone drifted —
+// its reservation, an operator volume or mount, its disk — is kept and the pair installed into it,
+// as it always was: the install, not a fresh pod, is what brings that agent onto the current
+// plugin, and the next launch that installs nothing replaces the pod for those facets. A pod
+// replaced for any other reason in the same sweep still is. An issue pod is kept by an installing
+// launch as by every launch, whatever of its shape moved, its image included, and the pair is
+// installed into it.
 //
 // A ServiceAccount other than the configured one (accountDrift) is answered by whoever answers
 // the pod's other drift. A launch into a pod a round covers keeps it for the account as for every
@@ -124,11 +132,12 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // On an error the caller owns stopping its previous process (runtime.Runtime's Spawn and Resume);
 // relaunch stops only the child it may itself have started: a Start the launcher received but did
 // not answer in time (stopIssuedChild). A launch installs its plugin pair (launcherCommand) only
-// when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any other
-// reason — a suspended Sandbox, a lost launcher binding, a failed init, a moved address — comes up
-// on the configured image, which the boot gate holds to the daemon's contract, so its copies are
-// already right; carrying the install onto a fresh pod would be installing over a pair already
-// current. l.spec.Plugins is cleared in that case before launcherCommand builds its argv. A pod
+// when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any
+// reason — a suspended Sandbox, a lost launcher binding, a failed init, a moved address, a
+// controller pod built on another image — comes up on the configured image, which the boot gate
+// holds to the daemon's contract, so its copies are already right; carrying the install onto a
+// fresh pod would be installing over a pair already current. l.spec.Plugins is cleared in that
+// case before launcherCommand builds its argv. A pod
 // whose issue Sandbox is still of the release before the pod-owned disk — owning the `issue`
 // volume claim template that pod mounts — is replaced too, and its Sandbox with it: that field is
 // immutable in the CRD, so deleting the Sandbox at the issue's next launch and creating one of the
@@ -166,8 +175,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	covered := roundCovers(l.kind)
 	// A live pod no round covers is this launch's to replace for every kind of drift: every facet
 	// of the pod itself but the account comes through movedInPod, the account is read here as
-	// accountDrifted, and the shape its template was built from is read here too, unless this
-	// launch is installing a stale-plugin pair into it (roundCovers, shapeDrift).
+	// accountDrifted, and the shape its template was built from is read here too (roundCovers,
+	// shapeDrift). A launch installing a stale-plugin pair into such a pod reads the image of that
+	// shape alone (podImageDrift): it replaces a controller pod built on another image, whose
+	// launcher and Oh My Pi no install reaches, and keeps a controller pod whose other facets alone
+	// drifted, installing the pair into it.
 	//
 	// A pod running as a ServiceAccount other than the configured one is this launch's to
 	// replace only where no round covers that pod (accountDrift, roundCovers), and then whatever
@@ -178,7 +190,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && len(r.shapeDrift(s, l.kind)) > 0)
+		(!installing && !covered && len(r.shapeDrift(s, l.kind)) > 0) ||
+		(installing && !covered && podImageDrift(s, r.podShapes[l.kind]))
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -203,8 +216,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 	}
 	if installing && replace {
-		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
-		// installed into it.
+		// Replaced, a controller pod built on another image included: the fresh pod comes up on
+		// the configured image, whose plugins are already current, so nothing is installed into it.
 		l.spec.Plugins = nil
 	}
 	if replace {

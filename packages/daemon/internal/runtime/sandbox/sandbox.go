@@ -743,9 +743,10 @@ func terminal(p *corev1.Pod) bool {
 // issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
 // once every role in it has answered the update message and no turn runs, or at the round's
 // bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
-// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
-// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
-// one it finds. A nil pod holds no drift: it is replaced for being absent.
+// next launch into it, an installing one included (roundCovers, podImageDrift), and the
+// repository cache's own pod, which holds no worker, by its next sweep (reconcileCachePod).
+// ReconcileOrphans warns of each one it finds. A nil pod holds no drift: it is replaced for being
+// absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false

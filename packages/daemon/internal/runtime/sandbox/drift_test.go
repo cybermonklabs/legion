@@ -362,8 +362,9 @@ func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 // No round covers the project controller's pod (roundCovers), so its pod has drifted from nothing
 // whatever the configuration says now — the ServiceAccount it runs as included: the controller
 // holds no issue workspace and has nothing to push, so there is nobody in that pod to task and no
-// round to open over it. What this answers nothing for, its next launch replaces instead, for
-// every kind of drift and as it always did
+// round to open over it. What this answers nothing for, its next launch replaces instead: a launch
+// that installs nothing for every kind of drift, as it always did, and a launch installing a
+// stale-plugin pair for the image alone (podImageDrift)
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted,
 // TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry, and for the account
 // TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers): a pod neither

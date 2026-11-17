@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -36,11 +37,15 @@ func movedControllerReservation(o *Options) {
 // a pod the deployment has moved away from, on the image, reservation, volumes, mounts and disk it
 // was created with.
 //
-// A launch that installs a stale-plugin pair into such a pod keeps it, as it always did
-// (spec.Plugins, LEGION-164): the install, not a fresh pod on the configured image, is what brings
-// that agent onto the current plugin. And a daemon restarted on the configuration its pod was
-// built from replaces nothing — the failure that would matter most here, since it would rebuild
-// the controller's pod at every launch of it.
+// A launch that installs a stale-plugin pair into such a pod (spec.Plugins, LEGION-164) reads the
+// image of its shape alone (podImageDrift). A pod built on another image is replaced: the install
+// reaches neither the legion launcher that runs as the pod's process 1 nor its Oh My Pi, so the
+// launch's agent is started plain in a fresh pod on the configured image, whose own plugins are
+// already current, and nothing is installed. A pod whose reservation alone moved is kept, as it
+// always was, and the pair is installed into it: the install, not a fresh pod, is what brings that
+// agent onto the current plugin. And a daemon restarted on the configuration its pod was built
+// from replaces nothing — the failure that would matter most here, since it would rebuild the
+// controller's pod at every launch of it.
 func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
@@ -54,7 +59,8 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 		"an operator volume added":                         {withOperatorVolume, nil, true},
 		"an operator mount added":                          {withOperatorMount, nil, true},
 		"another disk size":                                {func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") }, nil, true},
-		"an installing launch into a pod on another image": {func(o *Options) { o.Image = nextImage }, plugins, false},
+		"an installing launch into a pod on another image": {func(o *Options) { o.Image = nextImage }, plugins, true},
+		"an installing launch into a pod whose reservation alone moved": {movedControllerReservation, plugins, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
@@ -88,6 +94,43 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 			case !tc.replaced && shape() != built:
 				t.Errorf("the kept pod's template records %s, want the shape that pod was built from, %s", shape(), built)
 			}
+			if tc.replaced {
+				// The launch itself ended the pod it found: the Sandbox names that pod as the one
+				// the daemon replaced, the pod of the Sandbox's name is now another, and the claim
+				// runs in that one, on the configured image.
+				if named := g.sandbox(loc.Sandbox.Name).Annotations[displacedAnnotation]; named != loc.Sandbox.PodUID {
+					t.Errorf("the Sandbox names %q as the pod the daemon replaced, want the controller's old pod %s", named, loc.Sandbox.PodUID)
+				}
+				pod := g.pod(loc.Sandbox.Name)
+				if pod == nil {
+					t.Fatalf("the Sandbox holds no pod, want the new pod %s the controller was resumed in", next.Sandbox.PodUID)
+				}
+				if string(pod.UID) != next.Sandbox.PodUID {
+					t.Fatalf("the Sandbox holds pod %s, want the new pod %s the controller was resumed in, the old %s gone",
+						pod.UID, next.Sandbox.PodUID, loc.Sandbox.PodUID)
+				}
+				if other, drifted := imageDrift(pod, r2.image); drifted {
+					t.Errorf("the controller's new pod has a container on image %s, want every container on the configured %s", other, r2.image)
+				}
+			}
+			if tc.plugins != nil {
+				// A kept pod's installing launch starts through the install wrapper; a replaced
+				// pod's starts the agent plain, since its fresh copies are already current.
+				start := lastStart(t, g, controllerToken)
+				if start.Generation != spec.Generation {
+					t.Fatalf("the controller's last start is generation %d, want this launch's %d", start.Generation, spec.Generation)
+				}
+				i := slices.Index(start.Argv, "--")
+				if i < 0 || i+1 >= len(start.Argv) {
+					t.Fatalf("the installing launch's argv %q names no command after --", start.Argv)
+				}
+				switch wrapped := start.Argv[i+1] == "/bin/sh"; {
+				case tc.replaced && wrapped:
+					t.Errorf("the controller's pod replaced for its image was started through the install wrapper, want the plain agent: argv %q", start.Argv)
+				case !tc.replaced && !wrapped:
+					t.Errorf("the controller's kept pod was started plain, want the install wrapper: argv %q", start.Argv)
+				}
+			}
 		})
 	}
 }
@@ -97,20 +140,28 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 // replaces it. This is the direction that must never break — replacing an issue pod where it
 // stands ends every role's turn in it and deletes the disk they work on, with everything unpushed
 // (INFRA-484) — and the four keys beside the image reach a launch through nothing but shapeDrift,
-// which a pod a round covers is never read by (relaunch, roundCovers).
+// which a pod a round covers is never read by (relaunch, roundCovers). A launch installing a
+// stale-plugin pair into an issue pod on another image keeps it too, and installs the pair into
+// it, where the same launch into the controller's pod replaces that pod (podImageDrift,
+// TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted).
 func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
-	for name, now := range map[string]func(*Options){
-		"another image":            func(o *Options) { o.Image = nextImage },
-		"another reservation":      movedReservation,
-		"an operator volume added": withOperatorVolume,
-		"an operator mount added":  withOperatorMount,
-		"another disk size":        func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") },
+	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
+	for name, tc := range map[string]struct {
+		now     func(*Options)
+		plugins *runtime.PluginInstall
+	}{
+		"another image":                                    {func(o *Options) { o.Image = nextImage }, nil},
+		"another reservation":                              {movedReservation, nil},
+		"an operator volume added":                         {withOperatorVolume, nil},
+		"an operator mount added":                          {withOperatorMount, nil},
+		"another disk size":                                {func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") }, nil},
+		"an installing launch into a pod on another image": {func(o *Options) { o.Image = nextImage }, plugins},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
 			spec := workerSpec(t)
 			loc := g.spawn(spec)
-			r2 := secondRuntime(t, g, now)()
+			r2 := secondRuntime(t, g, tc.now)()
 			g.connectRunning(workerToken, loc.Sandbox.Generation)
 			g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
@@ -119,7 +170,7 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
 				t.Fatalf("PodDrift of the issue pod is empty, so this case proves nothing: its round is what replaces it")
 			}
-			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+			spec.Generation, spec.BootToken, spec.ResumeSessionFile, spec.Plugins = 2, "boot-tester-g2", resumeSession, tc.plugins
 			next, err := r2.Resume(g.ctx, &loc, spec)
 			if err != nil {
 				t.Fatalf("Resume the tester: %v", err)
@@ -127,6 +178,71 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 			if next.Sandbox.PodUID != loc.Sandbox.PodUID {
 				t.Errorf("Resume replaced the issue pod %s with %s, want it kept for its update round",
 					loc.Sandbox.PodUID, next.Sandbox.PodUID)
+			}
+			if tc.plugins != nil {
+				start := lastStart(t, g, workerToken)
+				if start.Generation != spec.Generation {
+					t.Fatalf("the tester's last start is generation %d, want this launch's %d", start.Generation, spec.Generation)
+				}
+				if i := slices.Index(start.Argv, "--"); i < 0 || i+1 >= len(start.Argv) || start.Argv[i+1] != "/bin/sh" {
+					t.Errorf("the installing launch into the kept issue pod started %q, want the install wrapper", start.Argv)
+				}
+			}
+		})
+	}
+}
+
+// An installing launch into the controller's pod reads one key of that pod's shape alone, the
+// image it was built from (podImageDrift), and reads it as the data the shape holds: from the
+// recorded shape where the template records one, and from the template's own containers where it
+// records none, as a Sandbox written before shapes were recorded is compared (templateImageDrift).
+// A shape whose other keys alone moved has drifted (podShapeDrift), but not in its image. A
+// recorded shape this daemon cannot read names no image, so it answers no image drift either:
+// what the launch does with such a pod is keptBy's, which cannot read that record and replaces
+// the pod.
+func TestPodImageDriftReadsTheImageAPodWasBuiltFrom(t *testing.T) {
+	shapeOn := func(image, cpu string) string {
+		t.Helper()
+		encoded, err := json.Marshal(podShapeRecord{
+			Image:     image,
+			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu)}},
+			Disk:      "20Gi",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	want := shapeOn(testImage, "1")
+	recorded := func(held string) *sandbox {
+		return &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
+			Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: held}},
+		}}}
+	}
+	unrecorded := func(image string) *sandbox {
+		return &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{Name: initContainer, Image: testImage}},
+			Containers:     []corev1.Container{{Name: runtime.IssuePodContainer, Image: image}},
+		}}}}
+	}
+	for name, tc := range map[string]struct {
+		s     *sandbox
+		image bool // whether podImageDrift answers that the pod was built on another image
+		shape bool // whether podShapeDrift names a drift, which a launch installing nothing replaces the pod for
+	}{
+		"the shape a pod is built from now":                  {recorded(want), false, false},
+		"a recorded shape on another image":                  {recorded(shapeOn(nextImage, "1")), true, true},
+		"a recorded shape whose reservation alone moved":     {recorded(shapeOn(testImage, "5")), false, true},
+		"no recorded shape and a template on another image":  {unrecorded(nextImage), true, true},
+		"no recorded shape and a template on the same image": {unrecorded(testImage), false, false},
+		"a recorded shape this daemon cannot read":           {recorded("{not json"), false, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := podImageDrift(tc.s, want); got != tc.image {
+				t.Errorf("podImageDrift = %t, want %t", got, tc.image)
+			}
+			if got := len(podShapeDrift(tc.s, want)) > 0; got != tc.shape {
+				t.Errorf("podShapeDrift names a drift: %t, want %t, so the case is not the one its name says", got, tc.shape)
 			}
 		})
 	}

@@ -26,16 +26,22 @@ import (
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
 // roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
 // what ends the roles already running there. A pod no round covers has no such round to wait for,
-// so its launch replaces it for every kind of drift, as every launch did before the round existed.
+// so its launch replaces it for every kind of drift, as every launch did before the round existed
+// — save a launch installing a stale-plugin pair, which replaces such a pod for its shape only
+// where the pod was built on another image (podImageDrift).
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
 // answers nothing for a pod it excludes, so no round is ever opened over one; a launch into a live
 // pod it excludes replaces that pod for the facets its roles' addresses carry, for the
-// ServiceAccount it runs as and, unless the launch is installing a stale-plugin pair, for the
-// shape its template was built from (relaunch, movedInPod, accountDrift, shapeDrift), where a
-// launch into a pod it covers keeps the pod — for the account as for every other kind of drift —
-// and leaves it to its round.
+// ServiceAccount it runs as and for the shape its template was built from (relaunch, movedInPod,
+// accountDrift, shapeDrift), where a launch into a pod it covers keeps the pod — for the account
+// and the image as for every other kind of drift — and leaves it to its round. A launch installing
+// a stale-plugin pair reads one key of an excluded pod's shape alone, the image (podImageDrift): it
+// replaces a controller pod built on another image, and keeps a controller pod whose other facets
+// alone drifted — its reservation, an operator volume or mount, its disk — and installs the pair
+// into it. A drifted pod a round covers, every issue pod, it keeps as every launch does, whatever
+// of the shape moved, the image included, and installs the pair into it.
 //
 // A round covers every issue pod and nothing else. The project controller's pod is the one kind it
 // excludes: the controller holds no issue workspace and has nothing to push, so there is nobody in
@@ -199,11 +205,50 @@ func templateImageDrift(s *sandbox, image string) []string {
 //
 // It is the one reading of a pod's shape, which both sides of a drifted pod's replacement take:
 // the round names its reasons in the task it opens with (PodDrift), and a launch into a live pod
-// no round covers replaces that pod when it answers anything (relaunch, roundCovers). So the two
-// can never disagree about whether a pod's shape has moved, or about which kind's shape it is
-// compared with.
+// no round covers that installs nothing replaces that pod when it answers anything (relaunch,
+// roundCovers). So the two can never disagree about whether a pod's shape has moved, or about
+// which kind's shape it is compared with. A launch installing a stale-plugin pair into such a pod
+// reads the image key of that same shape alone (podImageDrift).
 func (r *Runtime) shapeDrift(s *sandbox, kind podKind) []string {
 	return podShapeDrift(s, r.podShapes[kind])
+}
+
+// podImageDrift is whether the pod of the Sandbox read as s was built from an image other than the
+// one want names, want being the shape a pod of its kind is built from now (podShape,
+// r.podShapes): the image its recorded shape holds, or, for a Sandbox whose template records no
+// shape, the image a container of that template runs, read as templateImageDrift reads it
+// (imageOtherThan). It is podShapeDrift's image key, read from the shape as data and never from
+// the phrase podShapeDrift names it in.
+//
+// It is what a launch installing a stale-plugin pair into a live pod no round covers, the project
+// controller's, replaces that pod for (relaunch). The install puts the release's plugins under the
+// agent and nothing more: a pod built on another image would go on running another release's
+// legion launcher as its process 1 and another release's Oh My Pi, where a fresh pod on the
+// configured image carries the release's own launcher, Oh My Pi and plugins. A pod whose other
+// facets alone drifted answers false, and that launch keeps it and installs into it.
+//
+// A recorded shape this daemon cannot read answers false as well: it names no image, and this
+// reading guesses none. Such a launch then goes on as it did before this was asked: keptBy reads
+// that same record, cannot read it either, and the launch replaces the pod as it replaces any pod
+// whose template says nothing it can read.
+func podImageDrift(s *sandbox, want string) bool {
+	held := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
+	if held == want {
+		return false
+	}
+	var now podShapeRecord
+	if err := json.Unmarshal([]byte(want), &now); err != nil {
+		return false
+	}
+	if held == "" {
+		_, drifted := imageOtherThan(&s.Spec.PodTemplate.Spec, now.Image)
+		return drifted
+	}
+	var was podShapeRecord
+	if err := json.Unmarshal([]byte(held), &was); err != nil {
+		return false
+	}
+	return was.Image != now.Image
 }
 
 // PodDrift satisfies runtime.Runtime: why the pod k's process runs in no longer matches the
