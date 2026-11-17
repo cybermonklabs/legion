@@ -1413,15 +1413,14 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
-		// A child that runs nothing (record.InWorkflow: out of the workflow by its status, or done,
-		// as a parked child stays when a person writes a running status on it without a todo) has
-		// its architect suspended or retired with its launch and its generation kept, so nothing
-		// supersedes the row. It finishes here, before any publish, since no ready queues a
-		// catch-up while the child runs nothing (workflow's claimReady, the same rule) and its next
-		// launch writes a fresh one. A child's catch-up names no kept decision
-		// (workflow.QueueCatchUp), and one that named any is not finished here, so nothing it named
-		// is lost. A root's catch-up is not judged here: it ends with its tree's linger
-		// (stoppedWithTree).
+		// A child out of the workflow (record.InWorkflow: by its status, or done, as a parked child
+		// stays when a person writes a running status on it without a todo) has its architect
+		// suspended or retired with its launch and its generation kept, so nothing supersedes the
+		// row. It finishes here, before any publish, since no ready queues a catch-up while the
+		// child is out of the workflow (workflow's claimReady, the same rule) and its next launch
+		// writes a fresh one. A child's catch-up names no kept decision (workflow.QueueCatchUp),
+		// and one that named any is not finished here, so nothing it named is lost. A root's
+		// catch-up is not judged here: it ends with its tree's linger (stoppedWithTree).
 		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !record.InWorkflow(issue) && payload.CatchUp.Kept == nil {
 			r.log.Info("outbox catch-up finished undelivered: its issue is out of the workflow", "row", row.ID, "issue", row.Issue,
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
