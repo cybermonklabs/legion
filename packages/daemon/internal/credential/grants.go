@@ -125,7 +125,7 @@ func (g *Grants) record(grant Grant) {
 }
 
 // Redeem answers id's grant for as long as ttl lasts. A grant is the credential of one call the
-// `legion` tool or the operator CLI makes, which may reach the daemon more than once (`legion status`, which mints then posts),
+// `legion` tool or the operator CLI makes, which may reach the daemon more than once (`legion issue status`, which mints then posts),
 // so it serves every redemption until it expires — as the shipped daemon's resolveGrant does.
 // Redeem knows nothing of the claim: a route refuses a grant whose claim no longer holds the
 // capability that minted it (StillMatches), on every redemption.

@@ -830,9 +830,9 @@ func (w *workflowRuntime) logUnservedRenames(accepted []mappedRepository) {
 // stamping decision this warning describes reads (specs.issueTrailer), so a configured name the
 // mapping holds only under the other name of a configured pair is served, stamps, and is not
 // warned about. It is said here, and refuses
-// nothing, because the served set is Dispatch's mapping alone and `legion start --check-config`
+// nothing, because the served set is Dispatch's mapping alone and `legion config check`
 // reads no Dispatch at all — it runs config.LoadForValidation and daemon.CheckStart and nothing
-// else (checkStartConfig, cmd/legion/main.go) — so it can refuse only what the file alone
+// else (checkConfig, cmd/legion/main.go) — so it can refuse only what the file alone
 // decides, and a name mapped the day after the file is written is no fault of the file.
 func (w *workflowRuntime) logUnservedCommitIssueTrailerRepos(accepted []mappedRepository) {
 	for _, repo := range w.commitIssueTrailerRepos {

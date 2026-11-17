@@ -180,7 +180,7 @@ func TestDeploymentRendersTheReportsOfLiveSessionsAlone(t *testing.T) {
 	}
 }
 
-// A supervision with no supervisor yet — `legion start --check-config`'s, and a bare test's —
+// A supervision with no supervisor yet — `legion config check`'s, and a bare test's —
 // reports the deployment from what it has.
 func TestDeploymentWithoutASupervisorRendersNoSession(t *testing.T) {
 	s := &supervision{cfg: config.Config{Runtime: config.Runtime{Name: "tmux"}}, log: quietLogger(), refreshGate: supervise.NewRefreshGate(0)}

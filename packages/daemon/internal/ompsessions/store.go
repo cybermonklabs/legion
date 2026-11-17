@@ -59,8 +59,8 @@ type Database struct {
 // but its pattern is unanchored and would quietly take a part of a longer string (a:b:c:d:e parses
 // as project a:b, region c, name d), so the round trip refuses whatever it would not use whole.
 // It is the one rule, which both the loader that reads the instance from the file and the proxy
-// that dials it hold to, so --check-config accepts nothing the connector would refuse or read
-// otherwise.
+// that dials it hold to, so `legion config check` accepts nothing the connector would refuse or
+// read otherwise.
 func ValidInstance(name string) bool {
 	if strings.ContainsFunc(name, unicode.IsSpace) {
 		return false
@@ -82,7 +82,7 @@ var serviceAccountEmail = regexp.MustCompile(`^[a-z0-9-]+@[a-z0-9-]+(\.[a-z0-9-]
 // refuses the login form itself (<name>@<project>.iam), a person's email, a bare name, upper case,
 // white space and a blank value. It is the one rule, which both the loader that reads the account
 // from the file and the proxy that impersonates it hold to, as both hold to ValidInstance for the
-// instance, so --check-config accepts no account the proxy would refuse.
+// instance, so `legion config check` accepts no account the proxy would refuse.
 func ServiceAccountLogin(email string) (login string, ok bool) {
 	if !serviceAccountEmail.MatchString(email) {
 		return "", false

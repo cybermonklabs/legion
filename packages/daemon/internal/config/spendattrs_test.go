@@ -24,7 +24,7 @@ var liveSpendAttributes = []struct{ lane, value string }{
 
 // spendAttributesReaders are the two readers of an operator's own OTEL_RESOURCE_ATTRIBUTES:
 // `runtime.kubernetes.pod.env` (readPodEnv) and `runtime.tmux.pane_env` (readPaneEnv). Both read
-// the same file at boot and under `legion start --check-config`, so one table drives both and
+// the same file at boot and under `legion config check`, so one table drives both and
 // holds them to one verdict: a value either runtime would hand the agent's OpenTelemetry detector
 // is refused by whichever reader carries it, in that key's own sentence.
 var spendAttributesReaders = []struct {
@@ -86,7 +86,7 @@ func TestBothReadersAcceptTheLiveSpendAttributes(t *testing.T) {
 // configuration key's own sentence: the key, the variable, and the one member that is wrong with
 // what is wrong with it. The rest of the value is nobody's business and is never printed — an
 // operator reading the refusal sees the member to fix, and the attributes beside it stay out of
-// the daemon's log and out of `legion start --check-config`'s output.
+// the daemon's log and out of `legion config check`'s output.
 func TestBothReadersRefuseWhatTheDetectorWouldThrowOn(t *testing.T) {
 	long := strings.Repeat("a", 256)
 	for _, tc := range []struct {

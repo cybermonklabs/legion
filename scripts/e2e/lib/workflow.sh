@@ -24,10 +24,11 @@
 #                  production's)
 #   dispatch_actor the session every proof-human write names as its actor, or empty. A bearer caller
 #                  must name one (production Dispatch refuses the write otherwise, ACTOR_KIND); it
-#                  holds no claim, so the daemon sets back its status write on a live root as it does
-#                  any outside session's, and a proof takes a tree out with `legion status` instead.
-#                  Empty, the writes carry none and the human header alone says who wrote (a scratch
-#                  Dispatch's X-Dispatch-User), which the workflow reads as a person's move
+#                  holds no claim, so the daemon sets back its status write on a live root as it
+#                  does any outside session's, and a proof takes a tree out with
+#                  `legion issue status` instead. Empty, the writes carry none and the human header
+#                  alone says who wrote (a scratch Dispatch's X-Dispatch-User), which the workflow
+#                  reads as a person's move
 #   dispatch_token_file
 #                  the file holding the agents' Dispatch bearer, which write_dispatch_header reads
 #                  (Stage 4b's LEGION_E2E_DISPATCH_TOKEN_FILE); only its caller sets it

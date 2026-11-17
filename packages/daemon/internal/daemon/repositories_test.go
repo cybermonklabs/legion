@@ -465,7 +465,7 @@ func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testin
 // the stamping decision reads (specs.issueTrailer), so a configured name the mapping holds only
 // under the other name of a configured rename is served, stamps, and is not warned about. It
 // refuses no boot and widens nothing: the served
-// set is Dispatch's mapping either way, and `legion start --check-config` reads no Dispatch at all,
+// set is Dispatch's mapping either way, and `legion config check` reads no Dispatch at all,
 // so the file alone cannot decide it.
 func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectDoesNotServe(t *testing.T) {
 	const unserved = "commit_issue_trailer_repos names a repository this project does not serve"

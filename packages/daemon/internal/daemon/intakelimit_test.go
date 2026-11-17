@@ -51,7 +51,7 @@ var intakeHandlerLimitWindows = []struct {
 	// for the windows that derive a limit of their own.
 	decidedBy string
 	// derived is IntakeHandlerLimitLine's second answer, true only when the window lifted the
-	// limit above that floor, which is what `legion start --check-config` prints on.
+	// limit above that floor, which is what `legion config check` prints on.
 	derived bool
 	// windowsClause is what the floor's sentence must say this window alone would derive,
 	// written out here rather than built from intake.WindowsPerLimit: the line reads that
@@ -101,7 +101,7 @@ var intakeHandlerLimitWindows = []struct {
 // it, the key and value it was derived from, and — only above intake.HandlerLimitCeiling — the
 // clause saying the cut no longer returns a wedged handler's message while an operator is still
 // looking. This row holds all four over the windows that decide them, and `derived`, the answer
-// `legion start --check-config` prints on.
+// `legion config check` prints on.
 //
 // The sentence is not read back whole here. `packages/daemon/cmd/legion/intakelimit_test.go`
 // asserts it character for character at one window, because what an operator reads is that row's
@@ -163,7 +163,7 @@ type intakeBootRecord struct {
 // the same windows, that exactly one record goes out for each of them — the floor's windows
 // included, since a running daemon says its limit either way — and that the message is
 // IntakeHandlerLimitLine's own line with nothing prefixed to it. That last one is what keeps the
-// boot log and `legion start --check-config` saying the same words, and it is the assertion that
+// boot log and `legion config check` saying the same words, and it is the assertion that
 // fails if someone puts `daemon: ` in front of a sentence that already begins `intake: `. The
 // message is compared against IntakeHandlerLimitLine rather than written out, because the two
 // surfaces agreeing is the property, not the wording, which the cmd row asserts.

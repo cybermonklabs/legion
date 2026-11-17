@@ -102,7 +102,7 @@ func readTmux(value *yaml.Node) (*Tmux, error) {
 // One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
 // the operator's own resource attributes, which the runtime appends the launch's issue and role
 // to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
-// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// refused here, where a person reads the refusal — under `legion config check` as at boot
 // — rather than at a launch nobody watches.
 func readPaneEnv(value *yaml.Node, key string) (map[string]string, error) {
 	if value.Kind != yaml.MappingNode {

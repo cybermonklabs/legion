@@ -10,7 +10,7 @@ import (
 )
 
 // A grant is the credential for one call the `legion` tool or the operator CLI makes, which may
-// reach the daemon more than once (`legion status` mints, then posts): it serves every redemption until it expires.
+// reach the daemon more than once (`legion issue status` mints, then posts): it serves every redemption until it expires.
 func TestGrantServesEveryRedemptionUntilItExpires(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 	grants := New(func() time.Time { return now })

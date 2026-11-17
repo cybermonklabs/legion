@@ -265,19 +265,19 @@ held=$(kind_k -n nfs exec ganesha -- cat /export/scratch/from-issue-pod)
 note "the server's /export/scratch/from-issue-pod → $held"
 pass
 
-begin check-config
+begin config-check
 # Each case's own file, beside the token files it names by relative path.
 shares_config=$(awk '$1 == "shares" {print $3}' "$result")
-out=$("$work/legion" start --check-config --config "$shares_config" 2>&1) ||
-  fail "--check-config refused the shares file: $out"
+out=$("$work/legion" config check --config "$shares_config" 2>&1) ||
+  fail "legion config check refused the shares file: $out"
 note "shares: $(head -1 <<<"$out")"
 broken=$(dirname "$shares_config")/broken.yaml
 sed 's|          persistent_volume_claim: {name: team-share}|          persistent_volume_claim: {name: team-share}\n          nfs: {server: '"$server"', path: /team}|' "$shares_config" >"$broken"
-if refused=$("$work/legion" start --check-config --config "$broken" 2>&1); then
-  fail "--check-config passed a volume naming a claim and an NFS export"
+if refused=$("$work/legion" config check --config "$broken" 2>&1); then
+  fail "legion config check passed a volume naming a claim and an NFS export"
 fi
-want="legion start: runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs"
-[ "$refused" = "$want" ] || fail "--check-config refused the two-source volume with: $refused"
+want="legion config check: runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs"
+[ "$refused" = "$want" ] || fail "legion config check refused the two-source volume with: $refused"
 note "a volume naming a claim and an export: refused, exit 1: $refused"
 pass
 

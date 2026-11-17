@@ -124,7 +124,7 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 // issue's scratch on its volume (roleStateHome), which legionMountPaths() already fences through
 // TreeRoot — and the image makes nothing there either, but Legion names it to the issue pod's
 // workspace-init (xdgEnvironment), so an operator's mount over it is refused here, at
-// `--check-config`, rather than left to surprise someone in a pod. (An operator's
+// `legion config check`, rather than left to surprise someone in a pod. (An operator's
 // pod.VolumeMounts reaches the launcher containers and the image probe's and no init container, so
 // this row speaks for the name rather than for workspace-init.) A provider key must name a
 // variable nothing else in the pod sets, since the shim refuses one its own environment names
@@ -137,7 +137,7 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 // My Pi's environment under the provider key's name. launchSecrets are the secrets every launch's
 // spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
 // which may be the session database's URL key. configure runs it, and the daemon before its boot
-// and for `legion start --check-config`.
+// and for `legion config check`.
 func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
