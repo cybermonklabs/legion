@@ -928,6 +928,59 @@ func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 	}
 }
 
+// The queue's bound holds at a capacity of one: the send in flight takes the one place
+// (mentionSender.inflight), so a second mention, accepted while the first is in flight, is not
+// queued. The claim its attempt committed with is given back, so the attempt is pending and
+// unclaimed, and the delivery sweep sends it once it has waited a claim lease: once, after the
+// first.
+func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
+	listener, state := newMentionListener(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
+	served.mentions.mu.Lock()
+	served.mentions.capacity = 1
+	served.mentions.mu.Unlock()
+	release := state.hold("s1")
+	defer release()
+	issue := createInteractionIssue(t, handler, "TEST", "A queue of one", "before")
+	post := func(body string) string {
+		return decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+			"body": body, "mentions": []map[string]any{{"target": "session:s1"}},
+		})).ID
+	}
+
+	sending := post("in flight")
+	state.awaitSend(t)
+	refused := post("past the bound")
+	served.mentions.mu.Lock()
+	queued, inflight := len(served.mentions.claims), served.mentions.inflight
+	served.mentions.mu.Unlock()
+	t.Logf("with the first send in flight: queued %d, in flight %d, of a capacity of 1", queued, inflight)
+	if !unclaimedPending(t, database, refused, "session:s1") {
+		t.Fatal("the second attempt, accepted while the first send was in flight, kept the claim it committed with: the queue took it past its capacity of 1")
+	}
+	if queued+inflight > 1 {
+		t.Fatalf("the queue holds %d sends and %d in flight, past its capacity of 1", queued, inflight)
+	}
+
+	release()
+	if settled := settledCommentDeliveries(t, database, sending); !allSent(settled) {
+		t.Fatalf("comment %s attempts = %#v, want it sent", sending, settled)
+	}
+	if !unclaimedPending(t, database, refused, "session:s1") {
+		t.Fatal("the attempt past the bound was taken before it waited a claim lease")
+	}
+	ageAttempts(t, database, refused)
+	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
+		t.Fatalf("resume the owed deliveries: %v", err)
+	}
+	if settled := settledCommentDeliveries(t, database, refused); !allSent(settled) {
+		t.Fatalf("comment %s attempts = %#v, want it sent by the delivery sweep", refused, settled)
+	}
+	if sent := state.sent(); len(sent) != 2 || sent[0].body != "in flight" || sent[1].body != "past the bound" {
+		t.Fatalf("sends = %#v, want each comment sent once, in order", sent)
+	}
+}
+
 // runOutboxBeside runs the outbox beside the test, as a Dispatch process runs it beside its API,
 // publishing through publisher every event it decides on, until the test ends.
 func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
