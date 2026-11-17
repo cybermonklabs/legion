@@ -5508,14 +5508,16 @@ jobs:
           persist-credentials: false
 
       # PRIVATE_NAME_TERMS is the deployment's own list, which check-private-names.sh's fifth rule
-      # reads and requires on a merge group (that script's header).
+      # reads and requires on a merge group (that script's header). Both scripts run by the
+      # checkout's own path, the form every job that holds the list runs the check by;
+      # check-pr-text.sh runs check-private-names.sh from its own directory.
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: |
-          payload=$(.github/scripts/find-pr-payload.sh)
-          GITHUB_EVENT_PATH="$payload" .github/scripts/check-pr-text.sh
+          payload=$("$GITHUB_WORKSPACE/.github/scripts/find-pr-payload.sh")
+          GITHUB_EVENT_PATH="$payload" "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"
 
   # The merge queue's cancel act. Main's queue builds each group on top of the group below it,
   # so when a group fails, every group built on it can no longer merge: the queue takes that
