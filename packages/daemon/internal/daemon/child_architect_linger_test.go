@@ -14,14 +14,16 @@ import (
 // finds no claim. A person moves the root out of the workflow before the outbox runs it, so the
 // tree lingers, and the outbox holds the start on its backoff with no claim created
 // (childArchitectFirstStart, startRoot), where it finishes every other start of a lingering tree's
-// member without acting. The person then sets the root back to todo inside its linger, which
-// re-admits the tree and brings back each role of its mid-phase members that holds a claim
-// (admit's startMidPhaseMembers): the child's planner, and not its architect, which holds none.
-// So the held first start is the one row that gives the child its architect, and it must still be
-// queued after the reopen. Had the outbox finished it, nothing would queue it again: a later phase
-// start revives only a failed claim (workflow's reviveArchitect), and the child would run to its
-// close with no architect of its own, which R1 allows only for a child started before the change
-// (plan D9). TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain reads the held start act.
+// member without acting, the planner's among them. The person then sets the root back to todo
+// inside its linger, which re-admits the tree and brings back, for each mid-phase member, the role
+// of the phase it stands in, claim or none, and each other role that holds a claim (admit's
+// startMidPhaseMembers): the child's planner, and not its architect, which is no phase's role here
+// and holds no claim. So the held first start is the one row that gives the child its architect,
+// and it must still be queued after the reopen. Had the outbox finished it, nothing would queue it
+// again: a later phase start revives only a failed claim (workflow's reviveArchitect), and the
+// child would run to its close with no architect of its own, which R1 allows only for a child
+// started before the change (plan D9). TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain
+// reads the held start act.
 func TestAChildsArchitectFirstStartHeldByALingerIsQueuedWhenTheTreeReopens(t *testing.T) {
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))
