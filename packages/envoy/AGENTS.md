@@ -96,7 +96,7 @@ Each item below names a task and where its code is, then notes on it.
   a whole number from 1 to 5 (`bus.MaxReplicas`, which aws:WebhookListener's rendering also refuses above), default 1;
   0, a negative number, more than 5 or a word refuses startup naming the variable.
   The stream and every bucket Envoy opens (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `legion_agents`, `envoy_ci_state`, `envoy_dpop_proofs`, `envoy_webhook_redelivery`) are created at it, and one found with fewer copies is raised to it by the owning program's keeper every 30 seconds, and at start as well for every one but `envoy_known_sessions`:
-  a listener's start opens an existing `envoy_known_sessions` as it finds it (`openKnownBucket`, `internal/session/known.go`), so the keeper alone raises that bucket's copies.
+  a listener's start opens an existing `envoy_known_sessions` as it finds it (`openKnownBucket`, `internal/session/known_open.go`), so the keeper alone raises that bucket's copies.
   The five buckets a listener copies (`bus.CopiedBuckets`) are created by the operator's `envoy-infra buckets` alone, never by a listener (next bullet); the others are created by the program that opens them.
   More than 1 needs a clustered NATS.
   `ENVOY_STREAM_MAX_BYTES`: a positive whole number of bytes, the stream's byte limit, past which a full stream refuses new publishes (`DiscardNew`;
@@ -4157,7 +4157,7 @@ A read-only broker token carries no project either, but none of the three checks
   one `STREAM.INFO` per watcher, so 1.5 a second for a listener with all three), holds a record delivered on a confirmation of the stream older than 4 s (`streamConfirmMaxAge`) for the read of the stream already in flight, or for one of its own when none is and none ended within the probe interval, so a slow or failing `STREAM.INFO` holds delivery back by one read at most, and reads the stream before a read completes.
   Reads that keep failing for longer than the stale bound stop the copy following, and the watcher reads its bucket again once the stream answers (WARN `<cache> could not read its bucket's stream for longer than its stale bound; ...`).
   A new stream stops the copy following and starts the read of the new bucket at once, in a new epoch (INFO `<cache> bucket was recreated under its watcher; ...`, then the read's own `<cache> bucket was recreated; ...`);
-  a missing one stops the copy following until the bucket is created again (`<cache> bucket was deleted under its watcher; ...`), which only the operator's `envoy-infra buckets` does once every writer has ended (no listener creates a bucket it copies, above).
+  a missing one stops the copy following until the bucket is created again (`<cache> bucket was deleted under its watcher; ...`), which only the operator's `envoy-infra buckets` does: its normal create once every writer has ended, its break-glass create while they run (no listener creates a bucket it copies, above).
   Each store's `Ping`, which the self-health probe runs, is the fallback (`kvwatch.Watcher.Check`):
   it records a terminal watcher error for a stream other than the one the watcher reads, so the next tick rebuilds the watcher.
 
