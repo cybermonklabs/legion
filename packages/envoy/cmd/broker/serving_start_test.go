@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
@@ -41,11 +39,7 @@ func TestABrokerThatDiesBeforeServingRecordsNoServingBeat(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := connectToBroker(t, databaseURL)
 	serving := func() string {
 		t.Helper()
 		var rows string
