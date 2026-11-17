@@ -59,7 +59,10 @@ async function child(environment: Record<string, string>): Promise<number> {
   spawned.push(running);
   // The pid is live the moment `spawn` returns, but the kernel carries the process and its
   // environment a moment later. What is awaited is that reading, not a guessed delay: this case
-  // is about a real process tree, so there is no clock to fake.
+  // is about a real process tree, so there is no clock to fake. The command awaited is the one
+  // `exec` leaves, `sleep 300` exactly: the shell's own line, `sh -c exec sleep 300`, names it
+  // too and is read first (252 of 300 spawns, measured), and a reading taken while `exec` runs
+  // has no argv at all, so the case would read the process as `[sh]`.
   await until(async () => {
     const scan = await readStallProcesses();
     if (!scan.read) return false;
@@ -67,7 +70,7 @@ async function child(environment: Record<string, string>): Promise<number> {
     return (
       found !== undefined &&
       found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
-      found.command.includes("sleep 300")
+      found.command === "sleep 300"
     );
   });
   return running.pid;
