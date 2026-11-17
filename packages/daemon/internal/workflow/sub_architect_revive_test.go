@@ -144,9 +144,8 @@ func (move reviveMove) moved(t *testing.T, pool *pgxpool.Pool, engine *Engine, k
 // every transition that starts a phase of the child, the move into accepting among them, whose
 // role is the architect itself. The start is the plain one (childArchitectStart),
 // queued on the child in the transaction that moves it, and the outbox's start retries the failed
-// claim with fresh budgets in its session, or in a new one where the provider refused that session
-// out of its launch budget or no session store holds it any more (supervise's freshSession and
-// startFresh; this start asks for no new session). The engine reads the claim's state in that
+// claim with fresh budgets in its session, or in a new one once supervise's Machine.forgetSession
+// has dropped that (this start asks for no new session). The engine reads the claim's state in that
 // transaction and queues the start only when the claim has failed: a claim that runs, is
 // suspended (by the daemon, or by the idle release, whose suspension keeps its role), has retired,
 // or does not exist is no failed architect, and no start is queued for it. A root's architect is

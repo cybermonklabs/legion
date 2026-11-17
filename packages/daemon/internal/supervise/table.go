@@ -441,10 +441,9 @@ type RequestTreeClose struct{ Claim claim.Token }
 // ends as a tree close ends it, keeping its whole session - the id, which the volume reaping reads
 // as its evidence, and the resume path. It is not a lost workspace: nothing is recovered, and the
 // issue's next run, should a person set it todo again, resumes that session on a pod and a disk of
-// its own. Two cases take a new session at that start: a session the store lost starts fresh and
-// is reported (startFresh), and one the provider refused out of the claim's launch budget is
-// replaced by a new one (freshSession). That start asks for no new session itself. Like the
-// tree's close it is the workflow's own decision and is not put to TreeClosable.
+// its own, or a new one once Machine.forgetSession has dropped it. That start asks for no new
+// session itself. Like the tree's close it is the workflow's own decision and is not put to
+// TreeClosable.
 type RequestIssueClose struct{ Claim claim.Token }
 
 // RequestOperatorClose is the operator closing a tree through the API, through its root claim; the

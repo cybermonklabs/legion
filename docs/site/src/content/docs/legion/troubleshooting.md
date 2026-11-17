@@ -653,12 +653,12 @@ stands:
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
-budgets, or on a new session when the provider refused that one out of its launch budget or no
-session store holds it any more, and retries a failed phase worker whose issue is held for that
-worker's own role by applying the held phase's retry, as its architect's `retry_or_escalate`
-would. It reaches a claim an operator stopped as well as a failed one, since `legion claims stop`
-retires the claim it stops: a stopped phase worker is started again on the task of the phase its
-issue stands in now. Every other state is refused and named: a queued claim is spawned rather than
+budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
+phase worker whose issue is held for that worker's own role by applying the held phase's retry,
+as its architect's `retry_or_escalate` would. It reaches a retired claim as well as a failed one,
+whatever retired it (`legion claims stop` retires the claim it stops): a stopped phase worker is
+started again on the task of the phase its issue stands in now. Every other state is refused and
+named: a queued claim is spawned rather than
 retried, a suspended claim is resumed, and the daemon's own controller is its keeper's to retry,
 which the refusal says. A retry that leaves the issue held, as a lingering tree's does, is refused
 naming the issue.

@@ -2845,8 +2845,7 @@ func (m *Machine) sessionGone() {
 // this ran. It has three callers: the launch's startFresh, for a session no store holds any more;
 // retry, when freshSession says the retry needs a new session; and the operator's forget-session
 // (forgetSession, the table's), which `legion claims retry --fresh-session` and the controller's
-// fresh_session run (api's freshSession). Every text that says which session a start uses names
-// this function rather than repeating these cases.
+// fresh_session run (api's freshSession).
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the

@@ -226,7 +226,7 @@ For the second arm, read the root's architect claim in `read_state` too.
 A `failed` or `retired` claim this wake names has no start that will relaunch it: no start of its run was queued in the last ten minutes, or the one the queue holds has run against it and left it as it is, which the daemon retries on its backoff.
 It takes nothing the daemon sends.
 `fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
-When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept, and `fresh_session` would discard it.
+When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept, or a new one once supervise's `forgetSession` has dropped that, and `fresh_session` would discard the kept one.
 Name that root in the day's report with what it waits on (`issues.<KEY>.waitingOn`: the ask, or the version of its gate), so a person knows the tree has no architect that can run until they answer.
 That wake is the arm's one wake of the root's run: the daemon marks the arm told for the run, and the answer starts no new run, so it does not tell you again when the wait is answered or when the start the answer queues fails against the claim.
 So at each `tick` after `issues.<KEY>.waitingOn` is gone, read `issues.<KEY>.architectStalls`, which lists an arm whether or not you were told of it, and when it lists `claim-unreachable`, take `fresh_session` on that claim as for any other claim of this arm.

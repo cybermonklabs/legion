@@ -834,9 +834,7 @@ func TestAMachineRefusesLimitsOrTimeoutsThatCannotWork(t *testing.T) {
 // phase decides it for a worker, and the operator's retry for an architect, which a later start
 // the daemon writes for it also relaunches (a child's next phase start, a re-admission of its
 // tree), and for a phase worker whose own retries do not reach it. Each relaunches the same
-// session with fresh budgets, unless the retry asks for a new one, the provider refused that
-// session out of the launch budget (freshSession), or no session store holds it any more
-// (startFresh).
+// session with fresh budgets, or a new one once Machine.forgetSession has dropped it.
 func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
