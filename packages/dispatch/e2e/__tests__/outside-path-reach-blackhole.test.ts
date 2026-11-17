@@ -6,6 +6,9 @@
  */
 
 import { describe, expect } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   blackhole,
   curl,
@@ -18,7 +21,7 @@ import {
   withoutTools,
 } from "./outside-path-reach-fixtures";
 
-const { drive, list } = reachFixtures();
+const { scratch, drive, list, pathPacing } = reachFixtures();
 
 /** The script's own probe, run once here against the blackholed address: exit 28 with the lookup
  *  done and no connect is a drop, and the rows run; exit 7 is a network that refuses the address
@@ -63,19 +66,38 @@ const blackholeSkip = await blackholeDrops();
 if (blackholeSkip !== null) console.warn(`Skipped the blackholed rows: ${blackholeSkip}.`);
 
 describe.concurrent("outside-path-reach.sh", () => {
+  // A dropped address must not hold a probe past curl's own timeouts: one that did would hold its
+  // round into the next, and the last round's into the end of the run. The row reads that from the
+  // order of the run's own events, not from a clock this host's load moves: the fake curl writes
+  // `probe` to a log as it starts a probe of the blackholed address and `ended` once that probe is
+  // over, and the `sleep` first on PATH writes `slept 6` once the sleep between two rounds is over.
+  // Each probe of the address ends before the next round starts, and the last before the run ends.
   row(withoutTools || blackholeSkip !== null)(
-    "reads a blackholed address as unreachable and passes within 36 seconds",
+    "reads a blackholed address as unreachable and passes, each probe of it ending within its own round",
     async () => {
       const origin = fakeDispatch();
+      const order = join(scratch, `order-${randomUUID()}`);
+      const address = `telnet://${blackhole.host}:${blackhole.port}`;
       try {
-        const run = await drive({
-          OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-          OUTSIDE_PATH_TARGETS: await list(`blackhole ${blackhole.host} ${blackhole.port}`),
-        });
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: await list(`blackhole ${blackhole.host} ${blackhole.port}`),
+          },
+          {
+            path: pathPacing(
+              `case "$*" in *${address}) echo probe >>${order}; ${curl} "$@"; status=$?; ` +
+                `echo ended >>${order}; exit "$status" ;; esac`,
+              order
+            ),
+          }
+        );
         expect(lineFor(run, "blackhole")).toContain(" unreachable; curl exit 28,");
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
-        expect(run.seconds).toBeLessThan(36);
+        expect(readFileSync(order, "utf8")).toBe(
+          `${"probe\nended\nslept 6\n".repeat(4)}probe\nended\n`
+        );
       } finally {
         origin.stop(true);
       }

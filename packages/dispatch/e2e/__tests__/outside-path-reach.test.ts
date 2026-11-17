@@ -11,16 +11,16 @@
 
 import { describe, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, watch, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
-import type { TCPSocketListener } from "bun";
 import {
   bash,
   blackhole,
   closedPort,
   closingTarget,
   fakeDispatch,
+  type HoldingTarget,
   holdingTarget,
   lineFor,
   locales,
@@ -30,7 +30,8 @@ import {
   withoutTools,
 } from "./outside-path-reach-fixtures";
 
-const { scratch, drive, targets, written, list, pathOf, pathWithCurl, v6Only } = reachFixtures();
+const { scratch, drive, targets, written, list, pathOf, pathWithCurl, pathPacing, v6Only } =
+  reachFixtures();
 
 describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
@@ -81,8 +82,10 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
-  // Two holding targets beside the holding origin: probed one after another in each round they
-  // would take 39 s or more, so a run under 36 shows each round probes them at once.
+  // Two holding targets beside the holding origin. Probed one after another, the second would be
+  // connected only once curl had given up the first at its --max-time of 5 s; probed at once, both
+  // are held together. Each target lists the connections it took, so the row reads, round by round,
+  // that the two were open at the same time: each opened before the other closed.
   row(withoutTools)(
     "reads targets that accept and hold the connection as reached, each round probing them at once",
     async () => {
@@ -101,7 +104,17 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "nats-b")).toContain(" REACHED; curl exit 28,");
         expect(verdict(run)).toBe("FAIL: reached nats-a nats-b");
         expect(run.code).toBe(1);
-        expect(run.seconds).toBeLessThan(36);
+        expect(first.held.length).toBe(5);
+        expect(second.held.length).toBe(5);
+        const together = first.held.map((one, round) => {
+          const other = second.held[round];
+          return (
+            other !== undefined &&
+            one.opened < (other.closed ?? Number.POSITIVE_INFINITY) &&
+            other.opened < (one.closed ?? Number.POSITIVE_INFINITY)
+          );
+        });
+        expect(together).toEqual([true, true, true, true, true]);
       } finally {
         origin.stop(true);
         first.stop(true);
@@ -399,32 +412,25 @@ describe.concurrent("outside-path-reach.sh", () => {
   // its RekeyTimeout of 5 s plus up to 334 ms; probes started together would all fall inside that.
   // The hub's port refuses until 3.5 s after the first probe of it, which the fake curl marks with a
   // builtin and a watch here sees, so the row needs nothing of the shell's and runs on any bash. The
-  // hub's listener stamps each connect with this process's own clock, and the row reads the gaps
-  // between those stamps alone, each stamped the same way: rounds 4 s apart would give 4 s gaps,
-  // so 5 s leaves a second for this host's scheduling. The 3.5 s is on the real clock on purpose:
-  // the script is another process, timed by its own sleep, so no fake timer here can stand in.
+  // 3.5 s is on the real clock on purpose: the script is another process, timed by its own sleep,
+  // so no fake timer here can stand in. The spacing is read from the order of what the script ran,
+  // not from a clock this host's load moves: the fake curl writes `probe` to a log as each probe of
+  // the hub starts, and a `sleep` first on PATH runs the host's sleep, then writes `slept` and its
+  // arguments there. The host's `sleep 6` ran to its end between each two probes of the hub, so
+  // the rounds start 6 s apart; rounds 4 s apart would log `slept 4`, and rounds that did not wait
+  // for the sleep would log two probes in a row.
   row(withoutTools)(
-    "starts its five rounds 6 s apart, so a path down for the first 3.5 s cannot hide a target",
+    "sleeps a whole 6 s between each two of its five rounds, so a path down for the first 3.5 s cannot hide a target",
     async () => {
       const origin = fakeDispatch();
       const stamps = join(scratch, `stamps-${randomUUID()}`);
       mkdirSync(stamps);
       const port = await closedPort();
-      const connects: number[] = [];
+      const order = join(stamps, "order");
       let first: number | undefined;
-      let hub: TCPSocketListener | undefined;
+      let hub: HoldingTarget | undefined;
       const up = () => {
-        hub = Bun.listen({
-          hostname: "127.0.0.1",
-          port,
-          socket: {
-            open(socket) {
-              connects.push(performance.now());
-              socket.write("INFO {}\r\n");
-            },
-            data() {},
-          },
-        });
+        hub = holdingTarget(port);
       };
       const watcher = watch(stamps, (_, name) => {
         if (name !== "first" || first !== undefined) return;
@@ -438,8 +444,9 @@ describe.concurrent("outside-path-reach.sh", () => {
             OUTSIDE_PATH_TARGETS: await list(`hub 127.0.0.1 ${port}`),
           },
           {
-            path: pathWithCurl(
-              `case "$*" in *telnet://127.0.0.1:${port}) : >>${stamps}/first ;; esac`
+            path: pathPacing(
+              `case "$*" in *telnet://127.0.0.1:${port}) : >>${stamps}/first; echo probe >>${order} ;; esac`,
+              order
             ),
           }
         );
@@ -452,9 +459,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
-        expect(connects.length).toBe(4);
-        const gaps = connects.slice(1).map((connect, at) => (connect - (connects[at] ?? 0)) / 1000);
-        expect(gaps.map((gap) => gap >= 5)).toEqual([true, true, true]);
+        expect(hub?.held.length).toBe(4);
+        expect(readFileSync(order, "utf8")).toBe(`${"probe\nslept 6\n".repeat(4)}probe\n`);
       } finally {
         watcher.close();
         origin.stop(true);

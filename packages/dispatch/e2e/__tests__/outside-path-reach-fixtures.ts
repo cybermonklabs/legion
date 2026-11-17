@@ -24,12 +24,13 @@
 
 import { test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { TCPSocketListener } from "bun";
 
 export const script = fileURLToPath(
   new URL("../acceptance/outside-path-reach.sh", import.meta.url)
@@ -173,18 +174,35 @@ export function closingTarget() {
   });
 }
 
+/** One connection a holding target took: when it opened and, once closed, when it closed, on this
+ *  process's `performance.now()` clock. */
+interface Held {
+  opened: number;
+  closed?: number;
+}
+
+/** A listener that holds every connection it takes; `held` lists them in the order they opened. */
+export type HoldingTarget = TCPSocketListener<Held> & { held: Held[] };
+
 /** A target that accepts, speaks first and holds the connection open, as NATS does, on `port`. */
-export function holdingTarget(port = 0) {
-  return Bun.listen({
+export function holdingTarget(port = 0): HoldingTarget {
+  const held: Held[] = [];
+  const listener = Bun.listen<Held>({
     hostname: "127.0.0.1",
     port,
     socket: {
       open(socket) {
+        socket.data = { opened: performance.now() };
+        held.push(socket.data);
         socket.write("INFO {}\r\n");
+      },
+      close(socket) {
+        socket.data.closed = performance.now();
       },
       data() {},
     },
   });
+  return Object.assign(listener, { held });
 }
 
 /** The bash wrapper `drive` runs to give the script its target list. Its arguments: how the list
@@ -325,9 +343,23 @@ export function reachFixtures() {
     return path;
   }
 
+  /** A PATH directory as `pathWithCurl` makes it, whose `sleep` runs the host's sleep and then
+   *  writes `slept` and its arguments to `log`, so a row reads there where each round began. */
+  function pathPacing(answers: string, log: string): string {
+    const path = pathWithCurl(answers);
+    const sleep = join(path, "sleep");
+    unlinkSync(sleep); // the host's sleep by a symlink, which a write would follow
+    writeFileSync(
+      sleep,
+      `#!${bash}\n${hostTool("sleep") ?? "sleep"} "$@"\nstatus=$?\necho "slept $*" >>${log}\nexit "$status"\n`,
+      { mode: 0o755 }
+    );
+    return path;
+  }
+
   /** A PATH whose curl refuses every probe of a bracketed (IPv6) target. */
   const v6Only = () =>
     pathWithCurl(`case "$*" in *'telnet://['*) printf '0.000010 0.000000'; exit 7 ;; esac`);
 
-  return { scratch, drive, targets, written, list, pathOf, pathWithCurl, v6Only };
+  return { scratch, drive, targets, written, list, pathOf, pathWithCurl, pathPacing, v6Only };
 }
