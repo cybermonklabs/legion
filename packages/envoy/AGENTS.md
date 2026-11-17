@@ -356,6 +356,22 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
+- **The session that holds each role of an issue**: `internal/dispatch/api/issue_role_holders.go`, `store/migrations/20261116163813_issue_role_holders.up.sql`
+
+  The Legion daemon publishes the live role sessions of an issue with `PUT /api/v1/issues/{key}/role-holders`, as session `legion-daemon:<project>`.
+  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
+  Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name the daemon's session; the airlock closes that case.
+  The body is the issue's whole set, each pair naming both its role and its session, and the write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  Each session is a session id (`text.IsSessionID`) of at most 256 bytes; any other body is `400 INVALID_ROLE_HOLDER` and stores nothing.
+  A write locks the issue row (`for no key update`), so two writes of one issue store one whole set, the set of the one that finishes last, and each answers the set that it stored.
+  The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
+  `heldRole` is the read that a later release of the results route makes in its own write transaction.
+  The daemon queues the publication in the transaction of each claim write that changes the session that holds a role (`internal/store`'s `putClaim`), so the change and its publication commit together, and an end whose claim write failed with an error that the daemon owes is published when the daemon makes that write again at the claim's next decision.
+  The session of an ended claim keeps its role until the daemon's next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
+  An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+  A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
+  Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
+
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
@@ -3186,13 +3202,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
   a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
-  with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
+  with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2, with a line that names `--allow-empty`.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
   `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
   `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
-  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
-  Those two read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
+  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read, for arguments it does not take, and for a file or a device on stdout that does not take all of its text, such as a full disk, with `spec-check: <subcommand>: cannot write standard output: <error>` on stderr.
+  A pipe whose reader has gone ends the command by SIGPIPE instead, with no line.
+  A stdout that is closed at the start reads as `/dev/null`, since the Go runtime opens `/dev/null` on it before the program starts, so the text is lost as with `>/dev/null`.
+  `changes` and `checks` read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
   the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
   `runnerlog.Say` writes every line but the usage and the JSON, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
@@ -3203,6 +3221,77 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Its cache entry is `spec-check-<os>-<arch>-go<version>-<hash>`, saved only on a miss in a `push`, `schedule` or `workflow_dispatch` run, and `ci-caches.yaml`'s `spec-check` job, a job of its own, fills it on every push to main.
   `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
   a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
+
+- `specgraph.ApprovedFile` is the one definition of `approved.json`, the approved spec as a file holds it: `{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}`, with `at` an RFC 3339 time as `time.RFC3339Nano` writes it, with an upper-case `T` and `Z`.
+  The reader refuses an `at` with a lower-case `t` or `z`, which RFC 3339 allows, since the writer writes upper case.
+  `specgraph.WriteApproved` writes it as `specgraph.ReadApproved` reads it, so the writer and the commands that read the file share that one definition; no route of the Dispatch server writes the file yet.
+  `ReadApproved` reads it through the package's one strict JSON reader (`decodeJSON`), which refuses a field that it does not know or that is written in other letters, a field that one object gives two times, and a byte that is not UTF-8;
+  it names a value of another type than the form needs, such as a string in the place of a version number or a time that is not RFC 3339, in its own words, `specgraph: approved spec: it is not in the form <form>: the value at "<JSON pointer>" is of another type`, where the form gives the type of each value, since `encoding/json/v2` names a Go type and picks its verb, "cannot" or "unable to", once in each process;
+  then `ReadApproved` refuses a file with no `nodes` list (`null`, `{}` or `"nodes": null`), and it reads the whole file, with no bound on its size.
+
+- `cmd/spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]` compares the spec files of one directory with an approved spec in the form of `approved.json` (`cmd/spec-check/compare.go`), by `specgraph.Compare`'s rules: unapproved-id, unapproved-text and removed-id.
+  A node in a text the approved spec never held is exit 1, one line on stderr for each, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, and `spec-check: <dir>: the comparison fails on <n> nodes` on stdout.
+  Otherwise it is exit 0, with `spec-check: <dir>: the approved spec held every text that the files hold; <m> of <n> approved statements are in the files at their current text`, which counts statements only:
+  the verb and its pronoun are in the singular for 1 held, and the noun for 1 of 1 alone, so it reads `0 of 1 approved statements are` and `1 of 3 approved statements is`.
+  Then comes one line for each other current approved node, of each kind (R2: the change that lands a statement writes it and its checks into the files): `spec-check: <kind> <id>: not in the files`, or `spec-check: <kind> <id>: the files hold approved version 1, and version 2 is current`.
+  Then one line for each node that the files hold and the approved spec removed, `spec-check: <kind> <id>: the files hold it, and the approved spec removed it` (`specgraph.Comparison.Removed`):
+  R28 counts it as a difference, and the person approves a removal before the change that takes the node out of the files, so it does not fail the comparison.
+  The kind is statement, check, component, interface or term, and the lines go statements, then checks, components and interfaces, then terms, each by id.
+  Files with a problem of `Parse` that can lose a node or change one (its `Effect` is `specgraph.LosesNode`, which `Parse` sets on each such problem: a block whose opening line the grammar refuses or that a block before it swallows, a line outside a block, a line that a node leaves out, or an attribute that a node drops) are exit 2 and no comparison, since the comparison would not see that text;
+  each such problem is a line on stderr, then `spec-check: <dir>: the files do not parse, so no comparison was made`.
+  A directory that does not exist or holds no spec file is exit 2 too, since every text of no file is approved, with a line that names `--allow-empty`.
+  With `--allow-empty`, `compare` reads it as the empty tree, as `tree` does, with a line on stderr that says so:
+  git keeps no empty directory, so a revert of the change that added the last spec file leaves none, and each approved node then reads `not in the files` (R2: the revert "takes it out of the files").
+  A problem of `Parse` that keeps each node (`specgraph.KeepsEachNode`), such as a heading that names code, is `tree`'s to judge, and `compare` compares those files: each node holds the text that the files write, except a raw `0xA0` or `0x85` byte where its opening line's attributes take white space (after `{`, between two attributes or before `}`), which it drops as white space.
+  A heading is no node, so `compare` never compares it.
+  `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
+  the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
+  Its blocks do not pass through `runnerlog.Say`, so the output of `print` must not reach a CI log: a line of a block that starts with `::` would be a workflow command there.
+  An id the approved spec does not hold, or removed, is exit 2 with nothing on stdout.
+
+- No CI job compares the spec files with the approved spec: R2 gives that comparison at each push to Dispatch.
+  No route of the Dispatch server calls `specgraph.Compare` yet.
+  `spec-check compare` is the comparison that a writer or a reviewer runs.
+  Two parts hold the refusal for the routes below.
+  `spec-check compare` refuses to run in a CI job (`cmd/spec-check/compare.go`): when `GITHUB_ACTIONS` is `true`, it exits 2 before it reads an argument, with one line on stderr, `spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch`.
+  Each CI job of this repository is a GitHub Actions job, and GitHub sets `GITHUB_ACTIONS=true` in every step of every job.
+  `compare` does not read `CI`: an agent's shell sets `CI=true`, and an agent's step is no CI job (R12), so `compare` runs there.
+  The refusal reads the environment of its own process, so it covers each route that passes the runner's environment on to the command: a step, a package script, a make target, a script in any directory, or a link to one.
+  It does not cover a route that drops that environment, such as `sudo` with its default `env_reset` or a container that `docker run` starts without `-e GITHUB_ACTIONS`: there the command compares (the built-binary row "compare compares behind a boundary that drops the environment" holds that with `env -i`).
+  The guard names such a line in the files it reads only when the command's name and `compare` stand next to each other, as in `sudo -n spec-check compare`.
+  `docker run --entrypoint spec-check <image> compare` puts another word between the two, and a block list of a command (`- spec-check`, then `- compare`) a line break and a `-`, so such a line passes both parts, and so does a `sudo` or `docker run` call in a file that the guard does not read, such as a make target.
+  The refusal is the command's, not `specgraph`'s, since the library's tests run in CI.
+  The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
+
+- `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
+  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) reads each file as text, and knows nothing of shell or of YAML.
+  The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas, `(` or `[` between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
+  The name is `spec-check`, under any path, as a word of its own: a word that only holds it, such as `envoy-spec-check` or `spec-checker`, is another name, and a suffix such as `.exe` keeps it.
+  `compare` is a word of its own too, and the next item gives the two bounds of the rule.
+  A list of arguments in a script, such as `spawnSync('spec-check', ['compare'])` or `subprocess.run(["spec-check","compare"])`, is named too.
+  The guard also names a comment or a quoted text that no shell runs, and the author rewords that line.
+  It is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
+  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line names the command that compares the files with the approved spec, and no CI job runs that command (R2). If the line only mentions the command, for example in a comment, a quoted text, a pattern or a name, reword it.` on stderr for each, at the line where the command's name stands, and `spec-check: <dir>: <n> lines of CI files name the command that compares the files` on stdout.
+  No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
+  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files names the command that compares the files`.
+  The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those when the step passes the runner's environment on.
+  A Go program that calls `specgraph.Compare` is outside both the guard and the refusal of `compare`.
+  The guard follows no symbolic link at or under the four directories (the path to them, `--root` and `.github` included, resolves as the system resolves it), and it reads each file whole, with no bound on its size.
+  `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
+
+- Each bound of the guard's rule reads the file's own bytes (`nameStart` and `compareEnds` in `cmd/spec-check/cifiles.go`).
+  Right before the name, a letter, a digit, `_` or `-` makes the name part of another word.
+  Right after `compare`, a letter, a digit, `_`, `-`, `.` or `/` makes `compare` part of another word or a path, such as `compare-all`, `compare.sh` or `compare/`.
+  Each other byte ends the word: white space, a quote, `;`, `|`, `&`, `(`, `)`, `<`, `>`, a comma, a bracket, and the start or the end of the file.
+  A backslash right after `compare` is an escape, and the byte after it takes its place.
+  A quote there ends the word only when no letter, digit or `_` follows the quote, so `"compare"d` and `compare\"d` are other words.
+  After a backslash, `n`, `t` and `r` stand for white space, so `\n`, `\t` and `\r` end the word on each side, as a backslash before a space or a line break does after `compare`.
+  PowerShell reads a lone carriage return as a line break, and Bash reads it as a byte of the word, so for Bash a `\r` beside the two words names a line that runs no comparison.
+  So a name right after `\7` or `\-` is not named, nor `compare` before `\x20` or `\x64`.
+  So `run: "set -e\nspec-check compare …"`, `run: "spec-check compare\ --dir …"` and `"spec-check compare".split()` are named, and `needs: [spec-check, compare-baselines]` is not.
+  The rule reads the file's bytes and runs no shell expansion, so it does not find a command that an expansion, an escape or an alias builds, one with another word between the two, such as a redirection, a here-document or an image (`docker run --entrypoint spec-check <image> compare`), or a `run: |` block whose two line continuations need the indentation after one kept and after the other removed.
+  Before the name, only `\n`, `\t` and `\r` of the escapes stand for white space; each other escape or expansion of one language that builds the boundary is outside the claim (`\x20`, `\x0a`, `\012`, `\u000a`, PowerShell's `` `n ``, a batch file's `%~dp0`, `$1`), and so are `\0` right before the name or right after `compare`, a NUL byte that Bash skips or stops at, `\t` between the two words, and a letter, a digit or `_` right after the quote that ends `compare`, which Bash reads as more of the word and another language can read as its next token, such as Python's `f` or `r` prefix (`"compare"f" --dir"`).
+  `TestCIFilesThatCompareLeavesAFormOutsideTheClaim` holds each of these limits, and `TestCIFilesThatCompareNamesEachCallThatAHeadNamed` each calling line that a head of #4183 named (`cmd/spec-check/testdata/ci-files/named-calls.txt`).
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
@@ -3926,6 +4015,10 @@ It is the only credential that proves a session of its own, so its caller writes
 a body `actor` naming the same session is taken, for its `Origin`, which nothing else carries, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A named project scope rides on `model.Actor.Project`, set from the token and never from a body, as `Service` is;
 a person-scoped token names no single project and carries none.
+Every actor a write records says whether the write's credential proved it (`model.Actor.Proven`, `proven` on the wire):
+this token's session, a browser's person (the API's cookie and the document socket's) and `actingPerson`'s person carry `true`, and a session a body names under the shared token, a personal token or a service-account token carries none, as does every row recorded before the mark.
+An act's `session_proven` (`model.ActorAct.SessionProven`) is the same mark for the session beside a person, set only for this token's own session and never for one a `?session=` or a body names.
+A document version's author is every write of one writer merged by kind and id (`docs.mergeAuthor`, and the pending-author upsert in SQL), and it is proven only when every one of those writes was.
 A read-only token is the token a read entry mints (`BROKER_EXCHANGE_READ_ACCOUNTS`): it holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks its caller `brokertoken.Caller.ReadOnly`.
 `brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.
@@ -6299,7 +6392,8 @@ the kind the broker serves the secret as, `Secret.Kind`, absent for a stored sec
 nothing else of the tags, since the route is public), which `agent-secrets secret retag` compares with the kind it wrote and exits 1 on a mismatch (`rereadRetag`:
 a stale metadata read still serves the old kind), `400 SECRET_NAME_INVALID` for such a name and `503 REQUEST_ENDED`, with no `broker: reread secret failed` line, for a reread whose own request ended first;
 the public `GET /v1/settings` answers the store (`store`:
-`secrets.StoreAWS` or `secrets.StoreGCP`), the prefix and, per store, the key ARN with its region and account (`secrets.AWSKeyARNParts`) or the Cloud KMS key name with the project number (`secrets.GCPProject`), the other store's fields omitted.
+`secrets.StoreAWS` or `secrets.StoreGCP`), the prefix and, per store, the key ARN with its region and account (`secrets.AWSKeyARNParts`) or the Cloud KMS key name with the project number (`secrets.GCPProject`), the other store's fields omitted; and, on either store, `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`, `Deps.GoogleExchangeAudience`, omitted unless `BROKER_VM_SERVICES` lists a machine the exchange can mint a launcher credential for: `cmd/broker`'s `googleExchangeAudience`, since an audience set for a `google:` API caller alone would have every machine mint, trade and be refused), which `agent-secrets` reads to find a machine's own identity with no setting.
+It names no Kubernetes exchange audience: a pod's trade mints no launcher credential (`exchange.go`, the credential is minted for a Google subject or a person alone), so no machine could register a session under it.
 
 That reread is fleet-wide.
 On its 200, and on the `503 REQUEST_ENDED` of a reread whose request ended during its value read alone (`policy.ErrValueUnchecked`: `RefreshOne` had already merged the tags it read), `rereadSecret` calls `Deps.NotifyReread` through `notifyPeers`, which `cmd/broker` fills with `reread.Notifier(st.Pool, senderID)`:
@@ -6506,7 +6600,7 @@ a reader told that date never waits past the purge (`earliestPurge` is the one p
 GCP's deletion moment is `expire_time` itself, the exact purge moment, so `show` and `list` print only it, with no separate earliest-purge line.
 The forms' unit tests run in-process against `secrets.Local` and a fake STS and broker (`secret_test.go`) for AWS, and against a fake Secret Manager gRPC server, replaced credential seams (`gcpCredentialsFile`, `gcpMetadataToken`, `gcpMetadataPrincipal`) and a stub `gcloud` alone on `PATH` (`secret_gcp_test.go`) for GCP;
 `secret_gcp_order_test.go` runs R1's order through the real sources instead: a stub `gcloud` with a configuration directory of its own, key files whose token endpoint is local, and a fake metadata server at `GCE_METADATA_HOST`, each row reading the bearer the fake store saw.
-A test whose subtests are `onEachStore`'s `aws` and `gcp` counts on both backends only once `scripts/backend-count.sh` names it, which ci.yaml's envoy-go step "Count the store-form rows on each backend" runs: it runs only the named tests (`-run`, 5-minute `-timeout`), and fails on a named test with no passing run on either backend.
+A test whose subtests are `onEachStore`'s `aws` and `gcp` counts on both backends only once `scripts/backend-count.sh` names it, which ci.yaml's envoy-go step "Count the store-form rows on each backend" runs over `./cmd/agent-secrets/` and `./internal/broker/api/` (`backend-count.sh PACKAGE... -- TEST...`): it runs only the named tests in only those packages (`-run`, 5-minute `-timeout`), and fails on a named test with no passing run on either backend, which a test in neither package is.
 The database broker suites' skips are counted by `scripts/database-skips.sh`, envoy-go's step "Count the database broker suites' skips": it runs `./internal/broker/...` with `-json` under a `-timeout` that bounds each package, not the run, so the step has a `timeout-minutes` of its own, which the job's budget counts; it fails on any skipped test there but the few `EXPECTED_SKIPS` names, and prints `database_skips=UNKNOWN` and fails where its report is missing or holds no broker test.
 `secret_moto_test.go` (`-tags moto`) runs the built binary against moto's AWS, with no AWS account, through `scripts/aws-moto-check.sh [BINARY]`: the SDK's own credential order (access keys over `AWS_PROFILE`, `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`, a container credentials endpoint for the rest of the chain), a missing profile that stops the command before that endpoint signs in, and the `using` line on every form; moto ignores a policy's conditions, so it proves no IAM policy.
 AWS's `secret_e2e_test.go` runs create, delete, restore and retag against `brokertest.NewRig`'s real broker.
@@ -6516,10 +6610,10 @@ Unset, each falls back to its launcher's path, `$XDG_RUNTIME_DIR/agent-secrets` 
 a pod sets its variables and has no `XDG_RUNTIME_DIR`.
 The exec form's command keeps exactly those three variables, so an `agent-secrets` call it makes is the same session's.
 A box's key and enrollment arrive after the box starts, so its launcher writes `enrollment.pending` into the key dir before the box starts and removes it once it has written `enrollment` or `enrollment.error`.
-While that marker is there and younger than 160 s by mtime, a call waits for `key.pem` and `enrollment`, up to `AGENT_SECRETS_ENROLL_WAIT` (default 20s), then fails with its ordinary error;
+While that marker is there and younger than 160 s by mtime, a call waits for `key.pem` and `enrollment`, up to `AGENT_SECRETS_ENROLL_WAIT` (default 20s), then fails naming the marker and the wait, never going on to a later source of the chain, or with the key dir's own error where `key.pem` arrived without its enrollment;
 with no fresh marker nothing waits, and the Go shim never writes one, so a pod never waits.
-`agent-secrets identity` answers locally, with no broker call and no registration, whether the calling process has a session identity (exit 0 for a `key.pem`, a fresh marker, or the helper's sign probe answering OK or NOT_ENROLLED;
-exit 1 otherwise, with a notice when a helper is expected but cannot be asked), for callers that choose between the broker and another backend.
+`agent-secrets identity` answers locally, with no broker call and no registration, whether the calling process has a session identity (exit 0 for a launcher's `key.pem` with no `machine-session` marker beside it, a fresh marker, or the helper's sign probe answering OK or NOT_ENROLLED;
+exit 1 otherwise, a key dir an older client marked `machine-session` included, with a notice when a helper is expected but cannot be asked), for callers that choose between the broker and another backend.
 A helper holding no launcher credential (never logged in, or after it dropped its login, below, until the operator logs the machine in again) enrolls no one:
 its sign and sign-request answer NO_CREDENTIAL, so `identity` exits 1 and every other command fails, each with the same not-logged-in notice naming `agent-secrets machine login`.
 
@@ -7711,11 +7805,11 @@ The wire contract both this client and the TypeScript client (`packages/broker-c
 Each suite replays every exchange in it against a stub broker of its own and asserts set equality — the corpus is the whole of what a request may carry and the whole of what a client may read out of an answer — so a field one client starts sending or reading without an entry there fails that client's own test, and a field added there fails the other client until it sends it too.
 It lives in the Go package's `testdata` because the Go client was written first; the TypeScript suite (`packages/broker-client/src/__tests__/wire.test.ts`) reads it by relative path.
 
-The variables, all unset by default, in which case every program works exactly as it did:
+The variables, all unset by default, in which case the helper and the controller work exactly as they did and `agent-secrets` finds the machine's identity from the broker's exchange audiences (below); `agent-secrets` also reads the URL, the sign-in client's and the machine identity's settings from `~/.config/agent-secrets/config` where the environment leaves them unset:
 
 | Variable | Form | Default | What it does |
 | --- | --- | --- | --- |
-| `AGENT_SECRETS_MACHINE_IDENTITY` | `kubernetes`, `metadata` or `pool` | unset | the identity this machine proves at the exchange; unset, it proves none |
+| `AGENT_SECRETS_MACHINE_IDENTITY` | `kubernetes`, `metadata` or `pool` | unset | the one identity this machine proves at the exchange; unset, the helper and the controller prove none and `agent-secrets` detects one (`brokerclient.DetectMachineIdentity`); `agent-secrets` refuses `kubernetes` (exit 2), for which the exchange mints no launcher credential |
 | `AGENT_SECRETS_MACHINE_TOKEN_FILE` | a path | unset | the projected Kubernetes service-account token `kubernetes` reads and `pool` federates |
 | `AGENT_SECRETS_MACHINE_AUDIENCE` | an audience | unset | the `aud` of this machine's Google identity token, which `metadata` mints for and `pool` names on its mint |
 | `AGENT_SECRETS_POOL_AUDIENCE` | `//iam.googleapis.com/projects/…` | unset | the workload identity pool provider an external credential is traded at |
@@ -7742,9 +7836,21 @@ One record per person, so a second person on the box signs in beside the first.
 A session with exactly one sign-in here uses it; with more than one it is refused until `AGENT_SECRETS_PERSON` says which, and the refusal names them.
 Every refusal a sign-in would cure names `agent-secrets login`.
 
-`selectSigner` therefore tries, in order: a key dir holding `key.pem` and an enrollment (a box or pod a launcher set up), a person's sign-in record, a helper socket, and last a machine identity of this machine's own.
-That last branch is how a pod with no launcher and no helper enrols itself: it trades, registers a key it makes, and writes that key and the enrollment into the key dir as a launcher would have, so the next call takes the file branch and trades nothing.
-`agent-secrets-helper` takes the same route for its launcher credential when `AGENT_SECRETS_MACHINE_IDENTITY` is set: no machine file, no device grant, nobody approving the machine, and the credential traded again before it lapses.
+`selectSigner` (`cmd/agent-secrets/chain.go`) therefore walks the spec's R4 chain in order: `key-dir`, a key dir holding `key.pem` and an enrollment (a box or pod a launcher set up); `sign-in`, a person's sign-in record; `helper`, the helper, asked first with the identity probe and taken only when it answers OK or `NOT_ENROLLED`; and `machine`, this machine's own identity.
+A source with nothing for the caller answers `errSourceAbsent` with its reason and the walk goes on — a helper answering `NOT_A_SESSION`, as it does for a process that only inherited `AGENT_SECRETS_HELPER_SOCK`, is such a source — while a present source that fails, and any broker refusal, stop the command; with none left, one refusal names each source and its reason (`no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`).
+Two absences read as present: a fresh `enrollment.pending` with no `key.pem` after `awaitEnrollment` (a launcher still enrolling stops `key-dir`), and a helper socket that is not there where `AGENT_SECRETS_HELPER_SOCK` names it or `helperInstalled` finds the unit (a stopped helper stops `helper`, as bare `identity` reads it), so a process in a session never signs as the machine because its launcher is slow or its helper is restarting.
+A session form's chain failure exits 1, and a missing `AGENT_SECRETS_URL`, an unreadable `AGENT_SECRETS_ENROLL_WAIT` or a plain-http broker off loopback reaching the machine source exits 2 (`settingError`, `sessionFailed`).
+`identity --source` walks the same chain registering nothing and prints the source it would use; bare `identity` keeps its local reads (a launcher's `key.pem` with no `machine-session` marker beside it, a fresh pending marker, the helper's probe) and asks no network.
+The machine source reads the machine cache first, `${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine` (`machinecache.go`: `key.pem` and `enrollment`, `0600` in a `0700` directory), with no network call, so a machine with no launcher and no helper registers once and trades nothing after while its session is live.
+A read holds the flock of the cache's `lock` file shared, and `registerMachine` holds it exclusively from its second read of the cache to its write (`machinecache_lock_unix.go`), so commands that find the cache empty at once register one session and none signs with one registration's key and another's enrollment; each registration, the first and each `machineReregister` after `ENROLLMENT_NOT_LIVE`, makes a key of its own, so a copied `key.pem` signs for no later enrollment, and `doProofBuilt` signs the retried request object again with the new key (the broker holds a request object to its enrollment's own key).
+With no cached session it calls `machineSource`: `AGENT_SECRETS_MACHINE_IDENTITY` names the one identity (`brokerclient.MachineIdentity`, unchanged, read through `clientGetenv`), except that `kubernetes` is refused as a `settingError` (exit 2) before anything is traded, since the exchange mints no launcher credential for a Kubernetes subject; else the Google exchange audience the broker answers in `GET /v1/settings` (`google_exchange_audience`) goes to `brokerclient.DetectMachineIdentity` (`internal/brokerclient/detect.go`), which takes the first of an `external_account` file `GOOGLE_APPLICATION_CREDENTIALS` names (`ExternalAccountIdentity`, minting through `generateIDToken` as `PoolIdentity` does) and the metadata server (`googleidentity.Probe`); a pod's projected token is never detected, and a broker that names no Google audience is skipped and nothing asks the machine.
+That read is unauthenticated and its Google audience is the `aud` of the token the machine mints and hands over, so `machineSource` reads it only from an https or loopback broker (`requireTrustedBrokerURL`, the secret forms' gate), and `checkGoogleAudience` refuses an audience other than the one the cache's `google-exchange-audience` keeps before anything is detected or minted; the audience must be the broker's to choose, since the deployment sets one estate-wide value that is not the broker's origin.
+`keepGoogleAudience` writes that file only once `DetectMachineIdentity` has found an identity, and before any token is minted, so a machine with no identity keeps nothing and a later audience or broker still gets the no-source refusal; it writes through `keepFirst`, which takes the exclusive flock of `google-exchange-audience.lock` and renames a finished file into place, so the first of two writers wins with no hard link and a reader sees a whole audience or none.
+`agent-secrets login` and a sign-in's renewal take their actor from `machineSource` too, so a person signs in with no machine setting.
+The cache sits below the sign-in, so a person's `agent-secrets login` takes effect at the next command while the cache stays on disk; a machine session a client before #4143 wrote into the key dir beside a `machine-session` marker is moved into the cache by the next walk (`migrateKeyDirMachineSession`, under the cache's exclusive lock), so a key dir is a launcher's alone.
+A process with no environment of its own reads `AGENT_SECRETS_URL`, the sign-in client's three settings and the five machine identity settings from `~/.config/agent-secrets/config` (`config.go`: `KEY=value` lines, any other key a usage error naming the line; a path that is not a regular file, stated before it is opened so a FIFO never holds the command, a file another uid than this user's or root's owns (`fileOwner`), and a file its group or others can write are usage errors before anything in it is read; a set variable wins), loaded once by `run` before every form but `--version` and help.
+`HOME` for the settings file, the sign-ins, the machine cache and the helper's unit is `homeGetenv`'s: the environment's, else the password database's home for the process's user, since systemd starts a system unit that names no `User=` with no `HOME`.
+`agent-secrets-helper` takes the trade route for its launcher credential when `AGENT_SECRETS_MACHINE_IDENTITY` is set, and detects nothing when it is not: no machine file, no device grant, nobody approving the machine, and the credential traded again before it lapses.
 That credential is the one its sessions enrol under while nobody is signed in on the box.
 Before every enrolment the helper reads its own user's sign-ins (`brokerclient.SignIns`, `AGENT_SECRETS_SIGNIN_DIR` or the state directory it defaults to, the resolved directory being what `install` writes into the unit), and with one there it trades that sign-in and enrols the session under the person's credential instead, stating them as the operator: a host session and an agent box registered after `agent-secrets login` act for that person, and one registered after the sign-in is revoked is the machine's again, neither needing a restart (`internal/brokerclient`'s `SignInAuthority`, whose tests run where this package's own cannot).
 An enrolment states the operator its credential carries and no other — the person for a sign-in's, the operator file's login for a machine login's, none at all for the one a machine's identity traded for, which names its fleet's service — since the broker refuses an enrolment stating an operator its credential has not got (`enroll.Service.Create`, `OPERATOR_MISMATCH`); a revoke is signed with the credential that enrolled, falling back to the machine's on the broker's 403.

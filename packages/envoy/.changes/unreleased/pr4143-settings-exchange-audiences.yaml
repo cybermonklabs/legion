@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The broker's `GET /v1/settings` names its Google exchange audience, `google_exchange_audience`,
+  where `BROKER_VM_SERVICES` lists a machine, and `agent-secrets` finds a machine identity against
+  it with no setting of its own: an `external_account` credentials file or the Google metadata
+  server. Against a broker that names none, the client tries no machine identity and says the
+  broker accepts none. The client reads these settings only from an `https` broker, or an `http`
+  one on loopback, and keeps the first Google audience it finds an identity for: a broker that
+  later names another is refused before any identity token is minted for it, while a machine with
+  no identity keeps nothing and still says which source had what. `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes`
+  is a usage error for `agent-secrets`, since the broker mints no launcher credential for a pod's
+  token.

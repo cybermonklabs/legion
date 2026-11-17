@@ -444,7 +444,7 @@ test("a model picked in the header is the viewer's own Send of /model, holds Sen
     await expect.poll(async () => (await sentSwitches()).length, PROBE).toBe(1);
     expect(await sentSwitches()).toEqual([
       {
-        actor: { id: "alice", kind: "user" },
+        actor: { id: "alice", kind: "user", proven: true },
         message: "/model anthropic/model-b",
         mode: "steer",
         target: id,
@@ -476,7 +476,7 @@ test("a model picked in the header is the viewer's own Send of /model, holds Sen
     await expect(status).toHaveText("Switching model to anthropic/model-a…");
     await expect.poll(async () => (await sentSwitches()).length, PROBE).toBe(2);
     expect((await sentSwitches())[1]).toEqual({
-      actor: { id: "alice", kind: "user" },
+      actor: { id: "alice", kind: "user", proven: true },
       message: "/model anthropic/model-a",
       mode: "steer",
       target: id,
@@ -507,7 +507,12 @@ test("a thinking level picked in the header sends /effort, and the session's ans
     await expect(thinking).toHaveValue("auto");
     await expect.poll(async () => (await sentSwitches()).length, PROBE).toBe(1);
     expect(await sentSwitches()).toEqual([
-      { actor: { id: "alice", kind: "user" }, message: "/effort high", mode: "steer", target: id },
+      {
+        actor: { id: "alice", kind: "user", proven: true },
+        message: "/effort high",
+        mode: "steer",
+        target: id,
+      },
     ]);
     const stored = await storedSwitch(id, "/effort high");
     await expect(
@@ -582,7 +587,7 @@ test("a switch from the header is stored under the person who made it and names 
     expect(stored.author).toEqual(expect.objectContaining({ id: "bob", kind: "user" }));
     await expect.poll(async () => (await sentSwitches()).length, PROBE).toBe(1);
     expect((await sentSwitches())[0]).toEqual(
-      expect.objectContaining({ actor: { id: "bob", kind: "user" }, mode: "steer" })
+      expect.objectContaining({ actor: { id: "bob", kind: "user", proven: true }, mode: "steer" })
     );
     // Bob's own switch reads as his; to Alice it names him.
     await expect(

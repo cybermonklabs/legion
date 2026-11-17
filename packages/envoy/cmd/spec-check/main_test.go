@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -156,10 +157,13 @@ func TestTheBuiltBinary(t *testing.T) {
 		want := "spec-check: " + missing + ": cannot be read: open " + missing + ": no such file or directory\n"
 		expect(t, got, result{code: 2, stderr: want})
 	})
-	t.Run("tree over an empty directory exits 2 without --allow-empty", func(t *testing.T) {
+	t.Run("tree over an empty directory exits 2 without --allow-empty, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{code: 2, stderr: "spec-check: " + dir + ": holds no spec file\n"})
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
+			code:   2,
+			stderr: "spec-check: " + dir + ": holds no spec file, and tree reads it as the empty tree only with --allow-empty\n",
+		})
 	})
 	t.Run("tree over an empty directory with --allow-empty is the empty tree", func(t *testing.T) {
 		t.Parallel()
@@ -169,10 +173,13 @@ func TestTheBuiltBinary(t *testing.T) {
 			stderr: "spec-check: " + dir + noList,
 		})
 	})
-	t.Run("tree over a missing directory exits 2 without --allow-empty", func(t *testing.T) {
+	t.Run("tree over a missing directory exits 2 without --allow-empty, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "missing")
-		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{code: 2, stderr: "spec-check: " + dir + ": does not exist\n"})
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
+			code:   2,
+			stderr: "spec-check: " + dir + ": does not exist, and tree reads it as the empty tree only with --allow-empty\n",
+		})
 	})
 	t.Run("tree over a missing directory with --allow-empty is the empty tree", func(t *testing.T) {
 		t.Parallel()
@@ -318,31 +325,58 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 	})
 
-	t.Run("a bad argument exits 2 with the usage", func(t *testing.T) {
+	t.Run("compare", func(t *testing.T) {
 		t.Parallel()
-		for _, args := range [][]string{
-			{"tree"},
-			{"tree", "--dir", valid, "extra"},
-			{"tree", "--bogus"},
-			{"changes", "--dir", valid},
-			{"checks", "--dir", valid},
+		testCompare(t, binary)
+	})
+	t.Run("print", func(t *testing.T) {
+		t.Parallel()
+		testPrint(t, binary)
+	})
+	t.Run("guard", func(t *testing.T) {
+		t.Parallel()
+		testGuard(t, binary)
+	})
+
+	t.Run("a bad argument exits 2 with the line that names it and the usage", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		for _, row := range []struct {
+			args []string
+			line string
+		}{
+			{[]string{"tree"}, "tree: --dir is required"},
+			{[]string{"tree", "--dir", valid, "extra"}, `tree: takes no argument but its flags, got "extra"`},
+			{[]string{"tree", "--bogus"}, "tree: flag provided but not defined: -bogus"},
+			{[]string{"changes", "--dir", valid}, "changes: --base is required"},
+			{[]string{"checks", "--dir", valid}, "checks: --job is required"},
+			{[]string{"compare", "--dir", valid}, "compare: --approved is required"},
+			{[]string{"compare", "--approved", approved}, "compare: --dir is required"},
+			{[]string{"print", "--approved", approved}, "print: --id is required"},
+			{[]string{"print", "--id", "order"}, "print: --approved is required"},
+			{[]string{"guard"}, "guard: --root is required"},
+			{[]string{"guard", "--root", valid, "extra"}, `guard: takes no argument but its flags, got "extra"`},
 		} {
-			got := runBinary(t, binary, "", args...)
-			if got.code != 2 || got.stdout != "" || !strings.HasPrefix(got.stderr, "spec-check: ") || !strings.HasSuffix(got.stderr, usage+"\n") {
-				t.Errorf("%q: exit %d, stdout %q, stderr %q; want exit 2, a line and the usage", args, got.code, got.stdout, got.stderr)
-			}
+			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "spec-check: " + row.line + "\n" + usage + "\n"})
 		}
 	})
 }
 
 // TestUsage runs the command with no subcommand and with one it does not know, each of which exits
-// 2 with the usage, and with -h after a subcommand, which exits 0 with the usage.
+// 2 with the usage, and with -h after a subcommand, which exits 0 with the usage. The usage names
+// compare's --allow-empty, the flag a caller needs after a revert of the last spec file.
 func TestUsage(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	expect(t, runBinary(t, binary, ""), result{code: 2, stderr: usage + "\n"})
 	expect(t, runBinary(t, binary, "", "nope"), result{code: 2, stderr: "spec-check: unknown subcommand \"nope\"\n" + usage + "\n"})
 	expect(t, runBinary(t, binary, "", "tree", "-h"), result{stderr: usage + "\n"})
+	help := runBinary(t, binary, "", "compare", "-h")
+	expect(t, help, result{stderr: usage + "\n"})
+	line := "spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]"
+	if !slices.ContainsFunc(strings.Split(help.stderr, "\n"), func(l string) bool { return strings.TrimSpace(l) == line }) {
+		t.Errorf("the usage %q holds no line %q", help.stderr, line)
+	}
 }
 
 // result is what one run of the binary did.
@@ -351,12 +385,19 @@ type result struct {
 	stdout, stderr string
 }
 
-// runBinary runs binary with args in dir, the test's own directory when dir is empty, and answers
-// its exit status and output.
+// runBinary runs binary with args in dir, the test's own directory when dir is empty, in the
+// environment of childEnv with no variable added, and answers its exit status and output.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
+	t.Helper()
+	return runBinaryIn(t, binary, dir, nil, args...)
+}
+
+// runBinaryIn is runBinary with the variables extra, each "NAME=value", added to the environment.
+func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...string) result {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
+	cmd.Env = childEnv(extra...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -365,6 +406,15 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 		t.Fatal(err)
 	}
 	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// childEnv is this process's environment without GITHUB_ACTIONS, then extra. These tests run in a
+// GitHub Actions job, where compare refuses to run, so every child starts outside one unless a row
+// sets GITHUB_ACTIONS itself. CI stays as this process has it: GitHub and an agent's shell both set
+// CI=true, and compare runs under it.
+func childEnv(extra ...string) []string {
+	env := slices.DeleteFunc(os.Environ(), func(v string) bool { return strings.HasPrefix(v, "GITHUB_ACTIONS=") })
+	return append(env, extra...)
 }
 
 // expect fails the test unless got is want.
