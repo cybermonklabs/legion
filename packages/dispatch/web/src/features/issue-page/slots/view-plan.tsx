@@ -11,7 +11,7 @@ import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
-import { PlanFilterBody, type PlanRead, type PlanReads } from "../plan-filter/PlanFilterBody";
+import { type FailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueTree } from "../useIssueTree";
@@ -62,7 +62,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
-  const failed: { readonly read: PlanRead; readonly retry: () => void }[] = [];
+  const failed: FailedRead[] = [];
   if (planId !== undefined && failedWithNothing(planBlocks)) {
     failed.push({ read: "plan", retry: () => void planBlocks.refetch() });
   }

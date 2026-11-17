@@ -306,6 +306,14 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
       retry,
       "t p from the Spec control with the plan's blocks refused does not put the focus on the plan's Retry"
     ).toBeFocused();
+    // The chord shows the tree it focused from its own top (`useIssueKeymap.ts`'s `showPart`),
+    // and the Retry stands over the tree, so the Retry the tree handed the focus to is brought on
+    // screen in the frame after (`PlanFilterBody.tsx`'s `focusOn`).
+    await expect
+      .poll(() => onScreen(retry), {
+        message: "t p from the Spec control leaves the plan's focused Retry off the screen",
+      })
+      .toBe(true);
     refusing = false;
     await page.keyboard.press("Enter");
     await expect(

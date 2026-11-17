@@ -6,13 +6,20 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
 import type { Artifact, ArtifactBlock, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
+import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import {
   firstLineOf,
@@ -211,18 +218,21 @@ type DrawnBody = RenderResult & { readonly redraw: (root: TreeNode, reads: PlanR
  *  none the page holds no document, as on a tree drawn before that read answered. `reads` is
  *  how the plan's and the spec's blocks reads stand, as the slot hands them on
  *  (`slots/view-plan.tsx`): answered unless a case gives another. `client` is the query client,
- *  by default one whose reads never go stale. `redraw` draws the same body again where it is
+ *  by default one whose reads never go stale. `container` is the element the body is drawn in,
+ *  by default one the test adds to the page. `redraw` draws the same body again where it is
  *  mounted, over another `root` and `reads`, as the slot does when the issue's reads change. */
 function renderBody(
   root: TreeNode,
   {
     client: given,
+    container,
     plan,
     reads = ANSWERED,
     reveal,
     written,
   }: {
     client?: QueryClient;
+    container?: HTMLElement;
     plan?: readonly TreeNode[];
     reads?: PlanReads;
     reveal?: readonly TreeNode[];
@@ -271,7 +281,7 @@ function renderBody(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(draw(root, reads));
+  const view = render(draw(root, reads), container === undefined ? {} : { container });
   return { ...view, redraw: (shown, held) => view.rerender(draw(shown, held)) };
 }
 
@@ -568,72 +578,20 @@ test("the control switches to the ordered steps, which are the outline's own row
 const SPEC_ARTIFACT = "artifact-spec";
 const VERIFICATION_ARTIFACT = "artifact-verification";
 
-/** One document of the issue, with whatever the case gives it: a role, or being the spec. */
-function issueDocument(id: string, slug: string, extra: Partial<Artifact>): Artifact {
-  return {
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    id,
-    issue_key: KEY,
-    kind: "doc",
-    name: slug,
-    primary: false,
-    project: "CORE",
-    ref_key: `artifact:${id}`,
-    session_id: null,
-    slug,
-    versions: [],
-    ...extra,
-  };
-}
-
-/** The issue as its read hands it to the slot: its spec and its plan, and the Verification
- *  document where a case gives one. */
+/** The issue as its read hands it to the slot (`decisions-fixtures.ts`'s `issueDetails`, with
+ *  this file's documents): its spec and its plan, and the Verification document where a case
+ *  gives one. */
 function issueRead(verification?: Artifact): IssueDetails {
   return {
-    advances: [],
-    advances_revision: 0,
+    ...issueDetails(),
     artifacts: [
-      issueDocument(SPEC_ARTIFACT, SPEC, { primary: true }),
-      issueDocument(PLAN_ARTIFACT, PLAN, { role: "plan" }),
+      artifact(SPEC_ARTIFACT, SPEC, true),
+      { ...artifact(PLAN_ARTIFACT, PLAN), role: "plan" },
       ...(verification === undefined ? [] : [verification]),
     ],
-    assignee: null,
-    blocked_by: [],
-    children: [],
-    claim: null,
-    closed_at: null,
-    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
     decisions_artifact_id: "",
-    design_gates: [],
-    external_links: [],
-    holder_state: null,
-    key: KEY,
-    labels: [],
-    last_seen: null,
-    last_seq: 1,
-    number: 1,
-    open_asks: [],
-    parent: null,
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
-    priority: null,
-    progress: { children: null, tasks: null },
-    project: "CORE",
-    rank: "U",
-    referenced_by_count: 0,
-    repo: null,
-    resolved_repo: null,
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    status: "todo",
-    takeable_at: null,
-    title: "The issue page draws one ordered body",
-    updated_at: "2026-11-05T00:00:00Z",
     verification_artifact_id: verification?.id ?? "",
   };
 }
@@ -658,7 +616,7 @@ function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClie
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, {
     gaps: [],
     has_plan: true,
@@ -671,7 +629,11 @@ function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClie
     issue: KEY,
     verification_artifact_id: "",
   });
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, {
+    decisions: [],
+    document: null,
+    open_questions: [],
+  });
   for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
     taskBlock("t1"),
@@ -724,7 +686,7 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     expect([steps().getAttribute("aria-pressed"), focusedRow()]).toEqual(["true", D("t2")]);
     expect(card()).toContain(pageFocusedRow);
     view.redraw(
-      issueRead(issueDocument(VERIFICATION_ARTIFACT, "verification-md", { role: "verification" }))
+      issueRead({ ...artifact(VERIFICATION_ARTIFACT, "verification-md"), role: "verification" })
     );
     await waitFor(() => expect(blocks).toHaveBeenCalledWith(VERIFICATION_ARTIFACT));
     expect(
@@ -906,6 +868,16 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
       "the read Retry asked again answered with no task leaves the focus off the view's tree"
     ).toBe(view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`));
     expect(view.container.textContent).toContain(EMPTY_STATE_LINES.plan);
+    // The tree the focus rests on is described by the empty line, so a screen reader says it.
+    const tree = document.activeElement;
+    const described = tree?.getAttribute("aria-describedby") ?? "";
+    expect(
+      described === "" ? undefined : document.getElementById(described)?.textContent,
+      "the view's tree is not described by the empty line"
+    ).toBe(EMPTY_STATE_LINES.plan);
+    expect(tree?.getAttribute("aria-busy"), "the tree of a view whose reads answered is busy").toBe(
+      "false"
+    );
   });
   // Both refused, and the statements line's Retry pressed: that read is out and its line goes,
   // and the plan's line stays.
@@ -964,6 +936,58 @@ test("the view's tree focused with a read refused hands the focus to its Retry",
   } finally {
     view.unmount();
     control.remove();
+  }
+});
+
+// A focus that moves onto the view's tree from inside the view - a reader moving on from the
+// Retry, or a screen reader's cursor, which moves the focus onto what it reads - is the reader's
+// own, and stays on the tree: only a focus from outside the view is handed on to the Retry.
+test("a focus moved onto the view's tree from its Retry stays on the tree", () => {
+  setViewport(1440);
+  const view = renderBody(issue([task("t1")]), { reads: failed([], "plan") });
+  try {
+    const tree = view.container.querySelector<HTMLElement>(
+      `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`
+    );
+    if (tree === null) throw new Error("the view draws no tree");
+    act(() => retryOf(view, "plan").focus());
+    expect(document.activeElement).toBe(retryOf(view, "plan"));
+    act(() => tree.focus({ preventScroll: true }));
+    expect(
+      document.activeElement,
+      "a focus moved from the Retry onto the tree is sent back to the Retry"
+    ).toBe(tree);
+    // The tree holds nothing while its reads have not answered, and says so.
+    expect(
+      tree.getAttribute("aria-busy"),
+      "the tree of a view whose read is refused is not busy"
+    ).toBe("true");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A page opened at the view's address from another issue starts with the focus on the app's main
+// element (`app.tsx`), which holds the view: nothing holds that focus, so a Retry drawn then
+// takes it, as it takes a focus on the page itself.
+test("a Retry drawn while the element around the view holds the focus takes it", () => {
+  setViewport(1440);
+  const main = document.createElement("div");
+  main.tabIndex = -1;
+  document.body.append(main);
+  const root = issue([task("t1")]);
+  const view = renderBody(root, { container: main, reads: { state: "waiting" } });
+  try {
+    act(() => main.focus());
+    expect(document.activeElement).toBe(main);
+    view.redraw(root, failed([], "plan"));
+    expect(
+      document.activeElement,
+      "a read refused while the element around the view holds the focus leaves the focus off its Retry"
+    ).toBe(retryOf(view, "plan"));
+  } finally {
+    view.unmount();
+    main.remove();
   }
 });
 
