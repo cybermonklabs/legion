@@ -100,16 +100,15 @@ configure({ asyncUtilTimeout: 10_000 });
 afterEach(resetRouteAnswers);
 afterEach(forgetTestAnswers);
 
-// A request answered by nothing fails its test (`network.ts`), and one a page swallowed in a
-// `catch`, or a write loop made after the file's last test - a retry no test is left to fail -
-// fails the file.
+// A request answered by nothing fails its test (`network.ts`), even one a page swallowed in a
+// `catch`; one made after the file's last test - a write loop's retry, which no test is left to
+// fail - fails the file, through the `afterAll` at the end of this file.
 const reportReachedNetwork = () => {
   const reached = requestsThatReachedNetwork();
   if (reached.length === 0) return;
   throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
 };
 afterEach(reportReachedNetwork);
-afterAll(reportReachedNetwork);
 
 class WebSocketStub {
   binaryType = "arraybuffer";
@@ -190,21 +189,41 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-// A row in which React printed an act message fails by its own name, with what React printed
-// (`act-warnings.ts`). The hook order this rests on is measured on Bun 1.4.4: a row's `afterEach`
-// hooks of its own file run first and then this preload's, in the order they were registered, and
-// an `afterEach` that throws skips every `afterEach` after it for that row. So this one is the
-// preload's last, and its failure skips no other hook. A message printed by a file's `afterEach`
-// is charged to its row, since those run first; one printed between two rows, to the next row;
-// and one printed after a file's last row fails the file through the `afterAll`. The same skip
-// works against this check: an `afterEach` that throws before it - a file's own, or this
-// preload's `reportReachedNetwork` - skips it for that row, so the row's messages are charged to
-// the next row, or after the last row to the file; the failure's test frames still point at the
-// row that printed them. Bun runs a file's own `afterAll` before the preload's, and reports a
-// preload `afterAll` that throws as `(fail) (unnamed)` under the file. That `afterAll` runs once
-// per file under `--parallel`, which `test:web` passes; a plain `bun test` over several files runs
-// it once, at the end of the run. Keep this block the last of the file: a hook added later goes
-// above it.
+// A row in which React printed an act message fails with what React printed (`act-warnings.ts`).
+// The hook order this rests on, measured on Bun 1.4.4: after a row, its file's `afterEach` hooks
+// run and then this preload's, in the order they were registered, and an `afterEach` that throws
+// skips every later `afterEach` of that row. A file's `afterAll` runs before this preload's, and a
+// preload `afterAll` that throws is reported as `(fail) (unnamed)` under the file and skips every
+// preload `afterAll` after it.
+//
+// So the `afterEach` below, the preload's last, charges a message to the row that printed it,
+// that row's earlier `afterEach` hooks included. A message printed between two rows, or in a row
+// whose check was skipped because an earlier `afterEach` threw - the file's own, or
+// `reportReachedNetwork` - is charged to the next row, hence "in or before this row"; the
+// failure's test frames still point at the code that printed it. A message printed after the
+// last row's check, or in a last row whose check was skipped, fails the file through the
+// `afterAll` below, hence "in or after this file's last row".
+//
+// That `afterAll` runs the network report and then the act check, and throws what failed, as one
+// error when both did: as two `afterAll` hooks, the first to throw would skip the other. It runs
+// once per file under `--parallel`, which `test:web` passes; a plain `bun test` over several files
+// runs it once, at the end of the run. Keep this block the last of the file, so its throws skip
+// no other hook and its checks run after every other: a hook added later goes above it.
 installActMessageRecorder();
-afterEach(() => failOnActMessages("in this row"));
-afterAll(() => failOnActMessages("after this file's last row"));
+afterEach(() => failOnActMessages("in or before this row"));
+afterAll(() => {
+  const failures: Error[] = [];
+  const checks = [
+    reportReachedNetwork,
+    () => failOnActMessages("in or after this file's last row"),
+  ];
+  for (const check of checks) {
+    try {
+      check();
+    } catch (failure) {
+      failures.push(failure as Error);
+    }
+  }
+  if (failures.length > 1) throw new Error(failures.map((failure) => failure.message).join("\n"));
+  if (failures.length === 1) throw failures[0];
+});
