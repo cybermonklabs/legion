@@ -215,13 +215,17 @@ stagings.push(() => seedMiseState(miseState));
  * version is set for shim: bun". They are passed whatever the caller sets, since a caller that
  * sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise. XDG_CONFIG_HOME itself is
  * not passed, so no other tool's configuration of the caller's reaches the rig, whether the caller
- * sets it or not. */
+ * sets it or not. MISE_NO_ENV=1 keeps the caller's config's [env] out as well: a shim runs its
+ * tool with that env over the one it was given (src/cli/exec.rs:374-441 in mise 2026.10.11), so a
+ * caller's `DATABASE_URL` would reach both Dispatch stand-ins in place of each run's own, and with
+ * it mise picks the tool version and loads no config env (src/config/mod.rs:1554-1557). */
 const env = {
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",
   TMPDIR: scratch,
   ...callerMiseEnvironment(miseState),
+  MISE_NO_ENV: "1",
   STUB_DIR: stub,
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",

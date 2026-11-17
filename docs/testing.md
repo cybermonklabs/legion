@@ -150,7 +150,10 @@ itself, whose tests import its sources by relative path.
   the suite's own, because mise writes there on every run (a link for each config it loads, and the
   trust record `mise exec` gives the active config). `seedMiseState(stateDir)`, called in the hook
   that stages the HOME, copies the caller's trust and ignore records into it, so a project config
-  the caller trusted still loads and nothing is written back to the caller's state
+  the caller trusted still loads and nothing is written back to the caller's state. Set
+  MISE_NO_ENV=1 beside them: with the caller's config in reach, a shim runs its tool with that
+  config's `[env]` over the variables the suite set (a caller's `DATABASE_URL` over the
+  fixture's), and with it mise still picks the tool version but loads no config env
   (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts` and `rig-isolation.test.ts`).
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,

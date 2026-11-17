@@ -58,6 +58,11 @@ export type CallerMiseEnvironment = {
  * src/config/config_file/mod.rs:614-622). A child given the caller's would leave those records in
  * the caller's state. Call this where the child's environment is built, and `seedMiseState` with
  * the same `stateDir` in the hook that stages the child's HOME.
+ *
+ * The caller's config carries its `[env]` too, which a shim applies over the child's own
+ * variables (src/cli/exec.rs:374-441). Nothing here stops that, so a child that must keep its own
+ * values sets MISE_NO_ENV=1 beside these, as both rig tests do: mise then picks the tool version
+ * and loads no config env (src/config/mod.rs:1554-1557).
  */
 export function callerMiseEnvironment(
   stateDir: string,

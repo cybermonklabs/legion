@@ -54,11 +54,15 @@ beforeAll(() => {
  * in its own ~/.config/mise. make_omp_home keeps the operator's mise data directory and
  * XDG_CONFIG_HOME for the processes it starts for the same reason, and base_env passes
  * MISE_DATA_DIR to every agent. XDG_CONFIG_HOME itself is not passed, so no other tool's
- * configuration of the caller's reaches a child, whether the caller sets it or not. */
+ * configuration of the caller's reaches a child, whether the caller sets it or not. MISE_NO_ENV=1
+ * keeps the caller's config's [env] out as well: a shim runs its tool with that env over the one
+ * it was given (src/cli/exec.rs:374-441 in mise 2026.10.11), and with it mise picks the tool
+ * version and loads no config env (src/config/mod.rs:1554-1557). */
 const childEnv = {
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
   ...callerMiseEnvironment(miseState),
+  MISE_NO_ENV: "1",
 };
 
 let profiles = 0;
