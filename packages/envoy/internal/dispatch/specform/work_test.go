@@ -23,13 +23,15 @@ const workSamples = 3
 
 // A judgment does work in proportion to its text, for each rule of the form and each shape that
 // grows the text: many forms of one rule on one line, one long line, many short lines, many links,
-// addresses and titles, many terms and many texts. Each row judges a text of n units and one of
-// 4n, and the work of the larger grows less than workGrowth times. The work is the CPU time of the
-// thread that judges (cputest.OfCall): a wait for a core is not in it, and work that allocates
-// nothing is. A row whose judgment finds no finding of its rule at either size reads nothing, so
-// it fails; a row of a rule "" is a shape that breaks no rule. A text of n units is 16 KB or more:
-// Go's regexp reads a shorter text by a faster way, and the port's work for each byte grew 1.3
-// times from a text of 8 KB to one of 32 KB for that reason alone.
+// addresses and titles, many terms and many texts, and for each rule of the terms (R50): many
+// definitions, one name of many characters, and many second definitions, in the document, in the
+// list and in lines outside Terms. Each row judges a text of n units and one of 4n, and the work
+// of the larger grows less than workGrowth times. The work is the CPU time of the thread that
+// judges (cputest.OfCall): a wait for a core is not in it, and work that allocates nothing is. A
+// row whose judgment finds no finding of its rule at either size reads nothing, so it fails; a row
+// of a rule "" is a shape that breaks no rule. A text of n units is 16 KB or more: Go's regexp
+// reads a shorter text by a faster way, and the port's work for each byte grew 1.3 times from a
+// text of 8 KB to one of 32 KB for that reason alone.
 func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -59,6 +61,14 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 				}
 				return Check(context, Input{Texts: read.Texts, Proposed: read.Terms})
 			}
+		}
+	}
+	// defined judges the definitions that terms makes of n units against the list that it makes.
+	defined := func(terms func(n int) (proposed, list []Term)) judgment {
+		return func(_ *testing.T, n int) func() []Finding {
+			proposed, list := terms(n)
+			in := Input{Proposed: proposed, List: list}
+			return func() []Finding { return Check(context, in) }
 		}
 	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
@@ -97,6 +107,27 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 		{"many statements", "ste100-semicolon", 1_000, extracted("", ":::requirement{#s-%d}\nDispatch keeps it; it waits.\n:::\n\n", "")},
 		{"many statements of one id", "ste100-semicolon", 1_000, extracted("", ":::requirement{#s}\nDispatch keeps record %d; it waits.\n:::\n\n", "")},
 		{"many footnotes", "ste100-semicolon", 1_000, extracted("", "[^%[1]d]: Dispatch keeps it; it waits.\n\n:::requirement{#s-%[1]d}\nDispatch keeps it[^%[1]d].\n:::\n\n", "")},
+		{"many definitions of two sentences", ruleDefinitionSentences, 1_000, extracted("# Terms\n\n", "- **term %d**: Dispatch keeps it. It waits.\n", "")},
+		{"many definitions of one term", ruleTermSecondDefinition, 1_000, extracted("# Terms\n\n", "- **lease**: Dispatch keeps record %d.\n", "")},
+		{"many definitions of terms that the list holds", ruleTermSecondDefinition, 1_000, defined(func(n int) (proposed, list []Term) {
+			for index := range n {
+				name := fmt.Sprintf("term %d", index+1)
+				proposed = append(proposed, Term{Name: name, Definition: "Dispatch keeps it.", Where: where})
+				list = append(list, Term{Name: name, Definition: "Dispatch keeps it.", Where: "terms.md version 1 of ACME-1"})
+			}
+			return proposed, list
+		})},
+		{"many term lines outside Terms that name a defined term", ruleTermSecondDefinition, 1_000,
+			extracted("# Terms\n\n- **lease**: Dispatch keeps it.\n\n# Notes\n\n", "- **lease**: Dispatch keeps record %d.\n", "")},
+		{"many names of terms outside the alphabet", ruleTermName, 1_000, extracted("# Terms\n\n", "- **termé %d**: Dispatch keeps it.\n", "")},
+		{"one name of a term of many characters outside the alphabet", ruleTermName, 4_500, defined(func(n int) (proposed, list []Term) {
+			var name strings.Builder
+			for index := range n {
+				name.WriteRune(rune(0x20000 + index)) // a letter of another script, each one another
+			}
+			return []Term{{Name: name.String(), Definition: "Dispatch keeps it.", Where: where}}, nil
+		})},
+		{"many headings that read as Terms in another form", ruleTermsHeading, 4_000, extracted("", "## terms\n\nDispatch keeps record %d.\n\n", "")},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			sizes := []int{row.n, 4 * row.n}

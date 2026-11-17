@@ -2,7 +2,6 @@ package specform
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -59,11 +58,17 @@ func termNameDetail(held []rune) string {
 // an angle bracket does not. That closes the class of two names that read as one and compare as
 // two, such as "İnbox" and "inbox", or a Cyrillic а in place of a Latin a, which no comparison of
 // all of Unicode closes. A name is in the alphabet exactly when each of its characters is: NFKC
-// composes a mark with the letter before it into no letter from a to z.
+// composes a mark with the letter before it into no letter from a to z. Each character is read
+// once, so the work is in proportion to the name.
 func outsideAlphabet(name string) []rune {
 	var held []rune
+	read := map[rune]bool{}
 	for _, r := range name {
-		if !slices.Contains(held, r) && strings.ContainsFunc(TermKey(string(r)), func(r rune) bool {
+		if read[r] {
+			continue
+		}
+		read[r] = true
+		if strings.ContainsFunc(TermKey(string(r)), func(r rune) bool {
 			return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != ' ' && r != '-'
 		}) {
 			held = append(held, r)
