@@ -941,8 +941,10 @@ test("a retracted ask is listed, and landing on one resets a filter that hides i
     comments: [comment("comment-1", { body: "An open thread" })],
   });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  // Stubbed on Element, the prototype that owns the method: patching HTMLElement would leave an
+  // own property behind that shadows every later patch on Element.
+  const scrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = () => {};
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
@@ -960,7 +962,7 @@ test("a retracted ask is listed, and landing on one resets a filter that hides i
     expect(card?.getAttribute("aria-current")).toBe("true");
   } finally {
     view.unmount();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
     stub.restore();
   }
 });
@@ -1070,8 +1072,9 @@ test("a handoff is Closed, and landing on one resets a filter that hides it", as
     handoffs: [handoffRecord("handoff-1", 1, "{}", "2026-09-10T09:00:00Z")],
   });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  // On Element, which owns the method, for the reason the retracted-ask row above gives.
+  const scrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = () => {};
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
@@ -1092,7 +1095,7 @@ test("a handoff is Closed, and landing on one resets a filter that hides it", as
     expect(card?.getAttribute("aria-current")).toBe("true");
   } finally {
     view.unmount();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
     stub.restore();
   }
 });
@@ -1118,8 +1121,9 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   const getAsk = spyOn(api, "getAsk");
   const stub = stubLists({ asks: [askRow({}, replies)], comments: replies });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  // On Element, which owns the method, for the reason the retracted-ask row above gives.
+  const scrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = () => {};
   const view = render(
     tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "reply-1")
   );
@@ -1137,7 +1141,7 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
     stub.restore();
   }
 });
@@ -2070,8 +2074,9 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   const stub = stubLists(lists);
   const putIssueState = answerIssueStates().mockImplementation(async () => issueState());
   const mark = answerThreadReads().mockResolvedValue(undefined);
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  // On Element, which owns the method, for the reason the retracted-ask row above gives.
+  const scrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = () => {};
   const queryClient = newQueryClient();
   seedUnread(queryClient, { issue: "CORE-1" }, unread);
   const view = render(
@@ -2083,7 +2088,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
       putIssueState.mockRestore();
       mark.mockRestore();
       stub.restore();
-      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+      Element.prototype.scrollIntoView = scrollIntoView;
       viewport.restore();
     },
     mark,

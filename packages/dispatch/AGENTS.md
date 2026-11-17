@@ -1733,6 +1733,19 @@ that made it, and a write it left out would go on retrying, once that test's spi
 into the tests and files after it, which one process running every file reports as failures of
 whichever test is running then.
 
+A spy or a stub on a DOM method goes on the prototype that owns it, which `Object.hasOwn` tells
+(happy-dom's `Element.prototype`, not `HTMLElement.prototype`, owns `getBoundingClientRect`,
+`scrollTo` and `scrollIntoView`), because a restore — Bun's `mockRestore` or an assignment —
+leaves an own copy on a prototype that only inherited the method, and that copy shadows every
+later spy on the owner.
+A `localStorage` method is replaced on the storage itself, as `onLocalStorage` in
+`features/project/IssuesTable.test.tsx` does, never on `Storage.prototype`, because happy-dom
+copies the prototype's method onto the storage the first time it is read, and a spy on the
+prototype after that never reaches it.
+A row that reads a Markdown body or a lazily loaded part in the commit that mounts it first waits
+for it (`warmMarkdownRenderer()` from `features/refs/markdown-engine.ts`, or a `findBy*` query),
+because the earlier row that loaded it may run after it in random order.
+
 An interaction is performed with `@testing-library/user-event`, never dispatched with
 `fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
 disabled control, as a person's press does.
