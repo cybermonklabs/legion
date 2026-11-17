@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -22,6 +23,8 @@ import {
   noteIssueParent,
   REGISTRATION,
   REPOSITORY_ROOT,
+  RESERVE_LIST_SHA256,
+  RESERVE_LIST_THROUGH,
   RESERVE_VARIABLE,
   type ReserveAccess,
   reserveAccessOf,
@@ -164,6 +167,14 @@ export interface CaseRow {
    * the case has no issue or the chain could not be followed, and absent as `askTreeRoot` is.
    */
   issueTreeRoot?: string | null;
+  /**
+   * Whether `askTreeRoot` is in version 3's list (`RESERVE_LIST_THROUGH` in `reserve.ts`): null
+   * where that root is null or the build stopped before the list's event, and absent from a corpus
+   * built before the build recorded it. The reserve reads either as not in the list.
+   */
+  askRootListed?: boolean | null;
+  /** Whether `issueTreeRoot` is in version 3's list, read as `askRootListed` is. */
+  issueRootListed?: boolean | null;
   answeredAt: string;
   eventCreatedAt: string;
   approval: CaseApproval | null;
@@ -182,6 +193,15 @@ export interface Snapshot {
   keptEvents: number;
   readStartedAt: string;
   readFinishedAt: string;
+  /** Version 3's list as the build took it from the log, or null when it stopped before. */
+  reserveList: ReserveList | null;
+}
+
+/** Version 3's list as a build took it: the event it was taken at, its sha256, its size. */
+export interface ReserveList {
+  throughEventId: number;
+  sha256: string;
+  issues: number;
 }
 
 /** The shape of the corpus, by kind and by verdict, and how many cases the reserve holds. */
@@ -457,8 +477,47 @@ function report(
     `  cases with their words ${counts.withWordsByKind.approval} approval,` +
       ` ${counts.withWordsByKind.question} question`,
     `  reserved cases         ${reserveLine(reserve)}`,
+    `  version 3's list       ${
+      snapshot.reserveList === null
+        ? `not taken: the walk stopped before event ${RESERVE_LIST_THROUGH}`
+        : `${snapshot.reserveList.issues} issues through event ` +
+          `${snapshot.reserveList.throughEventId}, sha256 ${snapshot.reserveList.sha256}`
+    }`,
     `  written to             ${directory}`,
   ].join("\n");
+}
+
+/** Version 3's list as a build took it, with what `snapshot.json` records of it. */
+export interface TakenList {
+  listed: ReadonlySet<string>;
+  record: ReserveList;
+}
+
+/**
+ * Takes version 3's list from a walk that has read every event through `RESERVE_LIST_THROUGH` and
+ * none after it (`TreeLog.reserveListOf`), and refuses a list whose sha256 is not the registered
+ * one: the reserve would then hold other trees than the scorers skip, so no build goes on.
+ */
+export function takeReserveList(
+  trees: TreeLog,
+  askRoots: ReadonlyMap<string, string | null>,
+  registered: string = RESERVE_LIST_SHA256
+): TakenList {
+  const keys = trees.reserveListOf(askRoots);
+  const sha256 = createHash("sha256")
+    .update(keys.map((key) => `${key}\n`).join(""), "utf8")
+    .digest("hex");
+  if (sha256 !== registered) {
+    throw new CannotRunError(
+      `the log through event ${RESERVE_LIST_THROUGH} gives version 3's list as ${keys.length} ` +
+        `issues with sha256 ${sha256}, not the registered ${registered}: the reserve would hold ` +
+        "other trees than the scorers skip"
+    );
+  }
+  return {
+    listed: new Set(keys),
+    record: { throughEventId: RESERVE_LIST_THROUGH, sha256, issues: keys.length },
+  };
 }
 
 async function build(flags: Flags): Promise<number> {
@@ -506,10 +565,15 @@ async function build(flags: Flags): Promise<number> {
   const askRoots = new Map<string, string | null>();
   const trees = new TreeLog();
   let keptEvents = 0;
+  let list: TakenList | null = null;
   const walk = await pageEventLog({
     through,
     onPage: (events) => {
       for (const event of events) {
+        // Taken once the walk has read every event through the list's own, before any after it.
+        if (list === null && event.id > RESERVE_LIST_THROUGH) {
+          list = takeReserveList(trees, askRoots);
+        }
         noteIssueParent(parents, event);
         noteAskRoot(askRoots, parents, event);
         trees.note(event);
@@ -521,12 +585,22 @@ async function build(flags: Flags): Promise<number> {
       }
     },
   });
+  if (list === null && walk.lastEventId >= RESERVE_LIST_THROUGH) {
+    list = takeReserveList(trees, askRoots);
+  }
+  const listed = list?.listed ?? null;
   const readFinishedAt = new Date().toISOString();
-  const seeded: CaseSeed[] = [...seeds.values()].map((seed) => ({
-    ...seed,
-    askTreeRoot: askRoots.get(seed.askId) ?? null,
-    issueTreeRoot: seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents),
-  }));
+  const seeded: CaseSeed[] = [...seeds.values()].map((seed) => {
+    const askTreeRoot = askRoots.get(seed.askId) ?? null;
+    const issueTreeRoot = seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents);
+    return {
+      ...seed,
+      askTreeRoot,
+      issueTreeRoot,
+      askRootListed: listed === null || askTreeRoot === null ? null : listed.has(askTreeRoot),
+      issueRootListed: listed === null || issueTreeRoot === null ? null : listed.has(issueTreeRoot),
+    };
+  });
   const counts = countsOf(seeded);
   const snapshot: Snapshot = {
     person: flags.person,
@@ -535,6 +609,7 @@ async function build(flags: Flags): Promise<number> {
     keptEvents,
     readStartedAt,
     readFinishedAt,
+    reserveList: list?.record ?? null,
   };
   const reserve = await writeCorpus(directory, seeded, snapshot, built);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
