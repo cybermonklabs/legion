@@ -1,0 +1,136 @@
+{
+  "nodes": [
+    {
+      "id": "acme-keeps-each-order",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#acme-keeps-each-order kind=\"behavior\"}\nACME keeps each order that a customer sends.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "an-order-survives-a-restart",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#an-order-survives-a-restart kind=\"behavior\" parent=\"acme-keeps-each-order\"}\nACME keeps each stored order after the order service starts again.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "a-crash-keeps-each-order",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#a-crash-keeps-each-order serves=\"an-order-survives-a-restart\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/acme/orders TestACrashKeepsEachOrder\" job=\"go-checks\"}\nClaim: The order service reads each stored order after a crash stops it and it starts again.\nProcedure: The program stores one order, stops the order service with a kill signal, starts it again and reads the orders.\nIt must find the order one time.\nFailing example: An order service that writes its orders to disk only when it stops normally.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "a-restart-keeps-each-order",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#a-restart-keeps-each-order serves=\"an-order-survives-a-restart\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/acme/orders TestARestartKeepsEachOrder\" job=\"go-checks\"}\nClaim: The order service reads each stored order after it starts again.\nProcedure: The program stores one order, starts the order service again and reads the orders.\nIt must find the order one time.\nFailing example: An order service that keeps its orders in memory only.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "orders-reach-billing-only-through-the-interface",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#orders-reach-billing-only-through-the-interface kind=\"structure\" parent=\"acme-keeps-each-order\" about=\"orders-to-billing\"}\nThe order service sends each order to billing only through the interface between them.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "no-order-skips-the-interface",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#no-order-skips-the-interface serves=\"orders-reach-billing-only-through-the-interface\" subject=\"graph\" procedure=\"query\"}\nClaim: No order goes from the order service to billing outside the interface.\nProcedure: The query returns each order that goes to billing outside the interface.\nIt must return none.\nFailing example: A copy of the graph with one order that goes to billing outside the interface.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "billing",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::component{#billing name=\"Billing\"}\nIt sends a bill for each order.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "orders",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::component{#orders name=\"Orders\"}\nIt keeps the orders that customers send.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "orders-to-billing",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::component{#orders-to-billing name=\"Orders to billing\" kind=\"interface\" joins=\"billing orders\"}\nOrders sends each order to billing through it.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "shipping",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::component{#shipping name=\"Shipping\"}\nIt sends the products of each paid order.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "order",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::term{#order name=\"order\"}\nAn order is a request of a customer for one or more products.\n:::\n"
+        }
+      ]
+    }
+  ]
+}
