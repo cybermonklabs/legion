@@ -1528,7 +1528,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr)); err != nil {
+	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
 		return err
 	}
 	from := issue.Phase
