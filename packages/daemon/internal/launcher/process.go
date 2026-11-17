@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // A deployed launcher is PID 1 in its role's private PID namespace. kill(-1) there includes
@@ -110,11 +114,126 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 	return ppid, pgid, errParent == nil && errGroup == nil
 }
 
+// pidGuard holds the pids of the launcher's own children that are no generation's, so a reap of
+// PID 1's leaves each exit to the wait that started it (pidGuard.reap: the orphan reaper's passes,
+// which skip them as they skip a manager's generation, and the controller pod's drain). A pid is
+// recorded as its process starts, under the lock every reap holds for its whole pass, so no pass
+// can read /proc between a child's start and its record. Every child the launcher's process starts
+// and waits for itself, but a generation, starts here: the test database's script (runTestPG), the
+// put-back's jj and git (bundleRestore) and the leak-check install's run of the check
+// (checkInstall). TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every
+// start that process reaches.
+type pidGuard struct {
+	mu   sync.Mutex
+	pids map[int]bool
+}
+
+// start runs cmd and answers its pid, recorded as the launcher's own.
+func (g *pidGuard) start(cmd *exec.Cmd) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	pid := cmd.Process.Pid
+	if g.pids == nil {
+		g.pids = map[int]bool{}
+	}
+	g.pids[pid] = true
+	return pid, nil
+}
+
+// done forgets pid once its own wait has read its exit.
+func (g *pidGuard) done(pid int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.pids, pid)
+}
+
+// starter is start and done as a procgroup.Starter, for the launcher's own children that run
+// through a package that takes one: the put-back's jj and git (workspace.RunCommand, from
+// restoreWorkspace) and the leak-check install's run of the check (leakguard.InstallServed). Its
+// start takes the guard's lock alone, as start does.
+func (g *pidGuard) starter() procgroup.Starter {
+	return func(cmd *exec.Cmd) (func(), error) {
+		pid, err := g.start(cmd)
+		if err != nil {
+			return nil, err
+		}
+		return func() { g.done(pid) }, nil
+	}
+}
+
+// held are the pids the reaper must skip. The caller holds the guard's lock for the whole pass.
+func (g *pidGuard) held() []int {
+	pids := make([]int, 0, len(g.pids))
+	for pid := range g.pids {
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+// reap is one pass of reapNamespace that leaves the guard's children, and skip, to their own
+// waits, under the guard's lock for the whole pass, and answers whether any other process of the
+// namespace is left that is none of the guard's children's (heldWithTheirs): their descendants and
+// group members are not counted, though an exited one PID 1 adopted is reaped, since no other wait
+// reads it. Every reap of the launcher's process runs here: the orphan reaper's passes
+// (reapOrphans, which skips each manager's generation) and the controller pod's drain of an exited
+// generation (cleanExitedGeneration), which so waits for no process of a held child's.
+func (g *pidGuard) reap(skip ...int) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	held := g.held()
+	spared, err := heldWithTheirs("/proc", held)
+	if err != nil {
+		return false, fmt.Errorf("list the processes the launcher holds: %w", err)
+	}
+	return reapNamespaceCounting(append(held, skip...), spared)
+}
+
+// signalNamespace sends sig to every process of PID 1's namespace but PID 1 and the guard's
+// children with theirs (heldWithTheirs), which the controller pod's drain leaves to finish and to
+// their own waits. While the guard holds nothing it is kill(-1), which reaches every process at
+// once, a setsid or daemonized one included; while it holds a child the signal goes process by
+// process, under the guard's lock, so no guarded child starts between the read of /proc and the
+// signals.
+func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	held := g.held()
+	if len(held) == 0 {
+		return signalGeneration(0, sig)
+	}
+	spared, err := heldWithTheirs("/proc", held)
+	if err != nil {
+		return fmt.Errorf("list the processes the launcher holds: %w", err)
+	}
+	pids, err := procPIDs("/proc")
+	if err != nil {
+		return fmt.Errorf("list role namespace processes: %w", err)
+	}
+	for _, pid := range pids {
+		if pid <= 1 || spared[pid] {
+			continue
+		}
+		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("signal role process %d: %w", pid, err)
+		}
+	}
+	return nil
+}
+
 // reapNamespace leaves each process of skip, a direct child exec.Cmd.Wait reads, to that wait.
 // Every other adopted child belongs to PID 1; Wait4 with WNOHANG reaps exited orphans without
 // delaying a resident worker's next turn, and never takes the exit status a generation's own wait
-// reports.
+// reports. It answers whether any process of the namespace is left but PID 1 and skip's.
 func reapNamespace(skip ...int) (bool, error) {
+	return reapNamespaceCounting(skip, nil)
+}
+
+// reapNamespaceCounting is reapNamespace that answers whether a process is left that is neither
+// in skip nor in uncounted, which it reaps all the same.
+func reapNamespaceCounting(skip []int, uncounted map[int]bool) (bool, error) {
 	pids, err := procPIDs("/proc")
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)
@@ -131,7 +250,7 @@ func reapNamespace(skip ...int) (bool, error) {
 		if err != nil && !errors.Is(err, syscall.ECHILD) && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EINTR) {
 			return false, fmt.Errorf("reap role process %d: %w", pid, err)
 		}
-		remaining = remaining || reaped != pid
+		remaining = remaining || (reaped != pid && !uncounted[pid])
 	}
 	return remaining, nil
 }
