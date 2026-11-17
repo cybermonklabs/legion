@@ -6,27 +6,22 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 )
 
 var updateTree = flag.Bool("update", false, "rewrite testdata/tree.golden from newRoot")
 
-// treeGolden is `legion`'s command tree as the spec's "Command trees" gives it, one line per
-// command (treeLines).
+// treeGolden is `legion`'s whole command tree, one line per command (treeLines): a command that
+// moves, appears or goes, or a flag that changes, is a change to this file a reviewer reads.
 const treeGolden = "testdata/tree.golden"
 
 // treeLines is the tree under cmd, one line per command in the order cobra lists them: its path,
@@ -54,9 +49,9 @@ func treeOf(root *cobra.Command) string {
 	return strings.Join(treeLines(root), "\n") + "\n"
 }
 
-// `legion`'s tree is the spec's: the three moves (config check, config reference, issue status),
-// every other command where it was, and the commands a program runs hidden. Each case after the
-// walk is a full invocation against a test double, with its exit code and effect.
+// `legion`'s tree is the golden one: `config check`, `config reference` and `issue status` where
+// they are, `start` without --check-config, and the commands a program runs hidden. Each case
+// after the walk is a full invocation against a test double, with its exit code and effect.
 func TestLegionTreeGolden(t *testing.T) {
 	got := treeOf(newRoot(io.Discard, io.Discard))
 	if *updateTree {
@@ -107,24 +102,26 @@ func TestLegionTreeGolden(t *testing.T) {
 			t.Fatalf("legion config-reference --json = %d, stdout %q, stderr %q; want 2 naming legion config reference", code, stdout, stderr)
 		}
 	})
-	t.Run("issue status reaches the daemon's status route once", func(t *testing.T) {
-		daemon := newStatusDaemon(t)
-		code, stdout, stderr := legionRun(t, "issue", "status", "DEMO-1", "todo", "--operator-token-file", operatorTokenFile(t), "--port", daemon.port)
+	t.Run("issue status sets the status through the daemon", func(t *testing.T) {
+		daemon := newControllerDaemon(t)
+		tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
+		code, stdout, stderr := legionRun(t, "issue", "status", "DEMO-1", "todo", "--operator-token-file", tokenFile, "--port", strconv.Itoa(daemon.port))
 		if code != 0 {
 			t.Fatalf("legion issue status DEMO-1 todo = %d, stdout %q, stderr %q; want 0", code, stdout, stderr)
 		}
-		if got := daemon.statusWrites(); !slices.Equal(got, []api.IssueStatusRequest{{GrantID: "grant-1", Issue: "DEMO-1", Status: "todo"}}) {
-			t.Fatalf("the status route got %+v, want one write of DEMO-1 todo under the minted grant", got)
+		if got := daemon.dispatch.writes; !slices.Equal(got, []string{"DEMO-1=todo"}) {
+			t.Fatalf("Dispatch was asked for %v, want one write of DEMO-1=todo", got)
 		}
 	})
 	t.Run("status <issue> <status> names issue status", func(t *testing.T) {
-		daemon := newStatusDaemon(t)
-		code, stdout, stderr := legionRun(t, "status", "DEMO-1", "todo", "--operator-token-file", operatorTokenFile(t), "--port", daemon.port)
+		daemon := newControllerDaemon(t)
+		tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
+		code, stdout, stderr := legionRun(t, "status", "DEMO-1", "todo", "--operator-token-file", tokenFile, "--port", strconv.Itoa(daemon.port))
 		if code != 2 || stdout != "" || !strings.Contains(stderr, `"legion issue status DEMO-1 todo"`) {
 			t.Fatalf("legion status DEMO-1 todo = %d, stdout %q, stderr %q; want 2 naming legion issue status", code, stdout, stderr)
 		}
 		if requests := daemon.requests(); len(requests) != 0 {
-			t.Fatalf("the daemon got %q, want nothing", requests)
+			t.Fatalf("%d requests reached the daemon, want none", len(requests))
 		}
 	})
 	t.Run("a mutant that keeps config-reference at the top fails the walk", func(t *testing.T) {
@@ -144,63 +141,4 @@ func legionRun(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	var out, errb bytes.Buffer
 	code = run(context.Background(), append([]string{"legion"}, args...), &out, &errb)
 	return code, out.String(), errb.String()
-}
-
-// statusDaemon is a daemon's two routes an issue status call reaches: the grants route, which
-// mints grant-1 for the operator bearer, and the issue status route, which records each write.
-type statusDaemon struct {
-	port   string
-	mu     sync.Mutex
-	seen   []string
-	writes []api.IssueStatusRequest
-}
-
-func newStatusDaemon(t *testing.T) *statusDaemon {
-	t.Helper()
-	d := &statusDaemon{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		d.seen = append(d.seen, r.Method+" "+r.URL.Path)
-		switch r.URL.Path {
-		case "/legion/v1/grants":
-			if r.Header.Get("Authorization") != "Bearer "+claimsOperatorToken {
-				http.Error(w, `{"error":"not the operator bearer"}`, http.StatusForbidden)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(api.GrantResponse{GrantID: "grant-1"})
-		case "/legion/v1/issues/status":
-			var write api.IssueStatusRequest
-			if err := json.NewDecoder(r.Body).Decode(&write); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			d.writes = append(d.writes, write)
-			_, _ = io.WriteString(w, "{}\n")
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	parsed, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, d.port, err = net.SplitHostPort(parsed.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d
-}
-
-func (d *statusDaemon) statusWrites() []api.IssueStatusRequest {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Clone(d.writes)
-}
-
-func (d *statusDaemon) requests() []string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Clone(d.seen)
 }

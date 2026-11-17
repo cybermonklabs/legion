@@ -1,33 +1,49 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/clitest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// buildLegion builds this package's `legion` into a directory of the test's own and answers its
+// legionBuildDir is where legionBuild puts the binary: a directory TestMain makes and removes.
+var legionBuildDir string
+
+// legionBuild builds this package's `legion` once for the whole test binary and answers its
 // path: the binary a caller runs, with no test code linked in, which is what clitest and the
-// invocation table drive.
+// invocation table drive. Every test that runs it only runs it, so one build serves them all.
+var legionBuild = sync.OnceValues(func() (string, error) {
+	binary := filepath.Join(legionBuildDir, "legion")
+	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("go build: %v\n%s", err, out)
+	}
+	return binary, nil
+})
+
+// buildLegion is legionBuild's binary, or the test's failure when it could not be built.
 func buildLegion(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "legion")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	binary, err := legionBuild()
+	if err != nil {
+		t.Fatal(err)
 	}
 	return binary
 }
 
-// legionCommands is every command a person runs, by its words, its groups included: the tree of
-// the spec's "Command trees" for `legion`.
+// legionCommands is every command a person runs, by its words, its groups included: the commands
+// of newRoot that do not set Hidden, which TestConformanceCaseIsTheTree holds it to.
 var legionCommands = [][]string{
 	{"version"},
 	{"config"}, {"config", "check"}, {"config", "reference"},
@@ -43,7 +59,8 @@ var legionCommands = [][]string{
 }
 
 // legionHidden is every command only a program runs — a pod's, a pane's, git's or an image
-// build's. Each sets Hidden, so neither help nor completion offers it, its group's included.
+// build's: the commands of newRoot that set Hidden, which TestConformanceCaseIsTheTree holds it
+// to. Each sets Hidden, so neither help nor completion offers it, its group's included.
 var legionHidden = [][]string{
 	{"worker-shim"},
 	{"launcher"}, {"launcher", "role-init"},
@@ -52,6 +69,54 @@ var legionHidden = [][]string{
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},
 	{"skills-check"}, {"git-credential"}, {"git"}, {"gh"},
 	{"leak-check"}, {"leak-check", "pre-push"}, {"leak-check", "text"},
+}
+
+// The conformance case's two lists are newRoot's commands, split by Hidden, cobra's own help and
+// completion left to clitest: a command added to the tree and to neither list fails here, so no
+// command passes clitest by being left out of its case.
+func TestConformanceCaseIsTheTree(t *testing.T) {
+	var visible, hidden [][]string
+	var walk func(cmd *cobra.Command, words []string)
+	walk = func(cmd *cobra.Command, words []string) {
+		for _, child := range cmd.Commands() {
+			if len(words) == 0 && (child.Name() == "help" || child.Name() == "completion") {
+				continue
+			}
+			path := append(slices.Clone(words), child.Name())
+			if child.Hidden {
+				hidden = append(hidden, path)
+			} else {
+				visible = append(visible, path)
+			}
+			walk(child, path)
+		}
+	}
+	walk(newRoot(io.Discard, io.Discard), nil)
+	for _, list := range []struct {
+		name         string
+		tree, listed [][]string
+	}{{"legionCommands", visible, legionCommands}, {"legionHidden", hidden, legionHidden}} {
+		tree, inCase := commandSet(list.tree), commandSet(list.listed)
+		for command := range tree {
+			if !inCase[command] {
+				t.Errorf("legion %s is in the tree and not in %s, so clitest never runs it", command, list.name)
+			}
+		}
+		for command := range inCase {
+			if !tree[command] {
+				t.Errorf("%s holds legion %s, which the tree does not have as such", list.name, command)
+			}
+		}
+	}
+}
+
+// commandSet is commands, each by its words joined with spaces.
+func commandSet(commands [][]string) map[string]bool {
+	set := make(map[string]bool, len(commands))
+	for _, words := range commands {
+		set[strings.Join(words, " ")] = true
+	}
+	return set
 }
 
 // The built `legion` keeps the rules every command line on cobra keeps (clitest's package
@@ -71,11 +136,21 @@ func TestLegionConformance(t *testing.T) {
 		Server:   recorder,
 	})
 	t.Run("hidden", func(t *testing.T) {
+		// Each group holding a hidden command, with the names of those commands.
+		var groups [][]string
+		names := map[string][]string{}
 		for _, command := range legionHidden {
 			if len(command) < 2 {
 				continue
 			}
-			group, name := command[:len(command)-1], command[len(command)-1]
+			group, key := command[:len(command)-1], strings.Join(command[:len(command)-1], " ")
+			if _, seen := names[key]; !seen {
+				groups = append(groups, group)
+			}
+			names[key] = append(names[key], command[len(command)-1])
+		}
+		for _, group := range groups {
+			hidden := names[strings.Join(group, " ")]
 			for _, args := range [][]string{slices.Concat(group, []string{"--help"}), slices.Concat([]string{"__complete"}, group, []string{""})} {
 				run := exec.Command(legion, args...)
 				run.Dir, run.Env = t.TempDir(), append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}, env...)
@@ -85,8 +160,8 @@ func TestLegionConformance(t *testing.T) {
 					continue
 				}
 				for line := range strings.Lines(string(out)) {
-					if fields := strings.Fields(line); len(fields) > 0 && fields[0] == name {
-						t.Errorf("legion %s lists %q, a command only a program runs:\n%s", strings.Join(args, " "), name, out)
+					if fields := strings.Fields(line); len(fields) > 0 && slices.Contains(hidden, fields[0]) {
+						t.Errorf("legion %s lists %q, a command only a program runs:\n%s", strings.Join(args, " "), fields[0], out)
 					}
 				}
 			}

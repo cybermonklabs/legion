@@ -46,8 +46,8 @@ func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 // claimsCommand is `legion claims <sub>`: declare gives it the flags of its own beside the ones
 // every claims command takes (newClaimsCall), and answers its body.
 func claimsCommand(sub, short string, declare func(c *claimsCall) action, stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: sub, Short: short}
-	cmd.RunE = runs(declare(newClaimsCall(cmd, sub, stdout, stderr)))
+	cmd := &cobra.Command{Use: sub, Short: short, Args: noArguments}
+	cmd.RunE = runs(declare(newClaimsCall(cmd, stdout, stderr)))
 	return cmd
 }
 
@@ -65,15 +65,15 @@ type claimsCall struct {
 // --json, and the --wait that bounds the whole call. Every subcommand takes it, so every one of
 // them answers — done, held until when, or refused with a reason — inside a bound the operator set
 // (dispatch://INFRA-714 R10).
-func newClaimsCall(cmd *cobra.Command, sub string, stdout, stderr io.Writer) *claimsCall {
-	c := newOperatorCall(cmd, "claims "+sub, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
+func newClaimsCall(cmd *cobra.Command, stdout, stderr io.Writer) *claimsCall {
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
 	c.withWait("how long the whole command may take before it refuses with what it was waiting for")
 	return &claimsCall{operatorCall: c, asJSON: c.flags.Bool("json", false, "print the daemon's answer as it served it")}
 }
 
 // check is operatorCall.check with --operator-token-file among the required flags.
-func (c *claimsCall) check(args []string, required ...string) (code int, ok bool) {
-	return c.operatorCall.check(args, append([]string{"operator-token-file"}, required...)...)
+func (c *claimsCall) check(required ...string) (code int, ok bool) {
+	return c.operatorCall.check(append([]string{"operator-token-file"}, required...)...)
 }
 
 // send is operatorCall.send on an operator claim route, printing through printer.
@@ -292,8 +292,8 @@ func claimsSpawn(c *claimsCall) action {
 	role := c.flags.String("role", "", "role the claim holds on the issue (required)")
 	promptFile := c.flags.String("prompt-file", "", "file holding an operator role-prompt override")
 	task := c.flags.String("task", "", "the claim's first task, sent once its agent is ready")
-	return func(ctx context.Context, args []string) int {
-		if code, ok := c.check(args, "tree", "issue", "role"); !ok {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("tree", "issue", "role"); !ok {
 			return code
 		}
 		op, ok := c.connect()
@@ -304,7 +304,7 @@ func claimsSpawn(c *claimsCall) action {
 		if *promptFile != "" {
 			body, err := os.ReadFile(*promptFile)
 			if err != nil {
-				fmt.Fprintf(c.stderr, "%s: read the role prompt: %v\n", c.name, err)
+				fmt.Fprintf(c.stderr, "%s: read the role prompt: %v\n", c.name(), err)
 				return 1
 			}
 			prompt = string(body)
@@ -319,8 +319,8 @@ func claimsSpawn(c *claimsCall) action {
 func claimsDeliver(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	task := c.flags.String("task", "", "the task (required)")
-	return func(ctx context.Context, args []string) int {
-		if code, ok := c.check(args, "claim", "task"); !ok {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim", "task"); !ok {
 			return code
 		}
 		op, ok := c.connect()
@@ -335,8 +335,8 @@ func claimsDeliver(c *claimsCall) action {
 func claimRequest(request string) func(c *claimsCall) action {
 	return func(c *claimsCall) action {
 		token := c.flags.String("claim", "", "the claim's token (required)")
-		return func(ctx context.Context, args []string) int {
-			if code, ok := c.check(args, "claim"); !ok {
+		return func(ctx context.Context, _ []string) int {
+			if code, ok := c.check("claim"); !ok {
 				return code
 			}
 			op, ok := c.connect()
@@ -353,8 +353,8 @@ func claimRequest(request string) func(c *claimsCall) action {
 func claimsForgetSession(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	session := c.flags.String("session", "", "the claim's recorded session to abandon (required)")
-	return func(ctx context.Context, args []string) int {
-		if code, ok := c.check(args, "claim", "session"); !ok {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim", "session"); !ok {
 			return code
 		}
 		op, ok := c.connect()
@@ -378,8 +378,8 @@ func claimsForgetSession(c *claimsCall) action {
 // Pi's own words for it, and whatever task the claim owed has gone again in either case.
 func claimsCompact(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
-	return func(ctx context.Context, args []string) int {
-		if code, ok := c.check(args, "claim"); !ok {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim"); !ok {
 			return code
 		}
 		op, ok := c.connect()
@@ -423,11 +423,11 @@ func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")
 	fresh := c.flags.Bool("fresh-session", false, "start the claim in a new session rather than resuming the recorded one")
-	return func(ctx context.Context, args []string) int { return c.retry(ctx, args, *token, *failed, *fresh) }
+	return func(ctx context.Context, _ []string) int { return c.retry(ctx, *token, *failed, *fresh) }
 }
 
-func (c *claimsCall) retry(ctx context.Context, args []string, token string, failed, fresh bool) int {
-	if code, ok := c.check(args); !ok {
+func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool) int {
+	if code, ok := c.check(); !ok {
 		return code
 	}
 	if (token == "") != failed {
@@ -455,7 +455,7 @@ func (c *claimsCall) retry(ctx context.Context, args []string, token string, fai
 	}
 	var list api.OperatorClaims
 	if err := decodeAnswer(answer, &list); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, claimsRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
 		return 1
 	}
 	code := 0
@@ -464,7 +464,7 @@ func (c *claimsCall) retry(ctx context.Context, args []string, token string, fai
 			continue
 		}
 		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
-			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name, held.Token)
+			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), held.Token)
 			code = 1
 		}
 	}
@@ -482,11 +482,11 @@ const suspendPoll = 250 * time.Millisecond
 // is charged nothing.
 func claimsSuspend(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
-	return func(ctx context.Context, args []string) int { return c.suspend(ctx, args, *token) }
+	return func(ctx context.Context, _ []string) int { return c.suspend(ctx, *token) }
 }
 
-func (c *claimsCall) suspend(ctx context.Context, args []string, token string) int {
-	if code, ok := c.check(args, "claim"); !ok {
+func (c *claimsCall) suspend(ctx context.Context, token string) int {
+	if code, ok := c.check("claim"); !ok {
 		return code
 	}
 	op, ok := c.connect()
@@ -522,12 +522,12 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		var list api.OperatorClaims
 		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, claimsRoute, err)
+			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
 			return nil, false
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })
 		if i < 0 {
-			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not suspended\n", c.name, token)
+			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not suspended\n", c.name(), token)
 			return nil, false
 		}
 		seen := list.Claims[i]
@@ -535,28 +535,28 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		case supervise.StateSuspended:
 			suspended, err := json.Marshal(seen)
 			if err != nil {
-				fmt.Fprintf(c.stderr, "%s: %v\n", c.name, err)
+				fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 				return nil, false
 			}
 			// One line, as the daemon's own answers are.
 			return append(suspended, '\n'), true
 		case supervise.StateFailed, supervise.StateRetired:
-			fmt.Fprintf(c.stderr, "%s: %s is %s, so it will not be suspended\n", c.name, token, seen.State)
+			fmt.Fprintf(c.stderr, "%s: %s is %s, so it will not be suspended\n", c.name(), token, seen.State)
 			return nil, false
 		}
 		if !seen.SuspensionHeld {
 			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the suspension of %s, which is %s: a start run against "+
-				"the claim dropped it, or the daemon restarted\n", c.name, token, seen.State)
+				"the claim dropped it, or the daemon restarted\n", c.name(), token, seen.State)
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name, token, seen.State, *c.wait)
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
 			return nil, false
 		}
 		select {
 		case <-ctx.Done():
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name, ctx.Err())
+			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), ctx.Err())
 			return nil, false
 		case <-time.After(suspendPoll):
 		}
@@ -565,8 +565,8 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 
 // claimsList prints every claim the daemon supervises, one line each, in token order.
 func claimsList(c *claimsCall) action {
-	return func(ctx context.Context, args []string) int {
-		if code, ok := c.check(args); !ok {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check(); !ok {
 			return code
 		}
 		op, ok := c.connect()

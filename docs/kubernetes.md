@@ -2166,7 +2166,7 @@ keep a copy of the block as it was, which a rollback puts back.
 the volume names `role-homes` and `role-probe`;
 a mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home`, `/var/run/legion/role-probe`, `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc`;
 and a mount at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or the image's other spellings of them.
-Run this release's `legion config check` on the file before the rollout.
+Run this release's `legion start --check-config` on the file before the rollout.
 
 To roll this release back to contract 38, every stored locator and every issue Sandbox both go back to what the earlier release reads.
 Re-pinning alone boots neither:

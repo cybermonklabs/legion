@@ -74,11 +74,11 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 // --wait defaults to one minute, which is the bound a command with no flag of its own runs under.
 func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 	cmd := &cobra.Command{Use: "suspend"}
-	c := newClaimsCall(cmd, "suspend", &bytes.Buffer{}, &bytes.Buffer{})
+	c := newClaimsCall(cmd, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := cmd.ParseFlags([]string{"--operator-token-file", operatorTokenFile(t)}); err != nil {
 		t.Fatalf("the flags were refused: %v", err)
 	}
-	if code, ok := c.check(cmd.Flags().Args()); !ok {
+	if code, ok := c.check(); !ok {
 		t.Fatalf("check exited %d, want it to accept a command with no --wait", code)
 	}
 	if *c.wait != time.Minute {

@@ -22,20 +22,15 @@ func newIssueStatusCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status <issue> todo|backlog|icebox --operator-token-file <file>",
 		Short: "set an issue's Dispatch status to todo, backlog or icebox, as a controller does",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 2 {
-				return usageError{fmt.Errorf("name the issue and its status, todo, backlog or icebox (got %d words)", len(args))}
-			}
-			return nil
-		},
+		Args:  exactWords(2, "the issue and its status, todo, backlog or icebox"),
 	}
-	c := newOperatorCall(cmd, "issue status", "file holding the operator bearer, which mints the controller grant (required)", stdout, stderr)
+	c := newOperatorCall(cmd, "file holding the operator bearer, which mints the controller grant (required)", stdout, stderr)
 	cmd.RunE = runs(func(ctx context.Context, args []string) int { return runIssueStatus(ctx, c, args[0], args[1]) })
 	return cmd
 }
 
 func runIssueStatus(ctx context.Context, c *operatorCall, issue, status string) int {
-	if code, ok := c.check(nil, "operator-token-file"); !ok {
+	if code, ok := c.check("operator-token-file"); !ok {
 		return code
 	}
 	if status != "todo" && status != "backlog" && status != "icebox" {

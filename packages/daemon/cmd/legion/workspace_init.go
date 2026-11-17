@@ -71,7 +71,7 @@ func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func newWorkspaceFetchCommand(stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: workspaceUse(workspaceFetchUsage), Short: "fill the pod's feed directory with the repository, from its cache or from GitHub", Hidden: true, Args: noArguments}
+	cmd := &cobra.Command{Use: "fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]", Short: "fill the pod's feed directory with the repository, from its cache or from GitHub", Hidden: true, Args: noArguments}
 	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
 	feed := cmd.Flags().String("feed", "", "the pod's feed directory, the container's own (required)")
 	cacheURL := cmd.Flags().String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
@@ -82,7 +82,7 @@ func newWorkspaceFetchCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func newWorkspaceSkillsCommand(stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: workspaceUse(workspaceSkillsUsage), Short: "clone the deployment's skills marketplace into the pod's skills volume", Hidden: true, Args: noArguments}
+	cmd := &cobra.Command{Use: "skills --repo <owner>/<repo> --dir <dir>", Short: "clone the deployment's skills marketplace into the pod's skills volume", Hidden: true, Args: noArguments}
 	repo := cmd.Flags().String("repo", "", "the skills marketplace repository as <owner>/<name> (required)")
 	dir := cmd.Flags().String("dir", "", "the pod's skills volume root, the container's own (required)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
@@ -92,7 +92,7 @@ func newWorkspaceSkillsCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: workspaceUse(workspaceProvisionUsage), Short: "provision the issue's clone and jj workspace on the pod's disk from the feed", Hidden: true, Args: noArguments}
+	cmd := &cobra.Command{Use: strings.TrimPrefix(workspaceProvisionUsage, "legion workspace-init "), Short: "provision the issue's clone and jj workspace on the pod's disk from the feed", Hidden: true, Args: noArguments}
 	issue := cmd.Flags().String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
 	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
 	defaultBranch := cmd.Flags().String("default-branch", "", "the repository's default branch as GitHub names it, where an issue with no branch starts (required)")
@@ -103,12 +103,6 @@ func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 		return workspaceInitExit(cmd, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
 	})
 	return cmd
-}
-
-// workspaceUse is a subcommand's cobra Use, its usage line without the words before its own name:
-// `fetch --repo <owner>/<repo> …` of `legion workspace-init fetch --repo <owner>/<repo> …`.
-func workspaceUse(usage string) string {
-	return strings.TrimPrefix(usage, "legion workspace-init ")
 }
 
 // workspaceInitExit is a subcommand's exit status once it has run: 0, or its failure on stderr

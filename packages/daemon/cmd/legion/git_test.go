@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -629,21 +628,15 @@ func TestGitWrapperLeavesGitsHelpAndPathWordsAlone(t *testing.T) {
 	}
 }
 
-// legion git answers -h, -help and --help with its usage on stderr and exit 0. The usage starts
-// `usage: legion git --`, and no line of it is one the docs site's CLI generator reads as a
-// subcommand, checked with the generator's own pattern (docs/site/generators/legion-cli.sh).
+// legion git answers -h, -help and --help with its usage on stderr and exit 0: it reads its own
+// arguments (passThrough), so a help request is its own to answer. The usage starts
+// `usage: legion git --`.
 func TestGitWrapperHelpPrintsUsage(t *testing.T) {
-	subcommand := regexp.MustCompile(`^[[:space:]]*(usage:[[:space:]]+)?legion git [a-z]`)
 	for _, help := range []string{"-h", "-help", "--help"} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "git", help}, &out, &errb)
 		if code != 0 || out.Len() != 0 || !strings.HasPrefix(errb.String(), "usage: legion git --") {
 			t.Fatalf("legion git %s = %d, stdout %q, stderr %q", help, code, out.String(), errb.String())
-		}
-		for line := range strings.SplitSeq(errb.String(), "\n") {
-			if subcommand.MatchString(line) {
-				t.Errorf("legion git %s prints %q, which the docs generator reads as a subcommand", help, line)
-			}
 		}
 	}
 }

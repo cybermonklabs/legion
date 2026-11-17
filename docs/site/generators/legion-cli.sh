@@ -52,41 +52,44 @@ help() {
   printf '%s\n' "$output"
 }
 
+# under prints the lines of <text> under the line <heading>, up to the first blank line.
+under() {
+  local heading=$1 text=$2 line found=0
+  while IFS= read -r line; do
+    if [ "$found" = 0 ]; then
+      if [ "$line" = "$heading" ]; then found=1; fi
+      continue
+    fi
+    [ -n "$line" ] || break
+    printf '%s\n' "$line"
+  done <<<"$text"
+}
+
 # usage says whether <help> holds a usage line of <path>: a line under `Usage:` that is <path>
 # alone or <path> and more words.
 usage() {
-  local path=$1 text=$2 line under=0
+  local path=$1 line
   while IFS= read -r line; do
-    if [ "$line" = "Usage:" ]; then
-      under=1
-      continue
-    fi
-    [ "$under" = 1 ] || continue
-    [ -n "$line" ] || return 1
     case $line in
     "  $path" | "  $path "*) return 0 ;;
     esac
-  done <<<"$text"
+  done <<<"$(under Usage: "$2")"
   return 1
 }
 
 # commands prints, one per line and tab-separated, the name and summary of each command <help>
-# lists under "Available Commands:", leaving out cobra's own help and completion.
+# lists under "Available Commands:", leaving out cobra's own help and completion. Its caller
+# captures what it prints (`listing=$(commands …)`), so a line it cannot read stops the build.
 commands() {
-  local text=$1 line listing=0
+  local line
   while IFS= read -r line; do
-    if [ "$line" = "Available Commands:" ]; then
-      listing=1
-      continue
-    fi
-    [ "$listing" = 1 ] || continue
-    [ -n "$line" ] || break
+    [ -n "$line" ] || continue
     [[ $line =~ ^\ \ ([a-z][a-z-]*)\ +(.*)$ ]] || fail "unexpected line in a command list: $line"
     case ${BASH_REMATCH[1]} in
     help | completion) continue ;;
     esac
     printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
-  done <<<"$text"
+  done <<<"$(under 'Available Commands:' "$1")"
 }
 
 # escape makes text safe in a Markdown paragraph or table cell: `<team>` would be read as HTML.
@@ -100,16 +103,17 @@ escape() {
 }
 
 top=$(help --help)
-if ! usage legion "$top" || ! grep -qx '  legion \[command\]' <<<"$top"; then
+grep -qx '  legion \[command\]' <<<"$top" ||
   fail "the legion on PATH ($legion) is not the Legion daemon's Go CLI: its --help has no 'legion [command]' usage line"
-fi
 
 names=()
 summaries=()
+listing=$(commands "$top")
 while IFS=$'\t' read -r name summary; do
+  [ -n "$name" ] || continue
   names+=("$name")
   summaries+=("$summary")
-done < <(commands "$top")
+done <<<"$listing"
 [ "${#names[@]}" -gt 0 ] || fail "legion --help lists no commands"
 
 out=$content/legion/reference
@@ -122,7 +126,7 @@ page=$out/cli.md
 section() {
   local level=$1
   shift
-  local path="$*" text sub hashes ticks
+  local path="$*" text sub hashes ticks listing
   hashes=$(printf '%*s' "$level" '' | tr ' ' '#')
   text=$(help "$@" --help)
   ticks=$(fence <<<"$text")
@@ -130,10 +134,11 @@ section() {
     printf '%s legion %s\n\n' "$hashes" "$path"
     printf '%stext\n%s\n%s\n\n' "$ticks" "$text" "$ticks"
   } >>"$page"
+  listing=$(commands "$text")
   while IFS=$'\t' read -r sub _; do
     [ -n "$sub" ] || continue
     section $((level + 1)) "$@" "$sub"
-  done < <(commands "$text")
+  done <<<"$listing"
 }
 
 version=$(help version)

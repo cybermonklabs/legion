@@ -56,7 +56,6 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 	)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
 	// cobra's completion command runs nothing of its own, so a word naming none of its shells
 	// would print its help and exit 0: it is a group like every other. Execute adds no second one.
 	root.InitDefaultCompletionCmd()
@@ -195,7 +194,10 @@ func runs(do action) func(*cobra.Command, []string) error {
 // group is cmd as a command that holds children: a word naming none of them is a usage error with
 // cobra's suggestions (commandNamed), and the group with no word prints its usage on stderr and
 // exits 2. cobra would answer both with the group's help and exit 0, and its suggestions read
-// SuggestionsMinimumDistance only where cobra itself looks a word up.
+// SuggestionsMinimumDistance only where cobra itself looks a word up. A word naming no command
+// is that error even when a flag after it is no flag of the group's: cobra reads the group's flags
+// before its words, and `legion workspace-init init --issue X` would be refused for --issue. Every
+// other flag error of the group, and of each command under it, is a usage error.
 func group(cmd *cobra.Command, children ...*cobra.Command) *cobra.Command {
 	cmd.Args = commandNamed
 	cmd.SuggestionsMinimumDistance = 2
@@ -203,6 +205,12 @@ func group(cmd *cobra.Command, children ...*cobra.Command) *cobra.Command {
 		fmt.Fprint(cmd.ErrOrStderr(), cmd.UsageString())
 		return exitCode(2)
 	}
+	cmd.SetFlagErrorFunc(func(failed *cobra.Command, err error) error {
+		if words := failed.Flags().Args(); failed == cmd && len(words) > 0 {
+			return commandNamed(failed, words)
+		}
+		return usageError{err}
+	})
 	cmd.AddCommand(children...)
 	return cmd
 }

@@ -91,7 +91,7 @@ func (s *statusWrites) SetStatus(_ context.Context, key, status string) (dispatc
 	return dispatch.Issue{}, nil
 }
 
-// controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion status`
+// controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion issue status`
 // reach it: the real api.NewServer over an in-memory controller record, grants, and Dispatch, on
 // a loopback port, with every request that reached it recorded.
 type controllerDaemon struct {
@@ -201,7 +201,7 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
-// `legion status` reach it: the real api.NewServer over an in-memory controller record, grants,
+// `legion issue status` reach it: the real api.NewServer over an in-memory controller record, grants,
 // and Dispatch, on a loopback port, with every request that reached it recorded.
 func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) *controllerDaemon {
 	t.Helper()

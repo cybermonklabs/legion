@@ -521,14 +521,14 @@ func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 		Short: "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)",
 		Args:  configOnly,
 	}
-	c := newOperatorCall(cmd, "state", "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
 	asJSON := cmd.Flags().Bool("json", false, "print the state as the daemon serves it")
-	cmd.RunE = runs(func(ctx context.Context, args []string) int { return runState(ctx, c, *asJSON, args, stdout, stderr) })
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return runState(ctx, c, *asJSON, stdout, stderr) })
 	return cmd
 }
 
-func runState(ctx context.Context, c *operatorCall, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if code, ok := c.check(args); !ok {
+func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr io.Writer) int {
+	if code, ok := c.check(); !ok {
 		return code
 	}
 	op, ok := c.connect()
@@ -1485,11 +1485,11 @@ func runLegions(asJSON bool, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// oneWord refuses every count of words but one: the command's one argument, which what names.
-func oneWord(what string) cobra.PositionalArgs {
+// exactWords refuses every count of words but n: the command's arguments, which what names.
+func exactWords(n int, what string) cobra.PositionalArgs {
 	return func(_ *cobra.Command, args []string) error {
-		if len(args) != 1 {
-			return usageError{fmt.Errorf("name one %s (got %d words)", what, len(args))}
+		if len(args) != n {
+			return usageError{fmt.Errorf("name %s (got %d words)", what, len(args))}
 		}
 		return nil
 	}
@@ -1499,7 +1499,7 @@ func newStatusCommand(stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status <team>",
 		Short: "say whether a team's daemon is running",
-		Args:  oneWord("team"),
+		Args:  exactWords(1, "one team"),
 		RunE: runs(func(ctx context.Context, args []string) int {
 			return runStatus(ctx, args[0], stdout, stderr)
 		}),
@@ -1544,7 +1544,7 @@ func newRestartCommand(stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart <team>",
 		Short: "stop a registered daemon and start it again from the configuration it recorded",
-		Args:  oneWord("team"),
+		Args:  exactWords(1, "one team"),
 		RunE: runs(func(ctx context.Context, args []string) int {
 			return runRestart(ctx, args[0], stderr)
 		}),

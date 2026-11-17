@@ -22,9 +22,18 @@ import (
 // and old_stdout_sha256 columns, in place of comparing.
 var recordInvocations = flag.String("record-invocations", "", "a legion binary of the release before: write its exit and stdout digest for each row's argv into testdata/invocations.tsv")
 
-// invocationsTable is every call of `legion` its callers make outside tests: the daemon's
-// rendered argv, the image's wrappers and hooks, CI, the docs generators and walkthroughs, and the
-// deployment repository's programs and workflows (Shared contracts, "Invocation table").
+// invocationsTable is the calls of `legion` outside tests that one search found when `legion`
+// moved to cobra, read at this repository's 0af7286346, the deployment repository's c76d6d5e59 and
+// the dotfiles' b975ec0c72: `git grep` of each for `legion` followed by one of its command words,
+// and of the daemon for its argv builders (`exec.Command`, `[]string{` with a command word), each
+// hit read in its file — the daemon's rendered argv, the image's wrappers and hooks, CI, the docs
+// generators and walkthroughs, and the deployment repository's programs and workflows. Nothing
+// finds a caller added later: by convention, whoever adds one adds its row. Its columns: the
+// caller (repository, file:line and symbol or step); the argv as the caller writes it; the exit
+// status and stdout sha256 the release before gave it (`-` for a caller that reads the new
+// output); the argv the caller runs now; and where that argv moved — `this-pr` in the change that
+// moved the command, `pin-pr:<pin>` in the deployment repository's pin of the release that holds
+// it, or `unchanged`.
 const invocationsTable = "testdata/invocations.tsv"
 
 // absentRoot is where every absolute path a row names is moved to, a directory no machine has:
@@ -84,18 +93,21 @@ var absolutePrefixes = []string{"/var/run/legion", "/opt/legion", "/opt/omp", "/
 // pflag reads as a cluster of one-letter flags.
 var singleDashLong = regexp.MustCompile(`^-[A-Za-z][A-Za-z-]+$`)
 
+// placeholder is a `<name>` of a row, which placeholderValues gives the value of.
+var placeholder = regexp.MustCompile(`<([^<>]+)>`)
+
 // invocation is one row of the table.
 type invocation struct {
 	caller, argv, oldExit, oldDigest, newArgv, movedIn string
 }
 
-// Every call of `legion` its callers make outside tests runs, in its new form, against the built
-// binary with the exit status and standard output the release before gave the old form: a caller
-// that relied on how Go's flag package read its words (a single-dash long flag, a flag after a
-// positional, a word after a wrapper's `--`) is a row whose run differs. Each run reads and writes
-// nothing of the machine: its paths are under absentRoot, its HOME and working directory are the
-// test's own, and nothing it calls answers. A row whose caller this change moved to a new output
-// carries `-` for the digest: its exit is compared, and the caller's own test reads the output.
+// Each row of the table runs, in its new form, against the built binary with the exit status and
+// standard output the release before gave the old form: a caller that relied on how Go's flag
+// package read its words (a single-dash long flag, a flag after a positional, a word after a
+// wrapper's `--`) is a row whose run differs. Each run reads and writes nothing of the machine:
+// its paths are under absentRoot, its HOME and working directory are the test's own, and nothing
+// it calls answers. A row whose caller this change moved to a new output carries `-` for the
+// digest: its exit is compared, and the caller's own test reads the output.
 func TestInvocationTable(t *testing.T) {
 	rows := readInvocations(t)
 	if len(rows) == 0 {
@@ -146,9 +158,7 @@ func readInvocations(t *testing.T) []invocation {
 		if len(f) != 6 {
 			t.Fatalf("%s:%d: %d columns, want 6: %q", invocationsTable, i+2, len(f), line)
 		}
-		switch f[5] {
-		case "this-pr", "unchanged", "pin-pr:l1-pin":
-		default:
+		if f[5] != "this-pr" && f[5] != "unchanged" && (!strings.HasPrefix(f[5], "pin-pr:") || f[5] == "pin-pr:") {
 			t.Fatalf("%s:%d: moved_in %q", invocationsTable, i+2, f[5])
 		}
 		if f[5] == "unchanged" && f[1] != f[4] {
@@ -189,7 +199,6 @@ func concrete(t *testing.T, argv string) []string {
 	if err != nil || len(words) == 0 || words[0] != "legion" {
 		t.Fatalf("%q is no legion command line: %v", argv, err)
 	}
-	placeholder := regexp.MustCompile(`<([^<>]+)>`)
 	var args []string
 	for _, word := range words[1:] {
 		var unknown []string

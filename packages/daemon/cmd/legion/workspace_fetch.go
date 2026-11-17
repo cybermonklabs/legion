@@ -17,8 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workspaceFetchUsage = "legion workspace-init fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]"
-
 // cacheURLEnv is where the runtime names the repository's cache to the fetch container, beside its
 // token's file (LEGION_REPOSITORY_CACHE_TOKEN_FILE); --cache-url defaults to it.
 const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"

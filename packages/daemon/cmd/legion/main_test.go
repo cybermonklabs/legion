@@ -52,8 +52,9 @@ func TestMain(m *testing.M) {
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
-// their own and removes it afterwards. The removal is deferred, so it also runs when the setup
-// below panics. A run killed by a signal still keeps the directory, which nothing here can help.
+// their own, and a directory for the one `legion` the command-line tests build (legionBuild), and
+// removes both afterwards. The removal is deferred, so it also runs when the setup below panics.
+// A run killed by a signal still keeps the directories, which nothing here can help.
 func runWithoutTheOperatorsJJConfig(m *testing.M) int {
 	// Every test below starts isolated from the operator's own jj configuration — in particular
 	// fsmonitor.backend = "watchman" on this devbox: JJ_CONFIG names a file that does not exist,
@@ -73,6 +74,13 @@ func runWithoutTheOperatorsJJConfig(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "TestMain:", err)
 		return 1
 	}
+	buildDir, err := os.MkdirTemp("", "legion-test-build")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	defer os.RemoveAll(buildDir)
+	legionBuildDir = buildDir
 	return m.Run()
 }
 

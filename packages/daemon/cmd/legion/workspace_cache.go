@@ -15,10 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workspaceCacheUsage = "legion workspace-init cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]"
-
 func newWorkspaceCacheCommand(stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: workspaceUse(workspaceCacheUsage), Short: "serve a repository cache's bare clone, fetching it from GitHub on a schedule", Hidden: true, Args: noArguments}
+	cmd := &cobra.Command{Use: "cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]", Short: "serve a repository cache's bare clone, fetching it from GitHub on a schedule", Hidden: true, Args: noArguments}
 	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
 	root := cmd.Flags().String("root", "", "the cache's own volume, where the bare clone lives (required)")
 	listen := cmd.Flags().String("listen", fmt.Sprintf(":%d", repocache.Port), "the address the cache serves /healthz and /tar on")

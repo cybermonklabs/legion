@@ -16,8 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const skillsCheckUsage = "legion skills-check --dir <skills volume> --omp <omp path>"
-
 // ompPluginList is what `omp plugin list --json` answers, of which this reads the marketplace
 // plugins alone: each entry's id is `<plugin>@<marketplace>`, and each of its install entries names
 // the directory that scope's install put the plugin's files in. The npm plugins the image carries
@@ -130,7 +128,7 @@ func skillsRecordLine(path string) (string, error) {
 
 func newSkillsCheckCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    strings.TrimPrefix(skillsCheckUsage, "legion "),
+		Use:    "skills-check --dir <skills volume> --omp <omp path>",
 		Short:  "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)",
 		Hidden: true,
 		Args:   noArguments,

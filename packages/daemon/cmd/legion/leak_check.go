@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -34,15 +33,14 @@ func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
 		Short:  "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)",
 		Hidden: true,
 	},
-		leakCheckCommand("pre-push <remote> <url>", leakCheckPrePushUsage, "check a push before git makes it", runLeakCheckPrePush, stderr),
-		leakCheckCommand("text <kind>", leakCheckTextUsage, "check a text about to be published", runLeakCheckText, stderr),
+		leakCheckCommand("pre-push <remote> <url>", 2, leakCheckPrePushUsage, "check a push before git makes it", runLeakCheckPrePush, stderr),
+		leakCheckCommand("text <kind>", 1, leakCheckTextUsage, "check a text about to be published", runLeakCheckText, stderr),
 	)
 }
 
-// leakCheckCommand is one shape of `legion leak-check`: use names it and its words, and any other
-// count of words is a usage error, the guard's StatusSetupFailure, with usage on stderr.
-func leakCheckCommand(use, usage, short string, do func(ctx context.Context, args []string, stderr io.Writer) int, stderr io.Writer) *cobra.Command {
-	words := len(strings.Fields(use)) - 1
+// leakCheckCommand is one shape of `legion leak-check`: it takes words words, and any other count
+// is a usage error, the guard's StatusSetupFailure, with usage on stderr.
+func leakCheckCommand(use string, words int, usage, short string, do func(ctx context.Context, args []string, stderr io.Writer) int, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:    use,
 		Short:  short,
