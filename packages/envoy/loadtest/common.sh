@@ -177,19 +177,46 @@ lock_record_runs() {
   [ "$(lock_record_ns "$1")" = here ] && lock_pid_alive "$(lock_field pid "$1")"
 }
 
+# printable TEXT: TEXT with every byte outside printable ASCII written as an escape (\n, \r, \t,
+# and \xNN for any other), and a backslash as \\, as .github/scripts/race_memory.py prints a
+# process name. A process's command line is whatever its process gave itself, and a refusal
+# prints it to a terminal or a log, so a carriage return, an escape sequence or a newline must not
+# reach either as it is. Read byte by byte (LC_ALL=C), so a byte that is not UTF-8 is escaped too.
+printable() {
+  local LC_ALL=C
+  local text=$1 out="" char i
+  for ((i = 0; i < ${#text}; i++)); do
+    char=${text:i:1}
+    case $char in
+      $'\n') out+='\n' ;;
+      $'\r') out+='\r' ;;
+      $'\t') out+='\t' ;;
+      \\) out+="\\\\" ;;
+      [[:print:]]) out+=$char ;;
+      *)
+        printf -v char '\\x%02x' "'$char"
+        out+=$char
+        ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # lock_holders FILE: "pid N (command)" of each process whose descriptor 9 is open on FILE, joined
-# with ", ".
+# with ", ", each command line through printable.
 lock_holders() {
   local file=$1 dir cmd out=""
   for dir in /proc/[0-9]*; do
     [ "$dir/fd/9" -ef "$file" ] 2>/dev/null || continue
     cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
-    out+="${out:+, }pid ${dir#/proc/} (${cmd% })"
+    out+="${out:+, }pid ${dir#/proc/} ($(printable "${cmd% }"))"
   done
   [ -z "$out" ] || printf '%s\n' "$out"
 }
 
-# lock_take FILE: this process has just locked FILE on descriptor 9; write its record.
+# lock_take FILE: this process has just locked FILE on descriptor 9; write its record. The command
+# line goes through printable, so the record keeps one line per field whatever the command line
+# holds, and a refusal that quotes it (lock_root) prints no control character.
 lock_take() {
   local file=$1 command token
   # Empty the file before anything else, so that a refused caller never reads the previous
@@ -197,7 +224,7 @@ lock_take() {
   : >"$file"
   command=$(tr '\0' ' ' <"/proc/$$/cmdline")
   token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-  printf 'pid=%s\npidns=%s\ncommand=%s\nstarted=%s\ntoken=%s\n' "$$" "$(lock_pidns)" "${command% }" \
+  printf 'pid=%s\npidns=%s\ncommand=%s\nstarted=%s\ntoken=%s\n' "$$" "$(lock_pidns)" "$(printable "${command% }")" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$token" >"$file"
   export LOADTEST_LOCK_TOKEN=$token
 }

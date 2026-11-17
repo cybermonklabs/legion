@@ -497,6 +497,70 @@ case_stack_ports() {
   printf 'PASS: the default ports follow LOADTEST_ROOT, two roots in two blocks share no port, and each LOADTEST_*_PORT overrides its own\n'
 }
 
+# case_holder_names_escaped: a holder's command line is whatever its process gave itself, and a
+# refusal prints it: lock_holders (the lock's descriptor 9), the lock record's command, which a
+# refusal quotes, and stack.sh's port_holder (a listening socket) print each one with a carriage
+# return, a newline, a tab, an escape, a backslash and a byte that is not ASCII written as escapes,
+# so nothing a process names itself reaches a terminal or a log as it is.
+case_holder_names_escaped() {
+  out=""
+  local dir="${temporary_dir}/escaped" weird want holder listener port line i
+  mkdir -p "$dir"
+  weird=$'a\rb\nc\td\e[0m\\e\xff'
+  want='a\rb\nc\td\x1b[0m\\e\xff'
+  : >"$dir/lock"
+  # The `:` keeps bash from executing sleep in its own place, which would drop the command line
+  # under test.
+  bash -c 'exec 9>>"$1"; sleep 300 9>&-; :' holder "$dir/lock" "$weird" &
+  holder=$!
+  pids+=("$holder")
+  for ((i = 0; i < 100; i++)); do [ "$(readlink "/proc/$holder/fd/9" 2>/dev/null)" = "$dir/lock" ] && break; sleep 0.1; done
+  out=$(bash -c 'source "$1"; lock_holders "$2"' check "$helper" "$dir/lock")
+  [[ $out == *"pid $holder (bash -c exec 9>>\"\$1\"; sleep 300 9>&-; : holder $dir/lock $want)"* ]] ||
+    { fail "lock_holders did not print the holder's command line escaped"; return; }
+  [[ $out != *[$'\r\n\t\e']* && $out != *$'\xff'* ]] ||
+    { fail "lock_holders printed a control character or a byte that is not ASCII as it is"; return; }
+
+  # The record lock_take writes: one line per field, its command escaped.
+  bash -c 'source "$1"; exec 9>"$2"; lock_take "$2"' taker "$helper" "$dir/record" "$weird"
+  out=$(<"$dir/record")
+  [ "$(wc -l <"$dir/record")" = 5 ] || { fail "lock_take's record is not five lines"; return; }
+  line=$(grep '^command=' "$dir/record")
+  [ "$line" = "command=bash -c source \"\$1\"; exec 9>\"\$2\"; lock_take \"\$2\" taker $helper $dir/record $want" ] ||
+    { fail "lock_take's record does not hold the command line escaped"; return; }
+
+  # stack.sh's port_holder, its function as stack.sh defines it, over a listener named the same.
+  # Its proc root holds the network tables and the listener alone: over the host's /proc the walk
+  # reads every descriptor of every process, minutes on a shared machine. The listener is Python by
+  # its own path: a version manager's python3 shim passes its arguments on as text, the 0xff byte
+  # replaced by U+FFFD, and the listener's command line would no longer be the one under test.
+  "$(python3 -c 'import sys; print(sys.executable)')" -c '
+import os, socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen()
+open(sys.argv[1] + ".tmp", "w").write(str(s.getsockname()[1]))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)
+' "$dir/port" "$weird" &
+  listener=$!
+  pids+=("$listener")
+  wait_for "$dir/port" || { fail "the listener wrote no port"; return; }
+  port=$(<"$dir/port")
+  mkdir -p "$dir/proc/net"
+  ln -s /proc/net/tcp "$dir/proc/net/tcp"
+  ln -s /proc/net/tcp6 "$dir/proc/net/tcp6"
+  ln -s "/proc/$listener" "$dir/proc/$listener"
+  out=$(proc_root="$dir/proc" bash -c 'source "$1"; eval "$(sed -n "/^port_holder() {/,/^}/p" "$2")"; port_holder "$3"' \
+    check "$helper" "$here/stack.sh" "$port")
+  [[ $out == *"pid $listener ("*" $dir/port $want)"* ]] ||
+    { fail "port_holder did not print the listener's command line escaped"; return; }
+  [[ $out != *[$'\r\n\t\e']* && $out != *$'\xff'* ]] ||
+    { fail "port_holder printed a control character or a byte that is not ASCII as it is"; return; }
+  out=""
+  printf 'PASS: lock_holders, the lock record and port_holder print a command line with its control characters escaped\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -508,7 +572,8 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_holder_names_escaped || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 10 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
   exit 1
 fi

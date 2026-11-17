@@ -362,28 +362,36 @@ stop_one() {
 }
 
 # port_holder PORT: "pid N (command)" of each process of this PID namespace that holds a socket
-# listening on PORT, joined with ", ". It reads the listening sockets' inodes from /proc/net/tcp
-# and /proc/net/tcp6 and looks for them among the descriptors in /proc/<pid>/fd. A listener of
-# another PID namespace (another Legion role of this pod, which shares the network namespace) has
-# its socket in /proc/net/tcp and no process here, so the result is empty.
+# listening on PORT, joined with ", ", each command line through common.sh's printable. It reads
+# the listening sockets' inodes from <proc>/net/tcp and <proc>/net/tcp6 and looks for them among
+# the descriptors in <proc>/<pid>/fd, <proc> being ${proc_root:-/proc}: nothing here sets
+# proc_root, and common.test.sh gives it a root of the one process it reads, since the walk reads
+# every descriptor of every process on the machine. A listener of another PID namespace (another
+# Legion role of this pod, which shares the network namespace) has its socket in /proc/net/tcp and
+# no process here, so the result is empty.
+#
+# Each table is read by one awk, front to back, as scripts/e2e/lib/rig.sh's listening_holders
+# reads it, never by bash's `read`: on a file it can seek, `read` takes a block and seeks back to
+# the end of its line, once for each row, and the kernel makes a /proc table again for every seek,
+# from its current sockets. Over a host's table of 27,000 rows that was 214 s a pass, and once
+# sockets come and go the offset it seeks back to no longer starts a row, so a row can be cut or
+# missed.
 port_holder() {
-  local hex want=" " file inode dir fd target cmd out=""
+  local proc=${proc_root:-/proc} hex want=" " file inode dir fd target cmd out=""
   printf -v hex '%04X' "$1"
-  for file in /proc/net/tcp /proc/net/tcp6; do
+  for file in "$proc/net/tcp" "$proc/net/tcp6"; do
     [ -r "$file" ] || continue
-    while read -r _ local_address _ state _ _ _ _ _ inode _; do
-      [ "$state" = 0A ] && [ "${local_address##*:}" = "$hex" ] && want+="$inode "
-    done <"$file"
+    want+=$(awk -v port=":$hex" -v ORS=' ' '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' "$file")
   done
   [ "$want" = " " ] && return 0
-  for dir in /proc/[0-9]*; do
+  for dir in "$proc"/[0-9]*; do
     for fd in "$dir"/fd/*; do
       target=$(readlink -- "$fd" 2>/dev/null) || continue
       [[ $target == socket:\[*\] ]] || continue
       inode=${target#socket:\[}
       [[ $want == *" ${inode%\]} "* ]] || continue
       cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
-      out+="${out:+, }pid ${dir#/proc/} (${cmd% })"
+      out+="${out:+, }pid ${dir##*/} ($(printable "${cmd% }"))"
       break
     done
   done
