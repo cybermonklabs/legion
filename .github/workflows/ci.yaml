@@ -4285,8 +4285,8 @@ jobs:
             # commands expand over), every workflow file, and the check's own script, engine, data,
             # rules and path model.
             ci_filters:
-              # The directory rather than the four workflows the check names one by one (this
-              # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
+              # The directory rather than the workflows the check names one by one in
+              # ci_job_reads.py's reads for this gate: its rules read every
               # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
               # this one that runs on merge_group, check_cache_round_trip holds every workflow's
               # restore of a family ci-caches.yaml fills to the fill's key, and ci_only_documents
