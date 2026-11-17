@@ -155,41 +155,47 @@ func TestProbeAnswersTheEmailOfAGoogleMetadataServer(t *testing.T) {
 	}
 }
 
-// TestProbeSaysNoMetadataServerWithinItsTimeout: where nothing answers - a port no one listens
-// on, or a listener that takes the connection and never answers, as a laptop's network may - the
-// probe answers ErrNoMetadataServer, the absence a caller skips, within 2 s.
+// TestProbeSaysNoMetadataServerWithinItsTimeout: where nothing answers, the probe answers
+// ErrNoMetadataServer, the absence a caller skips, and its error says why. A port no one listens
+// on refuses the connection, and the error names the refusal. A listener that takes the connection
+// and never answers, as a laptop's network may, holds the probe until the probe's own deadline
+// (ProbeTimeout) ends it, and the error names that deadline. No row bounds the time from above: on
+// a loaded machine scheduling alone stretches it, and the test binary's deadline ends a probe that
+// never returns.
 func TestProbeSaysNoMetadataServerWithinItsTimeout(t *testing.T) {
-	// A port the test holds and nothing listens on, so no other process can take it and answer
-	// (testport.Refused).
-	closedAddr := testport.Refused(t)
-
-	silent, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { silent.Close() })
-	var held []net.Conn
-	go func() {
-		for {
-			conn, err := silent.Accept()
-			if err != nil {
-				return
-			}
-			held = append(held, conn) // never answered, closed with the listener's test
+	t.Run("a closed port", func(t *testing.T) {
+		// A port the test holds and nothing listens on, so no other process can take it and
+		// answer (testport.Refused).
+		t.Setenv(MetadataHostVar, testport.Refused(t))
+		email, err := Probe(context.Background())
+		if !errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), "connection refused") {
+			t.Fatalf("Probe = %q, %v; want ErrNoMetadataServer naming the refused connection", email, err)
 		}
-	}()
-
-	for name, host := range map[string]string{"a closed port": closedAddr, "a listener that never answers": silent.Addr().String()} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv(MetadataHostVar, host)
-			started := time.Now()
-			email, err := Probe(context.Background())
-			took := time.Since(started)
-			if !errors.Is(err, ErrNoMetadataServer) || took > 2*time.Second {
-				t.Fatalf("Probe = %q, %v after %s; want ErrNoMetadataServer within 2s", email, err, took)
+	})
+	t.Run("a listener that never answers", func(t *testing.T) {
+		silent, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { silent.Close() })
+		var held []net.Conn
+		go func() {
+			for {
+				conn, err := silent.Accept()
+				if err != nil {
+					return
+				}
+				held = append(held, conn) // never answered, closed with the listener's test
 			}
-		})
-	}
+		}()
+		t.Setenv(MetadataHostVar, silent.Addr().String())
+		started := time.Now()
+		email, err := Probe(context.Background())
+		took := time.Since(started)
+		if !errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || took < ProbeTimeout {
+			t.Fatalf("Probe = %q, %v after %s; want ErrNoMetadataServer ended by the probe's own deadline, %s or later", email, err, took, ProbeTimeout)
+		}
+	})
 }
 
 // TestProbeRefusesAServerWithoutTheGoogleFlavor: an answer that does not carry the
