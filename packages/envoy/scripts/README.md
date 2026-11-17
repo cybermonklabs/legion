@@ -148,6 +148,12 @@ over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
 `POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
+It keeps that session's lease alive for as long as it runs, with the renewer the
+Legion worker shim gives a pod: `agent-secrets renew --pod-token-file` on the pod
+token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
+(`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
+of it with it, so without the renewer a check that holds a grant for longer would
+have its calls refused 407 midway.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -170,9 +176,21 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the usage error, and the cleanup stopping
-everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+enrolment written beside the session key, the session's renewer, the usage error,
+and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
+(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+
+`dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
+the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
+broker starts with at its default sweep, holds one 30-minute grant of
+`AIRLOCK_DEMO_TOKEN`, and calls S through the proxy front at once and again three
+leases later. Both calls must reach S with the real value, and the session must still
+be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
+and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
+needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
+and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
