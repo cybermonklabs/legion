@@ -155,7 +155,7 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 	// A message nothing answers: the relay sends its frame, pauses for want of a receipt, and
 	// restarts the consumer at its ack floor again and again, each restart deleting the consumer
 	// and creating it at that floor. That is the retry the delete must outlast.
-	rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	rig.awaitPending(t, sessionID, 0)
 
 	rig.deregister(t, sessionID, "")

@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4134
+body: |-
+  The extension builds its session's inbox subject with `legacyAgentSubject`, the form the
+  listener has always used, while Envoy reads both forms of the name; what it registers and
+  follows is unchanged.

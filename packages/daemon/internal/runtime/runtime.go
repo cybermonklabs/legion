@@ -203,6 +203,19 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
+// LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
+// runtime chose it before the agent started rather than leaving it to the agent to mint: a
+// Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
+// prepares the launch (claudeInputs). It answers for the incarnation loc records, and false for
+// any other — an Oh My Pi role, whose id its agent mints and reports at its registration, a
+// launch the runtime does not remember (a daemon restarted since), or an earlier incarnation. It
+// is what lets the daemon register a Claude role's session for its pod at the shim's hello, before
+// the agent registers (supervise's ensureRegistered). A runtime that names no session implements
+// nothing here.
+type LaunchSessionNamer interface {
+	LaunchSession(loc Locator) (session string, named bool)
+}
+
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
@@ -266,12 +279,15 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
-// SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the launcher
-// sends the report on the connection of the role whose process it was, and the daemon tells that
-// role why the process is gone. The session gives it the issue key, the claim token of the role
-// the connection authenticated for, the uid of the pod the launcher runs in and the report; the
-// three are the session's own and never the report's, so a launcher cannot name another role,
-// issue or pod.
+// SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the role's session), which the launcher's guest watch names
+// (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
+// process it was, and the daemon tells that role why the process is gone. The session gives it the
+// issue key, the claim token of the role the connection authenticated for, the uid of the pod the
+// launcher runs in and the report; the three are the session's own and never the report's, so a
+// launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages, so the import is acyclic, and a second copy of the report would

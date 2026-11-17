@@ -2066,6 +2066,50 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
+// launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
+// `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
+// `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
+// issuePod.launcherContainer). The daemon's answer to an issue pod launcher's hello gains
+// `kernelKills` (`shimwire.LauncherHelloAck.KernelKills`), set on every issue pod's answer and on
+// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`,
+// a `shimwire.MemoryKillCause`): empty for the gVisor guard's own kill, as 144 sends it; `kernel`
+// for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
+// of the processes that run a role's session (its agent, shim, role-init or a helper) that the
+// kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
+// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
+// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// state's settings block carries the new `runtime.kubernetes.sandbox` key as
+// `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
+// alone would bump nothing.
+//
+// The skew is safe in both directions. An older launcher refuses an unknown flag and exits, so a
+// daemon of this release must never render the microVM flags into a pod whose image predates
+// them: the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`),
+// as it did for 39, 48 and 144, which is why the flags carry one. A gVisor pod's command line is
+// unchanged. An older daemon sends no `kernelKills`, and a microVM pod's launcher then sends no
+// kill report, since it sends one only on a connection whose answer carried `kernelKills`
+// (`internal/launcher`'s manager.serve), so such a daemon never tells a role of the kernel's kill
+// in the guard's words, and the launcher's own line in the pod's log keeps what it would have
+// said. An older launcher ignores `kernelKills`, as it ignored `memoryGuard` (144), and sends no
+// `cause`. `kernelKills` is set on every issue pod's acknowledgement, a gVisor pod's included, so
+// only the controller pod's acknowledgement is the bytes 144 writes, where the member is left
+// out; the guard's report is those bytes too, since `cause` is left out when empty.
+//
+// An earlier loader refuses the `runtime.kubernetes.sandbox` key by name, so a file that sets it
+// takes the block out before an earlier image is pinned (docs/kubernetes.md, "Issue pods in
+// microVMs").
+// (This change took 151, the lowest number above main's 144 that no open pull request declared,
+// read on 2026-11-15 in each open head's own copy of this file: #3659 holds 145, #3711
+// 146, #4017 147, #4049 and #3519 148, #2731 149 and #3730 150. It keeps 151 at the forward merge
+// of 2026-11-16 that brings main in at 47a901c14da2, which carries #3711's INFRA-2614 at 146, the
+// entry right above and the number the base now carries: 151 is still above it, and a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, made between
+// 2026-11-16T19:30:30Z and 19:35:10Z, gave 151 to this change alone (147 #4017, 148 #3519, 149
+// #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line.)
+//
 // 155: dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
 // which moves the two launcher shapes contract 144 added. The daemon's answer to the hello of that
 // pod's launcher, `shimwire.LauncherHelloAck`, now carries `memoryGuard` too, from a block of its
@@ -2079,6 +2123,11 @@ package api
 // kind `memory-guard-kill` under the project key (workflow's controllerMemoryGuardKill), one row
 // for each kill and never through admission's wakeController. It names the process by its
 // executable and carries none of its arguments, as 144's note does.
+//
+// The controller's pod is never a microVM's (151), so its launcher runs the guard and never the
+// guest watch, whatever `runtime.kubernetes.sandbox` says, and its acknowledgement still carries
+// no `kernelKills`: its reports carry the guard's own empty `cause`, and go on a connection whose
+// acknowledgement carried `memoryGuard`, as a gVisor issue pod's do.
 //
 // The skew is safe in both directions, for 144's reasons. An older launcher ignores the member in
 // its single-role form and runs no guard there. An older daemon writes no member for the
@@ -2099,9 +2148,15 @@ package api
 // open pull request of this repository, made between 2026-11-17T04:33:37Z and 04:37:38Z, gave
 // above main's 146: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and #4065), 151 (#4106),
 // 152 (#3730), 153 (#4115) and 154 (#3659), and no head declared a number above 154, so 155 was
-// the lowest free number above main's 146 at that reading. That is a reading and never the rule:
-// read main's own number and every open head again at the next forward merge rather than from
-// this line, as
+// the lowest free number above main's 146 at that reading. It keeps 155 at the forward merge of
+// 2026-11-17 that brings main in at a2b379d13f42, which carries cybermonklabs/legion#4106's
+// INFRA-3729 at 151, the entry right above and the number the base now carries. A reading of
+// `const DaemonAPIVersion` at the head of each of the 199 open pull requests of this repository,
+// made between 2026-11-17T14:40:31Z and 14:46:41Z, gave above main's 151: 152 (#3730), 153
+// (#4115), 154 (#3659), 156 (#4065) and 157 (#2230, #3519, #3993 and #4049), and 155 to this
+// change alone, so 155 was still the lowest free number above main's 151 at that reading. That is
+// a reading and never the rule: read main's own number and every open head again at the next
+// forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 155

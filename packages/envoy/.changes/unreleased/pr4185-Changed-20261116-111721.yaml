@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `DISPATCH_PPROF_PORT=0` serves Dispatch's profiler on a port the kernel chooses, which the
+  server logs as `dispatch: pprof listening addr=127.0.0.1:<port>`, where `0` refused startup
+  before. A test harness asks for it rather than a port it picked and let go of, which another
+  program could take before Dispatch binds it (`cmd/dispatch/README.md`, "Profiling"). Every other
+  value that is not a port 1-65535 still refuses startup.
+time: 2026-11-16T11:17:21Z
+custom:
+    Issue: pr4185

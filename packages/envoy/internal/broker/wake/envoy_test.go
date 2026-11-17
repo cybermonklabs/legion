@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // capturingHandler records every slog record it is asked to handle, so a test can assert that
@@ -114,15 +115,11 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 }
 
 func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	}))
-	srv.Close() // guarantees connection failure below
-
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Token: "tok", HTTP: srv.Client()}
+	// A port the test holds and nothing listens on: the connection fails.
+	e := Envoy{URL: "http://" + testport.Refused(t), Token: "tok", HTTP: &http.Client{}}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {

@@ -935,6 +935,10 @@
             "wait_seconds": 1,
             "interval_milliseconds": 100
           }
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
         }
       }
     },
