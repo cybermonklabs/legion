@@ -664,6 +664,17 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 				continue
 			}
 			if err := c.cache.WatchErr(); err != nil {
+				// A watcher ends when its bucket is deleted under it, before the monitor's next
+				// read adds the bucket to missing: read the cache's streams now, as the ping's
+				// branch below does, and name a bucket the server no longer holds as the degraded
+				// answer rather than the watcher's end as 503, which every listener's readiness
+				// probe would read at once for a deletion no probe can repair.
+				if len(c.buckets) > 0 {
+					if gone := readBuckets(ctx, d.client.JS(), c.buckets).missing; len(gone) > 0 {
+						held = append(held, gone...)
+						continue
+					}
+				}
 				writeDependencyHealth(w, c.name+" KV watcher", err, true)
 				return
 			}
