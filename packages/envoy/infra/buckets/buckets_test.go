@@ -999,6 +999,49 @@ func TestBreakGlassIsRefusedWhereItIsMisused(t *testing.T) {
 	}
 }
 
+// A --nats URL may carry its credential in its userinfo, a token or a user and password, which
+// nats.go authenticates with, and bus.Connect takes it without a scheme too. No line the command
+// writes carries that credential: neither the break-glass line, which names the hub, nor the
+// connect failure of either path. At 0668a6db6e the break-glass line named the scheme-less URL
+// whole, token included, since it parses as the scheme "user" with no host, and both connect
+// failures printed --nats as it was given.
+func TestNoLineTheCommandWritesCarriesTheURLsCredential(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	// No nkey seed, from either variable: the run connects with the URL's userinfo alone. t.Setenv
+	// puts each back when the test ends.
+	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
+	}
+	const secret = "s3cret-token"
+	uri, js := server(t)
+	hub := strings.TrimPrefix(uri, "nats://")
+	code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--nats", "user:"+secret+"@"+hub)
+	if code != 0 || !strings.Contains(stderr, " on nats://"+hub+",") {
+		t.Fatalf("create --break-glass over a scheme-less URL with a credential = %d, want 0 and a line naming the hub nats://%s\n%s%s", code, hub, stdout, stderr)
+	}
+	if strings.Contains(stdout+stderr, secret) {
+		t.Fatalf("create --break-glass wrote the URL's credential:\n%s%s", stdout, stderr)
+	}
+	if _, err := js.StreamInfo("KV_" + bus.SessionBucket); err != nil {
+		t.Fatalf("control: the break-glass run made no bucket, so its line was never written: %v", err)
+	}
+	for _, args := range [][]string{
+		{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
+		{"create", "--host", "box-1"},
+	} {
+		code, stdout, stderr := runCommand(t, &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, nil, append(args, "--nats", "user:"+secret+"@127.0.0.1:1")...)
+		if code != 1 || !strings.Contains(stderr, "connect to nats://127.0.0.1:1:") {
+			t.Fatalf("%q to a closed port = %d, want 1 naming the server nats://127.0.0.1:1 it could not reach\n%s%s", args, code, stdout, stderr)
+		}
+		if strings.Contains(stdout+stderr, secret) {
+			t.Fatalf("%q wrote the URL's credential in its connect failure:\n%s%s", args, stdout, stderr)
+		}
+	}
+}
+
 // A deployment's copied buckets get their copies here, where `envoy-infra buckets create` makes
 // them, since no listener creates one (cmd/listener/stream_replicas_test.go,
 // TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing). On a

@@ -260,7 +260,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment), bus.WithInboxPrefix(InboxPrefix))
 	if err != nil {
-		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", natsURL, err)
+		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", bus.NATSURLWithoutUserinfo(natsURL), err)
 		return 1
 	}
 	defer nc.Close()
@@ -380,7 +380,7 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, buckets []string, replicas int) int {
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
 	if err != nil {
-		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", natsURL, err)
+		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", bus.NATSURLWithoutUserinfo(natsURL), err)
 		return 1
 	}
 	defer nc.Close()
@@ -401,7 +401,7 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 		}
 		return 1
 	}
-	hub := hubOf(natsURL)
+	hub := bus.NATSURLWithoutUserinfo(natsURL)
 	for _, bucket := range buckets {
 		fmt.Fprintf(stderr, "envoy-infra buckets: break-glass: operator %s creates %s on %s, as the environment's NATS user and with no writer proof\n", operator, bucket, hub)
 		if _, err := bus.CreateMissingCopiedBucket(nc.Conn, js, bucket, replicas); errors.Is(err, bus.ErrBucketExists) {
@@ -414,17 +414,6 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
 	}
 	return 0
-}
-
-// hubOf is the server natsURL names, without the user or password a URL may carry, for the
-// break-glass line; natsURL as it is when it does not parse as a URL with a host.
-func hubOf(natsURL string) string {
-	u, err := url.Parse(natsURL)
-	if err != nil || u.Host == "" {
-		return natsURL
-	}
-	u.User = nil
-	return u.String()
 }
 
 // fence is the proof that no writer of the buckets runs.
