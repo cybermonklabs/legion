@@ -21985,6 +21985,10 @@
             "type": "string"
           }
         },
+        "required": [
+          "role",
+          "session"
+        ],
         "type": "object"
       },
       "IssueRoleHolderRecord": {

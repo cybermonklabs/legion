@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -376,6 +377,49 @@ func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
 		if got := field.Tag.Get("enum"); got != want {
 			t.Errorf("%T.Role names the roles %q, want %q", shape, got, want)
 		}
+	}
+}
+
+// Each pair of a publication names its role and its session: the route refuses a pair that leaves
+// either out (putIssueRoleHolders), so the contract a caller compiles against requires both. They
+// are read from the committed document (committedOpenAPI), from which the TypeScript contract is
+// generated, walking from the PUT's own request body to the schema of one pair, so the schema
+// read is the one the route takes and not a name that only looks like it.
+func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
+	var document map[string]any
+	if err := json.Unmarshal(committedOpenAPI(t), &document); err != nil {
+		t.Fatalf("read the committed document: %v", err)
+	}
+	paths, _ := document["paths"].(map[string]any)
+	item, _ := paths["/api/v1/issues/{key}/role-holders"].(map[string]any)
+	put, _ := item["put"].(map[string]any)
+	body, _ := put["requestBody"].(map[string]any)
+	content, _ := body["content"].(map[string]any)
+	media, _ := content["application/json"].(map[string]any)
+	schema, declared := media["schema"].(map[string]any)
+	if !declared {
+		t.Fatal("the document declares no JSON request body for PUT /api/v1/issues/{key}/role-holders")
+	}
+	pair := openAPISchemaChild(document, openAPISchemaChild(document, schema, "holders"), "0")
+	if reference, names := pair["$ref"].(string); names {
+		components, _ := document["components"].(map[string]any)
+		schemas, _ := components["schemas"].(map[string]any)
+		pair, _ = schemas[strings.TrimPrefix(reference, "#/components/schemas/")].(map[string]any)
+	}
+	properties, _ := pair["properties"].(map[string]any)
+	if _, role := properties["role"]; !role {
+		t.Fatalf("the schema of one pair of the PUT's holders is %v, which names no role: the walk reached no pair", pair)
+	}
+	required := []string{}
+	listed, _ := pair["required"].([]any)
+	for _, field := range listed {
+		name, _ := field.(string)
+		required = append(required, name)
+	}
+	slices.Sort(required)
+	if want := []string{"role", "session"}; !slices.Equal(required, want) {
+		t.Fatalf("one pair of the PUT's holders requires %q in the committed contract, want %q: the route refuses a pair that leaves either out",
+			required, want)
 	}
 }
 

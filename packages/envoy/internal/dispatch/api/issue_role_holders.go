@@ -32,12 +32,11 @@ import (
 // leaves the set only when the daemon's next publication lands, and until then its row stays. The
 // process of a failed or a suspended claim can still run during that window: the daemon lets go of
 // a process whose stop the runtime refused. Such a process keeps the pane's bearer, and its session
-// keeps its role, until the publication lands. The daemon publishes when a claim write lands that
-// changes the session holding a role, so an end whose own write the store did not take is
-// published when the daemon makes that write at the claim's next decision. A change whose queue
-// failed in the daemon is published at the daemon's next boot only when that boot comes within
-// seven days of it, and otherwise at the next ready, end or other change of a claim on the same
-// issue.
+// keeps its role, until the publication lands. The daemon queues the publication in the
+// transaction of each claim write that changes the session holding a role, so an end whose own
+// write the store did not take is published when the daemon makes that write at the claim's next
+// decision. The set follows the daemon's store, so a claim whose store lags the daemon's memory
+// keeps its session listed until a later claim write lands (dispatch://INFRA-4099).
 //
 // Each write replaces the issue's whole set under a lock of the issue row that a second write of
 // the same issue waits for, so the stored set is always one whole set, and each write answers the
@@ -51,10 +50,11 @@ import (
 // fact, and an event would feed the daemon's intake with facts that it caused. The write takes a
 // closed issue, because the tester's production check runs after the close.
 
-// issueRoleHolder is one pair of a publication: a Legion role and the session that holds it.
+// issueRoleHolder is one pair of a publication: a Legion role and the session that holds it. Both
+// are required: the route refuses a pair that leaves either out.
 type issueRoleHolder struct {
-	Role    string `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger"`
-	Session string `json:"session"`
+	Role    string `json:"role" required:"true" enum:"architect,planner,implementer,tester,reviewer,merger"`
+	Session string `json:"session" required:"true"`
 }
 
 // issueRoleHolderRecord is one stored pair, with the time Dispatch first stored it. A publication

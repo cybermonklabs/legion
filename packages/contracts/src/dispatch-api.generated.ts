@@ -5199,8 +5199,8 @@ export interface components {
     };
     IssueRoleHolder: {
       /** @enum {string} */
-      role?: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
-      session?: string;
+      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      session: string;
     };
     IssueRoleHolderRecord: {
       /** Format: date-time */
