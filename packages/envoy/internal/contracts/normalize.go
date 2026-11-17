@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -350,8 +351,7 @@ func SlackEnvelopes(input SlackEnvelopeInput) []Envelope {
 // Push to tag v1.0.0:     push.tag.v1_0_0 (dots sanitized to underscores)
 // workflow_run:            workflow.<filename>.<action>
 // Actions job finished:   job.<run_id>.completed (a check_run on the default branch, of a run with no pull request)
-// Returns empty string for events that should not be routed (e.g. push to refs that aren't heads or
-// tags), and for every event githubEventKinds does not name.
+// Returns empty string for events that should not be routed (e.g. push to refs that aren't heads or tags).
 func githubTopic(owner string, repo string, event string, body map[string]any) string {
 	if runID, _, ok := githubActionsJob(event, body); ok {
 		return GithubJobSubject(owner, repo, runID, "completed")
@@ -450,8 +450,7 @@ var githubEventParents = map[string]string{
 	"issue_comment":               "issue",
 }
 
-// githubEventKinds names the topic kind of each GitHub event the listener publishes. An event it does
-// not name is published nowhere (GithubEnvelopes), whatever its body holds.
+// githubEventKinds names the topic kind of each GitHub event the listener publishes.
 var githubEventKinds = map[string]string{
 	"pull_request":                "pr",
 	"issues":                      "issue",
@@ -799,9 +798,8 @@ func githubSummary(event string, body map[string]any) string {
 }
 
 // githubPayload encodes, as one JSON object, the fields a consumer reads of an event the listener
-// normalizes, and is "" for any other event, which GithubEnvelopes publishes nowhere. Every event
-// githubEventKinds names has a case here but check_suite, and a check run has one only as a
-// finished Actions job: a pull request's CI folds into the CI store instead.
+// normalizes. Every event githubEventKinds names has a case here but check_suite, and a check run
+// has one only as a finished Actions job: a pull request's CI folds into the CI store instead.
 func githubPayload(event string, body map[string]any) string {
 	repo := nestedString(body, "repository", "full_name")
 	if repo == "" {
@@ -927,13 +925,6 @@ func githubPayload(event string, body map[string]any) string {
 		// (githubNumber), so number is that issue's. The two issues can be in two repositories:
 		// GitHub names the other in parent_issue_repo or sub_issue_repo, and each falls back to
 		// the webhook's own repository.
-		parentRepo, subIssueRepo := nestedString(body, "parent_issue_repo", "full_name"), nestedString(body, "sub_issue_repo", "full_name")
-		if parentRepo == "" {
-			parentRepo = repo
-		}
-		if subIssueRepo == "" {
-			subIssueRepo = repo
-		}
 		data = map[string]string{
 			"kind":             "sub_issue",
 			"action":           action,
@@ -942,11 +933,11 @@ func githubPayload(event string, body map[string]any) string {
 			"parent_number":    GithubPRNumber(nested(body, "parent_issue", "number")),
 			"parent_title":     nestedString(body, "parent_issue", "title"),
 			"parent_url":       nestedString(body, "parent_issue", "html_url"),
-			"parent_repo":      parentRepo,
+			"parent_repo":      cmp.Or(nestedString(body, "parent_issue_repo", "full_name"), repo),
 			"sub_issue_number": GithubPRNumber(nested(body, "sub_issue", "number")),
 			"sub_issue_title":  nestedString(body, "sub_issue", "title"),
 			"sub_issue_url":    nestedString(body, "sub_issue", "html_url"),
-			"sub_issue_repo":   subIssueRepo,
+			"sub_issue_repo":   cmp.Or(nestedString(body, "sub_issue_repo", "full_name"), repo),
 			"sender":           nestedString(body, "sender", "login"),
 		}
 	case "push":
