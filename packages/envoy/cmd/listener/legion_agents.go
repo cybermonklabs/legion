@@ -210,7 +210,7 @@ type legionAgentBatchFailure struct {
 // answerLegionAgent is one registry entry as a read answers it (listenerwire.LegionAgentAnswer):
 // its live is the session's own registration state, as every reader of the session registry
 // judges it (session.StateOf through SessionRegistry.Lookup, sessionIsLive), never membership of
-// the session cache or of the registry (dispatch://INFRA-392).
+// the session cache or of the registry.
 func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) listenerwire.LegionAgentAnswer {
 	_, state := sessions.Lookup(agent.SessionID)
 	return listenerwire.LegionAgentAnswer{LegionAgent: agent, Live: sessionIsLive(state)}

@@ -816,8 +816,8 @@ func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 	}
 }
 
-const legionAgentRow = `{"session_id":"ses-old","legion_project":"infra","issue":"INFRA-448","role":"reviewer",` +
-	`"role_token":"legion-infra-infra-448-reviewer","title":"Legion reviewer · INFRA-448","harness":"omp",` +
+const legionAgentRow = `{"session_id":"ses-old","legion_project":"acme","issue":"ACME-448","role":"reviewer",` +
+	`"role_token":"legion-acme-acme-448-reviewer","title":"Legion reviewer · ACME-448","harness":"omp",` +
 	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +
 	`"replaced_by":"ses-new","replaced_at":"2026-10-26T02:00:00Z","added_later":1}`
 
@@ -826,8 +826,8 @@ func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
 	newer, at := "ses-new", "2026-10-26T02:00:00Z"
 	want := listenerwire.LegionAgentAnswer{LegionAgent: listenerwire.LegionAgent{
 		LegionAgentEntry: listenerwire.LegionAgentEntry{
-			SessionID: "ses-old", LegionProject: "infra", Issue: "INFRA-448", Role: "reviewer",
-			RoleToken: "legion-infra-infra-448-reviewer", Title: "Legion reviewer · INFRA-448", Harness: "omp",
+			SessionID: "ses-old", LegionProject: "acme", Issue: "ACME-448", Role: "reviewer",
+			RoleToken: "legion-acme-acme-448-reviewer", Title: "Legion reviewer · ACME-448", Harness: "omp",
 			StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z",
 		},
 		ReplacedBy: &newer, ReplacedAt: &at,
@@ -899,11 +899,11 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		query string
 		call  func(*Client) ([]listenerwire.LegionAgentAnswer, error)
 	}{
-		{"by role token", "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+		{"by role token", "/v1/legion/agents/roles/legion-acme-acme-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
 		}},
-		{"by issue", "/v1/legion/agents", "issue=INFRA-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.IssueAgents(context.Background(), "INFRA-448")
+		{"by issue", "/v1/legion/agents", "issue=ACME-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.IssueAgents(context.Background(), "ACME-448")
 		}},
 	} {
 		for _, listing := range []struct {
@@ -937,10 +937,10 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) ([]listenerwire.LegionAgentAnswer, error){
 		"RoleAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
 		},
 		"IssueAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.IssueAgents(context.Background(), "INFRA-448")
+			return c.IssueAgents(context.Background(), "ACME-448")
 		},
 	}
 	for _, tc := range []struct {

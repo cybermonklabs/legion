@@ -458,7 +458,7 @@ type LegionAgentEntry struct {
 	// RoleToken is legion-<legion_project>-<issue lower-cased>-<role>, byte for byte what
 	// claim.NewToken and roleToken build.
 	RoleToken string `json:"role_token"`
-	// Title is the session's title as stamped (`Legion tester · INFRA-71`).
+	// Title is the session's title as stamped (`Legion tester · ACME-71`).
 	Title string `json:"title"`
 	// Harness is omp or claude.
 	Harness string `json:"harness"`
