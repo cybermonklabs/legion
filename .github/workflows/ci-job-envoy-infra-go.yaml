@@ -32,11 +32,13 @@ env:
 jobs:
   envoy-infra-go:
     runs-on: ubuntu-24.04
-    # With main's go-envoy-infra entry for the run's module files, both vets take a second and the
-    # job took 537 s (run 44016277498), the live tests 423 s of it. A run whose module files main
-    # has not filled, such as a pull request that changes them, restores an entry built from older
-    # module versions and builds both vets nearly from nothing: 959 and 1059 s in runs 44013632169
-    # and 43996496498, which restored the entry of 2026-11-06. This limit is for that case.
+    # With a go-envoy-infra entry filled for the run's module files, both vets take a second and the
+    # job took 537 s (run 44016277498, from an entry a dispatched fill saved on its branch), the live
+    # tests 423 s of it. A run whose module files main has not filled, such as a pull request that
+    # changes them, restores an entry built from older module versions and rebuilds what moved. At
+    # worst that is both vets nearly from nothing: 959 and 1059 s in runs 44013632169 and
+    # 43996496498, whose entry was eleven days old and held no darwin objects. This limit is for
+    # that case.
     timeout-minutes: 20
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
