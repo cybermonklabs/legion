@@ -776,3 +776,31 @@ func TestAnUnexpectedArgumentIsNotPrinted(t *testing.T) {
 		})
 	}
 }
+
+// TestASettingsFileKeyItDoesNotTakeIsNotPrinted: a line of the settings file whose key the file
+// does not take is refused naming the file and the line, never the key: a token pasted into the
+// file as a line of its own reads as a key up to its first '='. A line whose key the file takes is
+// still read (the control).
+func TestASettingsFileKeyItDoesNotTakeIsNotPrinted(t *testing.T) {
+	const secret = "eyJhbGciOiJSUzI1NiJ9.hunter2pw-settingsline-0b6c33"
+	for _, line := range []string{secret + "==", secret + "=x"} {
+		t.Run(line, func(t *testing.T) {
+			path := writeClientConfig(t, "# settings\n\n"+line+"\n")
+			stdout, stderr, code := runIn("identity")
+			if code != exitUsageError {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
+			}
+			requireSays(t, "the output", stdout+stderr, []string{"hunter2pw-settingsline"}, []string{path + " line 3 sets a key this file does not take (not printed)"})
+		})
+	}
+	t.Run("control: a key the file takes", func(t *testing.T) {
+		unsetenv(t, "AGENT_SECRETS_URL")
+		writeClientConfig(t, "AGENT_SECRETS_URL=https://secrets.example\n")
+		if _, stderr, code := runIn("identity"); code == exitUsageError {
+			t.Fatalf("exit %d, stderr %q: a key the file takes was refused", code, stderr)
+		}
+		if got := clientGetenv("AGENT_SECRETS_URL"); got != "https://secrets.example" {
+			t.Fatalf("the file's AGENT_SECRETS_URL read as %q", got)
+		}
+	})
+}
