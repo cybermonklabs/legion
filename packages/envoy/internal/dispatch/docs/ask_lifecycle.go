@@ -393,7 +393,7 @@ func (s *Service) ClosedIssueVersions(ctx context.Context, issueKey string) ([]C
 		}
 		owed, err := contentChangedSinceVersion(ctx, tx, document.artifactID, latest.docUpdateVersion)
 		if err != nil {
-			return nil, fmt.Errorf("read the latest version of document %s: %w", document.artifactID, err)
+			return nil, fmt.Errorf("read the stored updates of document %s after its latest version: %w", document.artifactID, err)
 		}
 		if !owed {
 			versions = append(versions, ClosedIssueVersion{artifactID: document.artifactID, version: latest.Version, markdown: latest.markdown, mover: mover})

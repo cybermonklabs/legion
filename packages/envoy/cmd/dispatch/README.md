@@ -4095,6 +4095,8 @@ Each item below names a path with its method and identity, then its purpose.
   A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
   The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
   it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
+  Dispatch judges the request at the versions that it names when the reopen ends.
+  So a request that the reopen moves to a version that breaks the form stays `resolved` too.
   The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
   For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
@@ -4572,6 +4574,9 @@ Each item below names a path with its method and identity, then its purpose.
       So code font hides no name or link, also when it holds the whole name or a part of it.
       These rules also read each address and title of a link or an image.
       An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
+      Dispatch reads the address of a link one time when the address is the words of the link, with or without `mailto:`.
+      It reads that address in the words of the page, beside the words before and after it.
+      Dispatch stores a plain address in the words, such as `ada@example.com`, as such a link.
       A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
       A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
       A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
@@ -4615,6 +4620,11 @@ Each item below names a path with its method and identity, then its purpose.
       A part that is a word of an approved component name or term is no part of a name.
       Such a word is a whole word too, so the approved name `Dispatch_Admin` does not hide the name `Dispatch Admin`.
       The way out is to write the name of the system as the person approved it.
+      To know those words, a judgment under a root reads the latest approved version of each other covered document under that root.
+      That is two reads of the database and one parse for each such document.
+      So the work of a judgment grows in proportion to those documents.
+      With 1,000 approved documents under a root, one judgment sent 2,007 statements to the database.
+      It took about a third of a second on a loaded machine.
       A letter such as `é` can be one character, or a letter and a combining mark.
       Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
       The reviewer of R25 reads such a text.
@@ -4622,20 +4632,26 @@ Each item below names a path with its method and identity, then its purpose.
       A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
       So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
       A bare key of a project of Dispatch, such as `ACME-12`, names a record of Dispatch, also when no record has that key.
-      A key of another project, such as `UTF-8` or `SHA-256`, names nothing.
+      A word of that form whose first part is no project of Dispatch, such as `UTF-8` or `SHA-256`, names nothing.
       A bare id such as a UUID names a record of Dispatch too, also when no record has it.
       Its rule is `dispatch-link`, so write such a value by its kind, as in "the UUID of the request", not by its characters.
       The rules also read the name of a term (kind `term`).
 
     - When a form is a whole word: each form of a name above, a key and an id among them, is a whole word.
       A character of a word right before it or right after it makes it part of a longer word, which names nothing.
-      A character of a word is a letter, a mark, a decimal digit or `_`, of any script, so `#12abcd` and `#12é` name no pull request.
+      A character of a word is a letter, a mark, a decimal digit or connector punctuation such as `_`, of any script.
+      So `#12abcd` and `#12é` name no pull request.
       Some forms also continue with other characters: `@` before a handle, and `/` or `@` after it.
       So the package `@types/node` names no person.
       `.`, `-` or `/` before `<owner>/<repo>#<n>`, and `.` or `-` before the host of a pull request's address, continue them too.
-      A `:` that no white space follows continues an email address, so the SSH address `git@github.com:owner/repo.git` names no person.
-      An email address and a handle take the characters of a word beside them into their own parts.
+      The owner of `<owner>/<repo>#<n>` starts with a letter or a digit, as an owner on GitHub does, so `-acme/widgets#12` and `.github/workflows#12` name no pull request.
+      An email address after a `/`, or before a `:` and a character of a path, is part of a longer address, which names nothing.
+      So `ssh://git@github.com/owner/repo.git` and the SSH address `git@github.com:owner/repo.git` name no person.
+      A character of a path is a character of a word, `/`, `~`, `.` or `-`, so `(ada@example.com:)` and `ada@example.com: she` name a person.
+      An email address takes letters and marks beside it into its own parts, and a digit or connector punctuation before it too.
       So `xada@example.com` is an email address too.
+      A digit or connector punctuation after its domain makes it no address, as in `ada@example.com5`.
+      A handle takes the characters of a word after it, and a character of a word before its `@` makes it no handle.
       A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
       So a letter of another script in one of them makes it no form.
       A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
@@ -4664,7 +4680,8 @@ Each item below names a path with its method and identity, then its purpose.
       No rule compares the texts of that version, so its component names are no nouns of the system.
       The way out of both is a new version of that document, and for the approved document its approval.
 
-    A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+    A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+    `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
     `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
     The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
     A person's approval of a covered document gets the same refusal through three routes.

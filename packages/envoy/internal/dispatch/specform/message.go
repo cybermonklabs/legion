@@ -22,10 +22,23 @@ const (
 	requestChanges = "To send these findings to the author, choose Request changes."
 )
 
-// Message is the refusal of act: its head, which counts the texts that hold a finding (textsOf),
-// one line for each of the first 20 findings, a count of the rest that more says how to list,
-// each line of notes, and the next step. findings is every finding, and total counts them.
-func Message(act Act, findings []Finding, total int, more string, notes ...string) string {
+// Words is a refusal of the form in its two parts, so that a client can show the one without the
+// other: Refusal is its head, which counts the texts that hold a finding (textsOf), one line for
+// each of the first 20 findings, a count of the rest that more says how to list, and each line of
+// notes; NextStep is the step that the reader takes next.
+type Words struct {
+	Refusal  string
+	NextStep string
+}
+
+// String is the whole refusal, as a client that prints it shows it: Refusal, then NextStep on a
+// line of its own.
+func (w Words) String() string {
+	return w.Refusal + "\n" + w.NextStep
+}
+
+// Message is the refusal of act. findings is every finding, and total counts them.
+func Message(act Act, findings []Finding, total int, more string, notes ...string) Words {
 	switch act {
 	case ActApproval:
 		return refusal("Dispatch refused this approval", findings, total, more, notes, requestChanges)
@@ -37,9 +50,9 @@ func Message(act Act, findings []Finding, total int, more string, notes ...strin
 }
 
 // ChangesReason is the reason that a person's Request changes sends to the author after Dispatch
-// refused the person's approval.
+// refused the person's approval, whole.
 func ChangesReason(findings []Finding, total int, more string, notes ...string) string {
-	return refusal("Dispatch refused my approval", findings, total, more, notes, fixAndRequest)
+	return refusal("Dispatch refused my approval", findings, total, more, notes, fixAndRequest).String()
 }
 
 // UnreadLine is the line that says that a judgment compared no text with version of document, an
@@ -50,7 +63,7 @@ func UnreadLine(document string, version int, issue string) string {
 		"To change that, write a new version of that document and request its approval.", document, version, issue)
 }
 
-func refusal(head string, findings []Finding, total int, more string, notes []string, last string) string {
+func refusal(head string, findings []Finding, total int, more string, notes []string, next string) Words {
 	var out strings.Builder
 	texts := textsOf(findings)
 	count := fmt.Sprintf("%d texts break", texts)
@@ -72,8 +85,7 @@ func refusal(head string, findings []Finding, total int, more string, notes []st
 	for _, note := range notes {
 		out.WriteString("\n" + note)
 	}
-	out.WriteString("\n" + last)
-	return out.String()
+	return Words{Refusal: out.String(), NextStep: next}
 }
 
 // textsOf is how many texts hold one of findings. The findings of one text name its node, its

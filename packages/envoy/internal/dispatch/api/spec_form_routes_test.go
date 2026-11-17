@@ -238,7 +238,8 @@ func (f formFault) findings(issue formIssue, version int) []specFormFinding {
 
 // requireFormRefusal fails t unless response is the 409 SPEC_FORM refusal of act, naming exactly
 // want, each by its node and rule, in that order. Its head counts the texts that want names, and
-// findings_total counts want.
+// findings_total counts want. error is refusal, then next_step, the next step of act, on a line
+// of its own.
 func requireFormRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, act specform.Act, lines []string, want ...specFormFinding) specFormError {
 	t.Helper()
 	if response.Code != http.StatusConflict {
@@ -247,6 +248,13 @@ func requireFormRefusal(t *testing.T, what string, response *httptest.ResponseRe
 	body := decodeBody[specFormError](t, response)
 	if body.Code != "SPEC_FORM" || body.FindingsTotal != len(want) || !reflect.DeepEqual(body.Findings, want) {
 		t.Fatalf("%s: refusal = code %q, total %d, findings %#v; want SPEC_FORM, %d, %#v", what, body.Code, body.FindingsTotal, body.Findings, len(want), want)
+	}
+	members := decodeBody[map[string]any](t, response)
+	refusal, _ := members["refusal"].(string)
+	nextStep, _ := members["next_step"].(string)
+	wantStep := map[bool]string{true: "To send these findings to the author, choose Request changes.", false: "Fix each text, then request approval again."}[act == specform.ActApproval]
+	if nextStep != wantStep || refusal+"\n"+nextStep != body.Error {
+		t.Fatalf("%s: refusal %q and next_step %q, want error in its two parts and the next step %q; error =\n%s", what, refusal, nextStep, wantStep, body.Error)
 	}
 	texts := map[string]bool{}
 	for _, finding := range want {

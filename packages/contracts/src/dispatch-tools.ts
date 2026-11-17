@@ -212,10 +212,13 @@ function specFormRefusal(value: unknown): string | undefined {
   ]);
 }
 
+/** The whole rule of dispatch_spec_form's arguments. */
+const SPEC_FORM_RULE = `${specFormDocumentOwner.message} ${SPEC_FORM_VERSION_RULE} ${SPEC_FORM_ROOT_RULE}`;
+
 const specFormValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => specFormRefusal(value) === undefined,
-  message: `${specFormDocumentOwner.message} ${SPEC_FORM_VERSION_RULE} ${SPEC_FORM_ROOT_RULE}`,
-  refusal: specFormRefusal,
+  message: SPEC_FORM_RULE,
+  refusal: (value) => specFormRefusal(value) ?? SPEC_FORM_RULE,
 };
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps

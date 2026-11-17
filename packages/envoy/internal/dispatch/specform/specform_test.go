@@ -282,7 +282,7 @@ const more = "dispatch spec-form --issue ACME-2 --artifact spec.md lists them al
 // TestMessageListsTwentyAndCountsTheRest holds the refusal to 20 finding lines and a count of
 // the rest, before the next step.
 func TestMessageListsTwentyAndCountsTheRest(t *testing.T) {
-	lines := strings.Split(Message(ActRequest, breaking(23), 23, more), "\n")
+	lines := strings.Split(Message(ActRequest, breaking(23), 23, more).String(), "\n")
 	listed := 0
 	for _, line := range lines {
 		if strings.HasPrefix(line, "- ") {
@@ -301,21 +301,31 @@ func TestMessageListsTwentyAndCountsTheRest(t *testing.T) {
 }
 
 // TestMessageEndsWithTheNextStep holds each act's head and last line, and the count's grammar.
+// The next step is the refusal's second part, and the whole refusal is the first part, then the
+// next step on a line of its own.
 func TestMessageEndsWithTheNextStep(t *testing.T) {
 	two := breaking(2)
 	for _, test := range []struct {
-		name, text, head, last string
+		name       string
+		words      Words
+		head, last string
 	}{
 		{"request", Message(ActRequest, two, 2, more), "Dispatch refused this approval request, because 2 texts break the form of The Spec.", "Fix each text, then request approval again."},
 		{"approval", Message(ActApproval, two, 2, more), "Dispatch refused this approval, because 2 texts break the form of The Spec.", "To send these findings to the author, choose Request changes."},
-		{"changes reason", ChangesReason(two, 2, more), "Dispatch refused my approval, because 2 texts break the form of The Spec.", "Fix each text, then request approval again."},
 		{"restore", Message(ActRestore, two, 2, more), "Dispatch did not open this approval request again, because 2 texts break the form of The Spec.", "Fix each text, then request approval again."},
 		{"one", Message(ActRequest, two[:1], 1, more), "Dispatch refused this approval request, because 1 text breaks the form of The Spec.", "Fix each text, then request approval again."},
 	} {
-		lines := strings.Split(test.text, "\n")
+		lines := strings.Split(test.words.String(), "\n")
 		if lines[0] != test.head || lines[len(lines)-1] != test.last {
 			t.Errorf("%s: head %q and last line %q, want %q and %q", test.name, lines[0], lines[len(lines)-1], test.head, test.last)
 		}
+		if test.words.NextStep != test.last || test.words.String() != test.words.Refusal+"\n"+test.last || strings.Contains(test.words.Refusal, test.last) {
+			t.Errorf("%s: refusal %q and next step %q, want the next step %q apart from the refusal", test.name, test.words.Refusal, test.words.NextStep, test.last)
+		}
+	}
+	reason := strings.Split(ChangesReason(two, 2, more), "\n")
+	if head, last := reason[0], reason[len(reason)-1]; head != "Dispatch refused my approval, because 2 texts break the form of The Spec." || last != "Fix each text, then request approval again." {
+		t.Errorf("changes reason: head %q and last line %q", head, last)
 	}
 }
 
@@ -329,7 +339,7 @@ func TestMessageIsTheRefusalOfThePlan(t *testing.T) {
 		"- statement ship-at-head in spec.md version 12: it has 3 sentences, and a statement has one or two.\n" +
 		"- definition session in spec.md version 12: terms.md version 3 of ACME-1 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first.\n" +
 		"Fix each text, then request approval again."
-	if got := Message(ActRequest, findings, 2, more); got != want {
+	if got := Message(ActRequest, findings, 2, more).String(); got != want {
 		t.Fatalf("Message =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -349,11 +359,11 @@ func TestTheRefusalHeadCountsTheTextsThatBreak(t *testing.T) {
 		name, text, head string
 		lines            int
 	}{
-		{"request", Message(ActRequest, findings, len(findings), more), "Dispatch refused this approval request, because 1 text breaks the form of The Spec.", len(findings)},
-		{"approval", Message(ActApproval, findings, len(findings), more), "Dispatch refused this approval, because 1 text breaks the form of The Spec.", len(findings)},
+		{"request", Message(ActRequest, findings, len(findings), more).String(), "Dispatch refused this approval request, because 1 text breaks the form of The Spec.", len(findings)},
+		{"approval", Message(ActApproval, findings, len(findings), more).String(), "Dispatch refused this approval, because 1 text breaks the form of The Spec.", len(findings)},
 		{"changes reason", ChangesReason(findings, len(findings), more), "Dispatch refused my approval, because 1 text breaks the form of The Spec.", len(findings)},
-		{"restore", Message(ActRestore, findings, len(findings), more), "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.", len(findings)},
-		{"two texts", Message(ActRequest, both, len(both), more), "Dispatch refused this approval request, because 2 texts break the form of The Spec.", len(both)},
+		{"restore", Message(ActRestore, findings, len(findings), more).String(), "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.", len(findings)},
+		{"two texts", Message(ActRequest, both, len(both), more).String(), "Dispatch refused this approval request, because 2 texts break the form of The Spec.", len(both)},
 	} {
 		lines := strings.Split(test.text, "\n")
 		if lines[0] != test.head || len(lines) != test.lines+2 {
