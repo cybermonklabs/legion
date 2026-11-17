@@ -23,9 +23,9 @@ import (
 // role to three roles: the worker holding the issue's phase, the implementer, whose code the
 // checks ran on, and the tree's architect, who owns the tree. Each message names every check the
 // settlement reports and the conclusion it reports for it, in name order. A role named twice - the
-// implementer holding the phase, the architect holding accepting - is told once, and a phase no
-// worker holds names none. Nothing else happens: no phase moves, no architect
-// hears checks-red, no worker is started, and no return is counted.
+// implementer holding the phase, the architect holding admitted or accepting - is told once, and a
+// phase no worker holds names none. Nothing else happens: no phase moves, no architect hears
+// checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -33,6 +33,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 		// roles are the roles told, in the order tellChecks addresses them.
 		roles []claim.Role
 	}{
+		{phase.Admitted, "in_progress", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Implementing, "in_progress", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Testing, "testing", []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},

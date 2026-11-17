@@ -13,7 +13,7 @@
 # half scans the files of packages/daemon that name the contract and this one beside them, and
 # holds each number it finds to the constant the sentence it stands in states: waitingLineContract
 # for a window of the field itself, and whyAndLineFieldsContract for one naming `partPlace`, which
-# is the boundary the line's own members arrived at (internal/api/waiting_line_test.go:256-259);
+# is the boundary the line's own members arrived at (internal/api/waiting_line_test.go:303-308);
 # packages/daemon/internal/textcheck's
 # TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts recomputes these windows from
 # the seven files themselves and fails when a text and this copy have drifted apart, printing

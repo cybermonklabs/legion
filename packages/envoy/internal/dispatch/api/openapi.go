@@ -410,6 +410,7 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 			p.ParentSchema.Required = append(p.ParentSchema.Required, p.Name)
 		}
 		openAPIAllowNullRef(p.PropertySchema, p.Field.Type)
+		openAPIAllowNullEnum(p.PropertySchema)
 		return nil
 	}
 	if p.PropertySchema != nil {
@@ -475,6 +476,17 @@ func openAPIAllowNullRef(schema *jsonschema.Schema, field reflect.Type) {
 	referred := jsonschema.Schema{Ref: schema.Ref}
 	schema.Ref = nil
 	schema.WithAnyOf(referred.ToSchemaOrBool(), null.ToSchemaOrBool())
+}
+
+// openAPIAllowNullEnum puts null among the values of a nilable field's enum. The reflector reads an
+// `enum` tag onto the field's schema and adds "null" to a pointer's type, but JSON Schema holds a
+// value to both, so left alone the document would refuse the null the server sends for a *string
+// with no `,omitempty` and an enum of its values (NearCopyCheck.reason).
+func openAPIAllowNullEnum(schema *jsonschema.Schema) {
+	if schema == nil || len(schema.Enum) == 0 || !schema.HasType(jsonschema.Null) || slices.Contains(schema.Enum, nil) {
+		return
+	}
+	schema.Enum = append(schema.Enum, nil)
 }
 
 // rawFieldKey answers the rawFieldSchemas key of one property, the rawFieldKeyOf of the owning

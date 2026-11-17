@@ -473,6 +473,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.queueRecordedGatesPublish(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.queueRoleHoldersPublish(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -543,6 +546,74 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		return fmt.Errorf("queue the recorded design-gates publications of %s: %w", w.dispatchProject, err)
 	}
 	committed()
+	return nil
+}
+
+// roleHoldersPublishWindow is how far back the boot looks for a claim change that a release
+// before this one made and did not publish (queueRoleHoldersPublish): a claim whose last write is
+// older and that is not live is not read. No plan gives the number a reason beyond bounding the
+// boot's read. Each issue inside it costs the boot one outbox row and its lane one PUT, so a
+// longer window costs a boot one more of each for every issue whose claims last changed inside the
+// longer span.
+const roleHoldersPublishWindow = 7 * 24 * time.Hour
+
+// queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
+// a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
+// in one transaction. Every claim write of this release that changes a holder queues its own
+// publication in its own transaction (store's putClaim), so this pass recovers no change of this
+// release. It publishes what a release that published nothing left: a daemon that upgrades from
+// such a release starts over running sessions that Dispatch has never been told of, and a roll
+// forward after a rollback to one finds the claims that release changed. A claim that release
+// ended longer than roleHoldersPublishWindow before the roll forward stays listed on Dispatch
+// until the next change of a claim on its issue. A boot that cannot write the rows fails the boot,
+// as the design-gates pass does, and queueing rather than writing means a Dispatch that is down
+// refuses no boot. The lane is woken on commit (enqueueRoleHolders), which before attach reaches
+// nothing: the outbox's first sweep runs whatever this pass left.
+func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		issues, err := w.records.RecentClaimIssues(scoped, tx, w.dispatchProject, now.Add(-roleHoldersPublishWindow))
+		if err != nil {
+			return err
+		}
+		for _, issue := range issues {
+			if err := w.enqueueRoleHolders(scoped, tx, issue, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("queue the role-holder publications of %s: %w", w.dispatchProject, err)
+	}
+	committed()
+	return nil
+}
+
+// roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
+// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
+// a transaction of its own, which owns the commit hook its write registers, so the board lane is
+// woken once it commits. An error is the route's to answer: it refuses the ready with 503, so no
+// task goes first.
+func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		return w.enqueueRoleHolders(scoped, tx, c.Issue, time.Now().UTC())
+	}); err != nil {
+		return fmt.Errorf("queue the role-holder publication of %s: %w", c.Issue, err)
+	}
+	committed()
+	return nil
+}
+
+// enqueueRoleHolders queues the publication of issue's role sessions in tx
+// (store.EnqueueRoleHolders), and wakes the issue's board lane once tx commits, through the commit
+// scope of ctx (intake.WithCommitHooks), which both callers open.
+func (w *workflowRuntime) enqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
+	if err := store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
+		return err
+	}
+	intake.OnCommit(ctx, func() { w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 	return nil
 }
 
@@ -735,6 +806,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
+	// The record the rewrite reads where the task is of an entry and so carries the first-task
+	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the
+	// narrowing, and what its first task is derived from, read by the reader every start of a
+	// root architect reads it through (workflow.ArchitectStartOf). The reads are made only where
+	// a decision was dropped, since nothing else rewrites the task.
+	var root *record.Issue
+	var start workflow.ArchitectStart
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -745,7 +823,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		if err != nil {
 			return err
 		}
-		stays.Decisions, left = nil, nil
+		stays.Decisions, left, root = nil, nil, nil
 		for _, mark := range named.Decisions {
 			if !slices.Contains(holds, mark.Ref) {
 				// The row this mark named is not this delivery's any more, and only these take a
@@ -770,6 +848,16 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
+		if len(stays.Decisions) != len(named.Decisions) {
+			if root, err = w.records.Issue(scoped, tx, c.Tree); err != nil {
+				return err
+			}
+			if root != nil {
+				if start, err = workflow.ArchitectStartOf(scoped, tx, w.records, w.gatedSteps, *root); err != nil {
+					return err
+				}
+			}
+		}
 		if len(left) == 0 {
 			return nil
 		}
@@ -785,9 +873,27 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if len(stays.Decisions) == len(named.Decisions) {
 		return d.Task, d.Kept, nil
 	}
-	task := workflow.KeptDecisionsTask(c.Tree, stays)
+	// A task that carries the root's own first task keeps it: a decision leaving this tree says
+	// nothing about whether the tree has been taken up, and a rewrite from the decisions alone
+	// would hand a fresh architect the empty task that instruction exists to replace. Which task
+	// carries it is the entry the delivery is of, never the task's text (workflow.NarrowRootTask
+	// says why). A root the record now shows past admitted under its own power is served no first
+	// task, so its rewrite is the decisions' own; with no root recorded there is nothing to write
+	// one from either, so the rewrite is the decisions' own there too, as it always was.
+	var task string
+	if root != nil {
+		task = workflow.NarrowRootTask(start, d.Entry, stays)
+	} else {
+		task = workflow.KeptDecisionsTask(c.Tree, stays)
+	}
 	if task == "" {
 		return "", nil, nil
+	}
+	if len(stays.Decisions) == 0 && stays.Approved == 0 {
+		// The task names no decision now, so it holds none: the rows it named were released
+		// above, and a kept record naming nothing would have this delivery hold what it no
+		// longer says.
+		return task, nil, nil
 	}
 	kept, err := keptJSON(&stays)
 	if err != nil {
@@ -1666,11 +1772,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 
 // tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
 // or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
-// row names is sent that entry's work even where nothing else happens in the project: an
-// admission pass runs on a fact, and a quiet project raises none. Each run's event id is its own
-// — the word, the project, this boot and the run's time — since processed_events is shared by
-// every project's daemon. A failed apply is logged, and the next run tries again, as
-// applyControllerTick does.
+// row names is sent that entry's work, and the controller is woken for a stalled root architect,
+// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
+// project raises none. Each run's event id is its own — the word, the project, this boot and the
+// run's time — since processed_events is shared by every project's daemon. A failed apply is
+// logged, and the next run tries again, as applyControllerTick does.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
 	defer ticker.Stop()
@@ -1686,15 +1792,18 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 
 // applyEntrySweep applies one sweep, when one is owed. The fact itself reads nothing before it:
 // every handler decides inside the fact's own transaction, and what the sweep judges is the
-// daemon's own record. What runs before it is the gate — the very selection the sweep's pass
-// makes, asked as the one question this package has of it (admit's OwesEntryWork, over the
-// selection admit's resumeSlottedWorkers sends the work of), in a read-only transaction of its
-// own and outside the fact lock, asking whether any role of this project is owed the work of
-// the entry its phases row names. The fact takes the one lock every fact takes and writes a row
-// of processed_events, which nothing prunes, so the daemon asks before it applies one; and it
-// asks the question only one piece of code answers, so no gate of its own can disagree with the
-// pass and apply a fact a minute for work that pass would never do. A read that fails applies
-// nothing and is logged: the next run asks again.
+// daemon's own record. What runs before it is the gate — the very selections the sweep's pass
+// acts on, asked as the one question this package has of them (admit's OwesEntryWork), in a
+// read-only transaction of its own and outside the fact lock: whether any role of this project is
+// owed the work of the entry its phases row names (the selection admit's resumeSlottedWorkers
+// sends the work of), or, where none is, whether an arm of the stall reading holds for a slotted
+// root's architect that no wake has told the controller yet (the wakes that pass sends after its
+// sends). So a stall alone runs a sweep within a period of the arm holding, in a project where no
+// other fact arrives, and once its wake is told the gate is shut again. The fact takes the one
+// lock every fact takes and writes a row of processed_events, which nothing prunes, so the daemon
+// asks before it applies one; and it asks the question only one piece of code answers, so no gate
+// of its own can disagree with the pass and apply a fact a minute for work that pass would never
+// do. A read that fails applies nothing and is logged: the next run asks again.
 func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
 	owed, err := w.owesEntryWork(ctx)
 	if err != nil {
@@ -1711,8 +1820,9 @@ func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
 }
 
 // owesEntryWork is the sweep's gate read, in one short read-only transaction: admission's own
-// answer to whether any role of the project is owed the work of the entry its phases row names,
-// decided over the project exactly as the pass the fact would make decides it.
+// answer to whether the pass the fact would make has anything to do — a role of the project owed
+// the work of the entry its phases row names, or a stalled root architect no wake has told —
+// decided over the project exactly as that pass decides it.
 func (w *workflowRuntime) owesEntryWork(ctx context.Context) (bool, error) {
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {

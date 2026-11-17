@@ -68,6 +68,21 @@ const (
 	StateRetired ClaimState = "retired"
 )
 
+// allStates is every ClaimState, in the order the constants above declare them.
+// TestStatesIsEveryDeclaredStateOnce holds it to the constants the compiler sees in this package,
+// so a state added above and left out here fails that test.
+var allStates = []ClaimState{
+	StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady,
+	StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired,
+}
+
+// States is every state a claim can be in, in the order they are declared: the one list a test
+// outside this package walks to cover each state. It is a copy, so no caller changes the
+// package's own list.
+func States() []ClaimState {
+	return slices.Clone(allStates)
+}
+
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
 // (RequestRuleResume) — unless an operator suspended it: that suspension holds until the operator
@@ -179,6 +194,24 @@ type Claim struct {
 	// worker's turn. Zero is a claim that has retired no confirmed task of an entry, which every
 	// claim of a daemon upgraded in place is until its role's next start.
 	ServedEntry int64
+	// Handshake is the handshake between the daemon and this claim's worker over the last phase
+	// entry the claim was queued a task of: that entry, the issue generation the task was of, when
+	// a task of that entry was first queued to the claim and when a turn of its worker first
+	// confirmed one (EntryHandshake). It outlasts the task it was read from, which the end of the
+	// confirming turn retires, so it is what the state reads an issue's two times from
+	// (api.Issue.EntryQueuedAt and EntryConfirmedAt), and for a tree's own root it is its
+	// architect's in every phase the root stands in. The zero value names no entry, which every
+	// claim of a daemon upgraded in place is until its role's next start: the two times read as
+	// absent there. Four decisions write it, each beside GivenEntry or the delivery it records:
+	// queue and EntryGiven, where the claim is given an entry's work; confirm, where a turn
+	// confirms a task of that entry; and the take-back of that confirmation where it was never
+	// shown to be the worker's — a refusal or a busy answer (takeBackPending, refused), or a
+	// let-go that cut off a turn that confirmed the task while its prompt's send was in flight or
+	// a prompt of it still waited on its result (interrupted, confirmationInDoubt) — which clears
+	// the handshake's own. A queue of another entry replaces it, and nothing else clears it: a
+	// retirement, a turn's end, a hold and a let-go's take-back of a confirmation a turn of the
+	// task did take, its prompt's result come or no send or prompt of it outstanding, each leave it.
+	Handshake EntryHandshake
 	// ServingCheckLook is the production check look of the last confirmed delivery this claim
 	// retired, the look side of ServingGeneration: what ServingCheck answers with once no delivery
 	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a
@@ -450,6 +483,63 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+}
+
+// EntryHandshake is the handshake between the daemon and a claim's worker over one phase entry:
+// the entry, the issue generation the entry's task was of (Delivery.Generation), when a task of
+// that entry was first queued to the claim (the first such Delivery.QueuedAt) and when a turn of
+// the claim's worker first confirmed a task of it (the first such Delivery.ConfirmedAt). The zero
+// value names no entry, and a zero ConfirmedAt is an entry no turn has confirmed a task of.
+type EntryHandshake struct {
+	Entry       int64
+	Generation  uint64
+	QueuedAt    time.Time
+	ConfirmedAt time.Time
+}
+
+// queued is h once a task of entry, of generation's run, was queued to the claim at the moment at.
+// Where h already names that entry of that run it stands as it is: a second task of one entry is
+// a sweep's re-send after an unconfirmed retirement put the entry back (retirePending), or a held
+// phase's retry (RequestDeliver.ResendEntry), and the entry was still first queued, and perhaps
+// confirmed, when h says. Any other entry replaces h with that entry, queued at and confirmed by
+// no turn yet.
+func (h EntryHandshake) queued(entry int64, generation uint64, at time.Time) EntryHandshake {
+	if h.Entry == entry && h.Generation == generation {
+		return h
+	}
+	return EntryHandshake{Entry: entry, Generation: generation, QueuedAt: at}
+}
+
+// confirmed is h once a turn confirmed the task d: the first confirmation of a task of h's entry
+// and run is recorded at d.ConfirmedAt. Every other confirmation leaves h as it stands: a later
+// one of the same entry, which a task a death took back and sent again makes, and one of a task of
+// another entry or of no entry, a wake's or an operator's, which is no part of this handshake.
+func (h EntryHandshake) confirmed(d Delivery) EntryHandshake {
+	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
+		d.ConfirmedAt.IsZero() || !h.ConfirmedAt.IsZero() {
+		return h
+	}
+	h.ConfirmedAt = d.ConfirmedAt
+	return h
+}
+
+// unconfirmed is h once the daemon took back the confirmation of the task d, and whether that
+// changed h: a refusal or a busy answer said the turn that confirmed it was not d's, so the worker
+// never took it, or a let-go cut that turn off before anything said whose it was (interrupted,
+// confirmationInDoubt), so nothing says the worker took it. Where that confirmation is the one h
+// recorded — d is of h's entry and run, and its ConfirmedAt is h's — h is unconfirmed again, the
+// task's next real confirmation is recorded in its place, and the answer is true. Any other
+// take-back leaves h as it stands and answers false: one of a task of another entry or of no
+// entry, and one of a later confirmation of h's entry, after the first one stood. The bool is
+// what its callers read to know whether the claim's write must carry the handshake, rather than
+// comparing two handshakes that hold times.
+func (h EntryHandshake) unconfirmed(d Delivery) (EntryHandshake, bool) {
+	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
+		d.ConfirmedAt.IsZero() || !d.ConfirmedAt.Equal(h.ConfirmedAt) {
+		return h, false
+	}
+	h.ConfirmedAt = time.Time{}
+	return h, true
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
@@ -744,6 +834,12 @@ type Deps struct {
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
 	Secrets Enroller
+	// Registrar keeps each process's pod registered at the secrets broker to trade under the
+	// claim's session (ensureRegistered). nil — every deployment that names no
+	// `runtime.kubernetes.agent_secrets.exchange_audience` — registers nothing, and pins and logs
+	// no hello's key (helloKey). It reads the pod token the shim's hello carried, so it does
+	// nothing without Secrets.
+	Registrar Registrar
 	// Identity is the git identity a role's commits carry on issue: its App's bot, minted for the
 	// owner of the repository the issue works. A phase task hands it to the agent's working copy
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
@@ -773,7 +869,9 @@ type Deps struct {
 	// next runs — which can be after a park, a hand back to `todo` or a linger, generations later.
 	// Such a task names a person's decisions, which its own confirmation tells (daemon's
 	// settleKept, the claim store's putDelivery), so it is held rather than dropped: false keeps it
-	// pending, unsent and uncharged, and the start of the root's next run sends it (queue). It is
+	// pending, unsent and uncharged, and the start of the root's next run sends it (StartedBy,
+	// queue) — unless that start's own task supersedes it (supersedes), which retires it unsent
+	// and leaves the decisions it names for the catch-up that follows. It is
 	// asked only about a root architect's task of a run — never a phase worker's, never a task of
 	// no run such as an operator's or a production check's. nil sends every delivery.
 	RootHears func(ctx context.Context, c Claim, d Delivery) (bool, error)
@@ -1291,6 +1389,17 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
+	// registration is the pod-session registration this machine keeps written for the claim's
+	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
+	// writes it again at its shim's first hello to the new daemon.
+	registration *podRegistration
+	// helloKey is the thumbprint the first hello of the claim's current incarnation named, which
+	// every registration of that incarnation is bound to (ensureRegistered); a later hello of the
+	// same incarnation naming another key is logged and changes nothing. A machine with no
+	// Registrar pins none and logs none, since it keeps no registration for a key to be bound to.
+	// Memory only, like registration: a restored claim pins the key its shim's first hello to the
+	// new daemon names.
+	helloKey helloKey
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
 	// goroutines counts sends whose outcome has not been handled yet; idle wakes Wait.
@@ -1421,6 +1530,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		}
 		m.identity = &heldIdentity{incarnation: m.claim.Locator.Incarnation, AgentSecretsIdentity: identity}
 		m.enrollmentSent = false
+		if m.deps.Registrar != nil {
+			m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
+		}
 	}
 	dropped := m.dropWakeFor(ev)
 	if err := m.runParkedLaunchNow(ctx, ev); err != nil {
@@ -1545,14 +1657,26 @@ func (c Claim) ReleasedLaunch() bool {
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the
 // start's own work — including when that start carries no task of its own to deliver, where
 // nothing else would ask.
-func (m *Machine) StartedBy(ctx context.Context, row int64) error {
+//
+// The one held task it does not send is one the start's own task supersedes (task, the request
+// the start delivers once the claim is brought back, nil for a start that carries none;
+// supersedes): a tree's root architect's task of an earlier run, or of a lower entry of the same
+// run, that carries an entry of its own and that nothing of is in the agent's hands. Sent here,
+// it would be the re-admitted architect's first prompt — a task saying what was true of a run
+// that is over (dispatch://INFRA-2614 R3) — and the start's own task, the one the transition that
+// raised the newer entry wrote (R4), would wait behind its turn. The start's delivery retires it
+// unsent instead (queue), which releases the decisions it names for the catch-up that follows to
+// tell. A start of no entry supersedes nothing, and a held task of no entry, a wake's
+// (workflow's wakeRow) among them, is superseded by nothing, so either way a held task is sent
+// at the start as before.
+func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
 	if row <= m.claim.LastStartRow {
-		return m.sendPending(ctx)
+		return m.releaseHeld(ctx, row, task)
 	}
 	m.claim.LastStartRow = row
 	if m.held != nil {
@@ -1561,6 +1685,18 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 	}
 	if err := m.persist(ctx); err != nil {
 		return err
+	}
+	return m.releaseHeld(ctx, row, task)
+}
+
+// releaseHeld is StartedBy's send of the pending task, which it skips for a task the start's own
+// task supersedes (supersedes, the one rule queue applies when that task arrives).
+func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliver) error {
+	if p := m.claim.Pending; p != nil && task != nil && m.supersedes(*p, *task) {
+		m.log.Info("supervise: the start's own task supersedes the held task, so the held task is not sent; the start's delivery retires it",
+			"row", row, "held", p.ID, "heldGeneration", p.Generation, "heldEntry", p.Entry,
+			"generation", task.Generation, "entry", task.Entry)
+		return nil
 	}
 	return m.sendPending(ctx)
 }
@@ -1572,6 +1708,11 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 // difference the admission pass reads between the entry a role's phases row names
 // (record.PhaseRow.Entry) and the entry its claim was given has to close here rather than
 // through a second task of the same entry.
+//
+// The handshake is written with the number (Claim.Handshake), from the task the claim holds where
+// that task carries entry: its queued time is when that entry's work was first queued, and its
+// confirmed time, where a turn has confirmed it, when the worker took it. A claim holding no task
+// of entry has no handshake of it to record and keeps the one it holds.
 //
 // A claim already at or above entry is left alone and written nothing: the number only rises, so
 // a row run again after the claim was given a later entry's work cannot take it back.
@@ -1586,6 +1727,9 @@ func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 		return nil
 	}
 	m.claim.GivenEntry = entry
+	if p := m.claim.Pending; p != nil && p.Entry == entry {
+		m.claim.Handshake = m.claim.Handshake.queued(entry, p.Generation, p.QueuedAt).confirmed(*p)
+	}
 	return m.persist(ctx)
 }
 
@@ -2934,7 +3078,8 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
-	m.identity, m.enrollmentSent = nil, false
+	m.identity, m.enrollmentSent, m.helloKey = nil, false, helloKey{}
+	m.stopRegistration()
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}

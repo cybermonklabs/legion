@@ -225,9 +225,9 @@ func (m *Machine) replaceable(p *Delivery) bool {
 // it. The delivery it replaces is the one the claim holds (m.claim.Pending), which is the one
 // either caller could mean, and a claim holding none replaces none.
 //
-// The replaced task's row ends as any other retirement ends it (retirePending), and the question
-// a restart armed for that task is answered in the same step (answerAskFirstAfterDrop), so the
-// task that takes its place is never taken for the running turn's.
+// The replaced task's row ends as any other retirement ends it, and the question a restart armed
+// for that task is answered in the same step (dropPending), so the task that takes its place is
+// never taken for the running turn's.
 //
 // Nothing is logged here: what the two callers have to say of a replacement differs, so each
 // writes its own line when this reports one.
@@ -236,8 +236,8 @@ func (m *Machine) replaceOwedTask(ctx context.Context) (bool, error) {
 	if pending == nil || !m.replaceable(pending) {
 		return false, nil
 	}
-	if err := m.retirePending(ctx); err != nil {
+	if err := m.dropPending(ctx); err != nil {
 		return false, err
 	}
-	return true, m.answerAskFirstAfterDrop(ctx)
+	return true, nil
 }

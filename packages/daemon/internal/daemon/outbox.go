@@ -385,6 +385,24 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.RoleHoldersPublish:
+		// Nobody is told, and the line is what says the row ended. Two refusals end it
+		// (permanentRefusal): an issue Dispatch does not know, a WARN, since nothing of this
+		// daemon is wrong; and a 400 that refuses the set, an ERROR, since this daemon read a set
+		// from its own claims that Dispatch will never take. The issue's next ready, end or other
+		// change of a claim queues a fresh publication of the live set (roleHoldersChanged, the
+		// store's putClaim).
+		// permanentRefusal ended the row only on a coded *dispatch.Error, so refusal is set.
+		var refusal *dispatch.Error
+		errors.As(cause, &refusal)
+		log := r.log.Warn
+		if refusal.Status == http.StatusBadRequest {
+			log = r.log.Error
+		}
+		told = func() {
+			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -609,6 +627,16 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
 		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
+	case record.OutboxKindRoleHoldersPublish:
+		// The design-gates rule, and a 400 that carries Dispatch's code besides: the route refuses
+		// a set it will never store (INVALID_ROLE_HOLDER), and the set is read from the same claims
+		// on the retry, so a retry would send it for as long as the issue lives. A 400 with no code
+		// is from whatever stands in front of Dispatch, and it is retried as an outage.
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || refusal.Code == "" {
+			return false
+		}
+		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
 	default:
 		return false
 	}
@@ -675,6 +703,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.publishGatedSteps(ctx, value)
 	case record.DesignGatesPublish:
 		return r.publishDesignGates(ctx, value)
+	case record.RoleHoldersPublish:
+		return r.publishRoleHolders(ctx, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.CheckWakeDue:
@@ -1138,6 +1168,46 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 	}
 	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
 		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
+	}
+	return nil
+}
+
+// publishRoleHolders writes the session of each live Legion role of the issue onto the issue's
+// Dispatch row. The set is read from the claims now, in a transaction of its own, not when the row
+// was queued: a claim that ended after the queue is gone from it, and two claim changes of one
+// issue never publish a stale set. It is sent whole, empty included, since it replaces what
+// Dispatch holds, so a role whose claim ended leaves the set with no delete route.
+//
+// A Dispatch that has not got the route yet answers its router's 404 (dispatch.NoRoute), so the
+// daemon and Dispatch deploy in either order: that answer is a wait, not a failure. The row runs
+// again on its backoff and is logged as a wait is (settle): INFO at its first run, DEBUG after,
+// and WARN from waitWarnAttempts on, about two minutes after the first run, once a minute at the
+// backoff's cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
+// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer
+// is decided as it was: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row
+// (permanentRefusal), and a 5xx, a codeless 4xx, a handler's 404 NOT_FOUND "not found" and a
+// transport failure are failures retried on the same backoff.
+func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
+	if r.dispatch == nil {
+		return errors.New("role holders executor has no Dispatch client")
+	}
+	var live []record.RoleHolder
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		live, err = r.records.LiveRoleHolders(ctx, tx, payload.Issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the live role holders of %s: %w", payload.Issue, err)
+	}
+	holders := make([]dispatch.RoleHolder, len(live))
+	for i, holder := range live {
+		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
+	}
+	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
+		if dispatch.NoRoute(err) {
+			return wait.Errorf("the role holders of %s wait for a Dispatch that serves the route: %v", payload.Issue, err)
+		}
+		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
 	}
 	return nil
 }
@@ -1708,9 +1778,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// something to rewrite.
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
-		// look carries neither and is fenced on its check above, and every other start of no
-		// entry (record.SuperviseRequest.Entry, which lists them) is held to the generation
-		// alone.
+		// look carries neither and is fenced on its check above, every start of no entry
+		// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and
+		// so is a root architect's start, which carries an entry and names no phase, since that
+		// architect serves every phase of its tree and its row must act whatever phase the root
+		// stands in. What keeps one entry to one task for the architect is the claim's own rule:
+		// a delivery of an entry it was already queued a task of queues no second one
+		// (supervise.Claim.GivenEntry).
 		if payload.Entry > 0 && payload.Phase != "" {
 			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
 			if err != nil {
@@ -1818,11 +1892,48 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
 		}
+		// The task this start gives the claim, nil for a start that carries none. It is built here,
+		// before the start is recorded, because the record reads it: a task the claim holds back
+		// for a root that had no architect to hear it goes at the start, unless this start's own
+		// task takes its place (supervise.Machine.StartedBy), and that is decided against the
+		// request delivered below, so the two never read different starts.
+		//
+		// The row's phase, already held to the issue's above, travels with the delivery: it is
+		// what says the task is still the work to do once the delivery has outlived its id. The
+		// row's entry travels with it too, the number the start's own transaction raised on the
+		// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
+		// reports is held to (api/handoff.go), and what says a later row carrying the same
+		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
+		// the role the work of the entry its row already names travels with the mark that
+		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
+		// it was given that entry. A check start's look
+		// and check instance travel the same way, and are what say the completion this task's
+		// turn reports is a report on that look rather than a phase completion
+		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
+		// writes it with the delivery, so a retry of this row (a
+		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
+		// task again neither while it is pending nor once the claim has retired it
+		// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
+		// settles what its task named, that the claim has it (settleKept). What the task names
+		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
+		// claim's write of the delivery takes those rows from this start row and holds them
+		// under that claim and delivery id, and the write recording the turn's confirmation
+		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
+		var task *supervise.RequestDeliver
+		if payload.Task != "" {
+			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
+		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
 		// this row created has no older stop to fence, and recording it here rather than only for
 		// a claim that already existed keeps one rule instead of a special case.
-		if err := machine.StartedBy(ctx, row.ID); err != nil {
+		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
@@ -1925,35 +2036,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
 				}
 			}
-		} else if payload.Task != "" {
-			// The row's phase, already held to the issue's above, travels with the delivery: it is
-			// what says the task is still the work to do once the delivery has outlived its id. The
-			// row's entry travels with it too, the number the start's own transaction raised on the
-			// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
-			// reports is held to (api/handoff.go), and what says a later row carrying the same
-			// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
-			// the role the work of the entry its row already names travels with the mark that
-			// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-			// it was given that entry. A check start's look
-			// and check instance travel the same way, and are what say the completion this task's
-			// turn reports is a report on that look rather than a phase completion
-			// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
-			// writes it with the delivery, so a retry of this row (a
-			// settle or a ClaimReady below that failed, a crash before the row finished) queues the
-			// task again neither while it is pending nor once the claim has retired it
-			// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
-			// settles what its task named, that the claim has it (settleKept). What the task names
-			// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
-			// claim's write of the delivery takes those rows from this start row and holds them
-			// under that claim and delivery id, and the write recording the turn's confirmation
-			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
-			kept, err := keptJSON(payload.Kept)
-			if err != nil {
-				return err
-			}
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
+		} else if task != nil {
+			if err := machine.Handle(ctx, *task); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true

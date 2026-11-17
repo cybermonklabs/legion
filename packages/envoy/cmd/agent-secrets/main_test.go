@@ -207,7 +207,7 @@ var cannedStatus = map[string]string{"req-approved": approvedStatusJSON, "req-de
 func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	t.Helper()
 	counters := &brokerCounters{}
-	var audience string
+	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.createRequest, 1)
@@ -224,7 +224,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			counters.lastSessionID = *body.SessionID
 			counters.mu.Unlock()
 		}
-		obj, err := record.VerifyRequestObject(body.Request, audience, time.Minute, time.Now())
+		obj, err := record.VerifyRequestObject(body.Request, srv.URL, time.Minute, time.Now())
 		if err != nil || len(obj.Details) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -237,7 +237,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
 		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
-			writeJSON(w, pendingAnswer(name, audience, true))
+			writeJSON(w, pendingAnswer(name, srv.URL, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-approved", "state": "granted",
@@ -313,7 +313,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				return
 			}
 		}
-		writeJSON(w, pendingAnswer(name, audience, false))
+		writeJSON(w, pendingAnswer(name, srv.URL, false))
 	})
 	mux.HandleFunc("POST /v1/grants/grant-granted/values", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -368,11 +368,13 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The handlers read srv.URL, so srv is assigned before the server serves: Start, which sets
+	// the URL, runs after the assignment and before the goroutine that serves.
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.calls, 1)
 		mux.ServeHTTP(w, r)
 	}))
-	audience = srv.URL
+	srv.Start()
 	return srv, counters
 }
 
@@ -1019,6 +1021,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 			name: "one airlock name",
 			environ: append(append([]string{}, identity...),
 				"SSL_CERT_FILE=/inherited/roots.pem",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/inherited/grpc-roots.pem",
 				"HTTPS_PROXY=http://stale.example:3128",
 				"NO_PROXY=keep.example.com"),
 			release: &AirlockRelease{
@@ -1034,6 +1037,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 				"CURL_CA_BUNDLE="+testAirlockFiles.bundle,
 				"GIT_SSL_CAINFO="+testAirlockFiles.bundle,
 				"GRANT_ME=released",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="+testAirlockFiles.bundle,
 				"HTTPS_PROXY=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
 				"NODE_EXTRA_CA_CERTS="+testAirlockFiles.bundle,
 				"NODE_USE_ENV_PROXY=1",
@@ -1089,10 +1093,13 @@ func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 
 // runExecForm runs the exec form of GRANT_ME against broker from keyDir with no helper to fall
 // back to (the runtime dir is empty and AGENT_SECRETS_HELPER_SOCK is empty), returning its exit
-// code, stderr and how long it took. extraEnv comes last, so it can override any of that.
+// code, stderr and how long it took. extraEnv comes last, so it can override any of that. Its
+// home and state directory are the test's own, so no sign-in or machine cache of the machine
+// running the test answers for a key dir a row leaves empty.
 func runExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) (int, string, time.Duration) {
 	t.Helper()
-	env := append([]string{"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR=" + t.TempDir()}, extraEnv...)
+	env := append([]string{"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR=" + t.TempDir(), "HOME=" + t.TempDir(), "XDG_STATE_HOME=" + t.TempDir(),
+		"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY="}, extraEnv...)
 	start := time.Now()
 	_, stderr, exit := runAgentSecrets(t, binary, broker, keyDir, env, "GRANT_ME", "--", "sh", "-c", "exit 0")
 	return exit, stderr, time.Since(start)
@@ -1161,7 +1168,8 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
 // stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
-// fails with the error it would have failed with at once.
+// fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
+// present: the call stops there rather than go on to a later source of the chain.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1170,8 +1178,9 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	writePendingMarker(t, keyDir, 0)
 
 	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	if exit == 0 || !strings.Contains(stderr, "no session identity") {
-		t.Fatalf("exit = %d, stderr = %q, want the no-identity failure", exit, stderr)
+	if exit != 1 || !strings.Contains(stderr, "enrollment.pending is there and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
+		strings.Contains(stderr, "no broker identity for this process") {
+		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}
 	if elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
 		t.Fatalf("gave up after %s, want about the 1s bound", elapsed)
@@ -1199,8 +1208,8 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 	for _, tc := range []struct {
 		name, keyDir, want string
 	}{
-		{"empty key dir", t.TempDir(), "no session identity"},
-		{"stale marker", stale, "no session identity"},
+		{"empty key dir", t.TempDir(), "no broker identity for this process"},
+		{"stale marker", stale, "no broker identity for this process"},
 		{"reported failure", failed, "postgres unreachable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

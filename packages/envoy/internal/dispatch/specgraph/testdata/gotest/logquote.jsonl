@@ -1,0 +1,23 @@
+{"Time":"2026-11-16T16:19:23.064556279Z","Action":"start","Package":"example.com/acme/gotest/logquote"}
+{"Time":"2026-11-16T16:19:23.087157334Z","Action":"run","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenFails"}
+{"Time":"2026-11-16T16:19:23.087238118Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenFails","Output":"=== RUN   TestLogQuotesTheKillLineThenFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087311071Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenFails","Output":"    logquote_test.go:8: the child said: panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:23.087323525Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenFails","Output":"--- FAIL: TestLogQuotesTheKillLineThenFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087328078Z","Action":"fail","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:23.087339176Z","Action":"run","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenPasses"}
+{"Time":"2026-11-16T16:19:23.087341238Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenPasses","Output":"=== RUN   TestLogQuotesTheKillLineThenPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087343489Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenPasses","Output":"    logquote_test.go:13: the child said: panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:23.087347499Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenPasses","Output":"--- PASS: TestLogQuotesTheKillLineThenPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.08735007Z","Action":"pass","Package":"example.com/acme/gotest/logquote","Test":"TestLogQuotesTheKillLineThenPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:23.087353518Z","Action":"run","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails"}
+{"Time":"2026-11-16T16:19:23.087355209Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails","Output":"=== RUN   TestSubtestLogQuotesTheKillLineThenFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087357758Z","Action":"run","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails/quotes"}
+{"Time":"2026-11-16T16:19:23.087359791Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails/quotes","Output":"=== RUN   TestSubtestLogQuotesTheKillLineThenFails/quotes\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087362156Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails/quotes","Output":"    logquote_test.go:18: the child said: panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:23.08737011Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails/quotes","Output":"--- FAIL: TestSubtestLogQuotesTheKillLineThenFails/quotes (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087375075Z","Action":"fail","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails/quotes","Elapsed":0}
+{"Time":"2026-11-16T16:19:23.087378565Z","Action":"output","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails","Output":"--- FAIL: TestSubtestLogQuotesTheKillLineThenFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.087380984Z","Action":"fail","Package":"example.com/acme/gotest/logquote","Test":"TestSubtestLogQuotesTheKillLineThenFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:23.087383089Z","Action":"output","Package":"example.com/acme/gotest/logquote","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.089260684Z","Action":"output","Package":"example.com/acme/gotest/logquote","Output":"FAIL\texample.com/acme/gotest/logquote\t0.024s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:23.089318042Z","Action":"fail","Package":"example.com/acme/gotest/logquote","Elapsed":0.025}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
@@ -161,8 +163,11 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // says why. Before this it would have read the server's own bound as "meaning search failed",
 // which is what it says when something broke.
 //
-// The check answers at once rather than at the end of its three-second meaning allowance, which
-// is what tells the two apart: the statement was ended, not waited out. The text shares one word
+// The check answers when the statement is ended rather than at the end of its meaning allowance,
+// which is what tells the two apart: the statement was ended, not waited out. Here that
+// allowance is an hour (server.meaningBound, with the check's own allowance raised to match), so
+// a check that answered at all answered because the server ended the statement, and one that
+// waited the allowance out fails by name before the binary's deadline. The text shares one word
 // with the issue and means the same thing, so the keyword stage has the item to fall back on and
 // the meaning stage has a reason to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
@@ -183,19 +188,17 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}
 
+	const meaningBound = time.Hour
+	srv.meaningBound, srv.suggestionTimeout = meaningBound, meaningBound
 	endMeaningStatementsAt(t, "1ms")
-	started := time.Now()
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
-	elapsed := time.Since(started)
+	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
+		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	})
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
-		suggestions.SearchNote != "meaning search did not answer within 3s" {
+		suggestions.SearchNote != "meaning search did not answer within "+meaningBound.String() {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the server having ended the meaning statement", suggestions)
 	}
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
-	}
-	if elapsed >= relatedMeaningAllowance {
-		t.Fatalf("the check took %s, want it answered when the statement was ended rather than at the end of the "+
-			"%s meaning allowance", elapsed, relatedMeaningAllowance)
 	}
 }

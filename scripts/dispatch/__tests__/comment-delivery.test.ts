@@ -336,6 +336,14 @@ describe("the document", () => {
         "the status `received` in receipts.tsv, listed or unlisted.\n" +
         "- A person's comment rows from which no id was read: 0.\n"
     );
+    // Which sessions the transcript store holds, which is what an unknown of this reason means: it
+    // holds the Legion pods' sessions too, so such an unknown of a pod's session is not expected.
+    expect(first.stdout).toContain(
+      "- `session_not_in_store`: the transcript store does not hold the session. The store holds " +
+        "the Oh My Pi sessions of the dev boxes and of the Legion pods, and no Claude Code session " +
+        "of either. It loads each machine on its own schedule, so a session newer than its " +
+        "machine's last load is not in it yet.\n"
+    );
     expect(first.stdout).toContain(
       `- Comment ${id(7)}: \`session:01a1f001-0000-7000-8000-00000000000f\`, first at ` +
         "2026-10-20T04:00:01.000Z, `sami-rocqperf:/home/sami/.omp/agent/sessions/a/" +

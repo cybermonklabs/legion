@@ -377,6 +377,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		// From here on, a claim write that changes a role holder queues its issue's publication in
+		// its own transaction, and the store tells the issue once that commits, so its lane is woken
+		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
+		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
+		// on before supervision restores a claim, so no claim write of this boot is left out.
+		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The memory guards' kill holder is filled here, once the workflow is open
 		// (memoryGuardKills).
@@ -777,6 +783,9 @@ type plan struct {
 	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
 	// (newSecretsLogin); nil when the deployment enrolls no pod.
 	secretsEnroller supervise.Enroller
+	// secretsRegistrar is the same login as the machines' Registrar (newRegistrar); nil when the
+	// deployment names no exchange_audience, and then no pod session is ever registered.
+	secretsRegistrar supervise.Registrar
 	// pluginRelaunchable is supervise.Deps.PluginRelaunchable: whether this daemon can relaunch a
 	// stale-plugin claim onto a plugin at all. True under tmux always; under Kubernetes, true iff
 	// a plugin pair to install is known — plugins below, resolved by ResolvedPlugins from the
@@ -870,7 +879,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if stop == 0 {
 		stop = stopBudget
 	}
-	secretsEnroller, secretsLogin := newSecretsLogin(cfg, log)
+	secretsEnroller, secretsRegistrar, secretsLogin := newSecretsLogin(cfg, log)
 	plugins, pluginsSource := ResolvedPlugins(cfg)
 	pluginRelaunchable := cfg.Runtime.Name == "tmux" || plugins != nil
 	if o.pluginRelaunchable != nil {
@@ -881,7 +890,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
-		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
+		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 	}
@@ -1022,8 +1031,8 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 
 // launchVariants is the one reader a launch's arms come from: the experiments the project
 // declares, resolved against the answers the daemon's own store recorded for the launch's unit
-// (experiment.Launch, which decides which keys to read and which arms the rows put the launch
-// in). Everything here is the transaction that reads those rows.
+// and against the launch's role (experiment.Launch, which decides which keys to read and which
+// arms the rows put the launch in). Everything here is the transaction that reads those rows.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
@@ -1031,10 +1040,10 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 // read that draw back would run the unit against an arm the daemon had already recorded for it.
 // A declaration no launch could use names no key to read, so such a deployment opens no
 // transaction per worker spawn at all (experiment.Launch.Keys).
-func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
 	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	return func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+	return func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
 		keys := launch.Keys(tree, issue)
 		if len(keys) == 0 {
 			return experiment.Arms{}, nil
@@ -1047,7 +1056,7 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 		}); err != nil {
 			return experiment.Arms{}, err
 		}
-		return launch.Arms(recorded, tree, issue), nil
+		return launch.Arms(recorded, tree, issue, role), nil
 	}
 }
 
@@ -1455,6 +1464,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
+		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -2278,17 +2288,21 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
+	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
 	var await func(repo, tree, child, parent string)
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
+	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
+		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
+		architectStalls = workflow.admission.ArchitectStallArms
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2322,6 +2336,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+			architectStalls: architectStalls,
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2364,6 +2379,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
+		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 	})
@@ -2502,6 +2518,11 @@ type source struct {
 	// a source a test builds by hand reads as: serve sets this field over the daemon's own
 	// configuration, whatever the runtime.
 	noPluginInstall func(supervise.Claim) bool
+	// architectStalls is, by root key, every arm of the architect-stalled reading that holds for
+	// that root's architect (admit.Admission.ArchitectStallArms over the workflow's own admission),
+	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
+	// which weighs no architect and serves no arm.
+	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -2681,6 +2702,23 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		return api.State{}, nil, err
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
+	// Which arms of the architect-stalled reading hold for each root, read in the same snapshot
+	// by the reading the admission pass wakes the controller from (admit's ArchitectStallArms),
+	// and served on each root's own view whether or not the controller was told. It is the
+	// daemon's judgement as strandedClaims is, over records internal/projection may not read, so
+	// it is put on the views here, beside that report, rather than judged a second time anywhere.
+	if s.architectStalls != nil {
+		stalls, err := s.architectStalls(ctx, tx)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		for key, arms := range stalls {
+			if view, shown := state.Issues[key]; shown {
+				view.ArchitectStalls = arms
+				state.Issues[key] = view
+			}
+		}
+	}
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
 	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
 	// restart raises the wave again through its own paths; a paced catch-up waits on its

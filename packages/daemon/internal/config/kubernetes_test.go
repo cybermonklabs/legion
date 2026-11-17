@@ -1722,6 +1722,45 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.agent_secrets.exchange_audience is the audience of a second projected token
+// every enrolled pod carries, the one the secrets broker's exchange trades for a broker token
+// (BROKER_EXCHANGE_K8S_AUDIENCE). It lives inside the agent_secrets block, so a file that sets it
+// and names no broker is refused for the broker it names none of; it may not be empty, and it may
+// not be the enrollment's own audience, since the broker verifies the two at different routes and
+// the cluster admits one projected volume per audience. Unset, the block settles as it did before
+// the key existed.
+func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
+	const tf = agentSecretsTokenFile
+	for name, tc := range map[string]struct{ block, want string }{
+		"no broker url":        {"    agent_secrets:\n" + tf + "      exchange_audience: legion-broker-exchange\n", "runtime.kubernetes.agent_secrets.url is required"},
+		"blank":                {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: \"\"\n", "runtime.kubernetes.agent_secrets.exchange_audience must not be empty"},
+		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: agent-secrets\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both agent-secrets)"},
+		"the named audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: broker\n      exchange_audience: broker\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err %v, want %q", err, tc.want)
+			}
+		})
+	}
+	for name, tc := range map[string]struct{ block, want string }{
+		"set":   {"      exchange_audience: legion-broker-exchange\n", "legion-broker-exchange"},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: https://secrets.internal.example\n"+tf+tc.block), noEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience; got != tc.want {
+				t.Fatalf("agent_secrets.exchange_audience settled as %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAgentSecretsURLRefusalNamesNoCredential: a url carrying a user, a password, a query or a
 // fragment is refused without echoing it.
 func TestAgentSecretsURLRefusalNamesNoCredential(t *testing.T) {

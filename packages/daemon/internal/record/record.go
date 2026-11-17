@@ -561,9 +561,10 @@ type PhaseRow struct {
 	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
-	// phase the issue has moved into, and the promotion's start of a mid-phase worker a
-	// re-admitted tree brings back, raise it by one and write the two fields below beside it, in
-	// their own transaction (workflow's start and StartPromotedWorker). It is the finer of the
+	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
+	// tree brings back, and a root architect's start of work it was not on raise it by one and
+	// write the three fields below beside it, in their own transaction (workflow's start,
+	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
 	// one run, where the entry is new at each one, which is what tells one testing phase from the
 	// testing phase a conflicting head sent the work back to (api/handoff.go). A start that hands
@@ -581,6 +582,19 @@ type PhaseRow struct {
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
 	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
 	EntryTask string
+	// EntryVerbatim says the sweep's send of a root architect's entry again sends EntryTask as
+	// written (workflow's SendArchitectStart). Only the resume of a root a person answered sets
+	// it (workflow's ResumeAwaitedRoot): its task names the answer and no kept decision, and the
+	// answer is the work the entry owes. Every other raise clears it (workflow's enter), and
+	// ClearGeneration resets it with the task. False, the default, is a task the derivation of a
+	// root architect's first task wrote, or no task at all, which that send derives again from
+	// the record as it stands: a kept decision is claimed by the outbox row that names it, so a
+	// text composed once and sent again could name one another telling has claimed since. It is
+	// a fact of the record rather than a reading of the task's text, so what wrote an entry never
+	// turns on the wording of one release. A phase worker's row carries false and nothing reads
+	// it there, since the send of a phase worker's entry sends its task as written in every case
+	// (workflow's SendOwedEntry).
+	EntryVerbatim bool
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
 	// difference that has stood. Zero on a row no entry has been raised on.
@@ -613,6 +627,30 @@ type PhaseRow struct {
 // (workflow's clearHandoff) and a new generation (ClearGeneration) empty.
 func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
+}
+
+// PhaseRole names one row of the phases record: the issue and the role whose row it is, which
+// together are that row's key. It is how a batched read of many issues' rows answers
+// (Store.PhaseEntries).
+type PhaseRole struct {
+	Issue string
+	Role  claim.Role
+}
+
+// PhaseEntry is what a batched read of many issues' phases rows answers for one of them
+// (Store.PhaseEntries): the entry the row names, the moment the transition raised it and whether
+// its task is one to send as written, which are the three fields of PhaseRow a pass over every
+// slot holder reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
+// too.
+type PhaseEntry struct {
+	Entry    int64
+	RaisedAt time.Time
+	// Verbatim is the row's PhaseRow.EntryVerbatim: the entry was raised by the resume of a root a
+	// person answered, whose task names the answer. The sweep's reach over a root's architect
+	// reads it (workflow.ArchitectAtWork): such an entry, while its claim has not been given it,
+	// keeps a root the answer's own pass promoted past admitted in the reach, in every phase that
+	// carries a run but awaiting_person, where the answer to the new wait raises an entry of its own.
+	Verbatim bool
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
@@ -1500,6 +1538,17 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
+	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
+	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
+	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
+	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
+	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
+	// moment beside them to tell how long a role has been owed the work the number names (admit's
+	// architectStalls), and a read an issue would cost one round trip a slot on every fact of the
+	// project, which a project running hundreds of trees pays hundreds of times over. A row the
+	// record does not hold is absent from the answer, which reads as the zero entry: a role no
+	// transition has ever handed work on.
+	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
@@ -1598,6 +1647,25 @@ type Store interface {
 	// the trees that have one: what a catch-up queued to another tree's architect is written for
 	// (record.CatchUp.Launch), so a failed forward of an older one is not queued again behind it.
 	ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []string) (map[string]uint64, error)
+	// ArchitectServed is what the root architect claim of tree has served: the issue generation
+	// of the last confirmed delivery carrying one that the claim retired, and the phase entry of
+	// the last confirmed delivery carrying one (supervise.Claim.ServingGeneration and
+	// ServedEntry), each zero where the tree has no architect claim or its claim has retired no
+	// confirmed task carrying one. It is what tells a tree whose architect ran before
+	// (workflow.ArchitectStartTask's fourth rule). The launch ArchitectLaunches reads cannot tell
+	// it: claims.generation counts the claim's launches, and the claim is kept from one run to
+	// the next.
+	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
+	// TreeMembersRun is whether an issue of tree other than its root stands past
+	// phase.Admitted in the workflow (InWorkflow): its status is none of OutOfWorkflowStatuses
+	// and its phase is neither admitted nor done. Those are the members a
+	// re-admission's promotion starts again (admit's startMidPhaseMembers, which passes over a
+	// member at admitted and one out of the workflow), and a member a person set todo once its
+	// own first phase has started. It is what says a root architect's tree has work under way
+	// whatever its claim has served (workflow.ArchitectStart.MembersRun). It answers one bool
+	// from an exists over the tree's own issues (issues_tree), where TreeIssues would read every
+	// member's whole record, done ones included.
+	TreeMembersRun(ctx context.Context, tx pgx.Tx, tree string) (bool, error)
 	// KeepReadmittedApproval keeps, for root's next architect start, the step whose document a
 	// person approved, the version they approved and that document's latest version, which its
 	// re-admission found above the approved one before it cleared the old generation's gate; a
@@ -1616,6 +1684,24 @@ type Store interface {
 	// and boot runs does not tell it again. A re-admission opens a new generation of the tree and
 	// so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
+	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
+	// for the run its generation names of its tree, and answers, at each index of stalls,
+	// whether this call is the telling of that one: a stall already marked, or one an earlier
+	// index of the same call marked, answers false, so the one row decides who tells. Each arm has
+	// a mark of its own, so a root two arms read wakes the controller twice and one arm hides no
+	// other. Each arm is told once, because the pass that raises them runs on every fact of the
+	// project, and a wake that pass repeats would bury the controller's topic. A re-admission
+	// opens a new generation and tells it anew, as TellChildrenFirst does, and the tree is in the
+	// key for the same reason: a generation names a run within one tree alone. It is one
+	// statement however many stalls it marks, and none for no stall, since every fact of the
+	// project runs the pass that calls it
+	// (admit's TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
+	TellArchitectsStalled(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) ([]bool, error)
+	// ArchitectStallsUntold says whether any of stalls holds no mark yet, which is whether the
+	// pass TellArchitectsStalled is called from would tell the controller anything. It writes
+	// nothing, so the entry sweep's gate asks it in its read-only transaction (admit's
+	// OwesEntryWork), in one statement, and in none for no stall.
+	ArchitectStallsUntold(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) (bool, error)
 	// ForgetKeptDecisions tells what outbox row's published catch-up named of what tree is owed
 	// (KeptDecisions), of the rows row claims or nothing claims: every parked decision still
 	// standing at the reference and time it named — a newer decision on the same reference, kept
@@ -1792,6 +1878,12 @@ type Store interface {
 	// a run of changes queues no second row, a row that already says this set is left as it is,
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
+	// LiveRoleHolders is the session of each live claim of issue, by role: the set a role-holder
+	// publication sends.
+	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
+	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
+	// changed at or after since, in key order: the issues the boot publishes.
+	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
@@ -1940,21 +2032,56 @@ type RoleRun struct {
 }
 
 // QueuedSupervise is one queued supervise row: its id, which orders it against the others and
-// against the newest start run on the claim, and its request.
+// against the newest start run on the claim, its request, how many of its runs ended without
+// success, whether a lane holds it under a live lease, and how long ago it was queued.
+//
+// Attempts is the row's attempts. The outbox adds one each time a run of the row ends without
+// success and leaves the row queued for its backoff, a failure or a wait alike (wait.ErrWaiting:
+// internal/daemon's outbox settle, then Store.RetryOutbox), and a run that succeeds deletes the
+// row.
+//
+// Running is whether a lane holds a live lease on the row: its lease_token is set and its
+// lease_until is after now(), so the outbox is running the row now. A lapsed lease holds nothing.
+// A lane that dies mid-run records neither the row's finish nor its retry, so the row keeps that
+// lane's token and a lease_until in the past until the outbox's sweep wakes its lane and the lane
+// runs it again (internal/daemon's outbox_lanes.go); the store's own due predicate reads such a
+// row as free (outboxUnleasedDue), and Running reads it as a row between runs, by the live-lease
+// term the store already writes in Postgres.DropCatchUps: a token that is set and a lease_until
+// after now.
+// lease_until is the daemon's clock at the claim, or at the lane's latest renewal, plus the
+// outbox's lease (internal/daemon's outboxLease), and it is compared here with the store's now(),
+// as Age is; the two clocks agree on a deployment to far less than that lease. The
+// other ends of a run leave no lease at all: Store.RetryOutbox clears it, and a finished row is
+// deleted.
+//
+// Age is now(), the start of the reading transaction, less created_at, both in the store's own
+// clock. A row a transaction that began later wrote reads a negative age, which is inside any
+// bound. It is read from created_at because a row the outbox runs again in place keeps it, where
+// next_at moves with every backoff. It is read in the store's clock because created_at is the
+// database's now() at the start of the transaction that wrote the row, and subtracting it from
+// the daemon's clock would read the skew between the two clocks as age (the same reason
+// Notice.PacedFrom gives).
 type QueuedSupervise struct {
-	ID      int64
-	Request SuperviseRequest
+	ID       int64
+	Request  SuperviseRequest
+	Attempts int
+	Running  bool
+	Age      time.Duration
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
-// it was last given work of (given_entry), the moment its agent last stepped (step_at,
-// turn_started_at), what its own session last reported it was doing (activity_at,
-// activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
-// task's delivery id, generation, phase and confirmation. The id is what says the task is the
-// daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a reader of a
-// run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and readyWorkerTask).
+// it was last given work of (given_entry), the moment its agent last said it was ready
+// (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
+// handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
+// stepped (step_at, turn_started_at), what its own session last reported it was doing
+// (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
+// none, with the task's delivery id, generation, phase, entry, the moments it was queued and
+// confirmed, and whether a let-go took it back from a turn (interrupted). The id is what says the
+// task is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a
+// reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
+// readyWorkerTask).
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -2014,7 +2141,24 @@ type RoleClaim struct {
 	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
 	// row names — one owed that entry's work — from one already holding it.
 	GivenEntry int64
-	Pending    *supervise.Delivery
+	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
+	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
+	// writes it, a relaunch's included (supervise's ready). Its reader is the first stall arm
+	// (admit's architectTookNothing): a task a let-go took back from a turn waits for the
+	// relaunched agent, so the arm counts that task from the later of its queueing and this
+	// moment.
+	LastReady time.Time
+	// Handshake is the claim's handshake of the last entry it was queued a task of
+	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
+	// first queued to the claim and when a turn first confirmed one, the zero value where the
+	// claim was queued no task carrying an entry. The claim's machine writes the queued moment
+	// at the first queue of an entry and keeps it through every later task of the same entry and
+	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
+	// queued), where the task's own QueuedAt is that later task's. Its reader is the first stall
+	// arm (admit's architectTookNothing), which counts the task of an entry from when that entry
+	// was first queued, as R7 says (dispatch://INFRA-2614).
+	Handshake supervise.EntryHandshake
+	Pending   *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

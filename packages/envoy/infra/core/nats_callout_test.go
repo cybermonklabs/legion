@@ -74,7 +74,7 @@ func TestAuthCalloutRendersNoAuthorizationTimeout(t *testing.T) {
 		`    auth_users: ["`+authServiceKey+`"]`+"\n"+
 		`    xkey: "`+calloutXKey+`"`+"\n"+
 		"  }\n"+
-		"}\n", text)
+		"}\n"+calloutPingLines, text)
 }
 
 // renderedCalloutBlock is the callout's lines cut from text, a Render text: what follows the users'
@@ -88,19 +88,22 @@ func renderedCalloutBlock(t *testing.T, text string) string {
 	return block + "\n"
 }
 
-// CalloutBlock is exactly the callout's lines of Render's text, which a component that reloads its
-// servers rolls them on, and empty without a callout.
+// CalloutLines is every line Render writes for the callout, which a component that reloads its
+// servers rolls them on: the auth_callout block exactly as Render writes it inside the
+// authorization block, then the ping lines that end the text. It is empty without a callout.
 //
-// Control: make Render write its own block (a.Callout.block(a.Users) in place of a.CalloutBlock())
-// and CalloutBlock leave out the last user's key; this test fails, and so does gcp's
-// TestClusteredNatsHubHashesTheRenderedCalloutBlock.
-func TestCalloutBlockIsTheRenderedCalloutLines(t *testing.T) {
+// Control: make CalloutLines return the auth_callout block alone; the CutSuffix row fails, and
+// gcp's TestClusteredNatsHubRollsThePodsForACalloutChange fails on the digest.
+func TestCalloutLinesAreTheRenderedCalloutLines(t *testing.T) {
 	text, err := withCallout().Render(hubHeader)
 	require.NoError(t, err)
-	block := withCallout().CalloutBlock()
+	lines := withCallout().CalloutLines()
+	block, found := strings.CutSuffix(lines, calloutPingLines)
+	require.True(t, found, "CalloutLines leaves out the ping lines: %q", lines)
 	require.True(t, strings.HasPrefix(block, "  auth_callout {\n"), "%q", block)
 	require.Equal(t, renderedCalloutBlock(t, text), block)
-	require.Empty(t, hubShaped().CalloutBlock())
+	require.True(t, strings.HasSuffix(text, calloutPingLines), "%q", text)
+	require.Empty(t, hubShaped().CalloutLines())
 }
 
 func TestValidateRefusesACalloutThatCannotKeepAProjectApart(t *testing.T) {

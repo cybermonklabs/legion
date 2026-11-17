@@ -1,0 +1,14 @@
+{"Time":"2026-11-16T08:14:12.009703629Z","Action":"start","Package":"example.com/acme/gotest/fail"}
+{"Time":"2026-11-16T08:14:12.028450047Z","Action":"run","Package":"example.com/acme/gotest/fail","Test":"TestA"}
+{"Time":"2026-11-16T08:14:12.028550412Z","Action":"output","Package":"example.com/acme/gotest/fail","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:12.028600305Z","Action":"output","Package":"example.com/acme/gotest/fail","Test":"TestA","Output":"    fail_test.go:6: the claim is lost after a restart\n","OutputType":"error"}
+{"Time":"2026-11-16T08:14:12.028612639Z","Action":"output","Package":"example.com/acme/gotest/fail","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:12.028615085Z","Action":"fail","Package":"example.com/acme/gotest/fail","Test":"TestA","Elapsed":0}
+{"Time":"2026-11-16T08:14:12.028626698Z","Action":"run","Package":"example.com/acme/gotest/fail","Test":"TestSkipped"}
+{"Time":"2026-11-16T08:14:12.028628673Z","Action":"output","Package":"example.com/acme/gotest/fail","Test":"TestSkipped","Output":"=== RUN   TestSkipped\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:12.028631233Z","Action":"output","Package":"example.com/acme/gotest/fail","Test":"TestSkipped","Output":"    fail_test.go:10: the database is not here\n"}
+{"Time":"2026-11-16T08:14:12.028633913Z","Action":"output","Package":"example.com/acme/gotest/fail","Test":"TestSkipped","Output":"--- SKIP: TestSkipped (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:12.028635949Z","Action":"skip","Package":"example.com/acme/gotest/fail","Test":"TestSkipped","Elapsed":0}
+{"Time":"2026-11-16T08:14:12.028638085Z","Action":"output","Package":"example.com/acme/gotest/fail","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:12.03126243Z","Action":"output","Package":"example.com/acme/gotest/fail","Output":"FAIL\texample.com/acme/gotest/fail\t0.021s\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:12.031302501Z","Action":"fail","Package":"example.com/acme/gotest/fail","Elapsed":0.022}
