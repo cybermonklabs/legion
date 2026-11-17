@@ -79,7 +79,11 @@ const testMachineLoginURL = "https://dispatch.example/credentials/machine"
 
 // productionEnv is the configuration every broker needs besides its addresses and database: the
 // namespace it serves, the key every secret there is on, and the four settings a person signs
-// in to its approval page with, which it refuses to start without.
+// in to its approval page with, which it refuses to start without. It also empties
+// KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container: a test run in a pod would
+// otherwise hand it to each broker it starts, and every broker with an airlock would refuse to
+// start for want of BROKER_AIRLOCK_CLUSTER_RANGES. A broker these tests start is a local process,
+// outside any cluster, unless its row names KUBERNETES_SERVICE_HOST itself.
 func productionEnv(t *testing.T) []string {
 	t.Helper()
 	return []string{
@@ -89,6 +93,7 @@ func productionEnv(t *testing.T) []string {
 		"BROKER_SIGNIN_CLIENT_ID=" + brokertest.SignInClientID,
 		"BROKER_SIGNIN_CLIENT_SECRET_FILE=" + signInClientSecretFile(t),
 		"BROKER_SIGNIN_DOMAIN=" + brokertest.SignInDomain,
+		"KUBERNETES_SERVICE_HOST=",
 	}
 }
 

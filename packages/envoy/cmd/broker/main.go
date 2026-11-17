@@ -678,6 +678,10 @@ func main() {
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
+			// The broker cluster's own ranges (BROKER_AIRLOCK_CLUSTER_RANGES), which the proxy
+			// refuses to dial beside every private address. config.Load has already refused a
+			// start in a cluster whose ranges miss its Service range.
+			ClusterRanges: cfg.AirlockClusterRanges,
 			// The local stack's four settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
 			// addresses it may dial anyway, the roots it trusts upstream, and the two

@@ -903,8 +903,13 @@ What the airlock does not stop is as much of the design as what it does:
   agent in the middle of a call to ask for a new one.
 
 - A private address that reaches the proxy is refused, because the proxy runs beside the broker,
-  whose own identity reads every secret. A command that needs such a call sets its own `NO_PROXY`
-  entry for that name.
+  whose own identity reads every secret. So is an address inside the broker cluster's own
+  Service, pod and node ranges, which the deployment names in `BROKER_AIRLOCK_CLUSTER_RANGES`
+  beside `BROKER_AIRLOCK_RULES_FILE`: a Service range can be public address space, as GKE's
+  default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
+  (`KUBERNETES_SERVICE_HOST` set), a broker with a rules file refuses to start without that
+  setting, or when no range in it holds that address. A command that needs such a call sets its
+  own `NO_PROXY` entry for that name.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.
