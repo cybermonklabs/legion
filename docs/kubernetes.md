@@ -1709,7 +1709,7 @@ Take the block out before the earlier image is pinned, and `legion start --check
 A file that never set the block needs nothing.
 
 **A pod of this release's worker image runs with the guard off under an earlier daemon.**
-No launch replaces a running pod for an image change alone ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the pods this release made go on running after the earlier daemon starts.
+No launch replaces a running issue pod for an image change alone ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the issue pods this release made go on running after the earlier daemon starts.
 Each of their launchers starts its guard at the defaults, and the earlier daemon's answer to each hello carries no `memoryGuard` member, which the guard reads as "off" (`launcher: memory guard: off: the daemon's acknowledgement carries no settings`).
 From that answer on the guard ends nothing, and the launcher sends no `launcher_memory_kill` frame on that connection, since that daemon would close the connection on a frame it does not know: a report waiting then is dropped with a line.
 Such a pod is bounded by the kernel's stop of the whole container alone, as every pod was before this release, until a launch replaces it with a pod of the earlier image.
@@ -1717,6 +1717,43 @@ Such a pod is bounded by the kernel's stop of the whole container alone, as ever
 **Nothing in the database needs a statement.**
 This release adds no store migration.
 The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a kind the release before it already decodes, so a note still queued at the rollback is delivered as any other role message.
+
+#### Rolling back below the release that guards the controller's pod's memory
+
+The release that added the memory guard in the controller's pod ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3531`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A rollback below it has two steps of its own, and one effect on the controller's pod while that pod still runs.
+A rollback below the release that guards an issue pod's memory also takes the steps of that release's own section above.
+
+**`controller_pod` must come out of `legion.yaml` first.**
+An earlier loader refuses the member by name (`unknown key runtime.kubernetes.memory_guard.controller_pod`), so its daemon does not start while the member stands.
+Take `controller_pod` out before the earlier image is pinned, and `legion start --check-config` on the earlier image reads the file clean.
+A file that never set the member needs nothing.
+
+**Delete the unsent `memory-guard-kill` notices, once.**
+Each kill is a `controller_notice` outbox row whose payload's `kind` is `memory-guard-kill`.
+A sent notice leaves no row, so the rows that stand are the notices this release wrote and had not sent when its daemon stopped.
+An earlier release cannot send them: it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
+Stop this release's daemon, and run the block below once before the earlier release starts:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'memory-guard-kill';
+commit;
+SQL
+```
+
+It prints `BEGIN`, `DELETE <n>` for the notices it drops, and `COMMIT`.
+A rerun prints `DELETE 0` and changes nothing.
+The controller is not told of the kills those rows held, and the `ended` line of each kill stays in the `controller` container's log.
+This release adds no store migration, so nothing else in the database needs a statement.
+
+**The controller's pod of this release's image runs with the guard off under an earlier daemon.**
+An earlier daemon re-adopts the running controller pod and keeps it at the relaunch that installs its plugins ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the pod this release made goes on running after the earlier daemon starts.
+The earlier daemon's answer to its launcher's hello carries no `memoryGuard` member, which the guard reads as "off" (`launcher: memory guard: off: the daemon's acknowledgement carries no settings`).
+From that answer on the guard ends nothing, and the launcher sends no `launcher_memory_kill` frame on that connection: a report waiting then is dropped with a line.
+Such a pod is bounded by the kernel's stop of the whole container alone, until a launch that installs nothing replaces it with a pod of the earlier image.
 
 ### Cutting over to the pod-owned disk
 
@@ -2076,7 +2113,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 ### Pinning a release that drops what a running pod still uses
 
-A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
+A pod is built whole from the image pinned when it was launched, and no launch replaces a live issue pod for an image change alone:
 a release whose daemon stops serving a route, or stops setting a variable, that the previous image's agents call or read leaves every pod still on the earlier image calling this daemon as the older release.
 LEGION-631 is one: it deletes the `/legion/v1/gh-token` and `/legion/v1/git-credential` routes, which a pod's `legion gh` and `legion credential` from the earlier image still call.
 The daemon's boot log, and every orphan sweep after it, names each pod still on another image
@@ -2089,7 +2126,7 @@ The same log names each pod running as a ServiceAccount other than `runtime.kube
 A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `relaunch.go`, `roundCovers` in `drift.go`):
 a pod an update round covers — every issue pod — is replaced by that round, which asks every role in it to push its work and ends the pod once every role has answered or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
-For the account, the pod's kind decides, not the one exemption a stale-plugin install has: such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
+For the account, the pod's kind decides, not the exemption a stale-plugin install has for the pod's shape (below): such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
 The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway.
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
 The boot action is the log line alone: refusing to adopt a drifted pod would stop observing a live pod and trigger nothing.
@@ -2114,8 +2151,13 @@ For an operator-launched controller, stop `legion controller start` and run it a
 The daemon-launched controller's pod is in scope for the warning and in no round:
 it has no issue workspace and nothing to push, so `PodDrift` answers nothing for it (`internal/runtime/sandbox/drift.go`).
 Its pod is replaced by a launch: one that finds it not live — its Sandbox suspended, its pod ended, its init container failed, or its launcher binding lost
-— and, since no round covers it, one that finds it drifted in any way, its image and pod shape included, unless that launch installs a stale-plugin pair (`roundCovers`, `shapeDrift`).
-So an operator moving the controller onto a new image suspends its claim and resumes it (`legion claims suspend`, then `legion claims resume`).
+— and, since no round covers it, one that finds it drifted in any way, its image and pod shape included (`roundCovers`, `shapeDrift`).
+A launch that installs a stale-plugin pair reads one facet of the pod's shape alone, its image (`podImageDrift`):
+it replaces a controller pod built on another image, and the fresh pod installs nothing, since the configured image carries the release's own launcher, Oh My Pi and plugins.
+It keeps a controller pod whose other facets alone drifted — its reservation, an operator volume or mount, its disk — and installs the pair into it, and the next launch that installs nothing replaces that pod.
+So a release that moves the daemon API contract reaches the controller's running pod at the relaunch that installs its plugins, with no operator step ("Contract discipline" below).
+A daemon of a release before the one whose `version.go` carries the entry for `dispatch://INFRA-3531` keeps the controller's pod at that relaunch, whatever its image.
+Under such a daemon, and at a release that keeps the daemon API contract, whose boot relaunches no claim onto a plugin, an operator moving the controller onto a new image suspends its claim and resumes it (`legion claims suspend`, then `legion claims resume`).
 
 A launch replaces a pod other roles of its issue still run in only when the pod cannot run the launching role as a pod created now would and no worker in it can be asked to push first (`movedInPod`, `internal/runtime/sandbox/addresses.go`):
 it runs the layout before one container, one launcher container per role, or its launchers dial a worker stream other than the one a pod created now is handed and never redial it.
@@ -2135,12 +2177,13 @@ It charges neither a launch failure nor a death.
 A turn the role was in is lost: its task goes back to waiting and is sent again once the session resumes, as a moved address's relaunch does.
 The annotation lives on the Sandbox, so a daemon restarted mid-replacement reads it as well.
 
-A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no pod replacement and no runbook step:
+A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no issue pod replaced and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
-every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps the pod and the disk, so a worker loses only the turn it was in.
+every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps an issue pod and its disk, so a worker loses only the turn it was in.
 What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`):
 an install refreshes no binary, so only a new image carries that change, and the pod's own update round is what carries it
 — each issue pod is replaced once every role in it has answered, or at the round's bound.
+The controller's pod has no round: the relaunch that installs the pair replaces it when it was built on another image, so the new image carries that change to the controller at that relaunch (above).
 
 **Moving from one container per role to one `roles` container (daemon API contract 39).**
 A release at contract 39 builds an issue pod with one container, `roles`, whose launcher runs every role in multi-role mode, which only an image of that release's `legion` has:
@@ -2411,6 +2454,7 @@ every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
 To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.
 A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
 Contract 144, cybermonklabs/legion#4021, is the release just before this one, and its own section above, "Rolling back below the release that guards an issue pod's memory", gives its way back: take `runtime.kubernetes.memory_guard` out of `legion.yaml` before the earlier image is pinned, since a release before it refuses the key by name, and run no SQL.
 It adds no store migration, so the block below has nothing of it to reverse, and the note its guard sends is a `role_message` outbox row, a kind a release before it already decodes.
@@ -2601,7 +2645,7 @@ a registered claim whose recorded contract differs from the daemon's own, or is 
 — runs on this daemon's plugin before it does anything else, and it gets there by being relaunched onto it, asked nothing first.
 
 The lane asks its worker nothing and opens no round (`refreshPlugin` in `packages/daemon/internal/supervise/plugin.go`).
-A stale claim costs one paced wake, the relaunch itself, which keeps the pod and the disk, so what a worker loses is the turn in flight and no workspace with it.
+A stale claim costs one paced wake, the relaunch itself, which keeps a worker's issue pod and its disk, so what a worker loses is the turn in flight and no workspace with it.
 Until this release the daemon asked first — a claim whose plugin had `ready_for_update` was given an update round of its own, `plugin:<daemon contract>`, and kept running until its worker had pushed and answered — and that ask cost a second paced wake and a model turn for every live session, which took INFRA's wake queue 6 h 23 min to drain at the boot of 2026-11-10 (dispatch://INFRA-2712).
 Nothing opens such a round now, and a boot takes every claim an earlier daemon left in one out of it (`endPluginRounds` in `packages/daemon/internal/daemon/daemon.go`), which releases the task that round was holding back.
 The pod update round is untouched by all this: it replaces a pod and its disk, so it still asks every role in that pod to push first, and it ends at its bound whatever the roles answer ("Pinning a release that drops what a running pod still uses" above).
@@ -2629,17 +2673,19 @@ Each relaunch logs one line, exactly `supervise: the process speaks another plug
 a relaunch the tree lifecycle or the store refuses leaves the claim live and stale, so the orphan sweep
 — the one periodic pass that already reads every claim — posts it again until one attempt starts).
 
-Under Kubernetes that relaunch keeps the pod
-— even one built from another image — rather than replacing it:
+Under Kubernetes that relaunch keeps an issue pod
+— even one built from another image — rather than replacing it, and it keeps the controller's pod unless that pod was built on another image (below):
 the role's shim runs the start wrapper, `/bin/sh -c '<start script>' legion-start <n> <setup command…> <omp argv…>` (`startArgv`, `internal/runtime/sandbox/plugins.go`;
 `<n>` is the setup command's word count, 0 with none), whose install step runs `bun add --backend=copyfile --exact @sjawhar/pi-legion@<version> @sjawhar/pi-envoy@<version>` (a tarball path or URL source is handed to `bun add` as written;
 `--backend=copyfile` because the issue's bun install cache and the generation directory now share the issue's volume, where bun would otherwise hardlink the installed files out of that cache and an in-place edit of either would corrupt the other for the life of the volume) into a fresh generation directory, `$XDG_STATE_HOME/legion-plugins/g<generation>/` (`/legion/scratch/state/<role>/legion-plugins/g<N>/`), checks with a `node -e` snippet that the installed `pi-legion`'s `legion.daemonApiVersion` equals the daemon's own (exiting 1 before `exec`, printing `legion plugins: @sjawhar/pi-legion@<v> declares daemon API contract <got>; this daemon requires <want>` when it does not), and then `exec "$@"`s into Oh My Pi, which starts with `--extension <gen dir>/node_modules/@sjawhar/pi-envoy --extension <gen dir>/node_modules/@sjawhar/pi-legion` in place of `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`.
-A pod replaced for any other reason in the same relaunch
-— a suspended Sandbox, a lost launcher binding, a failed init container, a moved address, a pod no round covers running as another ServiceAccount
+A pod the same relaunch replaces
+— a suspended Sandbox, a lost launcher binding, a failed init container, a moved address, a pod no round covers running as another ServiceAccount, a controller pod built on another image
 — installs nothing: it comes up on the configured image, whose copies the boot gate already holds to the daemon's contract.
 An issue pod merely running another image is replaced by no relaunch at all, stale-plugin or not:
 it is drift, and the update round replaces it once every role in it has answered, or at the round's bound ("Pinning a release that drops what a running pod still uses" above).
-The controller's pod, which no round covers, is replaced by any relaunch that installs nothing.
+The controller's pod, which no round covers, is replaced by any relaunch that installs nothing, for any drift, and by a relaunch that installs the pair only when it was built on another image (`podImageDrift`, `internal/runtime/sandbox/drift.go`).
+The install puts the release's plugins under the agent and nothing more, so a kept pod on another image would go on running another release's `legion launcher` as its PID 1, and another release's Oh My Pi.
+A controller pod whose other facets alone drifted is kept, and the pair is installed into it.
 An install failure ends the child before Oh My Pi starts;
 the launcher reports it gone, the daemon charges it as a launch failure, and the claim is retried until the budget ends it in a `worker-died`.
 
@@ -2746,8 +2792,9 @@ runtime:
     skills_repository: <owner>/<name>   # optional: the Oh My Pi plugin marketplace every issue pod's roles install their skills from, cloned in an init container of the pod's own (below)
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
-    memory_guard:               # optional: the memory guard in each issue pod's launcher (The memory guard in an issue pod, below)
+    memory_guard:               # optional: the memory guard in each issue pod's launcher and in the controller pod's (The memory guard in an issue pod, and The memory guard in the controller's pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
+      controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults; read by the controller's pod under controller: daemon
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
@@ -2899,10 +2946,10 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   a `volume` that is not a positive Kubernetes quantity;
   a `refresh_minutes` or `retain_hours` that is not a positive integer; its `resources` take a reservation's six members and nothing else;
 
-- a `memory_guard` that is not a mapping, or names a member but `issue_pods` (`controller_pod` among them, which this release does not read);
-  an `issue_pods` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
-  an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`);
-  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`);
+- a `memory_guard` that is not a mapping, or names a member but `issue_pods` and `controller_pod`;
+  an `issue_pods` or a `controller_pod` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
+  an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`, and `controller_pod`'s alike);
+  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`, and `controller_pod`'s alike);
 
 - `gateway`, removed with LEGION-270: a pod's model route is the operator's `pod`;
 
@@ -4821,7 +4868,7 @@ The earlier runs of those Jobs, recorded in the same issue's `wc-gvisor` results
 Only a launcher that is its container's first process, PID 1, runs the guard: the `legion launcher` of an issue pod's `roles` container ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 Only that process sees every process of the container, and every process that no `role-init` holds is its own; the rules below rest on both.
 A launcher started any other way writes one `off` line and runs no guard.
-The launcher of the controller's pod runs none either.
+The launcher of the controller's pod runs a guard with rules of its own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 
 **What it reads.**
 Each interval, `interval_milliseconds` (100 ms by default), the guard reads two files: `AnonPages` of `/proc/meminfo`, the pod's anonymous memory, which is its reading, and the cgroup's `memory.limit_in_bytes`, the container's limit.
@@ -4906,7 +4953,8 @@ runtime:
 
 Those are the defaults, and the guard is on under `runtime: kubernetes` wherever the file says nothing.
 The ranges are 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`).
-`issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://INFRA-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
+The mapping is keyed by the kind of pod: `controller_pod` beside `issue_pods` is the block of the controller's pod ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)), and the loader refuses any other member as it refuses any other unknown key.
+Each block is settled from its own members and its own defaults, so a value under one never moves the other.
 The launcher checks the settings against the same ranges on its own side, and settings outside them change nothing and write one `settings refused` line.
 
 The daemon hands the settings to the guard on its answer to each role's hello (`memoryGuard` in `launcher_hello_ack`), so a change reaches a running pod at its next connection, which every daemon restart gives it, and replaces no pod.
@@ -4988,7 +5036,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   the launcher counts a report as sent once it is written, and does not send it again.
 
 - The daemon dropped the report, with a warning in its own log, and kept the connection open:
-  a report that fails the frame's own checks, one from a launcher of no issue, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
+  a report that fails the frame's own checks, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
   The launcher counted the report as sent once it was written, so it does not send it again.
 
 - The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
@@ -5029,7 +5077,118 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
   On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
 
-- It does not run in the controller's pod: a guard there is the work of dispatch://INFRA-3531.
+### The memory guard in the controller's pod
+
+The daemon-launched controller runs in a pod of its own, whose one container, `controller`, has one memory limit ([Daemon-launched controller](#daemon-launched-controller)).
+Under gVisor a container that passes its limit is stopped whole, `OOMKilled`, and the controller's turn ends with it.
+The launcher of that container runs the same memory guard as an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the guard acts before that point.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor the agent's own, and the daemon tells the controller why.
+The rest of the pod goes on: the guard never ends the launcher, the shim or Oh My Pi, so the controller's turn does not end for the kill, and the command that was ended fails in the turn that ran it.
+The launcher runs the guard with the controller pod's rules (`serveMemoryGuard` and `controllerClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
+"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, with the controller pod's own list of what the guard spares (below).
+
+**What gVisor measured.**
+Measured on 2026-11-17 in gVisor pods of 4 GiB and of 8 GiB, each with its memory request equal to its limit, by `TestControllerPodMemoryGuardLiveSandbox` (`packages/daemon/internal/launcher/memoryguard_live_test.go`), whose binary was the container's PID 1 and ran the launcher's single-role form at the defaults, with a real shim and agent (dispatch://INFRA-3531/comment/01974a85-5eac-4267-b88d-01e42bb972c4).
+A Python process that grew by 64 MiB every quarter of a second was ended alone at a reading of 85.48% of the 4 GiB limit and 85.06% of the 8 GiB limit, the shim and the agent lived on, one kill reached the daemon, and the reading fell within 22 ms and 94 ms of the kill.
+A file of 1.275 times the limit, mapped and read for 60 seconds, raised the memory counter to 159% and 156% of the limit while `AnonPages` stayed under 30%, and the guard ended nothing.
+With no guard, the last `AnonPages` reading before the sandbox was stopped `OOMKilled` was 96.92% of the 4 GiB limit and 98.57% of the 8 GiB limit, so the default act share plus one interval of the fastest rise measured (43 MiB) stays 445 MiB and 1,069 MiB below the point where the pod ends.
+
+**Where it runs.**
+Only the launcher's single-role form runs this guard, and only as the first process of its container, PID 1: the `legion launcher --role controller` of the controller's pod, under `runtime: kubernetes` and `controller: daemon`.
+Only that process sees every process of the container.
+A launcher started any other way writes one `off` line and runs no guard.
+No guard runs where the controller runs outside a pod, since no launcher runs there:
+under `runtime: tmux` the daemon-launched controller is a pane in a window of its own, and under `controller: operator` it is the Oh My Pi that a person's `legion controller start` runs ([Operator-launched controller](#operator-launched-controller)).
+
+**What it spares, and what it may end.**
+The guard never ends a process whose end would end the controller's turn: ending Oh My Pi ends the turn, and ending a command it ran does not.
+The launcher knows each spared process by its place in the process tree first, and by its executable and its arguments second, so a program that copies the name or the arguments of a spared one elsewhere in the tree is not spared (`controllerClassifier`).
+The controller's pod has no `role-init`: the launcher starts the shim in the container's own namespaces.
+The guard spares:
+
+- the launcher itself, PID 1;
+
+- each process the launcher runs for a step of its own, which its `pidGuard` holds, with every process under it;
+
+- the shim, the generation the launcher started, while that process is the launcher's own executable run as `worker-shim`:
+  once the launcher has reaped the shim, the kernel may give its pid to another process;
+
+- every direct child of the shim: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen;
+
+- Oh My Pi's helpers, each reached from Oh My Pi through a chain of helpers, by the rule of an issue pod:
+  a process that runs Oh My Pi's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of the JavaScript eval tool.
+
+Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 adopted, and a shell that `kubectl exec` started with what it runs.
+
+**Whom it tells.**
+Every process of the container is the controller's, spared or not.
+So the guard reports every kill to the controller, and the `ended` line of each kill names `role=controller`:
+a kill of a command the controller ran, of an orphan under PID 1, and of a process that a `kubectl exec` started.
+For each kill the launcher sends one `launcher_memory_kill` frame on the controller's connection, by the rules of "The report and the note" above: only on a connection whose answer carried settings, up to 32 reports that wait, and the same drops with a line.
+The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, as the fact `intake.ControllerMemoryGuardKill`.
+It credits the kill to the claim and the pod that the connection authenticated as, and never to anything the report says.
+For a claim that is not the project's controller, the workflow tells nobody and writes a line in the daemon's log.
+For the controller's claim it writes one controller notice of kind `memory-guard-kill` for each kill, under the project key as a `tick` is (`controllerMemoryGuardKill`, `packages/daemon/internal/workflow/engine.go`).
+The outbox publishes the notice to `notifications.legion.<project>.controller` as `memory-guard-kill on <PROJECT>`.
+Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
+The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
+
+```text
+The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before you run it again.
+```
+
+`skill://legion-controller/references/wakes.md` has the controller's handling of the notice.
+An `eval` cell that answers `Kernel died during execution; completion is uncertain` beside such a notice is that kill: the guard ended the cell's kernel.
+A notice can be lost in the first three cases of "The report and the note" above, and for a claim that is not the controller's.
+In each case the `ended` line stays in the `controller` container's log.
+
+**The settings.**
+
+```yaml
+runtime:
+  kubernetes:
+    memory_guard:
+      controller_pod:
+        enabled: true
+        act_percent: 85
+        floor_percent: 10
+        wait_seconds: 5
+        interval_milliseconds: 100
+```
+
+Those are the defaults, and the guard is on in the controller's pod wherever the file says nothing.
+The block has the five members of `issue_pods`, with the same defaults and ranges, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 95`).
+Each block is settled from its own members and its own defaults: a value under `issue_pods` never moves the controller's pod, and a value under `controller_pod` never moves an issue pod.
+The daemon hands the controller pod's launcher this block alone, on its answer to each hello (`memoryGuard` in `launcher_hello_ack`, `launcherHelloAck` in `packages/daemon/internal/runtime/sandbox/launcher_auth.go`).
+So a change applies at the launcher's next connection, which every daemon restart gives it, and replaces no pod.
+Before the first answer the guard runs at the defaults, so the pod is guarded while the daemon is away.
+Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before this guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
+The launcher's own check of the ranges, the `settings` line, and the readings and hourly lines of a guard that is off are as "The settings" above says.
+
+**The lines.**
+The guard writes the lines of "The lines" above, and a line that names a role names `controller` (`role=controller`, `largest_role=controller`).
+In this container the launcher's three lines about the reports carry no `<role>: ` prefix.
+
+**How a running controller pod takes it.**
+The guard is part of the launcher, which is the image's `legion`, so the controller's pod takes the guard only when it runs on an image of the release that adds it.
+The launcher of an earlier image runs no guard in its single-role form, and it ignores the settings the daemon hands it.
+The release that adds the guard also moves the daemon API contract, so a daemon's first boot on that release relaunches the controller onto its plugins at once, where the daemon knows a plugin pair to install ([Contract discipline](#contract-discipline)).
+That relaunch replaces a controller pod built on another image, and the fresh pod comes up on the configured image, with the release's launcher and its guard ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+So the controller's pod takes the guard at the deploy, with no operator step.
+A suspend and resume of the controller's claim (`legion claims suspend`, then `legion claims resume`) is for a controller pod that a daemon of an earlier release keeps: such a daemon keeps the pod at the relaunch that installs its plugins.
+
+**What it does not do.**
+
+- It does not keep its lines apart from the output of the shim and Oh My Pi.
+  The launcher writes its lines to the container's stderr with no prefix, through the same writer as that output, so a line that the shim or Oh My Pi has not finished can be joined to a guard line.
+  Read them with `kubectl -n <namespace> logs legion-<project>-controller -c controller | grep 'launcher: memory guard: '`, a pattern that does not anchor the start of the line.
+
+- It does not tell the controller's own work from another process of the pod.
+  A process that a `kubectl exec` started, and an orphan under PID 1, are the controller's to the guard, so the controller is told of their kill as of its own command's.
+
+- It does not lift any limit of the issue pod's guard ("What it does not do" above).
+  Among them, it never ends memory that Oh My Pi holds in its own process, and it does not stop a fill faster than its margin.
+  When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
 
 ### The disk dies with its pod
 
@@ -6772,6 +6931,7 @@ Its one container, the launcher, carries the controller's reservation
 — `runtime.kubernetes.resources.controller` where the file sets a field, the daemon's default of 1 CPU and 4Gi otherwise
 — as request and limit alike unless the file sets a lower `cpu_request` or `memory_request`, so at the default the pod is `Guaranteed`, never the class the kubelet evicts first under node memory pressure (a lower request makes it `Burstable`, [Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable");
 the image probe pod carries its own, smaller reservation, not the controller's, so a controller reservation the pool cannot place leaves the probe, and the boot, unaffected ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
+Its launcher, as PID 1 of that container, runs the memory guard, which near the limit ends the largest process that is neither Legion's own nor the agent's own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 
 The Sandbox is the claim's alone, where an issue's is its tree's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.
