@@ -265,11 +265,10 @@ stream=ENVOY_NOTIFICATIONS
 # controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
-# each in an issue pod of its own with an architect of its own, which its first phase start
-# starts, and each holding a slot of its own.
-# Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
-# holding no slot at all, and are parked there; with tree 2 gone and child 2 parked they raise no
-# peak either.
+# each in an issue pod of its own with an architect of its own, which its first phase start starts,
+# and each holding a slot of its own. Children 3 and 4, filed at children-first-acceptance, run
+# while the root stands in accepting holding no slot at all, and are parked there; with tree 2 gone
+# and child 2 parked they raise no peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
@@ -4014,8 +4013,7 @@ pass
 begin child-release
 # Acceptance 3, both paths, while the parent keeps running. Child 1 set done by the proof human: the
 # daemon retires every claim of the child, its own architect's included, each keeping its session
-# (issue_close), and its durable
-# close effect foreground-deletes the child's Sandbox (SuspendIssue,
+# (issue_close), and its durable close effect foreground-deletes the child's Sandbox (SuspendIssue,
 # internal/runtime/sandbox/issue_suspend.go), logging the release; its pod goes with that Sandbox
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
@@ -6369,9 +6367,8 @@ on_tree "$tree1" wait_for_worker "$tree1" merger
 # at children-first-acceptance, before the sign-off the daemon held for them, and no issue has
 # entered the tree since, which beneath an accepted root the daemon refuses — so the merge's own
 # close runs (closeMerged, internal/workflow/pullrequest.go): the status done, the slots its
-# issues held already freed, the tree lingered
-# (linger_hours 0.5) with every member's claims suspended except child 1's, which its done retired,
-# and the production check opened on the
+# issues held already freed, the tree lingered (linger_hours 0.5) with every member's claims
+# suspended except child 1's, which its done retired, and the production check opened on the
 # merge commit, whose first look the daemon hands the tester — the role a project that names no
 # `production_check` gets — in the still-live pod: its claim alone comes back, resumed on its kept
 # session, while the other five stay suspended, and the root's Sandbox stays Running for the look

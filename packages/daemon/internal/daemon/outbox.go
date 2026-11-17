@@ -1936,9 +1936,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 		case supervise.StateRetired:
 			// A retired claim was closed with its issue (a child closed as done) or with its tree
-			// (whose linger also removed the workspace), or an operator stopped it. So the workspace
-			// is provisioned, which brings back one a linger removed, before the kept session
-			// relaunches.
+			// (whose linger also removed the workspace), or an operator stopped it. So the
+			// workspace is provisioned, which brings back one a linger removed, before the kept
+			// session relaunches.
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
@@ -2006,21 +2006,23 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 			gave = true
 		}
-		// A start that finds an architect running is a return of its issue while its session lived
-		// on: a tree's re-admission for a root's architect; for a child's own, the tree's
+		// A start that finds an architect running is a return of its issue while its session
+		// lived on: a tree's re-admission for a root's architect; for a child's own, the tree's
 		// re-admission while the child stands past admitted (admit's startMidPhaseMembers) or the
 		// child's next first phase start (a rerun, or a person's move back to todo). The linger
-		// suspends every claim of the tree and a child's leave suspends the child's architect, so
-		// that happens only when the claim was mid-launch when the suspend ran (the machine ignores
-		// a suspend while launching), or the start ran before the suspend. No ready follows, and a
-		// ready is what tells the architect the issues it owns (workflow's claimReady), so the start
-		// applies that fact itself, for the running launch, once per start row, on the start's own
-		// issue: the architect is told its issues at their new generation, a root's whole tree and
-		// a child's own subtree, each through the workflow's one composer (workflow.QueueCatchUp).
-		// Its catch-up names what nobody claims, which this row's task may name too, so the
-		// decisions the task carries are settled first (settleKept) and the catch-up is composed
-		// without them; the settle after the row then finds nothing left to do. A retry of the row
-		// queues the task no second time and applies the fact once.
+		// suspends every claim of the tree, and a child's leave suspends or closes the child's
+		// architect. After either, this happens only when the claim was mid-launch when the
+		// suspend ran (the machine ignores a suspend while launching), or the start ran before
+		// it. A running child that a person sets back to todo goes through no leave, so its
+		// start finds the architect running unless something else stopped it. No ready follows,
+		// and a ready is what tells the architect the issues it owns (workflow's claimReady),
+		// so the start applies that fact itself, for the running launch, once per start row,
+		// on the start's own issue: the architect is told its issues at their new generation, a
+		// root's whole tree and a child's own subtree, each through the workflow's one composer
+		// (workflow.QueueCatchUp). Its catch-up names what nobody claims, which this row's task
+		// may name too, so the decisions the task carries are settled first (settleKept) and the
+		// catch-up is composed without them; the settle after the row then finds nothing left to
+		// do. A retry of the row queues the task no second time and applies the fact once.
 		//
 		// That catch-up stands in place of a launch, so it is a wake of the architect and takes a
 		// turn in the daemon's pacing like the launch it replaces: the fact says so (Paced), the

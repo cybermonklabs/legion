@@ -920,14 +920,14 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // holds nothing, even at accepting, since its branch below comes before any read of the phase, and
 // is told as a worker-died of the architect on the child, which reaches the architect above it,
 // since the owner walk starts at the child's parent for an architect's own worker-died
-// (record.OwningArchitect). That
-// architect takes the child's notices from then on, because the failed claim no longer holds its
-// role, until the child's architect runs again: the daemon starts it again at the child's next
-// phase start (start), and so do a re-admission of the tree while the child stands in a phase
-// (admit's startMidPhaseMembers) and an operator's retry. The worker-died names the failure, as a
-// finished role's does, so the architect above it reads why the child's architect stopped; no
-// controller copy goes with it, since an architect inside the tree is left to act on it. A child
-// that left the workflow or a member of a lingering tree tells nobody, as below.
+// (record.OwningArchitect). That architect takes the child's notices from then on, because the
+// failed claim no longer holds its role, until the child's architect runs again: the daemon starts
+// it again at the child's next phase start (start), and so do a re-admission of the tree while the
+// child stands in a phase (admit's startMidPhaseMembers) and an operator's retry. The worker-died
+// names the failure, as a finished role's does, so the architect above it reads why the child's
+// architect stopped; no controller copy goes with it, since an architect inside the tree is left
+// to act on it. A child that left the workflow or a member of a lingering tree tells nobody,
+// as below.
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect

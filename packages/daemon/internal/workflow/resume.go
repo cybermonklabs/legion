@@ -148,11 +148,12 @@ type phaseOwners struct {
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
 // The owner of admitted and of accepting is an architect and no phase worker — on a root the
-// root's own, which admission starts with the tree; on a child in accepting the child's own, which
-// the child's first phase start started (StartFirstPhase); and on a child at admitted the
-// architect above it, since the child's own starts only with that first phase — so no issue in
-// either is given one. An owner is answered only while its claim at the issue's generation stands
-// suspended, whatever the source: which sources a start may act on is each caller's to judge.
+// root's own, which admission starts with the tree; on a child in accepting the architect that
+// owns it (its own while that claim holds its role, else the one above); and on a child at
+// admitted the architect above it, since the child's own starts only with its first phase — so no
+// issue in either is given one. An owner is answered only while its claim at the issue's
+// generation stands suspended, whatever the source: which sources a start may act on is each
+// caller's to judge.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {

@@ -191,13 +191,14 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		if c.Released() && !woken[releasedRole{issue: c.Issue, role: string(c.Role)}] {
 			continue
 		}
-		// current is the phase the start that would wake the claim names; the architect's names none.
-		// A child's own architect is no phase worker, in accepting or elsewhere, so none is reported
-		// here (the default case). A failed one has its report already: a worker-died to the
-		// architect above it (Engine.claimFailed), and the daemon starts it again at its child's
-		// next phase start (Engine.reviveArchitect). A stranded claim goes to the controller, whose
-		// remedy is an operator's retry, which a claim the daemon starts again does not need. One an
-		// operator stopped or suspended is that operator's own move, which its retry or resume undoes.
+		// current is the phase the start that would wake the claim names; the architect's names
+		// none. A child's own architect is no phase worker, in accepting or elsewhere, so none is
+		// reported here (the default case). A failed one has its report already: a worker-died
+		// to the architect above it (Engine.claimFailed), and the daemon starts it again at its
+		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
+		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
+		// does not need. One an operator stopped or suspended is that operator's own move, which
+		// its retry or resume undoes.
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):

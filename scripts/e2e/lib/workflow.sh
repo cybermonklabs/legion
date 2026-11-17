@@ -179,9 +179,8 @@ set_status() { dispatch_human PATCH "issues/$1" "$(jq -cn --arg status "$2" '{st
 # new_child TITLE PARENT creates a child issue of PARENT in the run's project, sets it todo, and
 # prints its key: a child of a live tree needs no `legion` label, since the daemon enters it into
 # its tree itself once it is todo (the workflow's recordChildUnderLiveTree) and starts an architect
-# of its own at its first phase start, and no spec,
-# since a proof's instructions hold its planner until the driver speaks. Both writes are the proof
-# human's (dispatch_human).
+# of its own at its first phase start, and no spec, since a proof's instructions hold its planner
+# until the driver speaks. Both writes are the proof human's (dispatch_human).
 new_child() {
   local key
   key=$(new_issue "$1" "$2") || return 1

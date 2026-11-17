@@ -933,8 +933,8 @@ func ChildStartedNotice(child, root string, waited []string) record.Notice {
 	}
 	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it from now on: "+
 		"its decomposition, its children and its acceptance. You hear its child-status and child-closed notices, "+
-		"a worker-died or worker-stalled of its architect, and its other notices while its architect has failed "+
-		"or an operator has stopped or suspended it", child, root, why)
+		"a worker-died or worker-stalled of its architect, and its other notices while its architect does not hold "+
+		"its role: it failed, an operator stopped or suspended it, or the child left the workflow", child, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
 

@@ -1169,20 +1169,19 @@ Closing the terminal leaves the project without one, and the daemon logs
    role of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and its planner back, on
    their kept sessions, at its next first phase start, and each other role at the start of its
-   phase. It suspends or ends claims only when an issue leaves the workflow, when a claim
+   phase. The daemon suspends or ends claims only when an issue leaves the workflow, when a claim
    moves to another tree, or for a production check after the issue is done. A phase start gives
    its task to that live claim. At boot the daemon resumes by rule a suspended worker that still
    owns its issue's phase, but never a claim an operator suspended; a start for an
    operator-suspended claim waits instead. A notice for a root's operator-suspended architect waits
    until the operator resumes it. A notice for a child whose own architect an operator suspended
    goes to the architect above that child. A drain therefore ends with the operator resuming every
-   claim they
-   suspended, one `legion claims resume` each; `legion claims list --json` names each one's
-   `suspendedBy` (`operator`, `daemon`, `exit`, or `unknown` for one suspended before this
-   release). A daemon suspension of a claim whose issue left the workflow waits for its current turn
-   to finish, with no stop timeout: a child parked in Dispatch (`backlog` or `icebox`) stops its
-   worker only once the worker's current turn ends, and a lingering tree's claims stay suspended
-   until the tree is re-admitted.
+   claim they suspended, one `legion claims resume` each; `legion claims list --json` names each
+   one's `suspendedBy` (`operator`, `daemon`, `exit`, or `unknown` for one suspended before this
+   release). A daemon suspension of a claim whose issue left the workflow waits for its current
+   turn to finish, with no stop timeout: a child parked in Dispatch (`backlog` or `icebox`)
+   stops its worker only once the worker's current turn ends, and a lingering tree's claims stay
+   suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
    suspended reads `unknown`. The next phase start, re-admission and the controller keeper resume
@@ -1198,10 +1197,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
    shows for its `suspendedBy`. A claim the state names `retired` takes neither resume nor retry —
    `legion claims retry` refuses a claim that has not failed — and comes back only on a workflow
-   start: a start of the phase it owns, its tree's admission for a root's architect, or its child's
-   next first phase start for a child's own architect, as that page's `needsWorkflowStart` shows.
-   Never resume or retry by hand a claim of a lingering tree or of an issue parked out of the
-   workflow: re-admission or the issue's return to `todo` starts it.
+   start: a start of the phase it owns, or its tree's admission for a root's architect, as that
+   page's `needsWorkflowStart` shows. Never resume or retry by hand a claim of a lingering tree or
+   of an issue parked out of the workflow: re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and

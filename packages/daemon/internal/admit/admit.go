@@ -756,9 +756,9 @@ func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWo
 // Why the controller is told at all, when the architect that owns the issue already was or is
 // within the minute: a child's architect that does not hold its role is passed over for the one
 // above it, but the notice can end at a tree root's architect claim that has failed or is gone,
-// and then it reaches nobody, and the controller is the role that holds `fresh_session` and reads
-// the whole project (this root's architect ruled it on 2026-11-12, dispatch://INFRA-3163). The
-// tick carries the list. The state route gains no field for it; the state's settings gain the two
+// where it reaches nobody. The controller is the role that holds `fresh_session` and reads the
+// whole project (this root's architect ruled it on 2026-11-12, dispatch://INFRA-3163). The tick
+// carries the list. The state route gains no field for it; the state's settings gain the two
 // bounds, `worker_silence_minutes` and `worker_background_hours`, as two keys of a loose object,
 // so no daemon API contract number is taken for either.
 //

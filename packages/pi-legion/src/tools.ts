@@ -290,9 +290,9 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` is refused here only for the root architect's session, and finds what it
- * reports in the pane first (`handoffReport`); the daemon refuses every architect's completion, a
- * sub-architect's included (ACCEPTANCE_IS_SIGN_OFF), so it is a phase worker's operation.
- * `read_state` and `set_status` belong to the controller. */
+ * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
+ * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
+ * operation. `read_state` and `set_status` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;

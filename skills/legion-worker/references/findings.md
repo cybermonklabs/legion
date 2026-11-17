@@ -25,8 +25,7 @@ three steps that fits:
    the running tree whose code it is. Only when no tree owns that code does it file a Legion root.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite is a `dispatch ask`
    with one recommendation, as [Where it goes](#where-it-goes) says: whether the work is wanted at
-   all, which of several designs, who owns it, or a change of scope, cost or risk. A child's own
-   architect opens none itself: it sends the finding to the architect above it.
+   all, which of several designs, who owns it, or a change of scope, cost or risk.
 
 A fix you are not sure of is not step 1: hand it over, or ask when a person must decide.
 
@@ -104,12 +103,11 @@ of these that holds, so a person sees it and the controller finds it when it ret
 2. **The report issue is missing or closed:** ask on your own issue, the evidence posted there as
    a comment first. Then publish the ask's reference to the architect that owns your issue, the
    one your `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). A root's
-   architect holds its own ask. A child's own architect opens none: it sends the finding to the
-   architect above it. The architect holds your issue's
-   acceptance until a controller has taken the ask (`skill://legion-architect`, "Acceptance and the
-   merge"). That hold is what keeps the ask readable: an open ask on a closed issue drops out of
-   the controller's own listing (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an
-   issue that closed over one hides it for good.
+   architect holds its own ask. The architect holds your issue's acceptance until a controller has
+   taken the ask (`skill://legion-architect`, "Acceptance and the merge"). That hold is what keeps
+   the ask readable: an open ask on a closed issue drops out of the controller's own listing
+   (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an issue that closed over one hides
+   it for good.
 3. **Your own issue is closed too** (Dispatch refuses the ask `409 ISSUE_CLOSED`, as on a
    production check): put the report issue back in reach yourself, with the `dispatch` commands
    below, and ask there. Never `legion({op: "set_status"})`, which the controller's report steps

@@ -45,12 +45,12 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   `done` nor a park under that rule, and hold the acceptance until they answer. Until the person
   answers the ask on the root about an unreleased child you moved, sign off neither the issue you
   moved it under nor any issue above it that you accept (`skill://legion-architect`, section 3):
-  release the child when they
-  say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when
-  they say its work should wait, citing their answer. A parent: sign off only after its last round
-  (below). The daemon then closes a parent that is not the root at its own merge, which under this
-  rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
-  at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
+  release the child when they say to run it; when they say to stop it, close it, or move it to
+  `icebox` under the rule when they say its work should wait, citing their answer. A parent: sign
+  off only after its last round (below). The daemon then closes a parent that is not the root at
+  its own merge, which under this rule comes after its children's. One issue beneath never holds
+  it: one the daemon itself holds at `admitted` under an ancestor it has already accepted, which
+  starts when that ancestor closes.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
@@ -154,11 +154,12 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
   head and GitHub's refusal; never bypass a rule.
 - A squash into a base other than the default branch, where the repository allows only squash or
   the base's rules require a linear history: the merger tells the architect its addressing line
-  names which open pull requests of the tree build on the merged branch. Each one GitHub then
-  reports `CONFLICTING` comes back to `implementing` (*A conflicting head*, below), and the
-  architect that owns its issue hears of it by `checks-red`. For each one whose issue is yours,
-  tell its implementer (`envoy_publish` to its role topic) to expect its pull request back, and to
-  merge that base forward in that implementing round.
+  names which open pull requests of the tree build on the merged branch. Each one whose issue
+  stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
+  `implementing` (*A conflicting head*, below), and the architect that owns its issue hears of it
+  by `checks-red`. For each pull request on that list whose issue is yours, tell its implementer
+  (`envoy_publish` to its role topic) to merge that base forward in its implementing round. One
+  whose issue is still in `implementing` gets no move, no task and no `checks-red` from the daemon.
 
 ## A conflicting head
 

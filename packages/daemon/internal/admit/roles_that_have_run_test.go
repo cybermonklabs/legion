@@ -64,7 +64,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 	}
 
 	// survived is the assertion the rule itself reads: every claim row seeded before the
-	// re-admission is still there, in the state the tree's close left it.
+	// re-admission is still there, in the suspended state it was seeded in.
 	survived := func(t *testing.T, pool *pgxpool.Pool, tokens []claim.Token) {
 		t.Helper()
 		states := claimStates(t, pool)

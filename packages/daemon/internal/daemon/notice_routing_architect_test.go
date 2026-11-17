@@ -8,15 +8,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A worker-died or a worker-stalled about a child's architect is about that architect, so it starts
-// at the child's parent: the running architect above the child hears it — the parent's, else the
-// nearest running one above that, else the root's. The child's
-// architect never hears it itself, which a stalled claim would, since it still holds its role, not
-// even when the record's parents loop back to the child: that walk ends at the root. The same
-// notices about a phase worker of the child go to the child's own running architect, which is the
-// one that acts on its worker, and a root architect's own wake goes to the root's claim, as every
-// notice of the root does. The runs are the outbox's own (holdsRole), so deliverNotice, its fence
-// (earlierNoticeFor) and the ready's release (releaseWaiting) all pick this architect.
+// A worker-died or a worker-stalled about a child's architect is about that architect, so it
+// starts at the child's parent: the running architect above the child hears it — the parent's,
+// else the nearest running one above that, else the root's. The child's architect never hears it
+// itself, which a stalled claim would, since it still holds its role, not even when the record's
+// parents loop back to the child: that walk ends at the root. The same notices about a phase
+// worker of the child go to the child's own running architect, which is the one that acts on its
+// worker, and a root architect's own wake goes to the root's claim, as every notice of the root
+// does. The runs are the outbox's own (holdsRole), so deliverNotice, its fence (earlierNoticeFor)
+// and the ready's release (releaseWaiting) all pick this architect.
 func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 	root, parent, child, grandchild, orphan, stray, unrecorded := "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-77"
 	looped, loop := "LEGION-8", "LEGION-9"

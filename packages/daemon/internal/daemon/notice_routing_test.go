@@ -412,10 +412,11 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 }
 
 // A sub-architect the workflow suspended (a person moved its child out of the workflow) is not
-// coming back for a notice: only its child's next first phase start, after a person's todo, or an
-// operator's resume starts it again. A notice that would reach it goes to the architect above
-// instead, and so does the child's close, which starts at the parent; neither waits on the
-// suspended claim, and neither holds up the tree's later notices.
+// coming back for a notice: only its child's next first phase start, after a todo (a person's, or
+// the rerun_child of the architect above), or an operator's resume starts it again. A notice that
+// would reach it goes to the architect above instead, and so does the child's close, which starts
+// at the parent; neither waits on the suspended claim, and neither holds up the tree's later
+// notices.
 func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

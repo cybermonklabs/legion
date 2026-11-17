@@ -900,7 +900,8 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 // only what goes above that architect (workflow.ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
 	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
-	"and its other notices while its architect has failed or an operator has stopped or suspended it"
+	"and its other notices while its architect does not hold its role: it failed, an operator stopped or suspended it, " +
+	"or the child left the workflow"
 
 // childStatusNotices is the reason of every child-status notice the daemon has queued on issue for
 // the architect above it, oldest first, read off the daemon's own outbox, where a notice stands

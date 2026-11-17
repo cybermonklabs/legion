@@ -552,7 +552,8 @@ func assertPlannerStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // only what goes above that architect (ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
 	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
-	"and its other notices while its architect has failed or an operator has stopped or suspended it"
+	"and its other notices while its architect does not hold its role: it failed, an operator stopped or suspended it, " +
+	"or the child left the workflow"
 
 func childStatusNotices(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()

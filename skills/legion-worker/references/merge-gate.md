@@ -284,9 +284,11 @@ it there until that answer comes clean.
     (`required_linear_history`), since a squash there leaves each open pull request built on the
     merged branch a conflict of history alone; otherwise it squashes and tells the architect its
     addressing line names which open pull requests of the tree build on the merged branch. Each one
-    GitHub then reports `CONFLICTING` comes back to `implementing` by the daemon's own move, with a
-    task that names the base to merge forward, and the architect that owns its issue hears of it by
-    a `checks-red` notice. On a base with a merge queue —
+    whose issue stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
+    `implementing` by the daemon's own move, with a task that names the base to merge forward, and
+    the architect that owns its issue hears of it by a `checks-red` notice. The architect tells the
+    implementer of one still in `implementing` to expect it and to merge the base forward in that
+    implementing round. On a base with a merge queue —
     a `merge_queue`
     rule among the base branch's rules — it enqueues the pull request instead, with GraphQL
     `enqueuePullRequest` and the same head as `expectedHeadOid`, because `gh pr merge` on such a
