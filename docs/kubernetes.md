@@ -2926,6 +2926,13 @@ Measured for one pod over a day of 60-second intervals, through the trimmer's lo
 With one interval between the marks after the sweep that leaves 69.9%, the volume climbs back from there to its first start, 15.1 points or more, 7.4 GiB or more, in the two minutes after that sweep.
 The shortest cycle of each fill has none: the volume is back at that start the next interval, within one minute of the sweep, and each such cycle is a minute shorter and costs more, as 43 at 34 minutes (19.1 GiB an hour), 78 at 56 (12.7 GiB an hour), 87 at 100 (8.6 GiB an hour), 721 at 10 for the fill of two rise episodes with no pause (100 GiB an hour) and 1,081 at 12 for that of three (98.2 GiB an hour); a longer cycle of the same fill is a longer wait between the marks.
 
+The measurement injects the volume's readings and does not hold its sweeps to the minimum age, `min_age_minutes`, 15 by default (`defaultVolumeTrim`, `packages/daemon/internal/config/kubernetes.go`), so some of its rows cannot happen at the default.
+An entry younger than the minimum age is never deleted, so what the sweeps delete in the 15 minutes after the sweep that leaves 69.9% was already on the volume when that sweep ran, 34.3 GiB in all.
+The 5-minute cycle of starts of 86%, 91% and 92% with no pause (289 a day) cannot happen at the default: the sweeps of those 15 minutes delete 35.4 GiB, more than the volume holds when they begin.
+The 7-minute cycle of the same starts with 93% and 94% after them (619 a day) needs a pod that holds under about 6.7 GiB the trimmer cannot delete: the sweeps of those 15 minutes delete 27.5 GiB of the 34.3.
+A Go build cache entry is deleted only once it is 75 minutes old, the minimum age and Go's own hour (`goCacheMtimeSlack`, `packages/daemon/internal/launcher/volumetrim.go`).
+In every row of 90 GiB an hour or more, the sweeps of the 75 minutes after the sweep that leaves 69.9% delete more than 100 GiB, and of that the Go build cache can be at most the 34.3 GiB that was on the volume when that sweep ran, about a third of it or less.
+
 When the trimmer cannot bring the volume down, there are two remedies a person makes, and the quick one destroys work:
 restart the issue, and its next pod brings an empty disk of its own, taking the turn's unpushed changes and every cache the pod had built with the old one ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The other leaves the turn where it is, and is the one that follows.

@@ -3567,12 +3567,15 @@ func TestThePauseIsEngagedByASweepUnderAPointAndNotByOneOverIt(t *testing.T) {
 }
 
 // A volume the trimmer cannot bring under the high mark is swept at least once every eleven
-// intervals, and a volume whose first sweep deletes every eligible entry is swept that seldom: two
-// sweeps and then one every eleven intervals, since the first sweep frees what it can, the second
-// finds nothing eligible and so frees under a point, and that engages the ten-interval pause. A
-// sweep that frees a point or more engages no pause, so one whose roles refill what each sweep
-// frees is swept every interval.
-func TestTheWorstCaseIsTwoSweepsAndThenOneEveryEleventhInterval(t *testing.T) {
+// intervals, since the pause is ten. A volume whose first sweep deletes every eligible entry is
+// swept twice and then once every eleven intervals only while nothing new ages past the minimum
+// age between its sweeps: the first sweep frees what it can, the second finds nothing eligible and
+// so frees under a point, and that engages the ten-interval pause, but a later sweep that finds
+// entries newly past the minimum age and frees a point or more engages none, and the next interval
+// sweeps again. A sweep that frees a point or more engages no pause, so one whose roles refill
+// what each sweep frees is swept every interval. The case drives the first three sweeps of that
+// run, on a tree whose entries are all eligible from the start and to which nothing is added.
+func TestTheSweepAfterOneThatTookEveryEligibleEntryPausesTenIntervals(t *testing.T) {
 	f := newTrimFixture(t, 10) // forty entries, four points, which leaves the volume at 86%
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -4608,6 +4611,279 @@ func TestEachRecoveryStartsAChainThatCanRiseAgain(t *testing.T) {
 		want = append(want, opened, opened, reportEpisode{2*at + 2, shimwire.VolumeEpisodeRise})
 	}
 	assertReportEpisodes(t, f, want)
+}
+
+// Starts of 86% and 91% raise nothing, and a third of 92% raises a rise: the 86% anchors episode
+// 1, the 91% has the 86% beside it, a floor of 86% and no rise, and the 92% has the 91% beside it,
+// a floor of 91%, five points above the anchor. Every sweep frees nothing, reports and pauses, and
+// each pause reads the lower of the starts beside it (sweepStarts). The negative controls are a
+// copy that reads a rise from the one start, which raises it at the 91%, and a copy that wants the
+// floor more than five points above the anchor, which raises none.
+func TestStartsOf86And91RaiseNothingAndAThirdOf92RaisesARise(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(sweepStarts(86, 91, 92))
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 3)
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst}, // from 86%, which anchors episode 1 at 86%
+		{1, shimwire.VolumeEpisodeFirst}, // from 91%, after the 86%: a floor of 86%, no rise
+		{2, shimwire.VolumeEpisodeRise},  // from 92%, after the 91%: a floor of 91%, the rise
+	})
+	assertRises(t, f, "the floor of the last two reported sweep starts, 91.0% and 92.0%, is 91.0%, 5.0 points above the 86.0%")
+}
+
+// A lower start lowers the anchor of an episode no rise raised, so a high first start does not
+// stand in for the episode's anchor: starts of 97%, 86%, 91% and 92% raise a rise at the 92%, as
+// starts of 86%, 91% and 92% do. The 97% anchors episode 1, the 86% lowers the anchor to 86%, the
+// 91% has the 86% beside it, and the 92% has the 91% beside it, a floor five points above the 86%.
+// The negative control is a copy that never lowers an anchor, under which episode 1 stays anchored
+// at 97% and the 92% raises nothing.
+func TestALowerStartLowersTheAnchorSoStartsOf97Then86And91And92RaiseARise(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(sweepStarts(97, 86, 91, 92))
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 4)
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst}, // from 97%, which anchors episode 1 at 97%
+		{1, shimwire.VolumeEpisodeFirst}, // from 86%, which lowers the anchor to 86%
+		{1, shimwire.VolumeEpisodeFirst}, // from 91%, after the 86%: a floor of 86%, no rise
+		{2, shimwire.VolumeEpisodeRise},  // from 92%, after the 91%: a floor of 91%, the rise
+	})
+	assertRises(t, f, "the floor of the last two reported sweep starts, 91.0% and 92.0%, is 91.0%, 5.0 points above the 86.0%")
+}
+
+// Two starts in a row at 97% after an anchor of 86% raise a rise anchored at 97%, the floor that
+// raised it, and a fill from lower down then raises nothing, since no floor stands five points
+// above 97%, until a recovery, which starts a chain that can rise again. The sweeps start at 86%,
+// 97% and 97%, then at 86% and up in steps of two points to 100%, twice; one reading in the pause
+// after the second 100% falls to 65%, below the low mark, and the pause then reads 80%; the sweeps
+// of the next chain start at 86%, 91% and 92%. Every sweep frees nothing, reports and pauses. The
+// negative control is a copy that anchors a rise five points above the anchor before it, at 91%
+// here, rather than at the floor that raised it: the fill then raises a second rise at 98%.
+func TestARiseTwoStartsOf97RaiseHoldsAFillFromLowerDownUntilARecovery(t *testing.T) {
+	starts := []float64{86, 97, 97, 86, 88, 90, 92, 94, 96, 98, 100, 100, 86, 91, 92}
+	const recovered = 11 // the sweep from the second 100%, counted from 0, whose pause falls to 65%
+	steps := sweepStarts(starts...)
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(func(interval int) volumeUsage {
+		sweep, at := (interval-1)/(1+volumeQuietIntervals), (interval-1)%(1+volumeQuietIntervals)
+		switch {
+		case sweep == recovered && at == 5:
+			return usageAt(65)
+		case sweep == recovered && at > 5:
+			return usageAt(80)
+		}
+		return steps(interval)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, len(starts))
+
+	want := []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst}, // from 86%, which anchors episode 1 at 86%
+		{1, shimwire.VolumeEpisodeFirst}, // from 97%, after the 86%: a floor of 86%, no rise
+		{2, shimwire.VolumeEpisodeRise},  // from 97%, after a 97%: the rise, anchored at 97%
+	}
+	for range recovered - 2 { // from 86% to the second 100%: no floor five points above 97%
+		want = append(want, reportEpisode{2, shimwire.VolumeEpisodeRise})
+	}
+	want = append(want,
+		reportEpisode{3, shimwire.VolumeEpisodeRecovery}, // from 86%, after the fall to 65%: anchored afresh at 86%
+		reportEpisode{3, shimwire.VolumeEpisodeRecovery}, // from 91%, after the 86%: a floor of 86%, no rise
+		reportEpisode{4, shimwire.VolumeEpisodeRise},     // from 92%, after the 91%: the new chain's rise
+	)
+	assertReportEpisodes(t, f, want)
+	assertRises(t, f,
+		"the floor of the last two reported sweep starts, 97.0% and 97.0%, is 97.0%, 11.0 points above the 86.0%",
+		"the floor of the last two reported sweep starts, 91.0% and 92.0%, is 91.0%, 5.0 points above the 86.0%",
+	)
+}
+
+// A sweep the settings stopped neither anchors an episode nor pairs with the next reported sweep's
+// start: it sends no report, and riseAt reads only a reported sweep (tick). An answer with no
+// settings arrives as two sweeps start, so each ends at its first entry boundary, and the trimmer
+// waits for settings and runs again once they are back. The first stopped sweep starts at 85%,
+// the first of the episode; the reported sweeps after it start at 90% and 90%; the second stopped
+// sweep starts at 97%; and the reported sweeps after it at 95% and 95%. Read as the code reads
+// them, the first 90% anchors episode 1, and the rise is the second 95%, a floor of 95% five points
+// above it. The negative control is a copy that reads the stopped sweep's start too: the 85%
+// anchors the episode, so the second 90% raises a rise, and the 97% pairs with the first 95%.
+func TestASweepTheSettingsStoppedNeitherAnchorsNorPairs(t *testing.T) {
+	pause := func(percent float64) []float64 { return slices.Repeat([]float64{percent}, volumeQuietIntervals) }
+	f := newTrimFixture(t, 0) // no entry it may delete: every sweep frees nothing and takes no reading of its own
+	for _, root := range f.roots {
+		if root.Entry == ImmediateChildren {
+			// One entry too young to delete: the listing asks the settings before it reads an
+			// entry's age (list), so each sweep has an entry boundary the answer stops it at, and
+			// the sweeps that run delete nothing.
+			mkdirFixture(t, filepath.Join(root.Path, "tool-fresh"))
+		}
+	}
+	f.useVolume(script(slices.Concat(
+		[]float64{85},     // stopped by the settings
+		[]float64{90},     // reported: anchors episode 1 at 90%
+		pause(90),         // its pause
+		[]float64{90},     // reported: a floor of 90%, no rise
+		pause(90),         // its pause
+		[]float64{97},     // stopped by the settings
+		[]float64{95},     // reported: a floor of 90%, no rise
+		pause(95),         // its pause
+		[]float64{95, 95}, // reported: a floor of 95%, the rise, and the reading after it
+	)...))
+	f.setSettings(trimSettings())
+	var stopping atomic.Bool
+	f.clock.setHook(func(*fakeClock) {
+		// The clock's first reading of an interval is the sweep's own start (sweep): the answer
+		// with no settings arrives there, after the interval's own read of the settings.
+		if stopping.CompareAndSwap(true, false) {
+			f.setSettings(nil)
+		}
+	})
+	f.start(f.trimmer())
+	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+
+	stopped := func() {
+		t.Helper()
+		waited, started := f.logged("no settings are in force, so the trimmer stays off"), f.logged("started:")
+		stopping.Store(true)
+		f.tick("the settings stopped the trimmer")
+		testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+			return f.logged("no settings are in force, so the trimmer stays off") == waited+1
+		})
+		f.setSettings(trimSettings())
+		offerSettingsTicksUntil(t, f, "the interval loop to start again", func() bool { return f.logged("started:") == started+1 })
+	}
+	reported := func(pauses int) {
+		t.Helper()
+		f.tick("the sweep ended:")
+		for range pauses {
+			f.tick("no sweep for another")
+		}
+	}
+	stopped()
+	reported(volumeQuietIntervals)
+	reported(volumeQuietIntervals)
+	stopped()
+	reported(volumeQuietIntervals)
+	reported(0)
+	if t.Failed() {
+		t.FailNow()
+	}
+	testwait.Eventually(t, "the last sweep's report", func() bool { return len(f.reports()) == 4 })
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst}, // from 90%, after the stopped 85%: anchors episode 1 at 90%
+		{1, shimwire.VolumeEpisodeFirst}, // from 90%, after the 90%: a floor of 90%, no rise
+		{1, shimwire.VolumeEpisodeFirst}, // from 95%, after the stopped 97%: a floor of 90%, no rise
+		{2, shimwire.VolumeEpisodeRise},  // from 95%, after the 95%: a floor of 95%, the rise
+	})
+	assertRises(t, f, "the floor of the last two reported sweep starts, 95.0% and 95.0%, is 95.0%, 5.0 points above the 90.0%")
+	if said := f.logged("the settings stopped the trimmer"); said != 2 {
+		t.Errorf("the settings stopped %d sweeps, want the two the case stopped: %q", said, f.linesWritten())
+	}
+}
+
+// A sweep whose report panics while it is being made has been read for a rise all the same: tick
+// reads its start before it makes its report (riseAt), so its start anchors or pairs as a sent
+// report's does, and the panic is a fault the next report carries. The sweeps start at 86%, 91%
+// and 92%, and the bound of the first two reports panics (boundReport): the 86% anchors episode
+// 1, the 91% pairs with the 92%, and the third sweep's report, the one sent, carries the rise and
+// the two faults. The negative control is a copy that reads a sweep's start only once its report
+// is made: the first two are never read, the 92% anchors the episode, and its report carries
+// episode 1.
+func TestASweepWhoseReportPanicsHasBeenReadForARise(t *testing.T) {
+	const fell = "the report's bound fell over"
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(sweepStarts(86, 91, 92))
+	f.setSettings(trimSettings())
+	var bounds atomic.Int32
+	previous := boundReport
+	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+		if bounds.Add(1) <= 2 {
+			panic(fell)
+		}
+		return previous(trim, report)
+	}
+	t.Cleanup(func() { boundReport = previous })
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 3)
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{2, shimwire.VolumeEpisodeRise}, // from 92%, after the 91% whose report panicked: the rise
+	})
+	assertRises(t, f, "the floor of the last two reported sweep starts, 91.0% and 92.0%, is 91.0%, 5.0 points above the 86.0%")
+	if faults := f.reports()[0].Faults; len(faults) != 2 || !strings.HasPrefix(faults[0], fell) || !strings.HasPrefix(faults[1], fell) {
+		t.Errorf("the report carries the faults %q, want the two panics of the reports before it", faults)
+	}
+}
+
+// A trimmer started afresh carries an identifier of its own, never the one the trimmer before it
+// used: the launcher builds one trimmer per launcher process (serveVolumeTrim, newTrimmer), and the
+// identifier is what makes a restarted roles container a new counting line for the daemon's notice
+// bounds (shimwire.LauncherVolumeReport). Two trimmers built the way the launcher builds one each
+// make one sweep's report. The negative control is a copy that mints one identifier for the whole
+// process and gives it to every trimmer, under which the two reports name the same trimmer.
+func TestATrimmerStartedAfreshCarriesAnIdentifierOfItsOwn(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and reports
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	set := *trimSettings()
+	var ids []string
+	for range 2 {
+		tr := f.trimmer() // newTrimmer, with the machine pointed at the case's tree
+		tr.tick(context.Background(), &set)
+		ids = append(ids, tr.id)
+	}
+	reports := f.reports()
+	if len(reports) != 2 {
+		t.Fatalf("the two trimmers sent %d reports, want one each", len(reports))
+	}
+	for at, report := range reports {
+		if report.Trimmer != ids[at] || len(ids[at]) != 32 {
+			t.Errorf("trimmer %d is %q and its report names %q, want its own identifier of 32 hex characters (randomID)", at+1, ids[at], report.Trimmer)
+		}
+	}
+	if ids[0] == ids[1] {
+		t.Errorf("two trimmers started afresh carry the one identifier %q, want one of its own each: the daemon would count the second's episodes against the first's three notices", ids[0])
+	}
+}
+
+// The rises of a chain are bounded by the room above its anchor rounded down, which a high mark
+// where (100 − high mark) / 5 leaves a remainder exercises: at 84%, 3.2, so three rises and no
+// fourth. The first sweep starts at the high mark, each next floor stands exactly five points above
+// the anchor before it, two starts in a row at 89%, at 94% and at 99%, and three more sweeps from
+// 100% raise nothing, since 100% is one point above the last anchor. Every sweep frees nothing,
+// reports and pauses. TestTheRisesBeforeARecoveryAreBoundedByTheRoomAboveTheHighMark is the bound
+// at a high mark of 50%, which five divides. The negative control is a copy that raises a rise at
+// a full volume whatever the room above the anchor, the bound rounded up, under which the second
+// 100% raises a fourth.
+func TestTheRisesAboveAHighMarkOf84AreThreeTheRoomRoundedDown(t *testing.T) {
+	const high = 84
+	starts := []float64{high, 89, 89, 94, 94, 99, 99, 100, 100, 100}
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(sweepStarts(starts...))
+	f.setSettings(&shimwire.LauncherVolumeTrim{HighPercent: high, LowPercent: 70, MinAgeMinutes: 30, IntervalSeconds: 30})
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, len(starts))
+
+	assertRises(t, f,
+		"the floor of the last two reported sweep starts, 89.0% and 89.0%, is 89.0%, 5.0 points above the 84.0%",
+		"the floor of the last two reported sweep starts, 94.0% and 94.0%, is 94.0%, 5.0 points above the 89.0%",
+		"the floor of the last two reported sweep starts, 99.0% and 99.0%, is 99.0%, 5.0 points above the 94.0%",
+	)
+	reports := f.reports()
+	if last := reports[len(reports)-1]; last.Episode != 4 || last.RaisedBy != shimwire.VolumeEpisodeRise {
+		t.Errorf("the last report carries episode %d (%s), want episode 4 (%s): the first and three rises", last.Episode, last.RaisedBy, shimwire.VolumeEpisodeRise)
+	}
 }
 
 // A sweep that brings the volume below the low mark ends the episode, as a reading below it
