@@ -37,7 +37,10 @@ import (
 // apply back, byte for byte, and fires no observer (crdt.ErrApplyCheck). An apply that leaves the
 // rendering no larger is never refused by it, so a document already past the bound can still be
 // shortened. A refused drain is taken back alone and the update that filled its gap stands
-// (crdt.ErrApplyCheckDrain), which closes nobody (weighPeerUpdate).
+// (crdt.ErrApplyCheckDrain), which closes nobody (weighPeerUpdate). The structs it would have
+// landed stay parked in the room, and in its replica too: the commit's update leaves them out, and
+// the replica's document refuses every drain of its own that lands anything, so it integrates
+// only what each commit's update carries (renderedReplica, holdParked).
 //
 // It judges the hook's own applies alone - those the hook reserved an allowance for
 // (roomApplies.inFlight), which is every update and whole-state message a read-write browser

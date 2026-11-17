@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,11 +27,12 @@ import (
 )
 
 // rcRoom is a room as a load makes one (keepReplica, chargeLoadedRoom), with its update observer
-// draining each commit into the replica inside the apply, as observeRoomUpdates does, unless held:
-// a held room's replica takes nothing until the test releases it, which is the window between a
-// commit and the observer that takes it: after a commit of the server's own, the room's apply
-// check has no rendering standing at the commit an apply starts from (renderCheck.base), and after
-// a browser's it has only its own record of that apply (roomApplies.checked).
+// draining each commit into the replica inside the apply, as observeRoomUpdates does, and its
+// after-transaction drain taking a commit that only parked, as the load's does (onLoadDocument),
+// unless held: a held room's replica takes nothing until the test releases it, which is the window
+// between a commit and the observer that takes it: after a commit of the server's own, the room's
+// apply check has no rendering standing at the commit an apply starts from (renderCheck.base), and
+// after a browser's it has only its own record of that apply (roomApplies.checked).
 type rcRoom struct {
 	service *Service
 	live    *crdt.Doc
@@ -59,6 +62,11 @@ func newRCRoom(t *testing.T, state []byte) *rcRoom {
 			replica.observe("room")
 		}
 	})
+	live.OnAfterTransaction(func(txn *crdt.Transaction) {
+		if !room.held.Load() && log.Pending() > 0 && len(txn.ChangedTypes()) == 0 {
+			replica.observe("room")
+		}
+	})
 	return room
 }
 
@@ -78,8 +86,9 @@ func (r *rcRoom) release() {
 // room byte for byte as it was; an admitted one leaves the room rendering within
 // maxPeerRenderingBytes, or no larger than the room rendered before it. It holds the one the
 // check's reuse rests on as well: an admitted update leaves every rendering the room places at its
-// commit a whole render of the room there (requireRenderedAs). It reports the hook's answer. what
-// names the frame and the seed it came from in every failure.
+// commit a whole render of the room there (requireRenderedAs), and after every frame, admitted or
+// refused, the replica's document is the room's (requireReplicaIsRoom). It reports the hook's
+// answer. what names the frame and the seed it came from in every failure.
 func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 	t.Helper()
 	before, beforeErr := renderDocument(r.live)
@@ -90,20 +99,31 @@ func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 			t.Fatalf("%s: the hook answered %v and the room changed", what, err)
 		}
 		// A refusal for a rendering past the line is held to what a whole render of the room with
-		// the update applied writes: the check's splice must answer what that render answers.
+		// the update applied writes: the check's splice must answer what that render answers. The
+		// room is cloned rather than decoded, since a decode lands what the room holds parked
+		// behind a gap that is filled, and the update is applied with its drain taken back, since
+		// the check refused the update before any drain.
 		var checked *renderRefusal
 		if errors.As(err, &checked) && checked.cause == nil && !checked.unsure {
-			copied := newDocumentCopy()
-			if applyErr := crdt.ApplyUpdateV1(copied, state, nil); applyErr != nil {
-				t.Fatal(applyErr)
-			}
-			if applyErr := crdt.ApplyUpdateV1(copied, update, nil); applyErr != nil {
+			copied := r.live.Clone(documentCopyOptions(maxUpdateItems)...)
+			first := true
+			copied.SetApplyCheck(func(any, *crdt.ApplyView) error {
+				if first {
+					first = false
+					return nil
+				}
+				return errors.New("the drain is not the update's")
+			})
+			if applyErr := crdt.ApplyUpdateV1(copied, update, nil); applyErr != nil && !errors.Is(applyErr, crdt.ErrApplyCheckDrain) {
 				t.Fatal(applyErr)
 			}
 			if rendered, renderErr := renderDocument(copied); renderErr != nil || int64(len(rendered)) != checked.after {
 				t.Errorf("%s: the check refused the update as leaving %d bytes, and the room with it applied renders %d bytes (%v)",
 					what, checked.after, len(rendered), renderErr)
 			}
+		}
+		if whole, renderErr := renderDocument(r.live); renderErr == nil {
+			r.requireReplicaIsRoom(t, what, whole)
 		}
 		return err
 	}
@@ -137,7 +157,7 @@ func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 // replica stands behind the room's position until it is released, so only the check's record is
 // held to it there; an unheld room's replica must stand there, with its rendering once it holds a
 // copy of the room, which a room whose load handed it none takes at the room's first commit
-// (keepReplica).
+// (keepReplica), and with the room's own document (requireReplicaIsRoom).
 func (r *rcRoom) requireRenderedAs(t *testing.T, what, whole string) {
 	t.Helper()
 	at, counted := r.replica.logged.now()
@@ -161,6 +181,37 @@ func (r *rcRoom) requireRenderedAs(t *testing.T, what, whole string) {
 		if held := placed.rendered.rendering.markdown; held != whole {
 			t.Fatalf("%s: %s at commit %d is not a whole render of the room there: %s", what, placed.name, at, renderingDifference(held, whole))
 		}
+	}
+	r.requireReplicaIsRoom(t, what, whole)
+}
+
+// requireReplicaIsRoom requires the replica's document, which the replica renders every later
+// commit on and the room's reads and settlements walk, to be the room's, whatever the room parked,
+// refused or took back: the same integrated structs (the state vector), the same pending queue
+// (crdt.Doc.PendingStats) and the same whole render, whole being the room's. A held room's replica
+// stands behind the room until it is released, and a replica in its recover state holds no
+// document, so neither is compared.
+func (r *rcRoom) requireReplicaIsRoom(t *testing.T, what, whole string) {
+	t.Helper()
+	if r.held.Load() {
+		return
+	}
+	r.replica.mu.Lock()
+	defer r.replica.mu.Unlock()
+	doc := r.replica.doc
+	if doc == nil {
+		return
+	}
+	if got, want := doc.StateVector(), r.live.StateVector(); !maps.Equal(got, want) {
+		t.Fatalf("%s: the replica's document holds the state vector %v and the room %v", what, got, want)
+	}
+	if got, want := doc.PendingStats(), r.live.PendingStats(); got.Items != want.Items || got.DeleteRanges != want.DeleteRanges ||
+		!slices.Equal(got.MissingFor, want.MissingFor) {
+		t.Fatalf("%s: the replica's document parks %+v and the room %+v", what, got, want)
+	}
+	if rendered, err := renderDocument(doc); err != nil || rendered != whole {
+		t.Fatalf("%s: the replica's document renders %d bytes (%v) where the room renders %d: %s",
+			what, len(rendered), err, len(whole), renderingDifference(rendered, whole))
 	}
 }
 
@@ -197,12 +248,16 @@ func (r *rcRoom) browserCopy(t *testing.T, options ...crdt.DocOption) *crdt.Doc 
 	return browser
 }
 
-// edit is the update a browser sends for change, made on its own copy of the room.
+// edit is the update a browser sends for change, made on its own copy of the room: its
+// transaction's own update, as an editor sends it, so it carries nothing the copy took in before
+// the change - which, where the room holds structs parked behind a gap that is filled, includes
+// those structs, since the copy's decode of the room's state lands them.
 func (r *rcRoom) edit(t *testing.T, change func(txn *crdt.Transaction, browser *crdt.Doc)) []byte {
 	t.Helper()
 	browser := r.browserCopy(t)
+	before := browser.StateVector()
 	browser.Transact(func(txn *crdt.Transaction) { change(txn, browser) })
-	return crdt.EncodeStateAsUpdateV1(browser, r.live.StateVector())
+	return crdt.EncodeStateAsUpdateV1(browser, before)
 }
 
 // nextEdit is the update that follows a refusal in each fixed row: a keystroke where the room
@@ -337,10 +392,13 @@ func rcShapes() []rcShape {
 // insert, delete across format items, format and unformat, set start numbers, spans and levels,
 // build deep nesting of their own and type newlines - with a write of the server's own landing
 // before some frames while the replica has not taken it yet, the window where the check knows no
-// rendering standing at the commit the frame starts from (renderCheck.base), and with the replica
+// rendering standing at the commit the frame starts from (renderCheck.base), with the replica
 // held behind the room across runs of frames, so that one drain hands it several frames' commits,
-// each with the rendering its check made (takeChecked). After every admitted frame each rendering
-// the room places at its commit is a whole render of the room there (requireRenderedAs).
+// each with the rendering its check made (takeChecked), and with some frames sent behind a gap,
+// parked until a later frame fills it (gapFrames), whose drain the room lands or takes back. After
+// every admitted frame each rendering the room places at its commit is a whole render of the room
+// there (requireRenderedAs), and after every frame the replica's document is the room's
+// (requireReplicaIsRoom).
 //
 // The seed is printed and named in every failure; DISPATCH_RENDER_CHECK_SEED runs one again.
 func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
@@ -365,10 +423,16 @@ func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
 	}
 	t.Logf("seed %d (DISPATCH_RENDER_CHECK_SEED=%d runs it again)", seed, seed)
 	const documents, frames = 9, 24
-	var admitted, refused, pastBound, unsure, serverWrites, tookPast int
+	var admitted, refused, pastBound, unsure, serverWrites, tookPast, gaps, takenBack int
 	for document := range documents {
 		gen := rcGen{rng: rand.New(rand.NewPCG(seed, uint64(document)))}
 		room := newRCRoom(t, gen.document(t, document%3))
+		// The fill a frame sent behind a gap waits on (gapFrames), that frame's client and the
+		// clock its change starts at, and whether the change parked.
+		var fill []byte
+		var parkedClient crdt.ClientID
+		var parkedFrom uint64
+		var changeParked bool
 		for index := range frames {
 			what := fmt.Sprintf("seed %d, document %d, frame %d", seed, document, index)
 			switch gen.rng.IntN(5) {
@@ -379,8 +443,27 @@ func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
 			case 1:
 				room.held.Store(true)
 			}
-			update, op := gen.frame(t, room)
+			var update []byte
+			var op string
+			sentGap, filling := false, false
+			switch {
+			case fill != nil && (gen.rng.IntN(2) == 0 || index == frames-1):
+				update, op, filling, fill = fill, "the fill of a parked frame's gap", true, nil
+			case fill == nil && index < frames-1 && gen.rng.IntN(3) == 0:
+				update, fill, op, parkedClient, parkedFrom = gen.gapFrames(t, room)
+				op, sentGap = "behind a gap, "+op, true
+				gaps++
+			default:
+				update, op = gen.frame(t, room)
+			}
+			parkedBefore := room.live.PendingStats().Items
 			err := room.frame(t, what+" ("+op+")", update)
+			switch {
+			case sentGap:
+				changeParked = err == nil && room.live.PendingStats().Items > parkedBefore
+			case filling && err == nil && changeParked && room.live.StateVector().Clock(parkedClient) == parkedFrom:
+				takenBack++
+			}
 			var close *websocket.PeerClose
 			var checked *renderRefusal
 			switch {
@@ -406,10 +489,13 @@ func TestEveryAdmittedFrameLeavesTheRenderingWithinTheBound(t *testing.T) {
 		}
 		tookPast += room.tookPast
 	}
-	t.Logf("seed %d: %d frames admitted, %d refused, %d of them by the check for a rendering past the bound and its creep, %d refused for now against a server write the replica had not taken (%d such writes); %d frames taken past the bound and its creep",
-		seed, admitted, refused, pastBound, unsure, serverWrites, tookPast)
+	t.Logf("seed %d: %d frames admitted, %d refused, %d of them by the check for a rendering past the bound and its creep, %d refused for now against a server write the replica had not taken (%d such writes); %d frames taken past the bound and its creep; %d frames sent behind a gap, %d of whose drains the room took back",
+		seed, admitted, refused, pastBound, unsure, serverWrites, tookPast, gaps, takenBack)
 	if admitted == 0 || pastBound == 0 {
 		t.Fatalf("seed %d: %d admitted and %d refused past the bound, want both, or the generator tests nothing", seed, admitted, pastBound)
+	}
+	if takenBack == 0 {
+		t.Fatalf("seed %d: the room took back none of the drains of %d frames sent behind a gap, so the generator tests no drain taken back", seed, gaps)
 	}
 }
 
@@ -577,129 +663,185 @@ var rcMarks = []string{"inlineCode", "strong", "emphasis", "strike_through"}
 func (g rcGen) frame(t *testing.T, room *rcRoom) ([]byte, string) {
 	t.Helper()
 	var op string
-	update := room.edit(t, func(txn *crdt.Transaction, browser *crdt.Doc) {
-		fragment := txn.GetXmlFragment(fragmentName)
-		texts := allTexts(fragment)
-		elements := allElements(fragment)
-		text := texts[g.rng.IntN(len(texts))]
-		switch g.rng.IntN(8) {
-		case 0:
-			var b strings.Builder
-			for b.Len() < g.rng.IntN(9_000) {
-				b.WriteString(g.word())
-				if g.rng.IntN(4) == 0 {
-					b.WriteString("\n")
-				}
-			}
-			op = fmt.Sprintf("insert %d bytes of text", b.Len())
-			text.Insert(txn, g.rng.IntN(text.Len()+1), b.String(), nil)
-		case 1:
-			if text.Len() == 0 {
-				op = "nothing"
-				return
-			}
-			at := g.rng.IntN(text.Len())
-			length := 1 + g.rng.IntN(min(text.Len()-at, 200_000))
-			op = fmt.Sprintf("delete %d characters", length)
-			text.Delete(txn, at, length)
-		case 2:
-			if text.Len() == 0 {
-				op = "nothing"
-				return
-			}
-			at := g.rng.IntN(text.Len())
-			length := 1 + g.rng.IntN(text.Len()-at)
-			mark := rcMarks[g.rng.IntN(len(rcMarks))]
-			var value any = map[string]any{}
-			if g.rng.IntN(2) == 0 {
-				value = nil
-			}
-			op = fmt.Sprintf("format %d characters with %s=%v", length, mark, value)
-			text.Format(txn, at, length, crdt.Attributes{mark: value})
-		case 3:
-			element := elements[g.rng.IntN(len(elements))]
-			switch element.NodeName {
-			case "ordered_list":
-				op = "set an ordered list's start number"
-				element.SetAttributeValue(txn, "order", int64(999_999_999))
-			case "table_cell", "table_header":
-				op = "set a cell's spans"
-				element.SetAttributeValue(txn, "rowspan", float64(1+g.rng.IntN(60)))
-				element.SetAttributeValue(txn, "colspan", float64(1+g.rng.IntN(8)))
-			case "heading":
-				op = "set a heading's level"
-				element.SetAttributeValue(txn, "level", float64(1+g.rng.IntN(6)))
-			default:
-				op = "set a code block's language"
-				element.SetAttributeValue(txn, "language", g.word())
-			}
-		case 4, 5:
-			depth := 1 + g.rng.IntN(60)
-			lines := 1 + g.rng.IntN(6_000)
-			op = fmt.Sprintf("insert a code block of %d lines nested %d deep", lines, depth)
-			parent := any(fragment)
-			at := g.rng.IntN(len(fragment.Children()) + 1)
-			// Each element goes after what its parent holds, so a list item's leading
-			// paragraph, which the schema wants first, stays first.
-			insert := func(element *crdt.YXmlElement) {
-				switch into := parent.(type) {
-				case *crdt.YXmlFragment:
-					into.InsertElement(txn, at, element)
-				case *crdt.YXmlElement:
-					into.InsertElement(txn, into.Len(), element)
-				}
-				parent = element
-			}
-			item := func() {
-				listItem := crdt.NewYXmlElement("list_item")
-				insert(listItem)
-				paragraph := crdt.NewYXmlElement("paragraph")
-				listItem.InsertElement(txn, 0, paragraph)
-				text := crdt.NewYXmlText()
-				paragraph.InsertText(txn, 0, text)
-				text.Insert(txn, 0, "i", nil)
-			}
-			for level := range depth {
-				switch g.rng.IntN(3) {
-				case 0:
-					insert(crdt.NewYXmlElement("blockquote"))
-				case 1:
-					list := crdt.NewYXmlElement("ordered_list")
-					insert(list)
-					if level%2 == 0 {
-						list.SetAttributeValue(txn, "order", int64(rcStarts[g.rng.IntN(len(rcStarts))]))
-					}
-					item()
-				default:
-					insert(crdt.NewYXmlElement("bullet_list"))
-					item()
-				}
-			}
-			code := crdt.NewYXmlElement("code_block")
-			insert(code)
-			body := crdt.NewYXmlText()
-			code.InsertText(txn, 0, body)
-			body.Insert(txn, 0, strings.Repeat("\n", lines), nil)
-		case 6:
-			newlines := 1 + g.rng.IntN(8_000)
-			op = fmt.Sprintf("type %d newlines", newlines)
-			text.Insert(txn, g.rng.IntN(text.Len()+1), strings.Repeat("\n", newlines), nil)
-		default:
-			var paragraph *crdt.YXmlElement
-			for _, element := range elements {
-				if element.NodeName == "paragraph" && g.rng.IntN(3) == 0 {
-					paragraph = element
-				}
-			}
-			if paragraph == nil {
-				op = "nothing"
-				return
-			}
-			op = "insert a hard break"
-			paragraph.InsertElement(txn, len(paragraph.Children()), crdt.NewYXmlElement("hardbreak"))
-		}
-	})
+	update := room.edit(t, func(txn *crdt.Transaction, _ *crdt.Doc) { op = g.change(txn) })
 	return update, op
+}
+
+// gapFrames is a generated change sent behind a gap: a browser starts a change the room does not
+// hold yet (the fill), a change made after it reaches the room first and parks until the fill
+// arrives, and the fill's apply then lands it. Half the time the change is another browser's
+// nested code block (nestedCodeBlock) inserted right after a paragraph the fill starts: its few
+// bytes are what the hook's estimate of a drain weighs (drainWouldRender), and its rendering can
+// pass the bound, and it waits on the fill's paragraph as its origin, so the fill's apply lands it
+// in a drain of the pending queue, which the room takes back where its apply check refuses what
+// the drain lands or the apply's scan allowance cannot hold the drain. Otherwise the fill is a
+// keystroke into a text and the change any generated change (change) the same browser makes in a
+// transaction of its own and sends first, whose structs follow the keystroke's clock. It returns
+// the change and the fill, each as its browser sends its transaction, what the change does, and
+// the change's client and the clock it starts at, which the room's state vector stays at for that
+// client while the change is parked.
+func (g rcGen) gapFrames(t *testing.T, room *rcRoom) (parked, fill []byte, op string, client crdt.ClientID, from uint64) {
+	t.Helper()
+	browser := room.browserCopy(t)
+	before := browser.StateVector()
+	fragment := browser.GetXmlFragment(fragmentName)
+	if g.rng.IntN(2) == 0 {
+		at := g.rng.IntN(len(fragment.Children()) + 1)
+		browser.Transact(func(txn *crdt.Transaction) {
+			paragraph := crdt.NewYXmlElement("paragraph")
+			fragment.InsertElement(txn, at, paragraph)
+			text := crdt.NewYXmlText()
+			paragraph.InsertText(txn, 0, text)
+			text.Insert(txn, 0, "f", nil)
+		})
+		other := newDocumentCopy()
+		if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(browser, nil), nil); err != nil {
+			t.Fatal(err)
+		}
+		otherFrom := other.StateVector()
+		other.Transact(func(txn *crdt.Transaction) { op = g.nestedCodeBlock(txn, txn.GetXmlFragment(fragmentName), at+1) })
+		client = other.ClientID()
+		return crdt.EncodeStateAsUpdateV1(other, otherFrom), crdt.EncodeStateAsUpdateV1(browser, before), op, client, otherFrom.Clock(client)
+	}
+	texts := allTexts(fragment)
+	text := texts[g.rng.IntN(len(texts))]
+	browser.Transact(func(txn *crdt.Transaction) { text.Insert(txn, g.rng.IntN(text.Len()+1), "f", nil) })
+	filled := browser.StateVector()
+	browser.Transact(func(txn *crdt.Transaction) { op = g.change(txn) })
+	client = browser.ClientID()
+	return crdt.EncodeStateAsUpdateV1(browser, filled), crdt.EncodeStateAsUpdateV1(browser, before), op, client, filled.Clock(client)
+}
+
+// change is a generated browser's change, made in txn, and what it does.
+func (g rcGen) change(txn *crdt.Transaction) (op string) {
+	fragment := txn.GetXmlFragment(fragmentName)
+	texts := allTexts(fragment)
+	elements := allElements(fragment)
+	text := texts[g.rng.IntN(len(texts))]
+	switch g.rng.IntN(8) {
+	case 0:
+		var b strings.Builder
+		for b.Len() < g.rng.IntN(9_000) {
+			b.WriteString(g.word())
+			if g.rng.IntN(4) == 0 {
+				b.WriteString("\n")
+			}
+		}
+		op = fmt.Sprintf("insert %d bytes of text", b.Len())
+		text.Insert(txn, g.rng.IntN(text.Len()+1), b.String(), nil)
+	case 1:
+		if text.Len() == 0 {
+			op = "nothing"
+			return
+		}
+		at := g.rng.IntN(text.Len())
+		length := 1 + g.rng.IntN(min(text.Len()-at, 200_000))
+		op = fmt.Sprintf("delete %d characters", length)
+		text.Delete(txn, at, length)
+	case 2:
+		if text.Len() == 0 {
+			op = "nothing"
+			return
+		}
+		at := g.rng.IntN(text.Len())
+		length := 1 + g.rng.IntN(text.Len()-at)
+		mark := rcMarks[g.rng.IntN(len(rcMarks))]
+		var value any = map[string]any{}
+		if g.rng.IntN(2) == 0 {
+			value = nil
+		}
+		op = fmt.Sprintf("format %d characters with %s=%v", length, mark, value)
+		text.Format(txn, at, length, crdt.Attributes{mark: value})
+	case 3:
+		element := elements[g.rng.IntN(len(elements))]
+		switch element.NodeName {
+		case "ordered_list":
+			op = "set an ordered list's start number"
+			element.SetAttributeValue(txn, "order", int64(999_999_999))
+		case "table_cell", "table_header":
+			op = "set a cell's spans"
+			element.SetAttributeValue(txn, "rowspan", float64(1+g.rng.IntN(60)))
+			element.SetAttributeValue(txn, "colspan", float64(1+g.rng.IntN(8)))
+		case "heading":
+			op = "set a heading's level"
+			element.SetAttributeValue(txn, "level", float64(1+g.rng.IntN(6)))
+		default:
+			op = "set a code block's language"
+			element.SetAttributeValue(txn, "language", g.word())
+		}
+	case 4, 5:
+		op = g.nestedCodeBlock(txn, fragment, g.rng.IntN(len(fragment.Children())+1))
+	case 6:
+		newlines := 1 + g.rng.IntN(8_000)
+		op = fmt.Sprintf("type %d newlines", newlines)
+		text.Insert(txn, g.rng.IntN(text.Len()+1), strings.Repeat("\n", newlines), nil)
+	default:
+		var paragraph *crdt.YXmlElement
+		for _, element := range elements {
+			if element.NodeName == "paragraph" && g.rng.IntN(3) == 0 {
+				paragraph = element
+			}
+		}
+		if paragraph == nil {
+			op = "nothing"
+			return
+		}
+		op = "insert a hard break"
+		paragraph.InsertElement(txn, len(paragraph.Children()), crdt.NewYXmlElement("hardbreak"))
+	}
+	return op
+}
+
+// nestedCodeBlock inserts, in txn, a code block of up to 6,000 newlines nested up to 60 deep in
+// quotes and lists of every kind at position at of fragment, the room's document fragment, and
+// says what it inserted: every line of the code block renders every container's prefix again, so
+// a few thousand bytes of newlines can render hundreds of thousands.
+func (g rcGen) nestedCodeBlock(txn *crdt.Transaction, fragment *crdt.YXmlFragment, at int) string {
+	depth := 1 + g.rng.IntN(60)
+	lines := 1 + g.rng.IntN(6_000)
+	parent := any(fragment)
+	// Each element goes after what its parent holds, so a list item's leading
+	// paragraph, which the schema wants first, stays first.
+	insert := func(element *crdt.YXmlElement) {
+		switch into := parent.(type) {
+		case *crdt.YXmlFragment:
+			into.InsertElement(txn, at, element)
+		case *crdt.YXmlElement:
+			into.InsertElement(txn, into.Len(), element)
+		}
+		parent = element
+	}
+	item := func() {
+		listItem := crdt.NewYXmlElement("list_item")
+		insert(listItem)
+		paragraph := crdt.NewYXmlElement("paragraph")
+		listItem.InsertElement(txn, 0, paragraph)
+		text := crdt.NewYXmlText()
+		paragraph.InsertText(txn, 0, text)
+		text.Insert(txn, 0, "i", nil)
+	}
+	for level := range depth {
+		switch g.rng.IntN(3) {
+		case 0:
+			insert(crdt.NewYXmlElement("blockquote"))
+		case 1:
+			list := crdt.NewYXmlElement("ordered_list")
+			insert(list)
+			if level%2 == 0 {
+				list.SetAttributeValue(txn, "order", int64(rcStarts[g.rng.IntN(len(rcStarts))]))
+			}
+			item()
+		default:
+			insert(crdt.NewYXmlElement("bullet_list"))
+			item()
+		}
+	}
+	code := crdt.NewYXmlElement("code_block")
+	insert(code)
+	body := crdt.NewYXmlText()
+	code.InsertText(txn, 0, body)
+	body.Insert(txn, 0, strings.Repeat("\n", lines), nil)
+	return fmt.Sprintf("insert a code block of %d lines nested %d deep", lines, depth)
 }
 
 // serverWrite is a write of the server's own into room's first text, a local transaction the
