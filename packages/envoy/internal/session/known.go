@@ -22,7 +22,7 @@ import (
 // last_seen is read against (KnownSessions.Get). It is well past the 72 hours Envoy keeps a
 // session's messages, so a suspended Legion session that resumes under the same id is still known
 // when its queued messages are delivered.
-const KnownSessionRetention = 30 * 24 * time.Hour
+const KnownSessionRetention = bus.KnownSessionBucketMaxAge
 
 // KnownSessionRefreshAge is how young a stored record must be for a write of the same content to
 // be skipped (KnownSessions.RecordWithin): a session heartbeats every 90 seconds, so an unchanged
@@ -110,6 +110,17 @@ type knownSessionsOpts struct {
 	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
 	// scan idle timeout. No deployment sets it.
 	watch []kvwatch.Option
+	// existing is WithExistingKnownSessionBucket's.
+	existing bool
+}
+
+// WithExistingKnownSessionBucket makes every attempt to open the bucket, the first and the
+// background repair's, open it only if it exists (bus.OpenExistingKeyValue): a missing bucket is
+// left missing, the store answers no record and writes none, and the repair attempts it again. The
+// listener passes it, since no listener creates a bucket its watchers copy (bus.CopiedBuckets);
+// without it, an attempt creates a missing bucket, as a test's own server needs.
+func WithExistingKnownSessionBucket() KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.existing = true }
 }
 
 // WithKnownSessionReplicas sets the copies the bucket is created with, as the deployment's replica
@@ -165,6 +176,8 @@ type KnownSessions struct {
 	retryFirst   time.Duration
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
+	// existingBucket is WithExistingKnownSessionBucket's: no attempt creates the bucket.
+	existingBucket bool
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
 	// removes for the bucket's sake is indexed or unindexed through its rows (newKnownSessions),
@@ -219,16 +232,17 @@ type KnownSessions struct {
 // the background goroutines not started.
 func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 	s := &KnownSessions{
-		now:          opts.now,
-		log:          opts.log,
-		replicas:     opts.replicas,
-		retryFirst:   opts.retryFirst,
-		retryMax:     opts.retryMax,
-		watchOptions: opts.watch,
-		topics:       store.NewTopicMatcher(),
-		conn:         conn,
-		wake:         make(chan struct{}, 1),
-		stopped:      make(chan struct{}),
+		now:            opts.now,
+		log:            opts.log,
+		replicas:       opts.replicas,
+		retryFirst:     opts.retryFirst,
+		retryMax:       opts.retryMax,
+		watchOptions:   opts.watch,
+		existingBucket: opts.existing,
+		topics:         store.NewTopicMatcher(),
+		conn:           conn,
+		wake:           make(chan struct{}, 1),
+		stopped:        make(chan struct{}),
 	}
 	s.records = kvwatch.NewCopy(kvwatch.Rows[KnownSession]{
 		Decode:  decodeKnownSession,
@@ -275,7 +289,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(conn, opts.replicas)
+	kv, err := openKnownBucket(conn, opts.replicas, opts.existing)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -294,7 +308,8 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
-// and the copies the deployment asks for when it is not there.
+// and the copies the deployment asks for when it is not there, unless existing says to create
+// nothing (WithExistingKnownSessionBucket), when a missing bucket is bus.ErrBucketMissing.
 //
 // The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
 // bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
@@ -308,12 +323,15 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 // and must not give up on a cluster that is merely slow: a write is bounded by its caller's own
 // context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt a start waits
 // on, not for the work that follows it.
-func openKnownBucket(conn *nats.Conn, replicas int) (bus.KeyValue, error) {
+func openKnownBucket(conn *nats.Conn, replicas int, existing bool) (bus.KeyValue, error) {
 	opening, err := knownJetStream(conn)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
 	if _, err := opening.KeyValue(bus.KnownSessionBucket); errors.Is(err, nats.ErrBucketNotFound) {
+		if existing {
+			return bus.KeyValue{}, fmt.Errorf("KV_%s STREAM.INFO: %w", bus.KnownSessionBucket, bus.ErrBucketMissing)
+		}
 		if _, err := bus.EnsureKeyValue(conn, opening, &nats.KeyValueConfig{
 			Bucket:   bus.KnownSessionBucket,
 			TTL:      KnownSessionRetention,
@@ -484,7 +502,7 @@ func (s *KnownSessions) attemptRepair() (repairResult, error) {
 	s.openMu.RUnlock()
 	switch {
 	case watcher == nil:
-		kv, err := openKnownBucket(conn, s.replicas)
+		kv, err := openKnownBucket(conn, s.replicas, s.existingBucket)
 		if err != nil {
 			return repairNothing, err
 		}

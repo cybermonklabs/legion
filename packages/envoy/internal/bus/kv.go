@@ -217,6 +217,28 @@ func namedRequest(request string, err error) error {
 // next pass. A caller that waits on a budget of its own, such as a request or a watcher's
 // repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	return openKeyValue(conn, js, config, true)
+}
+
+// ErrBucketMissing is a bucket an open that creates nothing found missing (OpenExistingKeyValue).
+// It wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
+var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it, once every writer of it has ended: %w", nats.ErrBucketNotFound)
+
+// OpenExistingKeyValue opens the KV bucket config names as EnsureKeyValue does, with the same
+// lookup, raise of an existing bucket's copies and handle open, but it creates nothing: a bucket
+// the server says it does not hold is ErrBucketMissing, named for its stream
+// (`KV_envoy_sessions STREAM.INFO: bucket is missing; ...`). It is how a listener opens a bucket
+// its watcher copies (CopiedBuckets): a bucket deleted while one of its writers runs must not come
+// back while that writer runs, since a write the deleted bucket acknowledged is in no bucket after
+// it, and its writer was told it landed (INFRA-4094). The operator recreates such a bucket with
+// `envoy-infra buckets`, which refuses while any of its writers runs.
+func OpenExistingKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	return openKeyValue(conn, js, config, false)
+}
+
+// openKeyValue is EnsureKeyValue, which creates a missing bucket, and OpenExistingKeyValue, which
+// does not (creates).
+func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, creates bool) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -248,6 +270,8 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	kv, err := lookUpBucket()
 	created := false
 	switch {
+	case errors.Is(err, nats.ErrBucketNotFound) && !creates:
+		err = namedRequest(lookup, ErrBucketMissing)
 	case errors.Is(err, nats.ErrBucketNotFound):
 		// A create the server leaves unanswered is sent again, where an unanswered update is not
 		// (updateStream, internal/bus/stream.go:748-754). A second identical create finds the

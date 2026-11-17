@@ -119,7 +119,7 @@ func TestStartingGateLogsEachRefusedRequest(t *testing.T) {
 
 func TestHealthz_Starting_Returns200WithJSON(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
-	handler := healthzHandler(&state)
+	handler := healthzHandler(&state, nil)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/healthz", nil))
@@ -172,7 +172,7 @@ func TestFullMux_StartingState(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler(&state))
+	mux.HandleFunc("/healthz", healthzHandler(&state, nil))
 
 	mux.Handle("/v1/", newStartingGate("v1", logging.NewWithWriter("test", io.Discard)))
 
@@ -2820,7 +2820,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	caches := listenerCaches(registry, sessions, nil)
+	caches := listenerCaches(registry, sessions, nil, nil)
 	client.AddReconnectHook(func(conn *natsgo.Conn) error { return rewatchListenerKVWatchers(conn, caches) })
 	if _, err := client.SubscribeCore(contracts.RoleTopicPrefix+">", func(*natsgo.Msg) {}, "envoy-listener-"+machineID); err != nil {
 		t.Fatalf("open the role lane: %v", err)
@@ -5071,7 +5071,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: []listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, consumer: "listener-healthz-interest"})
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

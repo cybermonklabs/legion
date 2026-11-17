@@ -178,11 +178,11 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 				t.Fatalf("wait for the session cache: %v", err)
 			}
 			var state atomic.Pointer[listenerDeps]
-			state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
+			state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil, nil), consumer: consumer})
 			get := func() (int, map[string]any, time.Duration) {
 				recorder := httptest.NewRecorder()
 				started := time.Now()
-				healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+				healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 				elapsed := time.Since(started)
 				var body map[string]any
 				_ = json.Unmarshal(recorder.Body.Bytes(), &body)

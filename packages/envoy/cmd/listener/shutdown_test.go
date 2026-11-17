@@ -160,6 +160,10 @@ func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...st
 		"ENVOY_MACHINE_ID=" + machineID,
 		"NATS_URLS=" + uri,
 		"ENVOY_API_TOKEN=" + listenerTestToken,
+		// A test's server is a throwaway one: the listener creates the buckets it copies there,
+		// as no deployment's listener does (missing_buckets.go). A test that means the listener
+		// to find a bucket missing passes ENVOY_THROWAWAY_NATS=0 after it.
+		throwawayNATSEnv + "=1",
 	}, env...)
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
 	return &listenerProcess{Process: cmdtest.Start(t, "the listener "+machineID, cmd), port: held.Port}
@@ -174,6 +178,7 @@ func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
 		"ENVOY_MACHINE_ID=listen-fd-unset-address",
+		throwawayNATSEnv + "=1",
 		"NATS_URLS=" + testnats.URL(t),
 		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}
@@ -192,6 +197,7 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 		"PORT=0",
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=listen-port-zero",
+		throwawayNATSEnv + "=1",
 		"NATS_URLS=" + testnats.URL(t),
 		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}

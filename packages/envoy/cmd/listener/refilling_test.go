@@ -200,7 +200,7 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		registry.StopWatch()
 		sessions.StopWatch()
 	})
-	rig.caches = listenerCaches(registry, sessions, nil)
+	rig.caches = listenerCaches(registry, sessions, nil, nil)
 	hookCaches := rig.caches
 	if options.hookCaches != nil {
 		hookCaches = options.hookCaches(rig.caches)

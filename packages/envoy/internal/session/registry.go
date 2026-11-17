@@ -149,10 +149,19 @@ type sessionRegistryOpts struct {
 	lastSeenRetention time.Duration
 	log               *slog.Logger
 	now               func() time.Time
+	existing          bool
 }
 
 func WithSessionReplicas(n int) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.replicas = n }
+}
+
+// WithExistingSessionBucket opens the session bucket only if it exists (bus.OpenExistingKeyValue):
+// a missing one is bus.ErrBucketMissing, and the registry creates nothing. The listener passes it,
+// since no listener creates a bucket its watchers copy (bus.CopiedBuckets); without it,
+// OpenSessionRegistry creates a missing bucket, as a test's own server needs.
+func WithExistingSessionBucket() SessionRegistryOption {
+	return func(o *sessionRegistryOpts) { o.existing = true }
 }
 
 // BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with, and
@@ -160,7 +169,7 @@ func WithSessionReplicas(n int) SessionRegistryOption {
 // (WithSessionMaxAge). A record the bucket expires reads gone, whatever its own age says, so a
 // reader that acts on a gone session - the role claim reaper's period, say
 // (cmd/listener's defaultRoleClaimReapInterval) - reads this rather than a copy of it.
-const BucketMaxAge = 5 * time.Minute
+const BucketMaxAge = bus.SessionBucketMaxAge
 
 func WithSessionTTL(d time.Duration) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.ttl = d }
@@ -411,7 +420,11 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	open := bus.EnsureKeyValue
+	if opts.existing {
+		open = bus.OpenExistingKeyValue
+	}
+	kv, err := open(conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.SessionBucket,
 		TTL:      opts.ttl,
 		Replicas: opts.replicas,
