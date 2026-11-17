@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -603,6 +604,48 @@ func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *test
 	if held := rig.held(pairedSession); held.Requests != 1 || held.Grants != 1 || held.Grant != grant || held.GrantEnrollment != moved.enrollmentID {
 		t.Fatalf("after the move the broker holds %+v for session %s, want one request and the one grant %s, on the moved pod's enrollment %s: the moved pod takes the grant rather than %s being asked again",
 			held, pairedSession, grant, moved.enrollmentID, fleetPerson)
+	}
+}
+
+// TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds is the fixed name against
+// BROKER_SESSION_ACCOUNT_PAIRS on the real binary, in the window before the provider's first
+// exchange, when nothing has reserved the names the configuration fixes yet: the read entry's
+// session, readerSession, can still be held by another account as an ordinary claim, which is
+// what podAccount's pod does here by enrolling under it. pairedPodAccount, paired with podAccount,
+// enrols under the same name and is refused 403 SESSION_HELD, the name staying podAccount's, since
+// a name the configuration fixes goes to its entry and to no pair. What refuses it is the
+// broker's own read of the names its exchange entries fix (oauthstore.Store.Reserved, which
+// cmd/broker sets from the exchange's reservations): the row itself is an ordinary claim, so
+// without that read the pair would take it.
+func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	broker := startBroker(t, brokerOptions{Env: append(pairedExchangeEnv(t, databaseURL, cluster, github),
+		"BROKER_SERVICES="+registrarService+"="+podAccount+" "+registrarService+"="+pairedPodAccount,
+		"BROKER_SESSION_ACCOUNT_PAIRS="+podAccount+"="+pairedPodAccount)})
+	broker.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
+	db := openBrokerDatabase(t, databaseURL)
+	pods := podBroker{t: t, base: "http://" + broker.Addr, issuer: cluster, key: clusterKey, audience: enrolmentAudience}
+	launcher := pods.logIn(registrarService, registrarAccount)
+
+	t.Log("--- before any exchange, the old account's pod enrols under the name the read entry fixes")
+	pods.enrolledPodUnder(launcher, "pod-uid-old", podAccount, readerSession)
+	held := exchange.AccountPrincipal(podAccount)
+	if holder := sessionNameHolder(t, db, readerSession); holder != held {
+		t.Fatalf("after the old account's enrolment the name %s is held by %q, want %q, an ordinary claim", readerSession, holder, held)
+	}
+
+	t.Log("--- the paired account's pod is refused it")
+	if _, status, answer := pods.enrolPodUnder(launcher, "pod-uid-moved", pairedPodAccount, readerSession); status != http.StatusForbidden || decodeError(t, answer).Code != "SESSION_HELD" {
+		t.Fatalf("the paired account's pod enrolling %s, a name the read entry fixes = %d %s, want 403 SESSION_HELD: no pair takes a name the configuration fixes", readerSession, status, bytes.TrimSpace(answer))
+	}
+	if holder := sessionNameHolder(t, db, readerSession); holder != held {
+		t.Fatalf("after the paired account's refusal the name %s is held by %q, want %q still", readerSession, holder, held)
+	}
+	if takes := recordsWith(broker.Log(), enrollmentTookName, nil); len(takes) != 0 {
+		t.Fatalf("the broker logged %v, want no take: its refusal took nothing", takes)
 	}
 }
 
