@@ -340,6 +340,19 @@ func checked(err error) (string, bool) {
 	return "", false
 }
 
+// OneLine is text another party wrote - a broker's words, the code it answered - as one line of a
+// message may print it: the text itself where it holds no control character and is valid UTF-8
+// (hasControl), and otherwise the text Go-quoted (strconv.Quote), every such character escaped.
+// That is the rule this package prints its own text under: a Printable whose text holds such a
+// character prints as x/oauth2's text of its answer instead, which quotes the answer's fields the
+// same way. Its answer holds no control character, so OneLine of it is that answer again.
+func OneLine(text string) string {
+	if hasControl(text) {
+		return strconv.Quote(text)
+	}
+	return text
+}
+
 // hasControl reports whether text holds a control character (C0, DEL or C1) or is not valid
 // UTF-8, either of which can start a line of its own or move the cursor where the text prints.
 func hasControl(text string) bool {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -671,5 +672,22 @@ func TestARedactedErrorRedactedAgainBesideACleanAddressPrintsNoTextTheFirstWithh
 				}
 			}
 		})
+	}
+}
+
+// TestOneLineQuotesOnlyTextWithAControlCharacter: OneLine is text as it came where it holds no
+// control character and is valid UTF-8, and Go-quoted otherwise, under the rule a Printable's
+// text is held to (hasControl); its answer is one line and OneLine of it is that answer again.
+func TestOneLineQuotesOnlyTextWithAControlCharacter(t *testing.T) {
+	for _, text := range []string{"", "the grant has ended", "naïve — café: ok", `already "quoted"`} {
+		if got := OneLine(text); got != text {
+			t.Errorf("OneLine(%q) = %q, want it as it came", text, got)
+		}
+	}
+	for _, text := range []string{"a\nb", "a\r\nb", "a\rb", "a\x1b[2Kb", "a\tb", "a\x00b", "a\x7fb", "a\u0085b", "a\u009bb", "a\xffb"} {
+		got := OneLine(text)
+		if got != strconv.Quote(text) || hasControl(got) || OneLine(got) != got {
+			t.Errorf("OneLine(%q) = %q, want %q, which holds no control character and stays as it is", text, got, strconv.Quote(text))
+		}
 	}
 }

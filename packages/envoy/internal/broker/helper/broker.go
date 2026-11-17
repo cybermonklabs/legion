@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -266,14 +267,18 @@ type BrokerError struct {
 // not "broker 502 : ", and an unknown outcome's answer shows that text to an operator
 // (mayHaveReachedCause, server.go). With both fields set it reads "broker 403 SESSION_HELD: the
 // session … belongs to …", which nocredential_test.go matches as a prefix ("broker 401
-// LAUNCHER_INVALID"). A refusal whose text is withheld names no code.
+// LAUNCHER_INVALID"). A refusal whose text is withheld names no code. The code and the message are
+// the broker's, so each prints on one line (redact.OneLine): as it came where it holds no control
+// character, and Go-quoted where a line break or an escape sequence in it would start a line of
+// its own where this error prints. Message came through brokeraddr.Address.Words from do, under
+// that rule already, and from oauthBrokerError as the broker's OAuth answer held it.
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
 	if e.Code != "" && !e.withheld {
-		s += " " + e.Code
+		s += " " + redact.OneLine(e.Code)
 	}
 	if e.Message != "" {
-		s += ": " + e.Message
+		s += ": " + redact.OneLine(e.Message)
 	}
 	return s
 }

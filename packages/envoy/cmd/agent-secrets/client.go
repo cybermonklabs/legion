@@ -39,6 +39,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -117,19 +118,18 @@ type apiError struct {
 }
 
 // Error is the broker's message and code, and the answer id to quote when it named one; where
-// the answer's text is withheld, the status and Message alone. A body that was not the envelope is
-// the message as it came, a line ending and all (the mux's "404 page not found\n"), so the message
-// is cut at its trailing line endings before the id goes after it on the same line.
+// the answer's text is withheld, the status and Message alone. The code is the broker's, so it
+// prints on one line as Message does (redact.OneLine): as it came, or Go-quoted where a control
+// character in it would start a line of its own.
 func (e *apiError) Error() string {
 	if e.withheld {
 		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
 	}
-	message := strings.TrimRight(e.Message, "\r\n")
 	var text string
 	if e.Code == "" {
-		text = fmt.Sprintf("HTTP %d: %s", e.Status, message)
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
 	} else {
-		text = fmt.Sprintf("%s (%s)", message, e.Code)
+		text = fmt.Sprintf("%s (%s)", e.Message, redact.OneLine(e.Code))
 	}
 	if e.AnswerID != "" {
 		text += " (answer " + e.AnswerID + ")"
@@ -325,7 +325,11 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		}
 		_ = json.Unmarshal(data, &envelope)
 		if envelope.Error == "" {
-			envelope.Error = string(data)
+			// A body that was not the envelope is the message as it came, a line ending and
+			// all (the mux's "404 page not found\n"): it is cut at its trailing line endings
+			// before Words, which would otherwise quote it for them, so the id goes after it
+			// on the same line.
+			envelope.Error = strings.TrimRight(string(data), "\r\n")
 		}
 		if envelope.AnswerID == "" {
 			envelope.AnswerID = resp.Header.Get(answerIDHeader)
