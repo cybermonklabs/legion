@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -15,13 +14,16 @@ import (
 // list item or a footnote definition, has the closing fence's indentation taken out of its lines.
 // A block of a comment, a message or an ask, stored from the start of its line, has its opening
 // line's indentation, up to three spaces, taken off it and up to as many columns off each later
-// line, and its content reads as the item's own parse reads what the block holds. Where that
-// parse keeps a tab as text, the content can hold spaces in its place (columnsOff), so there the
-// two readings are compared with each run of spaces and tabs in a text as one space. A text that
-// does not read back as one typed block is answered as it stands. The documents' texts are slices
-// of a rendering, as the block index stores them; the items' texts are as a comment writes them.
+// line, and its content reads as the item's own parse reads what the block holds, node by node as
+// sameNodes compares them. A text that does not read back as one typed block is answered as it
+// stands. The documents' texts are slices of a rendering, as the block index stores them; the
+// items' texts are as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
 	const document, item = true, false
+	// quoteLimit begins the name of a row at the limit columnsOff names for a quote whose `>`
+	// stands four columns or more into a list item. Such a row's content is checked to read
+	// otherwise than the item, so a change that brings it to the item's reading shows.
+	const quoteLimit = "at the limit of a quote in a list item: "
 	for _, row := range []struct {
 		name     string
 		document bool
@@ -151,14 +153,49 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow", item,
 			"  :::callout{}\n  -\t\tCodeInItem.\n  :::",
 			"-     CodeInItem.\n"},
+		// Past a run five columns or more wide the walk reads markers still. Here the second `-`
+		// and its tab are code, which the item holds with the tab: the limit columnsOff names, so
+		// sameNodes compares that text with its whitespace collapsed.
+		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow, then in its code a second marker and a tab", item,
+			"  :::callout{}\n  -\t\t-\tx\n  :::",
+			"-     -   x\n"},
+		{"an item's block whose opening line stands one space in, over a list item in a quote, then a line whose `>` two tabs follow and whose `-` opens a list in that item", item,
+			" :::callout{}\n > 1. a\n >\t\t-\t\tb\n :::",
+			"> 1. a\n>      -       b\n"},
 		{"an item's block whose opening line stands two spaces in, over a quote whose `>` two tabs follow", item,
 			"  :::callout{}\n  >\t\tCodeInItem.\n  :::",
 			">     CodeInItem.\n"},
+		{"an item's block whose opening line stands one space in, over code in a quote whose `>` two tabs follow, a line of that `>` and two tabs alone, and more of that code", item,
+			" :::callout{}\n >\t\tcode\n >\t\t\n >\t\tmore\n :::",
+			">      code\n>      \n>      more\n"},
+		// A `>` that columnsOff cannot be sure opens or continues a quote can be a paragraph's
+		// text, so its run to the line's end is kept as it stands: written as spaces, it would end
+		// the paragraph's line in a hard break.
+		{"an item's block whose opening line stands two spaces in, over a paragraph whose lazy line is a `>` six spaces in and two tabs", item,
+			"  :::callout{}\n  foo\n        >\t\t\n  bar\n  :::",
+			"foo\n      >\t\t\nbar\n"},
+		{"an item's block whose opening line stands two spaces in, over a paragraph and a line of `2) `, which opens no list there, a `>` and two tabs", item,
+			"  :::callout{}\n  foo\n  2) >\t\t\n  bar\n  :::",
+			"foo\n2) >\t\t\nbar\n"},
+		// The limit columnsOff names for a quote whose `>` stands four columns or more into a
+		// list item: the walk does not take that `>` for a quote's, so on a line of only spaces
+		// and tabs in the quote's code its run is kept as it stands, and that line holds up to
+		// three columns more or fewer of whitespace than the item's, the structure the same.
+		// These rows hold the cut as it is today.
+		{quoteLimit + "an item's block whose opening line stands one space in, over code in a quote after `10. `, a line of that `>` and two tabs alone, and more of that code", item,
+			" :::callout{}\n 10. >\t\tcode\n     >\t\t\n     >\t\tmore\n :::",
+			"10. >      code\n    >\t\t\n    >      more\n"},
+		{quoteLimit + "an item's block whose opening line stands one space in, over code in a quote after `-   `, a line of that `>` and two tabs alone, and more of that code", item,
+			" :::callout{}\n -   >\t\tcode\n     >\t\t\n     >\t\tmore\n :::",
+			"-   >      code\n    >\t\t\n    >      more\n"},
+		{quoteLimit + "an item's block whose opening line stands one space in, over code in a quote after `> 1.  `, a line of those `>` and two tabs alone, and more of that code", item,
+			" :::callout{}\n > 1.  >\t\tcode\n >     >\t\t\n >     >\t\tmore\n :::",
+			"> 1.  >        code\n>     >\t\t\n>     >        more\n"},
 		{"an item's block whose opening line stands two spaces in, over a code line six spaces in, a line of spaces and another code line", item,
 			"  :::callout{}\n      a\n        \n      b\n  :::",
 			"    a\n      \n    b\n"},
 		// The item keeps the tab in its code's text, and the cut writes it as spaces: the limit
-		// columnsOff names, so the two readings are compared with their whitespace collapsed.
+		// columnsOff names, so sameNodes compares that text with its whitespace collapsed.
 		{"an item's block whose opening line stands two spaces in, over a fenced code line a tab past the fence", item,
 			"  :::callout{}\n  ```\n  \tcode\n  ```\n  :::",
 			"```\n  code\n```\n"},
@@ -171,12 +208,12 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 			if row.document || content == row.whole || content == "" {
 				return
 			}
-			got := sameShape(t, treeContent(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)))
-			want := sameShape(t, heldByItsOneBlock(t, row.whole))
-			if holdsATab(t, want) {
-				got, want = whitespaceCollapsed(t, got), whitespaceCollapsed(t, want)
-			}
-			if !bytes.Equal(got, want) {
+			got := treeContent(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
+			want := heldByItsOneBlock(t, row.whole)
+			same, _ := sameNodes(decodedTree(t, got), decodedTree(t, want))
+			if atTheLimit := strings.HasPrefix(row.name, quoteLimit); atTheLimit && same {
+				t.Errorf("the content %q reads as the item's own parse reads the block, %s, so the row is no longer at the limit", content, got)
+			} else if !atTheLimit && !same {
 				t.Errorf("the content %q reads as\n\t%s\nwant what the item's own parse reads in the block\n\t%s", content, got, want)
 			}
 		})
@@ -207,56 +244,68 @@ func heldByItsOneBlock(t *testing.T, whole string) json.RawMessage {
 	return treeContent(t, blocks[0])
 }
 
-// displayTexts decodes tree, the content of a node as the display read encodes it, calls visit
-// with each text node in it and whether a code block holds that node, and answers the decoded
-// tree with whatever visit changed in it.
-func displayTexts(t *testing.T, tree json.RawMessage, visit func(node map[string]any, inCode bool)) any {
+// decodedTree is tree, a node's content as the display read encodes it, decoded.
+func decodedTree(t *testing.T, tree json.RawMessage) any {
 	t.Helper()
 	var value any
 	if err := json.Unmarshal(tree, &value); err != nil {
 		t.Fatalf("decode the tree %s: %v", tree, err)
 	}
-	var walk func(value any, inCode bool)
-	walk = func(value any, inCode bool) {
-		switch node := value.(type) {
-		case []any:
-			for _, child := range node {
-				walk(child, inCode)
-			}
-		case map[string]any:
-			if _, text := node["text"].(string); text {
-				visit(node, inCode)
-			}
-			walk(node["content"], inCode || node["type"] == "code_block")
-		}
-	}
-	walk(value, false)
 	return value
 }
 
-// holdsATab reports whether a text node of tree holds a tab.
-func holdsATab(t *testing.T, tree json.RawMessage) bool {
-	t.Helper()
-	holds := false
-	displayTexts(t, tree, func(node map[string]any, _ bool) {
-		holds = holds || strings.Contains(node["text"].(string), "\t")
-	})
-	return holds
+// sameNodes walks content, the decoded tree a block's content reads as, and item, the decoded
+// tree the item's own parse gives what the block holds, together, and reports whether they are
+// the same node by node. Where a text node of item holds a tab, its text and the text of
+// content's node in its place are compared with each run of spaces and tabs as one space, since
+// there the content can hold spaces where the item holds a tab (columnsOff). Everything else is
+// compared exactly: every other text, each node's type, attrs and marks, and the shape, each
+// node's keys and each list's count of nodes. collapsed reports whether a text was compared with
+// its whitespace collapsed.
+func sameNodes(content, item any) (same, collapsed bool) {
+	switch item := item.(type) {
+	case []any:
+		nodes, isList := content.([]any)
+		if !isList || len(nodes) != len(item) {
+			return false, false
+		}
+		for index, child := range item {
+			sameChild, collapsedChild := sameNodes(nodes[index], child)
+			collapsed = collapsed || collapsedChild
+			if !sameChild {
+				return false, collapsed
+			}
+		}
+		return true, collapsed
+	case map[string]any:
+		node, isNode := content.(map[string]any)
+		if !isNode || len(node) != len(item) {
+			return false, false
+		}
+		for key, value := range item {
+			other, has := node[key]
+			if !has {
+				return false, collapsed
+			}
+			if text, _ := value.(string); key == "text" && item["type"] == "text" && strings.Contains(text, "\t") {
+				otherText, isText := other.(string)
+				if !isText || whitespaceRuns.ReplaceAllString(otherText, " ") != whitespaceRuns.ReplaceAllString(text, " ") {
+					return false, true
+				}
+				collapsed = true
+				continue
+			}
+			sameValue, collapsedValue := sameNodes(other, value)
+			collapsed = collapsed || collapsedValue
+			if !sameValue {
+				return false, collapsed
+			}
+		}
+		return true, collapsed
+	default:
+		return content == item, false
+	}
 }
 
 // whitespaceRuns is a run of spaces and tabs.
 var whitespaceRuns = regexp.MustCompile(`[ \t]+`)
-
-// whitespaceCollapsed is tree with each run of spaces and tabs in its text nodes written as one
-// space, its keys in the order sameShape leaves them.
-func whitespaceCollapsed(t *testing.T, tree json.RawMessage) json.RawMessage {
-	t.Helper()
-	value := displayTexts(t, tree, func(node map[string]any, _ bool) {
-		node["text"] = whitespaceRuns.ReplaceAllString(node["text"].(string), " ")
-	})
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("encode the tree: %v", err)
-	}
-	return encoded
-}
