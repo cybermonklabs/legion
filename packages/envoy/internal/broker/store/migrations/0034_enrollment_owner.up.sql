@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0032_enrollment_owner.up.sql
+-- packages/envoy/internal/broker/store/migrations/0034_enrollment_owner.up.sql
 -- Who a request belongs to: the principal that made it, rather than the one enrollment row it was
 -- made under. A Legion pod is replaced by its next generation, a person's session moves to another
 -- box, a machine's helper restarts: each enrols again under a row of its own, and until now a
