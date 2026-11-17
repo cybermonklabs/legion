@@ -37,7 +37,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { TCPSocketListener } from "bun";
+import type { TCPSocketListener, udp } from "bun";
 
 export const script = fileURLToPath(
   new URL("../acceptance/outside-path-reach.sh", import.meta.url)
@@ -141,19 +141,36 @@ function ephemeralLow(): number {
   }
 }
 /** The ports taken for closed ones: from 10000 to 2000 short of the ephemeral range, each handed
- *  out once in this process, starting at a random one so two processes rarely meet. */
+ *  out once in this process, starting at a random one so two processes seldom try the same ones. */
 const closedRange = { low: 10000, span: ephemeralLow() - 2000 - 10000 };
 if (!(closedRange.span > 2000)) {
   throw new Error(`the kernel's ephemeral ports start at ${ephemeralLow()}: no room below them`);
 }
 const closedStart = Math.floor(Math.random() * closedRange.span);
 let closedIssued = 0;
+/** The UDP sockets that reserve the ports `closedPort` issued, kept here so none is collected. */
+const closedReservations: udp.Socket<"buffer">[] = [];
 
 /** A port that refuses a connection: the next of the range, wrapping round it, past any a host
- *  program holds. The kernel hands none of them to a `port: 0` listener. */
+ *  program holds. The kernel hands none of them to a `port: 0` listener.
+ *  It reserves a port before it connects to it: it binds a UDP socket to the same number on
+ *  127.0.0.1 and holds it for the rest of this process's life. No other process can bind it
+ *  meanwhile, and the kernel frees it however the process ends. So no two processes issue one
+ *  port, and the connection reaches no row's listener, since a row listens in this range only on a
+ *  port its own process reserved; unreserved, it could reach another process's holding target,
+ *  which counts every connection. It tests by connecting, not by binding a TCP listener, since on
+ *  the BSDs a bind on 127.0.0.1 succeeds beside a listener on every address. */
 export async function closedPort(): Promise<number> {
   while (closedIssued < closedRange.span) {
     const port = closedRange.low + ((closedStart + closedIssued++) % closedRange.span);
+    let reservation: udp.Socket<"buffer">;
+    try {
+      // A failed bind throws here at once rather than rejecting the promise.
+      reservation = await Bun.udpSocket({ hostname: "127.0.0.1", port });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") continue;
+      throw error;
+    }
     const refused = await Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {} } }).then(
       (socket) => {
         socket.end();
@@ -161,7 +178,14 @@ export async function closedPort(): Promise<number> {
       },
       (error: { code?: string }) => error.code === "ECONNREFUSED"
     );
-    if (refused) return port;
+    if (!refused) {
+      reservation.close();
+      continue;
+    }
+    // Unreferenced, it holds the port without keeping the process running.
+    reservation.unref();
+    closedReservations.push(reservation);
+    return port;
   }
   throw new Error(`no refused port between ${closedRange.low} and the ephemeral range`);
 }
