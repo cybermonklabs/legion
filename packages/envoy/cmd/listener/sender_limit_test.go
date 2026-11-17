@@ -947,6 +947,48 @@ func TestSenderLimitCost(t *testing.T) {
 		requireRoleSendLinesNameNoSender(t, frozen.harness.logs.String()[before:])
 		frozen.requireCount(t, sender, false)
 	})
+
+	// A role send that forwarded once and did not hear the stream's acknowledgement may have
+	// stored the message for that holder, so R3 has it cost one whatever the send answers next.
+	// Here the stream did store it, and the role then moves to a holder that takes aside alone, so
+	// the next pass answers the steer 403 (settledBeforeForward). The same holds for every answer
+	// that pass can give after an attempt: an echo and a repeat as well as the 403.
+	t.Run("role send answered 403 by a later holder after a forward the stream stored costs one", func(t *testing.T) {
+		moved := newSenderLimitRig(t)
+		moved.limit(4, 1)
+		const sender, first, next, role = "ses_cost_moved", "ses_cost_moved_first", "ses_cost_moved_next", "cost-moved"
+		claimRoleFor(t, moved.deps.registry, moved.deps.sessions, first, role, []string{"steer"})
+		forwards := 0
+		delivery := *moved.deps.delivery
+		forward := delivery.forwardRole
+		delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+			forwards++
+			if forwards > 1 {
+				return forward(subject, item, msgID, timeout)
+			}
+			// The first forward is stored, and its acknowledgement is lost on the way back.
+			wait, err := forward(subject, item, msgID, timeout)
+			if err != nil {
+				return nil, err
+			}
+			if err := wait(); err != nil {
+				return nil, err
+			}
+			claimRoleFor(t, moved.deps.registry, moved.deps.sessions, next, role, []string{"aside"})
+			return func() error { return natsgo.ErrTimeout }, nil
+		}
+		moved.deps.delivery = &delivery
+		answer := moved.publishFrom(t, sender, contracts.RoleTopicPrefix+role, steer)
+		if forwards != 1 {
+			t.Fatalf("the role send forwarded %d times, want the first holder's one; body %s", forwards, answer.raw)
+		}
+		if stored := moved.storedOn(t, contracts.LegacyAgentSubject(first)); stored != 1 {
+			t.Fatalf("the stream holds %d forwards for %s, want the one whose acknowledgement was lost", stored, first)
+		}
+		answer.requireStatus(t, "the steer the next holder cannot take", http.StatusForbidden)
+		answer.requireNamed(t, "the steer the stream stored for the first holder", sender)
+		moved.requireCount(t, sender, false)
+	})
 }
 
 // TestSenderLimitSenders is check a-senders: the limit counts the session a secrets-broker token
