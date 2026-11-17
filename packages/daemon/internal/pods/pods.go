@@ -137,8 +137,10 @@ type IdleRoot struct {
 
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
-// in the workflow and its tree root's. Found is false for an issue the record does not hold,
-// which is no pod of the workflow's to release.
+// in the workflow and its tree root's. Found is false for an issue the record does not hold under
+// the daemon's own project, which is no pod of the workflow's to release: a record another
+// project's daemon keeps of the issue on a shared database is not this daemon's
+// (store.readIdleView).
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other

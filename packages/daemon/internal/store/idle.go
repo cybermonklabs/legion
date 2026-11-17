@@ -596,6 +596,20 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 	return err
 }
 
+// readIdleView is issue's pod as the idle rules read it (pods.IdleView), through tx; project is
+// the project token, as the claims hold it.
+//
+// The issue's record counts only where its project is project's (issues.project holds the
+// Dispatch key, which the token lowercases), and any other record is read as none: the view
+// answers Found false, as for an issue no record holds, and both rules then keep the pod
+// (workflow.IdleHoldNoPod, IdleHoldUnownedNoClaim). The issues table holds the issues of every
+// project on the database, and the operator's spawn makes a claim of another project's issue
+// under this project's token, so its pod can find the record that project's daemon keeps of the
+// issue. A release decided on that record would queue rows keyed by the other project's issue,
+// which this project's outbox never runs (record's DueRows), under a mark that would never
+// clear. The root is read through the issue's own tree and needs no check of its own: a record
+// takes its root's project when the workflow writes it, so the root of a record of this project
+// is this project's too.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
@@ -603,7 +617,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
-		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
+		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
 		&view.Root.AwaitingPerson, &view.Root.Answered)

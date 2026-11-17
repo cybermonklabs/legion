@@ -1,12 +1,15 @@
 package workflow
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -483,6 +486,72 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 				t.Fatalf("roles = %v, want none: this release suspends no role", got.Roles)
 			}
 		})
+	}
+}
+
+// The idle rule decides a pod from the view the release's own transaction reads
+// (store.Store.ReleaseIdleIssue), and that view counts an issue's record only where its project
+// is the daemon's. The operator's spawn makes a claim of another project's issue under the
+// daemon's token, and a database the daemon shares with that project's daemon holds that
+// daemon's record of the issue. Read as this pod's issue, it would let the rule release the pod
+// with rows keyed by the other project's issue, which this daemon's outbox never runs, under a
+// mark that never clears. It is no record of this daemon's, so the rule holds the pod as one of
+// an issue the record does not hold (IdleHoldNoPod), and nothing is marked or queued.
+func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store over the test pool: %v", err)
+	}
+	t.Cleanup(st.Close)
+	const issue = "OTHER-8"
+	seedIssue(t, pool, record.Issue{Key: issue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: issue, Project: "OTHER", Title: "OTHER's root", Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	token, err := claim.NewToken("legion", issue, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: issue, Issue: issue,
+		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateIdle, PluginContract: idleContract}); err != nil {
+		t.Fatalf("seed the operator's spawn of %s: %v", issue, err)
+	}
+	// The spawn has been quiet for twice the idle period, and its session reported after its last
+	// turn that it runs no background work with no reminder armed.
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `update claims set updated_at = $2, activity_at = $2, activity_background = false,
+		activity_kinds = '', activity_next_reminder_at = null where token = $1`, string(token), now.Add(-2*idlePeriod)); err != nil {
+		t.Fatalf("backdate the spawn: %v", err)
+	}
+
+	var decided IdleDecision
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		decided = IdleRelease(view, now, idlePeriod, true, idleContract)
+		if !decided.Release {
+			return store.IdleReleaseMark{}, nil
+		}
+		return store.IdleReleaseMark{Generation: view.Generation, Role: decided.Roles[0], Rows: []store.IdleReleaseRow{
+			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHER-8","generation":1,"treeGeneration":1,"role":"architect"}`)},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHER-8","role":"architect","generation":1}`), Boundary: true},
+			{Kind: "issue_release", Payload: []byte(`{"tree":"OTHER-8","generation":1,"treeGeneration":1}`)},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatalf("decide the pod of %s: %v", issue, err)
+	}
+	if marked || decided.Hold != IdleHoldNoPod {
+		t.Fatalf("the idle rule over the pod of %s = marked %t, hold %s; want no release and %s: OTHER's record is no record of this daemon's",
+			issue, marked, decided.Hold, IdleHoldNoPod)
+	}
+	var rows, marks int
+	if err := pool.QueryRow(ctx, `select (select count(*) from outbox where issue = $1),
+		(select count(*) from issue_releases where issue = $1)`, issue).Scan(&rows, &marks); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || marks != 0 {
+		t.Fatalf("after the idle rule's decision %d outbox rows are keyed %s and %d release marks name it, want none of either",
+			rows, issue, marks)
 	}
 }
 

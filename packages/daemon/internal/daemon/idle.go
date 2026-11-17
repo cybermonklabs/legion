@@ -264,7 +264,8 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 //   - IdleHoldNone is a release, not a hold;
 //   - IdleHoldNotIdle is a pod that is simply not idle yet, which is every working pod on nearly
 //     every tick and says nothing about release;
-//   - IdleHoldNoPod is an issue the record does not hold, so there is no pod to have kept;
+//   - IdleHoldNoPod is an issue the record does not hold under this project, so there is no pod
+//     of the workflow's to have kept;
 //   - IdleHoldNoLiveClaim is an issue whose claims have all stopped. Such a view is quiet, since
 //     the quiet period is measured from the pod's own claims and those claims stopped writing
 //     when they stopped, so a pass over one would record a hold every tick for as long as the

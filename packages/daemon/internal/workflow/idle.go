@@ -47,10 +47,11 @@ const (
 	IdleHoldReminder
 	// IdleHoldNotIdle: the pod did something inside the idle period, so the period has not passed.
 	IdleHoldNotIdle
-	// IdleHoldNoPod: the record holds no such issue, so there is no pod of the workflow's to
-	// release at all. An issue the record does hold whose claims have all stopped is
-	// IdleHoldNoLiveClaim instead: a pod stands there, and this rule is simply not the one that
-	// decides it.
+	// IdleHoldNoPod: the record holds no such issue under the daemon's own project, so there is
+	// no pod of the workflow's to release at all: a record another project's daemon keeps of the
+	// issue is none of this daemon's (store.readIdleView). An issue the record does hold whose
+	// claims have all stopped is IdleHoldNoLiveClaim instead: a pod stands there, and this rule
+	// is simply not the one that decides it.
 	IdleHoldNoPod
 	// IdleHoldReleasing: a release of this pod is already in progress. It is the idle tick's own
 	// word for "my release is already running", never a release that stopped short: a release
