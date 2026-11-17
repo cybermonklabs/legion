@@ -3,12 +3,14 @@ package delivery
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -477,4 +479,291 @@ func AttributePullRequests(ctx context.Context, pool *store.Pool, limit int) (in
 		return 0, fmt.Errorf("attribute stored pull requests: %w", err)
 	}
 	return changed, nil
+}
+
+// One statement gives the issue of a pull request at read time, from its stored facts alone: the
+// results row (pull_request_heads), the timeline row (delivery_pull_requests) and the texts of one
+// read of GitHub (pull_request_texts), with the keys the database reads from those texts
+// (attribution_keys, migration 20261117122117). Every reader by key and by issue runs it, so a
+// change of the rule, a new link, a moved issue or a new issue reaches every stored pull request
+// at its next read, with no read of GitHub.
+//
+// The text names the schema of the reading's two functions, which only the database knows, so it
+// is built once at start (PrepareAttribution) and never per read.
+
+// githubURLBound is the most bytes a pull request's own URL may have for a link to match it. It
+// is the bound of the partial index pull_request_heads_url_lower (migration 20261117111040): a
+// longer URL is no URL of GitHub, and no index holds it. Each arm that matches a link with the
+// pull request's own URL takes the bound (urlBound), the arm of a reader by key as the arm of a
+// reader by issue, so both match the same URLs and the reader by issue reads that index.
+const githubURLBound = 1024
+
+// urlBound is the condition each arm on a pull request's own URL takes: the predicate of the
+// partial index, so the planner reads it.
+func urlBound(column string) string {
+	return `octet_length(` + column + `) <= ` + strconv.Itoa(githubURLBound)
+}
+
+// linkURLAsCited is a link's URL folded the way the reading folds a cited URL: ASCII lower case,
+// under the collation "C", whatever the database's own collation folds besides. The cited list
+// is in that fold, so an arm that compares a link with it compares in that fold too, by key and by
+// issue alike, and the answer is the same in every database the guard of migration 20261117111040
+// admits. A pair equal in that fold is equal under lower() too, so the arm by key keeps lower() as
+// its first term, which issue_external_links_url_lower serves. The folded text takes the
+// database's collation again, the collation of the cited list and of its index
+// (pull_request_texts_keys): an overlap of the list with an array under "C" reads no index.
+const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
+
+// attributedTerms is the statement's terms over judged, a query of (repo, number) under any
+// stored name, for the schema that holds the reading. A caller adds its own select over
+// `attributed`, one row for each judged pull request: repo (the canonical name), number,
+// stored_repo and timeline_repo (the names its results row and its timeline row are stored under,
+// null where it has none), has_facts, fallback, issue_key and source.
+//
+//   - now_reading: the identity of the reading that runs now, and whether any texts row is on
+//     another. Each of min and max is one probe of pull_request_texts_reading, whatever the
+//     statistics say.
+//   - judged: each judged pull request once, under its canonical name (refs.CanonicalRepoSQL).
+//   - heads and timeline: its results row and its timeline row under any name the renaming rule
+//     reads as that name, the row under the canonical name first, then the results row read from
+//     GitHub last. limit 1 keeps each join one probe of the index on number.
+//   - batch: its texts, joined to that results row. The fallback is the results row's stored
+//     answer, read or unread, also when that is nobody, and the timeline row's issue only where
+//     no results row exists: the one fallback of every reader. The texts are facts only where they
+//     describe the results row's head (texts_current). A row's stored keys stand only where its
+//     reading is the one that runs now; else the keys are read from its texts here. offset 0 keeps
+//     the planner from making that condition a join filter, which would run the reading for every
+//     row.
+//   - named to picked: the five sources in their order (attributionCandidates), from facts whose
+//     head is the pull request's own repository's (own_head), bounded at
+//     attributionCandidateBound and held to the pull request's repository (attributionHeld). A
+//     tie of rank and place, two links of one URL in two letter cases, is ended by the key in byte
+//     order, so no collation, plan or row order picks the issue.
+//   - attributed: the rule's pick where the pull request has facts, and the fallback where it has
+//     none. Messages that were not read decide nothing: a held candidate of a higher source gives
+//     facts without them.
+func attributedTerms(schema, judged string) string {
+	hasFacts := `b.texts_current and (b.messages_read or p.key is not null)`
+	return `with recursive now_reading as materialized (
+		select r.id, coalesce((select pg_catalog.min(x.reading) from pull_request_texts x), r.id) <> r.id
+			or coalesce((select pg_catalog.max(x.reading) from pull_request_texts x), r.id) <> r.id as other
+		from (select ` + schema + `.attribution_reading() as id) r
+	), judged_raw as (` + judged + `
+	), judged as (
+		select distinct on (lower(c.repo), c.number) c.repo, c.number
+		from (select ` + refs.CanonicalRepoSQL("r.repo") + ` as repo, r.number from judged_raw r) c
+		order by lower(c.repo), c.number, c.repo
+	), heads as (
+		select j.repo as j_repo, j.number as j_number, h.*
+		from judged j cross join lateral (
+			select h.repo, h.number, h.url, h.issue_key, h.attribution_source, h.head_sha, h.base_ref, h.event_at,
+				h.head_ref, h.title, h.state, h.checked_at
+			from pull_request_heads h
+			where h.number = j.number and lower(` + refs.CanonicalRepoSQL("h.repo") + `) = lower(j.repo)
+			order by lower(h.repo) = lower(j.repo) desc, h.github_read_at desc nulls last, h.repo
+			limit 1) h
+	), timeline as (
+		select j.repo as j_repo, j.number as j_number, d.repo, d.issue_key
+		from judged j cross join lateral (
+			select d.repo, d.issue_key from delivery_pull_requests d
+			where d.number = j.number and lower(` + refs.CanonicalRepoSQL("d.repo") + `) = lower(j.repo)
+			order by lower(d.repo) = lower(j.repo) desc, d.repo
+			limit 1) d
+	), batch as (
+		select j.repo, j.number, h.url,
+			case when h.repo is null then tl.issue_key else h.issue_key end as fallback,
+			h.repo as stored_repo, tl.repo as timeline_repo, h.attribution_source as stored_source,
+			coalesce(t.head_sha = h.head_sha and t.base_ref = h.base_ref and t.updated_at is not distinct from h.event_at
+				and t.head_ref = h.head_ref and t.title = h.title, false) as texts_current,
+			coalesce(t.commit_messages is not null, false) as messages_read,
+			coalesce(t.head_repo <> '' and lower(` + refs.CanonicalRepoSQL("t.head_repo") + `) = lower(j.repo), false) as own_head,
+			case when t.reading = r.id then t.title_keys else k.title_keys end as title_keys,
+			case when t.reading = r.id then t.cited_issues else k.cited_issues end as cited_issues,
+			case when t.reading = r.id then t.branch_keys else k.branch_keys end as branch_keys,
+			case when t.reading = r.id then t.commit_keys else k.commit_keys end as commit_keys
+		from judged j cross join now_reading r
+			left join heads h on h.j_repo = j.repo and h.j_number = j.number
+			left join pull_request_texts t on t.repo = h.repo and t.number = h.number
+			left join timeline tl on tl.j_repo = j.repo and tl.j_number = j.number
+			left join lateral (select f.* from ` + schema + `.attribution_keys(t.repo, t.head_ref, t.title, t.body, t.commit_messages) f
+				where t.reading <> r.id offset 0) k on true
+	), named as (
+		select src.repo as pr_repo, src.number as pr_number, l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0::bigint as n
+		from batch src cross join lateral (select l.issue_key from issue_external_links l where lower(l.url) = lower(src.url) offset 0) l
+		where src.texts_current and src.own_head and ` + urlBound("src.url") + `
+		union all
+		select src.repo, src.number, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n
+		from batch src cross join lateral unnest(src.cited_issues) with ordinality u(url, n)
+			cross join lateral (select l.issue_key from issue_external_links l
+				where lower(l.url) = lower(u.url) and ` + linkURLAsCited + ` = u.url offset 0) l
+		where src.texts_current and src.own_head
+		union all
+		select src.repo, src.number, u.key, '` + string(sourceBranch) + `', 2, u.n
+		from batch src cross join lateral unnest(src.branch_keys) with ordinality u(key, n) join issues i on i.key = u.key
+		where src.texts_current and src.own_head
+		union all
+		select src.repo, src.number, u.key, '` + string(sourceTitleBody) + `', 3, u.n
+		from batch src cross join lateral unnest(src.title_keys) with ordinality u(key, n) join issues i on i.key = u.key
+		where src.texts_current and src.own_head
+		union all
+		select src.repo, src.number, u.key, '` + string(sourceCommitMessage) + `', 4, u.n
+		from batch src cross join lateral unnest(src.commit_keys) with ordinality u(key, n) join issues i on i.key = u.key
+		where src.texts_current and src.own_head
+	), candidates as (
+		select pr_repo, pr_number, key, source, rank, n
+		from (select named.*, row_number() over (partition by pr_repo, pr_number order by rank, n, key collate "C") place from named) r
+		where place <= ` + strconv.Itoa(attributionCandidateBound) + `
+	), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `, held as (
+		select c.pr_repo, c.pr_number, c.key, c.source, c.rank, c.n
+		from candidates c left join issues i on i.key = c.key ` + refs.IssueRepoJoin + `
+		where ` + attributionHeld("c.pr_repo") + `
+	), picked as (
+		select distinct on (pr_repo, pr_number) pr_repo, pr_number, key, source
+		from held order by pr_repo, pr_number, rank, n, key collate "C"
+	), attributed as (
+		select b.repo, b.number, b.stored_repo, b.timeline_repo, b.fallback, ` + hasFacts + ` as has_facts,
+			case when ` + hasFacts + ` then p.key else b.fallback end as issue_key,
+			case when ` + hasFacts + ` then coalesce(p.source, '` + string(sourceNone) + `') else coalesce(b.stored_source, '` + string(sourceNone) + `') end as source
+		from batch b left join picked p on p.pr_repo = b.repo and p.pr_number = b.number
+	)`
+}
+
+// headsByIssue is the judged rows of a read by issue $1: every pull request whose answer can be
+// $1, under the name it is stored under. Each arm but the last reads one index of migration
+// 20261117111040 or of the tables it reads: the results rows and the timeline rows that store
+// $1; the texts rows whose stored keys name it; the results rows whose own URL a link of $1
+// names, under the bound of the partial index; the texts rows that cite a URL a link of $1 names,
+// folded as the reading folds it (linkURLAsCited); and, only while some texts row is on another
+// reading, every such row, whose stored keys say nothing. The last is a one-time filter, so it
+// reads no row outside that window. A row an arm takes that the statement answers for another
+// issue is dropped by the reader's own `issue_key = $1`.
+var headsByIssue = `select repo, number from pull_request_heads where issue_key = $1
+	union select repo, number from delivery_pull_requests where issue_key = $1
+	union select repo, number from pull_request_texts
+		where branch_keys @> array[$1::text] or title_keys @> array[$1::text] or commit_keys @> array[$1::text]
+	union select h.repo, h.number from pull_request_heads h
+		where lower(h.url) in (select lower(l.url) from issue_external_links l where l.issue_key = $1) and ` + urlBound("h.url") + `
+	union select repo, number from pull_request_texts
+		where cited_issues && array(select ` + linkURLAsCited + ` from issue_external_links l where l.issue_key = $1)
+	union select t.repo, t.number from pull_request_texts t
+		where (select r.other from now_reading r) and t.reading <> (select r.id from now_reading r)`
+
+// pullRequestKeys is the judged rows of PullRequestIssues: the keys its caller gave, $1 the
+// repositories and $2 the numbers.
+const pullRequestKeys = `select k.repo, k.number from unnest($1::text[], $2::int[]) k(repo, number)`
+
+// pullRequestIssuesStatement is PullRequestIssues' statement: the answer of each key its caller
+// gave, matched under the renaming rule, for each key with a results row or a timeline row.
+func pullRequestIssuesStatement(schema string) string {
+	return attributedTerms(schema, pullRequestKeys) + `
+	select k.repo, k.number, a.issue_key, a.source, a.has_facts
+	from (` + pullRequestKeys + `) k
+	join attributed a on a.number = k.number and lower(` + refs.CanonicalRepoSQL("k.repo") + `) = lower(a.repo)
+	where a.stored_repo is not null or a.timeline_repo is not null`
+}
+
+// attributionStatements are the texts of every reader of a pull request's issue, built for the
+// schema that holds the reading.
+type attributionStatements struct {
+	pullRequestIssues     string
+	headsAttributedTo     string
+	headAttributedTo      string
+	newestPullRequestHead string
+	baseBranchMergedFor   string
+}
+
+func attributionStatementsFor(schema string) *attributionStatements {
+	byIssue := attributedTerms(schema, headsByIssue)
+	return &attributionStatements{
+		pullRequestIssues:     pullRequestIssuesStatement(schema),
+		headsAttributedTo:     byIssue + headsAttributedToSelect,
+		headAttributedTo:      byIssue + headAttributedToSelect,
+		newestPullRequestHead: byIssue + newestPullRequestHeadSelect,
+		baseBranchMergedFor:   byIssue + baseBranchMergedForSelect,
+	}
+}
+
+var preparedAttribution atomic.Pointer[attributionStatements]
+
+var errAttributionNotPrepared = errors.New("the statement of a pull request's issue is not built: PrepareAttribution runs after the migrations, before any reader")
+
+func attribution() (*attributionStatements, error) {
+	if statements := preparedAttribution.Load(); statements != nil {
+		return statements, nil
+	}
+	return nil, errAttributionNotPrepared
+}
+
+// PrepareAttribution builds every reader's statement for the database q reads, once, after the
+// migrations and before any reader. It finds the schema that holds pull_request_texts, which the
+// statement names before each function of the reading, and then asks the guard of migration
+// 20261117111040 (attribution_database_refusal) whether the database can read a pull request's
+// issue. A logical restore brings schema_migrations with it and runs neither that migration nor
+// its census, so this ask at each start is what refuses a database restored into another encoding
+// or collation: the error names it, and the process stops before it listens.
+func PrepareAttribution(ctx context.Context, q Querier) error {
+	var schema string
+	if err := q.QueryRow(ctx, `select pg_catalog.quote_ident(n.nspname) from pg_catalog.pg_class c
+		join pg_catalog.pg_namespace n on n.oid = c.relnamespace where c.oid = 'pull_request_texts'::pg_catalog.regclass`).Scan(&schema); err != nil {
+		return fmt.Errorf("find the schema of pull_request_texts: %w", err)
+	}
+	var refusal *string
+	if err := q.QueryRow(ctx, `select `+schema+`.attribution_database_refusal()`).Scan(&refusal); err != nil {
+		return fmt.Errorf("ask whether the database can read a pull request's issue: %w", err)
+	}
+	if refusal != nil {
+		return errors.New(*refusal)
+	}
+	preparedAttribution.Store(attributionStatementsFor(schema))
+	return nil
+}
+
+// PullRequestKey names one pull request as a caller holds it: a repository under any name it was
+// stored under, and the number.
+type PullRequestKey struct {
+	Repo   string
+	Number int
+}
+
+// PullRequestAttribution is the statement's answer for one pull request: its issue (nil for
+// nobody), the source that named it, and whether it was read from facts. Without facts, the
+// issue is the fallback and the source the results row's stored one.
+type PullRequestAttribution struct {
+	IssueKey *string
+	Source   string
+	HasFacts bool
+}
+
+// PullRequestIssues is the statement's answer for each of keys, keyed by each key as the caller
+// gave it: two keys of one pull request under two names get one answer. A key matches its rows
+// under the renaming rule. A key with neither a results row nor a timeline row is absent from the
+// map.
+func PullRequestIssues(ctx context.Context, q Querier, keys []PullRequestKey) (map[PullRequestKey]PullRequestAttribution, error) {
+	statements, err := attribution()
+	if err != nil {
+		return nil, err
+	}
+	repos := make([]string, len(keys))
+	numbers := make([]int, len(keys))
+	for i, key := range keys {
+		repos[i], numbers[i] = key.Repo, key.Number
+	}
+	rows, err := q.Query(ctx, statements.pullRequestIssues, repos, numbers)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %d pull requests: %w", len(keys), err)
+	}
+	defer rows.Close()
+	answers := make(map[PullRequestKey]PullRequestAttribution, len(keys))
+	for rows.Next() {
+		var key PullRequestKey
+		var answer PullRequestAttribution
+		if err := rows.Scan(&key.Repo, &key.Number, &answer.IssueKey, &answer.Source, &answer.HasFacts); err != nil {
+			return nil, fmt.Errorf("read the issues of %d pull requests: %w", len(keys), err)
+		}
+		answers[key] = answer
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the issues of %d pull requests: %w", len(keys), err)
+	}
+	return answers, nil
 }

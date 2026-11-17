@@ -230,8 +230,8 @@ func localeDatabase(t *testing.T, options string) (*Store, string) {
 	}
 	defer admin.Close(ctx)
 	name := "dispatch_locale_" + randomDatabaseSuffix(t)
-	if _, err := admin.Exec(ctx, "create database "+name+" template template0 "+options); err != nil {
-		t.Fatalf("create database with %s: %v", options, err)
+	if _, err := admin.Exec(ctx, "create database "+name+" template template0 strategy file_copy "+options); err != nil {
+		t.Fatalf("make a database of %s: %v", options, err)
 	}
 	t.Cleanup(func() {
 		drop, err := pgx.Connect(context.Background(), server.String())

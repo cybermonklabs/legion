@@ -45,8 +45,13 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 	if err != nil {
 		return "", err
 	}
+	// A link's URL is compared folded with lower(), as a pull request's issue is read through it
+	// (delivery's attributedTerms) and as the link check compares it (issue_patch.go), so an issue
+	// that holds the URL in another letter case is found, and two issues that hold it in two cases
+	// answer AMBIGUOUS_ISSUE_REF. issue_external_links_url_lower serves the read.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
+		select distinct issue_key from issue_external_links
+		where lower(url) = any(array(select lower(u) from unnest($1::text[]) u)) order by issue_key
 	`, externalURLs(repo, number))
 	if err != nil {
 		return "", err

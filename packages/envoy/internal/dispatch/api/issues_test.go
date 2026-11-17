@@ -1157,6 +1157,76 @@ func TestIssuePatchExternalLinkTakenByAnotherIssue(t *testing.T) {
 	}
 }
 
+// A pull request's issue is read through lower() of its links, so a URL that another issue holds
+// in another letter case is taken: the write answers 409 naming the holder, and the read by
+// reference and the external create find the holder in another case. The check compares with
+// other issues only: an issue that sends its own links again, in any case, with each write, as
+// the client does, is answered 200, and so is each issue of a pair stored before. A write that
+// sends one exact URL twice answers 409 with a message that says so.
+func TestALinkInAnotherCaseOfAHeldURLIsTaken(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("map owner/repo: status=%d body=%s", response.Code, response.Body.String())
+	}
+	keys := []string{}
+	for _, title := range []string{"One", "Two", "Three", "Four", "Five", "Six"} {
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": title}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		keys = append(keys, decodeBody[model.Issue](t, response).Key)
+	}
+	link := func(key string, urls ...string) *httptest.ResponseRecorder {
+		t.Helper()
+		links := []map[string]string{}
+		for _, url := range urls {
+			links = append(links, map[string]string{"url": url, "kind": "github"})
+		}
+		return sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"external_links": links, "actor": sessionActor()})
+	}
+	want := func(what string, response *httptest.ResponseRecorder, status int, parts ...string) {
+		t.Helper()
+		if response.Code != status {
+			t.Fatalf("%s: status=%d, want %d; body=%s", what, response.Code, status, response.Body.String())
+		}
+		for _, part := range parts {
+			if !strings.Contains(response.Body.String(), part) {
+				t.Fatalf("%s: body=%s, want it to hold %q", what, response.Body.String(), part)
+			}
+		}
+	}
+	one, two, three, four, five, six := keys[0], keys[1], keys[2], keys[3], keys[4], keys[5]
+
+	want("link #7 to "+one, link(one, "https://github.com/owner/repo/pull/7"), http.StatusOK)
+	want("link #7 in another case to "+two, link(two, "https://github.com/Owner/Repo/pull/7"), http.StatusConflict, `"code":"EXTERNAL_LINK_TAKEN"`, one)
+	if links := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+two, nil, "alice")).ExternalLinks; len(links) != 0 {
+		t.Fatalf("%s holds %v after the refused link, want none", two, links)
+	}
+	want(one+" links its own URL in another case", link(one, "https://github.com/OWNER/repo/pull/7"), http.StatusOK)
+	want(one+" sends its link and a new spelling of it", link(one, "https://github.com/OWNER/repo/pull/7", "https://github.com/Owner/Repo/pull/7"), http.StatusOK)
+
+	want("link #9 to "+three, link(three, "https://github.com/Owner/Repo/issues/9"), http.StatusOK)
+	want("resolve owner/repo#9", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%239", nil, "alice"), http.StatusOK, three)
+	want("create owner/repo#9", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#9"}, "alice"), http.StatusOK, three)
+	want(three+" links another URL beside its own", link(three, "https://github.com/Owner/Repo/issues/9", "https://github.com/owner/repo/pull/8"), http.StatusOK)
+	want("resolve owner/repo#10", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%2310", nil, "alice"), http.StatusNotFound)
+
+	if _, err := database.Pool.Exec(context.Background(), `insert into issue_external_links (issue_key, url, kind) values
+		($1, 'https://github.com/owner/repo/pull/11', 'github'), ($2, 'https://github.com/Owner/Repo/pull/11', 'github')`, five, six); err != nil {
+		t.Fatalf("store a pair of spellings: %v", err)
+	}
+	want(five+" of a stored pair writes a link", link(five, "https://github.com/owner/repo/pull/11", "https://github.com/owner/repo/pull/12"), http.StatusOK)
+	want(six+" of a stored pair writes a link", link(six, "https://github.com/Owner/Repo/pull/11", "https://github.com/owner/repo/pull/13"), http.StatusOK)
+	want("resolve owner/repo#11", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%2311", nil, "alice"), http.StatusBadRequest,
+		`"code":"AMBIGUOUS_ISSUE_REF"`, five, six)
+
+	want(four+" sends one URL twice", link(four, "https://github.com/owner/repo/pull/30", "https://github.com/owner/repo/pull/30"), http.StatusConflict,
+		`"code":"EXTERNAL_LINK_TAKEN"`, "https://github.com/owner/repo/pull/30 is repeated in this write")
+}
+
 // A closed issue can give up an external link — a write that adds no URL it does not already
 // have, whether a full clear, a partial removal, or a same-set resend — so a link can move to
 // the issue that replaced it, but still refuses to gain a new one or to touch any other field

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -222,6 +223,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	database := options.store
 	if database == nil {
 		database = storetest.Open(t)
+	}
+	// The results read runs the statement of a pull request's issue, which main builds after the
+	// migrations (delivery.PrepareAttribution), so every test server builds it too.
+	if err := delivery.PrepareAttribution(context.Background(), database.Pool); err != nil {
+		t.Fatalf("prepare the statement of a pull request's issue: %v", err)
 	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore

@@ -393,20 +393,39 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		heldBefore := make([]string, 0, len(before.ExternalLinks))
+		for _, link := range before.ExternalLinks {
+			heldBefore = append(heldBefore, link.URL)
+		}
+		sent := make(map[string]bool, len(*input.ExternalLinks))
 		for _, link := range *input.ExternalLinks {
 			if err := validateExternalURL(link.URL); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
+			// A URL links exactly one issue (issue_external_links_url), so one write that sends
+			// it twice cannot store it.
+			if sent[link.URL] {
+				writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is repeated in this write", link.URL))
+				return
+			}
+			sent[link.URL] = true
 			kind := link.Kind
 			if kind == "" {
 				kind = "url"
 			}
-			// A URL links exactly one issue (issue_external_links_url). This issue's own
-			// links are already deleted above, so an owner found here is another issue
-			// (or the same URL repeated earlier in this request).
+			// A pull request's issue is read through lower() of its links (delivery's
+			// attributedTerms), so another issue that holds the URL in any letter case holds it
+			// here. The check compares with other issues only, and never refuses a URL this issue
+			// held before the write, in any case: the client sends the issue's links again with
+			// each write, and an issue of a pair two writes at once stored keeps its own. The
+			// lesser key in byte order is named, so the answer turns on no row order.
 			var owner string
-			err := tx.QueryRow(r.Context(), `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
+			err := tx.QueryRow(r.Context(), `
+				select l.issue_key from issue_external_links l
+				where lower(l.url) = lower($1) and l.issue_key <> $2
+				  and not exists (select 1 from unnest($3::text[]) b(url) where lower(b.url) = lower($1))
+				order by l.issue_key collate "C" limit 1`, link.URL, key, heldBefore).Scan(&owner)
 			if err == nil {
 				writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from %s", link.URL, owner))
 				return

@@ -544,19 +544,25 @@ func upsertHeadUnderCanonicalName(
 // heads its check is compared with. A closed-unmerged pull request's head proves nothing. A
 // pull request attributed to another issue never answers for this one; the results read asks
 // this about the check's own issue, so a child's pull request never answers for a check above
-// it (api/results_comparison.go's comparisonReader).
+// it (api/results_comparison.go's comparisonReader). The issue is the statement's
+// (attributedTerms), and only a pull request with a results row has a head to answer.
 func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
+	statements, err := attribution()
+	if err != nil {
+		return false, err
+	}
 	var found bool
-	if err := pool.QueryRow(ctx, `
-		select exists (
-			select 1 from pull_request_heads
-			where issue_key = $1 and head_sha = $2 and state in ('open', 'merged')
-		)
-	`, issueKey, sha).Scan(&found); err != nil {
+	if err := pool.QueryRow(ctx, statements.headAttributedTo, issueKey, sha).Scan(&found); err != nil {
 		return false, fmt.Errorf("read the pull request heads of %s at %s: %w", issueKey, sha, err)
 	}
 	return found, nil
 }
+
+const headAttributedToSelect = `
+	select exists (
+		select 1 from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
+		where a.issue_key = $1 and h.head_sha = $2 and h.state in ('open', 'merged')
+	)`
 
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
 // among the heads a `before_merge` check compares its results with: the pull request's number,
@@ -564,31 +570,33 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 // is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
 // own update time on GitHub, as the read that wrote the head answered it; each is nil where no
 // writer has carried it. The reader shows the later of the two and names which it is
-// (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt).
+// (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). HeadKnown is false for a pull request
+// Dispatch holds no results row of, only a timeline row: it has no head, HeadSHA is "" and both
+// times are nil.
 type AttributedHead struct {
 	Number    int
 	HeadSHA   string
+	HeadKnown bool
 	CheckedAt *time.Time
 	EventAt   *time.Time
 }
 
 // HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
-// first: the whole list HeadAttributedTo answers one commit of, which the results read names as
-// what a `before_merge` check's results are compared with (R3). The two reads keep one rule, so
-// a commit HeadAttributedTo answers yes for is a commit this list holds.
+// first, and then every pull request of the issue whose head Dispatch has not read, by number
+// descending: the whole list HeadAttributedTo answers one commit of, which the results read names
+// as what a `before_merge` check's results are compared with (R3). The issue is the statement's
+// (attributedTerms), so the two reads keep one rule, and a commit HeadAttributedTo answers yes for
+// is a commit this list holds.
 //
 // The order is by the later of the two times either way, with a row carrying neither last and
 // the pull request's own number breaking a tie, so the list does not turn on whichever row the
 // planner returned first. A reader taking the first head takes the one Dispatch learned last.
-//
-// The read uses pull_request_heads_issue_head's leading column, as BaseBranchMergedFor's does:
-// the rows one issue's key holds are the handful of pull requests attributed to that issue.
 func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
-	rows, err := pool.Query(ctx, `
-		select number, head_sha, checked_at, event_at from pull_request_heads
-		where issue_key = $1 and state in ('open', 'merged')
-		order by greatest(checked_at, event_at) desc nulls last, number desc
-	`, issueKey)
+	statements, err := attribution()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx, statements.headsAttributedTo, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 	}
@@ -596,7 +604,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	var heads []AttributedHead
 	for rows.Next() {
 		var head AttributedHead
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.CheckedAt, &head.EventAt); err != nil {
+		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.HeadKnown, &head.CheckedAt, &head.EventAt); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		heads = append(heads, head)
@@ -607,8 +615,16 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	return heads, nil
 }
 
+// headsAttributedToSelect is HeadsAttributedTo's select over the statement's terms by issue: a
+// left join with heads, so a pull request with a timeline row only is listed with no head.
+const headsAttributedToSelect = `
+	select a.number, coalesce(h.head_sha, ''), h.repo is not null, h.checked_at, h.event_at
+	from attributed a left join heads h on h.j_repo = a.repo and h.j_number = a.number
+	where a.issue_key = $1 and (h.repo is null or h.state in ('open', 'merged'))
+	order by h.repo is null, greatest(h.checked_at, h.event_at) desc nulls last, a.number desc`
+
 // NewestHead is the one pull request head the results read derives a check CI proves at: the
-// repository the row is stored under, the pull request's number and its head commit.
+// repository's canonical name, the pull request's number and its head commit.
 type NewestHead struct {
 	Repo    string
 	Number  int
@@ -620,18 +636,16 @@ type NewestHead struct {
 // number, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
 // newest. Both are heads HeadsAttributedTo lists, so a result at the commit answered here stands
 // at one of the heads a `before_merge` check compares its results with. A closed-unmerged pull
-// request is no head. The repository is the row's own, which is the one to read the head's
-// check runs from (api/results_ci.go).
-//
-// The read uses pull_request_heads_issue_head's leading column, as HeadsAttributedTo's does.
+// request is no head, and a pull request with no results row has none. The repository is the
+// canonical name (refs.CanonicalRepoSQL), which GitHub answers the head's check runs under
+// (api/results_ci.go), whatever name the row is stored under.
 func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
+	statements, err := attribution()
+	if err != nil {
+		return NewestHead{}, false, err
+	}
 	var head NewestHead
-	err := pool.QueryRow(ctx, `
-		select repo, number, head_sha from pull_request_heads
-		where issue_key = $1 and state in ('open', 'merged')
-		order by state = 'open' desc, number desc
-		limit 1
-	`, issueKey).Scan(&head.Repo, &head.Number, &head.HeadSHA)
+	err = pool.QueryRow(ctx, statements.newestPullRequestHead, issueKey).Scan(&head.Repo, &head.Number, &head.HeadSHA)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NewestHead{}, false, nil
 	}
@@ -640,6 +654,13 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 	}
 	return head, true, nil
 }
+
+const newestPullRequestHeadSelect = `
+	select a.repo, a.number, h.head_sha
+	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
+	where a.issue_key = $1 and h.state in ('open', 'merged')
+	order by h.state = 'open' desc, a.number desc
+	limit 1`
 
 // HeadStoredAt reports whether sha is the head of an open or merged pull request stored for
 // repoFull, whatever issue it is attributed to: whether Dispatch holds a pull request at that
@@ -694,8 +715,9 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // squash: the commit that lands on the base branch is the one the squash makes, which is no
 // pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
 // commit is such a head — can never answer for it. Keying by the issue costs nothing in
-// honesty, since a row is attributed to an issue only where the pull request's head is a
-// branch of the repository that issue resolves to (headAttribution), so the branch this
+// honesty, since a pull request goes to an issue only where its head is a branch of the
+// repository that issue resolves to: by the statement (own_head, attributionHeld), or, for a pull
+// request with no facts, by the writer that stored its row (headAttribution). So the branch this
 // answers is one the issue's own work merged into.
 //
 // An empty answer is "no branch to measure against", which a merged row carrying no base_ref
@@ -703,20 +725,15 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // as its default, and a `pull_request` envelope published before Dispatch carried the field
 // writes exactly that, so such a row names no base branch; the empty answer leaves the caller
 // on its own fallback, the repository's default branch, where handing that value on as a
-// branch would have it build a GitHub compare read against a branch with no name.
-//
-// No index is added for this lookup: pull_request_heads_issue_head is partial on
-// `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
-// its leading column, and the rows one issue's key holds are the handful of pull requests
-// attributed to that issue.
+// branch would have it build a GitHub compare read against a branch with no name. A timeline row
+// stores no base branch, so a pull request with no results row names none either.
 func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
+	statements, err := attribution()
+	if err != nil {
+		return "", err
+	}
 	var branch string
-	err := pool.QueryRow(ctx, `
-		select base_ref from pull_request_heads
-		where issue_key = $1 and state = 'merged'
-		order by event_at desc nulls last, number desc
-		limit 1
-	`, issueKey).Scan(&branch)
+	err = pool.QueryRow(ctx, statements.baseBranchMergedFor, issueKey).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -725,6 +742,13 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 	}
 	return branch, nil
 }
+
+const baseBranchMergedForSelect = `
+	select h.base_ref
+	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
+	where a.issue_key = $1 and h.state = 'merged'
+	order by h.event_at desc nulls last, a.number desc
+	limit 1`
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again, and PullRequestHeadBatch how many it reads in one pass.

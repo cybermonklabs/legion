@@ -43,9 +43,16 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 // and on a shared machine that database is the server's postgres, where every other package's
 // harness creates and drops its databases, so another package's create database could hold the
 // build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
+//
+// The readers of a pull request's issue run a statement PrepareAttribution builds, as main
+// builds it after the migrations, so the pool comes with it.
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	return storetest.Open(t).Pool, t.Context()
+	pool := storetest.Open(t).Pool
+	if err := PrepareAttribution(t.Context(), pool); err != nil {
+		t.Fatalf("prepare the attribution statement: %v", err)
+	}
+	return pool, t.Context()
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of

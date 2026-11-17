@@ -346,6 +346,14 @@ func main() {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
 	}
+	// Every reader of a pull request's issue runs one statement, built here once for the schema
+	// the migrations wrote. It asks the migrations' guard first: a database a logical restore put
+	// in an encoding or a collation the reading cannot use brings its schema_migrations with it,
+	// so no migration refuses it, and this stops the process before it listens.
+	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
+		slog.Error("dispatch: prepare the statement of a pull request's issue", "error", err)
+		os.Exit(1)
+	}
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
