@@ -1,0 +1,5 @@
+kind: Fixed
+body: A listener whose ENVOY_WEBHOOKS names ghostwispr no longer starts with an empty ENVOY_GHOSTWISPR_SIGNING_SECRET, and no longer publishes Ghost Wispr events whose signature it did not check. It refuses the start with an error naming the variable, as it does for GitHub and Slack, and the Ghost Wispr route answers 401 to every event its secret did not sign.
+time: 2026-11-17T17:40:33.760044309Z
+custom:
+    Issue: pr4333
