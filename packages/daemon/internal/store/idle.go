@@ -334,12 +334,11 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // pause instead (stopReleasedForPause), with the pod held and the backstop the stop transaction
 // arms, and answers the pause and those roles (ReleaseCancelled.Pause, Stopped). paused is what
 // that needs of the workflow and the clock. The pause is project's, read by its token
-// (LockOpenPauseByTokenTx), as every read of a pause for a claim is, and never by the issue key's
-// prefix. No production row reaches a cancel for another project's issue: a cancel runs from a
-// row of the release, which is keyed by its issue, and the daemon's outbox runs only the rows of
-// its own project's keys (record's DueRows). It is read after the issue's lock
-// (LockIssueForPause), which this transaction takes after the serializer, the one order every
-// writer of a pod hold keeps (decision 13).
+// (LockOpenPauseByTokenTx; readOpenPauseByToken says why). No production row reaches a cancel
+// for another project's issue: a cancel runs from a row of the release, which is keyed by its
+// issue, and the daemon's outbox runs only the rows of its own project's keys (record's
+// DueRows). It is read after the issue's lock (LockIssueForPause), which this transaction takes
+// after the serializer, the one order every writer of a pod hold keeps (decision 13).
 //
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's
@@ -677,13 +676,12 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
-	// The pause's two facts, read by the view's project: project_pauses and the pod holds carry
-	// its Dispatch key, which project, the token (claim.ProjectToken), lowercases for every key
-	// project_pauses admits. Not by the issue key's prefix: the pod of a claim of another project's
-	// issue, which the operator's spawn makes under this project's token, is this project's to
-	// pause and to hold. The view is read under treelifecycle.Serialize, which the pause's own
-	// transaction takes too, so a release is marked either before a pause or not at all
-	// (ReleaseIdleIssue, decision 12 of dispatch://INFRA-3759).
+	// The pause's two facts, read by the view's project token as readOpenPauseByToken reads a
+	// pause (which says why): project_pauses and the pod holds carry its Dispatch key, which
+	// project, the token (claim.ProjectToken), lowercases for every key project_pauses admits.
+	// The view is read under treelifecycle.Serialize, which the pause's own transaction takes
+	// too, so a release is marked either before a pause or not at all (ReleaseIdleIssue,
+	// decision 12 of dispatch://INFRA-3759).
 	if err := tx.QueryRow(ctx, `select
 		exists (select 1 from project_pauses where lower(project) = $1 and ended_at is null),
 		exists (select 1 from project_pause_pod_holds where lower(project) = $1 and issue = $2 and ended_at is null)`,

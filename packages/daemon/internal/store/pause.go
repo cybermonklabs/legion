@@ -445,10 +445,14 @@ func readOpenPause(ctx context.Context, db queryRower, project, lock string) (Pa
 // readOpenPauseByToken is readOpenPause for the project whose token is token
 // (claim.ProjectToken), the spelling the claim and pod tables hold. project_pauses holds the
 // Dispatch key, which the token lowercases for every key the table admits (^[A-Z][A-Z0-9]*$),
-// so the read matches lower(project), as readIdleView's does. A path that acts for a claim reads
-// the pause by the claim's token and never by its issue key's prefix: a claim of another
+// so the read matches lower(project).
+//
+// It is the one statement of why a path that acts for a claim, its pod or its resume reads the
+// pause by the daemon's own project token and never by the claim's issue key's prefix, and each
+// such path names it rather than saying it again, whether it calls this function or reads the
+// table in a statement of its own (readIdleView, podResumesWithoutAFirstTurn): a claim of another
 // project's issue, which the operator's spawn makes under this project's token, is part of this
-// project's pause.
+// project's pause, whatever project its issue's key names.
 func readOpenPauseByToken(ctx context.Context, db queryRower, token, lock string) (Pause, bool, error) {
 	return scanOpenPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
 		where lower(project) = $1 and ended_at is null`+lock, token), token)
@@ -471,11 +475,6 @@ func scanOpenPause(row pgx.Row, project string) (Pause, bool, error) {
 // at each outbox sweep to set its flag (decision 18). project is the Dispatch key.
 func (s *Store) OpenPause(ctx context.Context, project string) (Pause, bool, error) {
 	return readOpenPause(ctx, s.pool, project, "")
-}
-
-// OpenPauseTx is OpenPause through tx's snapshot, for the state's read.
-func OpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, bool, error) {
-	return readOpenPause(ctx, tx, project, "")
 }
 
 // LockOpenPauseTx is project's open pause read with its row locked for share, which a stop

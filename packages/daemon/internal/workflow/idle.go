@@ -128,7 +128,8 @@ const (
 	// IdleHoldPauseHeld is the idle rule's; and IdleHoldUnownedPauseHeld is the second rule's,
 	// whose name carries the unowned_ prefix as the nine above do.
 
-	// IdleHoldPaused: the issue's project is paused, and a pause starts no release.
+	// IdleHoldPaused: the daemon's project is paused (pods.IdleView.Paused), and a pause starts
+	// no release.
 	IdleHoldPaused
 	// IdleHoldPauseHeld: a pause holds the pod. The pause stopped its roles and kept it, and it
 	// stays until a role of it is ready again or something deletes it (decision 13).
@@ -210,7 +211,7 @@ type IdleDecision struct {
 //     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
 //     close's to stop;
 //
-//   - the issue's project is not paused (IdleHoldPaused), and no pause holds the pod
+//   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
 //     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a
 //     pod it held stays after the resume until a role of it is ready again (decision 12 of
 //     dispatch://INFRA-3759);
@@ -402,7 +403,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     claim row of the issue (view.QuietSince, compared as IdleRelease compares it)
 //     (IdleHoldUnownedNotIdle);
 //
-//   - the issue's project is not paused (pods.IdleView.Paused). The release's own transaction
+//   - the daemon's project is not paused (pods.IdleView.Paused). The release's own transaction
 //     marks no release while the project is paused (store.Store.ReleaseIdleIssue, decision 12 of
 //     dispatch://INFRA-3759), so a pod this rule would otherwise release is kept, and the hold
 //     says what kept it (IdleHoldPaused).

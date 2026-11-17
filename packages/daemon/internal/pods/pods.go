@@ -167,10 +167,9 @@ type IdleView struct {
 	// the rule keeps it until the restore is confirmed.
 	BundleUnrestored bool
 	// Paused is whether the daemon's project is paused (a project_pauses row of that project
-	// stands open), whatever project the issue's key names: the pod of a claim of another
-	// project's issue, which the operator's spawn makes under this project, is this project's to
-	// pause. A paused project's pods stay: the pause starts no release (decision 12 of
-	// dispatch://INFRA-3759).
+	// stands open), read by the project's token whatever project the issue's key names (store's
+	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release
+	// (decision 12 of dispatch://INFRA-3759).
 	Paused bool
 	// PauseHeld is whether a pause's hold stands on the pod (project_pause_pod_holds): a pod whose
 	// roles a pause stopped, which stays until a role of it is ready again or something deletes it

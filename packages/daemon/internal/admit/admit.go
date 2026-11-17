@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -1640,14 +1639,15 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // call that released them. A queued root a live tree took in (adoptQueuedRoots) leaves the line
 // before anything else reads it.
 //
-// It makes one read of each kind for the whole pass and shares it: one record.Store.LiveIssues,
-// one record.Store.Slots, one bulk tree-lifecycle read, one design-gate read, one read of the
-// starts the project owes its workers (the three of record.ReadLineFacts) and one read of the
-// Dispatch mirror rows of everything it judges (blockers.Judged, blockers.Load). The release,
-// the waiting line, the INFRA-129 safety net, the promotion and the two repair passes all judge
-// from those, so no path reads per slot, per tree or per issue under the one fact lock every
-// fact takes (intake.ApplyFact). A read is made again only where this pass has itself written
-// something that would make it stale (reread).
+// It makes one read of each kind for the whole pass and shares it: one read of the project's
+// pause, which also gives the floor the pass's stall readings count from (readStallFloor), one
+// record.Store.LiveIssues, one record.Store.Slots, one bulk tree-lifecycle read, one design-gate
+// read, one read of the starts the project owes its workers (the three of record.ReadLineFacts)
+// and one read of the Dispatch mirror rows of everything it judges (blockers.Judged,
+// blockers.Load). The release, the waiting line, the INFRA-129 safety net, the promotion and the
+// two repair passes all judge from those, so no path reads per slot, per tree or per issue under
+// the one fact lock every fact takes (intake.ApplyFact). A read is made again only where this
+// pass has itself written something that would make it stale (reread).
 //
 // Every path that promotes comes through here — a live fact, the controller tick, a hold's
 // release, the boot's Reconcile — so each of them is also a look at every issue a blocker holds,
@@ -1656,8 +1656,12 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
 	// A paused project promotes nothing (decision 11 of dispatch://INFRA-3759): no slot, no owed
 	// entry, no stalled-tree notice and no children-first notice. The tick's wake of the
-	// controller is the caller's and still runs, and the resume applies one pass of its own.
-	if paused, err := a.paused(ctx, tx); err != nil || paused {
+	// controller is the caller's and still runs, and the resume applies one pass of its own. The
+	// read that answers whether the project is paused also gives the floor of the pass's stall
+	// readings, which is handed to the stalled-tree notice and to the architect-stalled arms
+	// (tellStalledTrees, resumeSlottedWorkers), so the pass reads the pause once.
+	floor, paused, err := a.readStallFloor(ctx, tx)
+	if err != nil || paused {
 		return 0, nil, err
 	}
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
@@ -1756,7 +1760,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -2045,7 +2049,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return admitted, released, err
 		}
 	}
-	if err := a.resumeSlottedWorkers(ctx, tx, issues, slots, facts); err != nil {
+	if err := a.resumeSlottedWorkers(ctx, tx, issues, slots, facts, floor); err != nil {
 		return admitted, released, err
 	}
 	// A step leaving gates.design needs nothing here. A root left at admitted by a step that has
@@ -2699,10 +2703,11 @@ const (
 // reads: that pass reads them after its sends, and a pass with nothing owed sends nothing. A
 // stalled architect is owed nothing the pass sends, so a gate that read no arm would answer no
 // for every stall, and a quiet project's controller would hear of the stall only at the next fact
-// of the project, which can be its own hourly tick. Past one read of the project's pause and,
-// after a pause, one of the launches it held for architects (readStallFloor, readPauseLetOuts),
-// the arms add two statements, the read of the controller's registration and the read of their
-// marks, and only where an arm holds: the one arm that reads the record for a root itself
+// of the project, which can be its own hourly tick. The gate reads the project's pause once,
+// before anything else, and that read gives the arms their floor (readStallFloor). Past it the
+// arms add, after a pause, one read of the launches the pause held for architects
+// (readPauseLetOuts), and two statements, the read of the controller's registration and the read
+// of their marks, only where an arm holds: the one arm that reads the record for a root itself
 // (architectTookNothing) reads it only for a root its own terms already hold. While no
 // controller is registered the pass tells nobody of a stall (wakeStalledArchitects), so the gate
 // answers no for a stall alone then: a gate that answered yes would apply a fact a minute for as
@@ -2713,7 +2718,8 @@ const (
 // one a minute for as long as the pause lasts. The resume applies a pass of its own, and the sweep
 // after it asks again.
 func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) {
-	if paused, err := a.paused(ctx, tx); err != nil || paused {
+	floor, paused, err := a.readStallFloor(ctx, tx)
+	if err != nil || paused {
 		return false, err
 	}
 	issues, slots, facts, err := a.reread(ctx, tx)
@@ -2727,7 +2733,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 	if len(owed) > 0 {
 		return true, nil
 	}
-	stalls, err := a.architectStalls(ctx, tx, read, facts, nil)
+	stalls, err := a.architectStalls(ctx, tx, read, facts, floor, nil)
 	if err != nil || len(stalls) == 0 {
 		return false, err
 	}
@@ -3162,9 +3168,10 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // could still do something for is wholly served before the controller is woken about it. The
 // arms read the holders as the pass read them before its sends, and the roots whose architect
 // start the pass wrote are handed to them, so the second arm reads that start and its reason
-// says what the pass did.
+// says what the pass did. floor is the floor the arms count from, which the caller read with the
+// project's pause (readStallFloor) and found the project not paused, so this reads no pause.
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
-	facts record.LineFacts,
+	facts record.LineFacts, floor stallFloor,
 ) error {
 	owed, read, err := a.owedEntryRoles(ctx, tx, issues, slots, facts)
 	if err != nil {
@@ -3205,7 +3212,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			intake.OnCommit(ctx, behind)
 		}
 	}
-	stalls, err := a.architectStalls(ctx, tx, read, facts, sent)
+	stalls, err := a.architectStalls(ctx, tx, read, facts, floor, sent)
 	if err != nil {
 		return err
 	}
@@ -3221,28 +3228,17 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // arrives to run them.
 func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 	// A paused project sends no role its entry's work (decision 11 of dispatch://INFRA-3759), as
-	// its promotion sends none (promoteHolds).
-	if paused, err := a.paused(ctx, tx); err != nil || paused {
+	// its promotion sends none (promoteHolds). The read that says so gives the stall arms their
+	// floor, so the sweep reads the pause once.
+	floor, paused, err := a.readStallFloor(ctx, tx)
+	if err != nil || paused {
 		return err
 	}
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
 		return err
 	}
-	return a.resumeSlottedWorkers(ctx, tx, issues, slots, facts)
-}
-
-// paused is whether the project stands paused, read on the pass's own transaction
-// (store.OpenPauseTx) rather than from the daemon's flag (internal/pause's Service.Paused): the
-// pass then judges the pause in the snapshot it judges everything else in, a pause another daemon
-// of a rolling restart made counts before this daemon's next sweep reads it, and the read is the
-// one the outbox's claim makes of the same table (record's outboxPauseFree).
-func (a *Admission) paused(ctx context.Context, tx pgx.Tx) (bool, error) {
-	_, open, err := store.OpenPauseTx(ctx, tx, a.project)
-	if err != nil {
-		return false, fmt.Errorf("read whether %s is paused: %w", a.project, err)
-	}
-	return open, nil
+	return a.resumeSlottedWorkers(ctx, tx, issues, slots, facts, floor)
 }
 
 // finishFencedStarts is the repair of a held start row that has outlived the fences the outbox

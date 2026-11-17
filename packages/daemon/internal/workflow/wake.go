@@ -57,8 +57,8 @@ type Pods interface {
 	// no release (decision 15 of dispatch://INFRA-3759).
 	TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
 	// OpenPauseID is the id of the daemon's project's open pause, read by the project's token
-	// and 0 while it runs, read with the pause's row locked for share, so the resume's end of it
-	// waits for the wake's fact.
+	// (store's readOpenPauseByToken) and 0 while it runs, read with the pause's row locked for
+	// share, so the resume's end of it waits for the wake's fact.
 	OpenPauseID(ctx context.Context, tx pgx.Tx) (int64, error)
 	// StoppedByPause is whether the claim's newest stop is a pause's, newer than issue's newest
 	// pod release: the session the wake brings back is one a pause stopped in a pod it kept

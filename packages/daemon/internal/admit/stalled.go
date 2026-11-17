@@ -146,7 +146,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // bound, the measure and the registration above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row,
+	rows map[string]blockers.Row, floor stallFloor,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -169,17 +169,14 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 		return nil
 	}
 	// Step 2: the measure the rule decides on. The quiet time is counted from no earlier than
-	// the end of the project's latest pause (stallFloor), as the architect-stalled arms count
-	// theirs: a pause stops every role of a tree, so a tree quiet only while the pause held the
-	// project has not stopped (decision 14 of dispatch://INFRA-3759). The floor is read here,
-	// past step 1, so a project with no tree past the bound pays no read for it; the notice still
-	// says how long the tree has been quiet, the pause's time included. Nothing reaches this
-	// while the project is paused, because the pass promotes nothing then (promoteHolds).
+	// the end of the project's latest pause (floor, stallFloor.count), as the architect-stalled
+	// arms count theirs: a pause stops every role of a tree, so a tree quiet only while the pause
+	// held the project has not stopped (decision 14 of dispatch://INFRA-3759). The floor is the
+	// pass's own, read with the pause before anything else (promoteHolds, readStallFloor), so the
+	// measure reads nothing for it; the notice still says how long the tree has been quiet, the
+	// pause's time included. Nothing reaches this while the project is paused, because the pass
+	// promotes nothing then.
 	quiet, claims, err := a.quietTrees(ctx, tx, issues, now)
-	if err != nil {
-		return err
-	}
-	floor, _, err := a.readStallFloor(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -187,7 +184,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	claimed := false
 	for _, root := range candidates {
 		measure := quiet[root.Key]
-		if min(measure.Quiet, floor.sinceFloor(now)) <= a.stalledTreeNotice {
+		if from, _ := floor.count(measure.MovedAt); now.Sub(from) <= a.stalledTreeNotice {
 			continue
 		}
 		if told := root.TreeStalledToldAt; told != nil && !measure.MovedAt.After(*told) {

@@ -209,9 +209,8 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // Each reads the resume's stuck clock (clock_at), never the wake's own moment (at), and passes
 // over every resume of a project paused now (decision 14 of dispatch://INFRA-3759): the pause
 // holds the launch the resume waits for, and its resume starts the clock again. The pause is the
-// daemon's project's, matched to the resume's project token (claim.ProjectToken lowers a key that
-// project_pauses' check admits), not the issue key's prefix: a claim of another project's issue
-// runs under this project, and its pause holds it.
+// daemon's project's, matched to the resume's project token as readOpenPauseByToken matches it,
+// which says why.
 func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2

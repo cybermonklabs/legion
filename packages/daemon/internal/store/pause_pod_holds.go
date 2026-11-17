@@ -17,12 +17,11 @@ import (
 // the issue's lock every writer of a hold takes first, the open and the ends of a hold, and its
 // reads. A hold keeps the pod of a role the pause stopped, with that role's unpushed work, from an
 // update round past its bound and from the idle rule. A hold's project is the pause's Dispatch
-// key ("LEGION"), which may differ from the project its issue's key names: the pod of a claim of
-// another project's issue, which the operator's spawn makes under this project's token, is held
-// by this project's pause. So every read of a hold is by the project, never by the issue key's
-// prefix, and each function below says which spelling of the project it takes: the Dispatch key,
-// or the token (claim.ProjectToken), which is the key lowercased for every key project_pauses
-// admits (^[A-Z][A-Z0-9]*$).
+// key ("LEGION"), which may differ from the project its issue's key names, so every read of a
+// hold is by the project, never by the issue key's prefix, as every read of a pause for a claim
+// is (readOpenPauseByToken says why). Each function below says which spelling of the project it
+// takes: the Dispatch key, or the token (claim.ProjectToken), which is the key lowercased for
+// every key project_pauses admits (^[A-Z][A-Z0-9]*$).
 
 // LockIssueForPause takes the transaction-scoped advisory lock every writer of issue's pod hold
 // takes first, after treelifecycle.Serialize where that writer takes it at all (decisions 6 and 13

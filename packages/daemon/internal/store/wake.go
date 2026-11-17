@@ -633,12 +633,10 @@ func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue strin
 // caller's transaction with its row locked for share (LockOpenPauseByTokenTx): a wake the workflow
 // takes while the project is paused is a held wake of that pause (TakeHeldPodWake, decision 15 of
 // dispatch://INFRA-3759), and the resume's end of the pause waits for the wake to commit. The
-// pause is read by the token of the project whose pod tables these are, as every read of a pause
-// for a claim is (readOpenPauseByToken), never by the issue key's prefix. The workflow takes a
-// wake only of a claim whose issue this project records (its wakeReleased): a claim of another
-// project's issue, which the operator's spawn makes under this project's token, takes none, so no
-// wake writes a start row keyed by another project's issue, which this project's outbox would
-// never run.
+// pause is read by the token of the project whose pod tables these are (readOpenPauseByToken
+// says why). The workflow takes a wake only of a claim whose issue this project records (its
+// wakeReleased), so a claim of another project's issue takes none, and no wake writes a start row
+// keyed by another project's issue, which this project's outbox would never run.
 func (p *PodRecords) OpenPauseID(ctx context.Context, tx pgx.Tx) (int64, error) {
 	held, open, err := LockOpenPauseByTokenTx(ctx, tx, p.project)
 	if err != nil || !open {
