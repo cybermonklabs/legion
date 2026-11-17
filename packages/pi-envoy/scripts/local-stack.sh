@@ -88,7 +88,7 @@ set_natsd_argv() {
 # listener is run with, to serve 127.0.0.1:PORT against NATS_URL as MACHINE_ID. HOME is the
 # caller's to add: each run gives the listener a scratch home of its own.
 set_listener_env() {
-  listener_env=(PORT="$1" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="$3" NATS_URLS="$2")
+  listener_env=(PORT="$1" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="$3" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$2")
 }
 
 # natsd_serving LOG: natsd's log says it is serving.

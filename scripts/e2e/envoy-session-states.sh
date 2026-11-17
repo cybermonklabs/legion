@@ -710,7 +710,7 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 start_listener() {
   start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
+    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
     ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
     ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "$work/bin/envoy-listener"
@@ -734,7 +734,7 @@ set_max_age() {
   rm -f "$work/maxage.port"
   start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
   await_start maxage "$maxage_pid" 60 "the maximum-age listener to serve" serving "$maxage_port"
   stop_pid "$maxage_pid"
@@ -1592,7 +1592,7 @@ check_gone_only_past_the_horizon() {
   rm -f "$work/shortlistener.port"
   start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \
     ENVOY_SESSION_REAP_INTERVAL=10s ENVOY_ROLE_CLAIM_REAP_INTERVAL=10s "$work/bin/envoy-listener"
   await_start shortlistener "$shortlistener_pid" 60 "the short-horizon listener to serve" serving "$short_port"

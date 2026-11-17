@@ -176,6 +176,7 @@ dispatch_env=(
 listener_env=(
   env -i PATH="$PATH" HOME="$work/home"
   ENVOY_MACHINE_ID=verifiers-e2e
+  ENVOY_THROWAWAY_NATS=1
   NATS_URLS="nats://127.0.0.1:$nats_port"
   ENVOY_LISTEN_HOST=127.0.0.1
   ENVOY_API_TOKEN="$shared_listener_token"

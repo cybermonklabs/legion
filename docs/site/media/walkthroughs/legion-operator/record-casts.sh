@@ -128,7 +128,7 @@ until_true 90 "NATS" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/envoy-token")
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
-ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \
+ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion ENVOY_THROWAWAY_NATS=1 NATS_URLS=$nats_url \
   start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
 until_true 60 "the Envoy listener" curl -fsS -H "Authorization: Bearer $(cat "$operator/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
 # The agents' model: accepts every request and never answers.

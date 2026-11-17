@@ -567,7 +567,7 @@ transcript_since() {
 # the run picking another.
 start_listener() {
   ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$port_listener" ENVOY_LISTEN_HOST="$bind_host" \
-    ENVOY_MACHINE_ID="legion-e2eccs-$$" NATS_URLS="nats://$bind_host:$port_nats" \
+    ENVOY_MACHINE_ID="legion-e2eccs-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS="nats://$bind_host:$port_nats" \
     start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions on its port $port_listener" \
     curl -fsS -H "@$work/envoy-auth-header" "http://$bind_host:$port_listener/v1/sessions"

@@ -139,7 +139,7 @@ until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
-ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" NATS_URLS=$nats_url \
+ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS=$nats_url \
   start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
 until_true 60 "the Envoy listener" curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/sessions"
 note "listener port $envoy_port"

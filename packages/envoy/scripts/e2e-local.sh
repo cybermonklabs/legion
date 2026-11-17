@@ -363,6 +363,7 @@ printf 'NATS: %s\n' "$nats_url"
 printf 'starting listener\n'
 PORT="${E2E_PORT:-0}" \
   ENVOY_MACHINE_ID=e2e-local \
+  ENVOY_THROWAWAY_NATS=1 \
   NATS_URLS="$nats_url" \
   ENVOY_WEBHOOKS=github \
   ENVOY_GITHUB_WEBHOOK_SECRET="$webhook_secret" \

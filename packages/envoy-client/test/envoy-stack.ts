@@ -256,6 +256,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       PORT: String(listenerPort),
       ENVOY_LISTEN_HOST: "127.0.0.1",
       ENVOY_MACHINE_ID: machineID,
+      ENVOY_THROWAWAY_NATS: "1",
       NATS_URLS: `nats://127.0.0.1:${natsPort}`,
     };
     const natsLog = path.join(work, "natsd.log");

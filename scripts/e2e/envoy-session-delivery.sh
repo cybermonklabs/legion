@@ -673,7 +673,7 @@ start_listener() {
     serve=(python3 "$held_port" exec --from "$work/ports/keep-listener-$name.sock" --fd-env ENVOY_LISTEN_FD -- "${serve[@]}")
   fi
   (isolated_exec "" HOME="$work/listener-$name-home" PORT="${listener_port[$name]}" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$name" NATS_URLS="$nats_url" -- "${serve[@]}") \
+    ENVOY_MACHINE_ID="$name" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$nats_url" -- "${serve[@]}") \
     >>"$work/logs/listener-$name.log" 2>&1 &
   pid[listener-$name]=$!
   await "listener-$name" "$work/logs/listener-$name.log" 90 listener_ready "$name"

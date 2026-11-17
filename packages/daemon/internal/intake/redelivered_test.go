@@ -342,6 +342,7 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_LISTEN_FD=3",
 		"ENVOY_MACHINE_ID=redelivered",
+		"ENVOY_THROWAWAY_NATS=1",
 		"NATS_URLS=" + natsURL,
 		"ENVOY_API_TOKEN=redelivered-listener-token",
 		"ENVOY_WEBHOOKS=github",

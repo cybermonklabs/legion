@@ -998,6 +998,7 @@ EOF
 PORT=$(listener_port "$role")
 ENVOY_LISTEN_HOST=0.0.0.0
 ENVOY_MACHINE_ID=$role
+ENVOY_THROWAWAY_NATS=1
 NATS_URLS=$(nats_url)
 ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_API_TOKEN=$(cfg .secrets.listener_token)

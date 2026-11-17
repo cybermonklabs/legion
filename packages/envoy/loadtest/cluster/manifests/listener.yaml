@@ -60,6 +60,10 @@ spec:
               value: 0.0.0.0
             - name: ENVOY_MACHINE_ID
               value: loadtest
+            # The loadtest's NATS is throwaway: its reset deletes the buckets with the listeners
+            # scaled to 0, and the listener creates them at its start, as no deployment's does.
+            - name: ENVOY_THROWAWAY_NATS
+              value: "1"
             - name: NATS_URLS
               value: nats://nats.__NAMESPACE__.svc:4222
             - name: ENVOY_ALLOW_REMOTE_NATS

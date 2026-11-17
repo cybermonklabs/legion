@@ -288,6 +288,7 @@ start_listener() {
   listener_start_offset="$(stat -c %s "$listener_log")"
   PORT="$listener_port" \
     ENVOY_MACHINE_ID=e2e-refill \
+    ENVOY_THROWAWAY_NATS=1 \
     NATS_URLS="$nats_url" \
     setsid "$listener_binary" >>"$listener_log" 2>&1 &
   listener_pid=$!

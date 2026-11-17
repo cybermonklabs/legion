@@ -64,7 +64,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	cmd.Dir = home
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL)
+		"ENVOY_MACHINE_ID="+machine, "ENVOY_THROWAWAY_NATS=1", "NATS_URLS="+natsURL)
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()

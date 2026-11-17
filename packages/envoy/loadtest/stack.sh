@@ -476,6 +476,7 @@ start_listener() {
     "PORT=$(port listener)"
     "ENVOY_LISTEN_HOST=127.0.0.1"
     "ENVOY_MACHINE_ID=$(stack_name)"
+    "ENVOY_THROWAWAY_NATS=1"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
     "ENVOY_API_TOKEN=$(jq -r .listener_token "$STACK")")
   spawn listener "$log" listener_env "$BIN/envoy-listener"

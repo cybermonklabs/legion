@@ -218,7 +218,7 @@ dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
 # holding legion/envoy.json would hand Dispatch a production configuration.
 env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
-  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
+  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$nats_url" \
   "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"

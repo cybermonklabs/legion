@@ -86,6 +86,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
     env: {
       PATH: Bun.env.PATH ?? "",
       ENVOY_MACHINE_ID: "held-port-test",
+      ENVOY_THROWAWAY_NATS: "1",
       NATS_URLS: natsUrl,
     },
     stdin,

@@ -253,7 +253,7 @@ start_listener() {
   local token
   token=$(cat "$work/envoy-token")
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="legion-e2e3-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
+    ENVOY_MACHINE_ID="legion-e2e3-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \

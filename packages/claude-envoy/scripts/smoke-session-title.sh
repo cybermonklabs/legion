@@ -97,7 +97,7 @@ readonly nats_port
 
 (cd "${repo_root}/packages/envoy" && go build -o "${workdir}/envoy-listener" ./cmd/listener) ||
   fail "the Envoy listener did not build"
-env PORT=0 ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=session-title-smoke \
+env PORT=0 ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=session-title-smoke ENVOY_THROWAWAY_NATS=1 \
   NATS_URLS="nats://127.0.0.1:${nats_port}" \
   "${workdir}/envoy-listener" >"${workdir}/listener.log" 2>&1 &
 listener_pid=$!

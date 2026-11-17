@@ -773,7 +773,7 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 keep_port listener_keeper listener_port
 start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
   ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-  ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
+  ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_THROWAWAY_NATS=1 ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
   ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
   ENVOY_SESSION_REAP_INTERVAL="$reap_interval" "$work/bin/envoy-listener"
 await_start listener "$listener_pid" 60 "the Envoy listener to serve" serving "$listener_port"

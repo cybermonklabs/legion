@@ -232,7 +232,7 @@ nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | 
 # helper hands the socket over as descriptor 3.
 start_held listener envoy_port ENVOY_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
-  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url" \
+  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" ENVOY_THROWAWAY_NATS=1 NATS_URLS="$nats_url" \
   "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
