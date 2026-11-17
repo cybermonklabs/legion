@@ -42,8 +42,21 @@ trap cleanup EXIT
 
 # A PATH with python3 and nothing else on it: no go, no docker. The script's own shebang finds
 # python3 through it, and the sampler it starts is started by sys.executable, an absolute path.
+# The link names the interpreter python3 reports as sys.executable, asked before PATH and HOME
+# change, not the first python3 on the caller's PATH: where that is a version manager's shim
+# (mise's, with no python selected), the shim needs mise's settings, and under `env -i` with this
+# PATH and HOME it refuses to run ("not a valid shim", or the user's mise config as untrusted when
+# the checkout is under the user's home), so no case reached the script.
 mkdir "$work/bin"
-ln -s "$(command -v python3)" "$work/bin/python3"
+if ! python=$(python3 -I -c 'import sys; print(sys.executable)'); then
+  echo "could not resolve the python3 interpreter" >&2
+  exit 1
+fi
+if [[ "$python" != /* || ! -x "$python" ]]; then
+  echo "python3 did not report an absolute executable path: $python" >&2
+  exit 1
+fi
+ln -s "$python" "$work/bin/python3"
 
 # run_watch <arguments...>: runs the script under test with that bare PATH, leaving its merged
 # output in $out and its status in $status.
@@ -92,6 +105,16 @@ tick_shape="^machine: $when_shape free \([0-9][0-9]*\|unknown\) kB, available me
 watched="$work/watched"
 mkdir "$watched"
 state="$work/state.json"
+
+echo "case: the bare PATH's python3 is an interpreter"
+bare_status=0
+bare=$(env -i PATH="$work/bin" HOME="$work" TMPDIR="$work" python3 -c 'print("ran")' 2>&1) || bare_status=$?
+check "exits 0 under the bare PATH and HOME" "$(is "$bare_status" 0)"
+check "runs under the bare PATH and HOME" "$(is "$bare" ran)"
+if [ "$bare_status" -ne 0 ] || [ "$bare" != ran ]; then
+  printf '%s\n' "$bare" >&2
+  summary "disk_watch.py"
+fi
 
 echo "case: start writes the state file, with no go and no docker on PATH"
 run_watch start --path "$watched" --state "$state"

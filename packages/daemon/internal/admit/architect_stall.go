@@ -306,7 +306,9 @@ func firstQueued(held record.RoleClaim) time.Time {
 //
 // workflow.ArchitectRelaunchOf decides which start of the run is the daemon's next move, and the
 // pass's own start (sent) is one too. The arm waits while such a start stands because the
-// outbox's start of a failed or a retired claim relaunches it on the session it kept: a
+// outbox's start of a failed or a retired claim relaunches it, on the session it kept, or a new
+// one once supervise's Machine.forgetSession has dropped that (an architect's start asks for no
+// new session): a
 // controller woken for that claim would take `fresh_session`, which discards the session that
 // start resumes, and the mark the wake writes would leave a real failure later in the run waking
 // nobody. Every re-admission of a closed tree makes that shape, since the linger's end retires the

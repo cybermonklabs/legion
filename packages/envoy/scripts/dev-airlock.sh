@@ -201,8 +201,8 @@ GOOGLE_SECRET="AIRLOCK_GOOGLE_LOGIN"
 AZURE_SECRET="AIRLOCK_AZURE_LOGIN"
 AWS_SECRET="AIRLOCK_AWS_KEY"
 # The four the model judge is asked about. Each is human tier, so each waits for a person
-# unless the judge decides it first, and each is a plain entry with no kind: what the judge is
-# about is who may approve a request, and a kind's minting is another check's subject.
+# unless the judge decides it first, and each is a plain entry with no type: what the judge is
+# about is who may approve a request, and a type's minting is another check's subject.
 # JUDGED_SECRET is the one the rules give the judge seconds of; UNJUDGED_SECRET the one they
 # give it nothing of, which must still wait for its person; SHARED_SECRET the one nobody owns,
 # which anyone signed in approves and which the judge therefore approves in anyone's place;
@@ -511,15 +511,15 @@ jq -n \
      {name: ($prefix + "airlock-scoped-token"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent"}, value: $scoped},
      {name: ($prefix + "airlock-github-app"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $owner},
+      tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
       value: ({app_id: $appid, private_key: $appkey} | tojson)},
      {name: ($prefix + "airlock-google-login"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", kind: "google-login"},
+      tags: {owner: $service, tier: "agent", type: "google-login"},
       value: ({type: "authorized_user", client_id: "the-stand-in-client",
                client_secret: "the-stand-in-client-secret",
                refresh_token: "the-stand-in-refresh-token"} | tojson)},
      {name: ($prefix + "airlock-azure-login"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", kind: "azure-login"},
+      tags: {owner: $approver, tier: "human", type: "azure-login"},
       value: ({tenant_id: "the-stand-in-tenant", client_id: "the-stand-in-application"} | tojson)},
      {name: ($prefix + "airlock-aws-key"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent"},

@@ -21,11 +21,11 @@ import (
 // is left armed, and no pass comes round again. `unknown` is no answer about the head, so nobody is
 // told of it: the issue's next event, its next handoff and the daemon's next start each read again.
 // Every other answer the ladder gets is recorded, and an approval left standing on a head GitHub
-// answers with a state it would not merge from tells the tree's architect and the reviewer, once
-// for that head and state, in the review-stuck notice the round writes - but only once the CI
-// settlement standing for the head says every check GitHub reported on it has concluded, since
-// until then the state says no more than that a check is running (workflow's reviewRound,
-// stuckMergeState).
+// answers with a state it would not merge from tells the architect that owns the issue and the
+// reviewer, once for that head and state, in the review-stuck notice the round writes - but only
+// once the CI settlement standing for the head says every check GitHub reported on it has
+// concluded, since until then the state says no more than that a check is running (workflow's
+// reviewRound, stuckMergeState).
 //
 // Both numbers have a second user: the outbox's merge-queue read (merge_queue_removal.go's
 // mergeQueueRead), which reads a pull request GitHub reported leaving the merge queue as this

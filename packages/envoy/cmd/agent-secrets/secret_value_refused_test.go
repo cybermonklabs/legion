@@ -53,7 +53,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	t.Cleanup(github.Close)
 
 	rig := brokertest.NewRig(t, brokertest.WithMinters(map[string]requests.Minter{
-		policy.KindGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
+		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
 	local := rig.Secrets
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
@@ -61,7 +61,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	// The person's own sign-in reads through valueReads, which refuses every GetSecretValue as
 	// IAM refuses a role that holds no read; the broker reads local itself.
 	signedIn := &valueReads{Local: local}
-	awsKindStore{signedIn}.refuseValueReads(true)
+	awsTypeStore{signedIn}.refuseValueReads(true)
 	useAWS(t, signedIn, testAccount, adaSignIn)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 
@@ -106,11 +106,11 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	refusedSeries := `broker_unservable_secrets{secret="` + id + `",reason="` + policy.ReasonValueMalformed + `",owner="` + rig.Operator + `"} 1` + "\n"
 
 	// The retag: tags written, the value unchecked, and the broker's refusal from its reread.
-	stdout, stderr, code := runSecret("retag", "APP_KEY", "--kind", policy.KindGitHubApp, "--github-owners", "acme-org")
+	stdout, stderr, code := runSecret("retag", "APP_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org")
 	if code != 1 {
 		t.Fatalf("retag: exit %d, stdout %q, stderr %q; want 1, the broker refusing the secret it reread", code, stdout, stderr)
 	}
-	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagKind] != policy.KindGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
+	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
 		t.Fatalf("tags after the retag = %v; want github-app for acme-org, written though the value was not checked", tags)
 	}
 	if !strings.Contains(stderr, "the tags are written, but APP_KEY's value was not checked as a github-app secret's") || !strings.Contains(stderr, "secretsmanager:GetSecretValue") {
@@ -153,7 +153,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	}
 
 	// A value that decodes: the next reread serves the secret again.
-	useStdin(t, policytest.KindValue(policy.KindGitHubApp))
+	useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
 	stdout, stderr, code = runSecret("set", "APP_KEY")
 	if code != 0 || !strings.Contains(stdout, "broker: serving APP_KEY") {
 		t.Fatalf("set of a value the decoder reads: exit %d, stdout %q, stderr %q; want 0 with the secret served", code, stdout, stderr)
