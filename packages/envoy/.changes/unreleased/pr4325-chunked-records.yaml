@@ -1,0 +1,13 @@
+kind: Fixed
+custom:
+  Issue: pr4325
+body: |-
+  A session whose interest record is larger than one NATS message (the server's max payload, 1 MiB
+  by default) is registered again: the listener stores such a record, and the session's
+  known-session record, in chunks under `=chunk.<generation>.<index>` and a manifest under the
+  record's own key, written last, and reads it back whole. Before, its write was refused, the
+  registration was answered `503` with `Retry-After: 1` at every retry, its role claims were never
+  renewed, and once it stopped a send to it was refused and a publish did not count it. A KV write the
+  bus refuses for its size, and a registration whose session consumer filter is past the max payload,
+  are now answered `413` naming the size and the bound, with no `Retry-After`. A listener of an
+  earlier build reads a chunked record as one it cannot decode.
