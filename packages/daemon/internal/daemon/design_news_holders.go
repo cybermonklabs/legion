@@ -51,15 +51,16 @@ func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
 // transaction, and those member read from the record on a miss. Every reader takes a member's
 // issue from the record, through member or, at a send, through records.Issue (readNewsAtSend),
 // which skips a key the record holds no issue of. So none mistakes such a key for an issue in no
-// phase. architects is the architect claim of each member as the record holds it, and
-// architectOf the member each token names, since a token carries the issue's key lowercased
-// (claim.NewToken): both are read the first time an owner is asked, and nil until then.
+// phase. runs is the outbox's live view of whether an architect's claim holds its role, which the
+// outbox's start weighs the owner walk by (withLiveView), nil for a reader that weighs the claims
+// the store records. owner is that walk, read the first time an owner is asked (owningIssue), and
+// nil until then.
 type newsClaims struct {
-	project     string
-	root        record.Issue
-	members     map[string]record.Issue
-	architects  map[claim.Token]*record.RoleClaim
-	architectOf map[claim.Token]record.Issue
+	project string
+	root    record.Issue
+	members map[string]record.Issue
+	runs    func(claim.Token) bool
+	owner   func(record.Issue) string
 }
 
 // newNewsClaims names the holders of root's tree, whose issues members are, as the caller read them
@@ -107,19 +108,20 @@ func (c *newsClaims) member(ctx context.Context, tx pgx.Tx, records record.Store
 }
 
 // holderOf is the one answer to which claim holds member's phase now, and whether one does: for a
-// member in accepting, the architect that owns it (owningArchitect: a running sub-architect, else
-// the tree root's, over the architect claims the record holds, recordedClaimRuns); for a member in
-// any other phase, the claim of the role that phase names (phaseHolder). The reconcile hands a
-// member's news to it (settleNews), a start carries the news of the members it holds
-// (owedToClaim), a send tells a member only while the claim it is held for is it
-// (readNewsAtSend), and the root architect's summary says how it is told (readMemberClaims).
+// member in accepting, the architect that owns it (owningIssue: the owner walk from the member
+// itself, as the reviewer's approval notice that moved it there was routed and as sign_off accepts
+// it, which ends at its own architect while that claim holds its role, else at the nearest one
+// above it whose claim does, else at the tree root's); for a member in any other phase, the claim
+// of the role that phase names (phaseHolder). The reconcile hands a member's news to it
+// (settleNews), a start carries the news of the members it holds (owedToClaim), a send tells a
+// member only while the claim it is held for is it (readNewsAtSend), and the root architect's
+// summary says how it is told (readMemberClaims).
 //
 // A member it names no holder of is held by no claim, in every one of those readers alike: a phase
-// no role holds, a token that cannot be built, and an owner owningArchitect cannot name, which it
-// cannot only where a token cannot be built either. No news-only start is queued for such a
-// member, no start attaches its news, a send drops it, and the summary says that the next start
-// of its phase tells it (workflow.NewsAtNextStart), as it says of a member whose holder has no
-// claim. The architect claims are read in the caller's transaction, once.
+// no role holds, and a token that cannot be built, the owning architect's among them. No
+// news-only start is queued for such a member, no start attaches its news, a send drops it, and
+// the summary says that the next start of its phase tells it (workflow.NewsAtNextStart), as it
+// says of a member whose holder has no claim. The walk is read in the caller's transaction, once.
 func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (newsHolder, bool, error) {
 	switch {
 	case c.project == "":
@@ -128,41 +130,56 @@ func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Sto
 		holder, held := phaseHolder(c.project, member)
 		return holder, held, nil
 	}
-	if err := c.readArchitects(ctx, tx, records); err != nil {
+	key, err := c.owningIssue(ctx, tx, records, member)
+	if err != nil {
 		return newsHolder{}, false, err
 	}
-	owner, err := owningArchitect(c.project, c.members, member, "", func(token claim.Token) bool { return recordedClaimRuns(c.architects[token]) })
+	owner, err := c.member(ctx, tx, records, key)
+	if err != nil {
+		return newsHolder{}, false, err
+	}
+	token, err := claim.NewToken(c.project, owner.Key, claim.RoleArchitect)
 	if err != nil {
 		return newsHolder{}, false, nil
 	}
-	issue, named := c.architectOf[owner]
-	return newsHolder{issue: issue, role: claim.RoleArchitect, token: owner}, named, nil
+	return newsHolder{issue: owner, role: claim.RoleArchitect, token: token}, true, nil
 }
 
-// readArchitects reads, once, the architect claim of each of the tree's issues, which an owner is
-// named over (holderOf). The walk to an owner reads the whole tree, so its issues are read through
-// member first, which reads them where c holds none yet: the root is an issue of every tree.
-func (c *newsClaims) readArchitects(ctx context.Context, tx pgx.Tx, records record.Store) error {
-	if c.architects != nil {
-		return nil
+// owningIssue is the key of the issue whose architect owns member now: the owner walk from the
+// member itself (record.OwningIssue), read once for c's tree in the caller's transaction. A reader
+// in a transaction weighs the architect claims the store records (record.ReadOwnerWalk); the
+// outbox's start weighs the machine's live view (runs, withLiveView) over the tree's issues, as the
+// outbox routes a notice (noticeArchitect). Both read every issue of the tree, since the walk
+// climbs through the member's parents.
+func (c *newsClaims) owningIssue(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (string, error) {
+	if c.owner != nil {
+		return c.owner(member), nil
 	}
-	if _, err := c.member(ctx, tx, records, c.root.Key); err != nil {
-		return err
-	}
-	tokens := make([]claim.Token, 0, len(c.members))
-	c.architectOf = make(map[claim.Token]record.Issue, len(c.members))
-	for _, member := range c.members {
-		if token, err := claim.NewToken(c.project, member.Key, claim.RoleArchitect); err == nil {
-			tokens = append(tokens, token)
-			c.architectOf[token] = member
+	if c.runs == nil {
+		walk, err := record.ReadOwnerWalk(ctx, records, tx, c.project, c.root.Tree)
+		if err != nil {
+			return "", err
 		}
+		c.owner = func(issue record.Issue) string { return walk.Owner(issue, false) }
+		return c.owner(member), nil
 	}
-	held, err := records.RoleClaims(ctx, tx, tokens)
+	issues, err := records.TreeIssues(ctx, tx, c.root.Tree)
 	if err != nil {
-		return err
+		return "", err
 	}
-	c.architects = held
-	return nil
+	c.seed(issues)
+	tree := record.TreeByKey(issues)
+	c.owner = func(issue record.Issue) string { return record.OwningIssue(c.project, tree, issue, false, c.runs) }
+	return c.owner(member), nil
+}
+
+// withLiveView makes c weigh the owner walk by runs, the outbox's live view of whether an
+// architect's claim holds its role (the outbox's holdsItsRole), which also passes over a claim a
+// decision in flight is stopping. The outbox's start reads it so, as the outbox routes a notice, so
+// a start never carries a member's news to an architect that a notice of the member would pass.
+func (c *newsClaims) withLiveView(runs func(claim.Token) bool) *newsClaims {
+	c.runs = runs
+	return c
 }
 
 // rootArchitect is the holder of the tree root's architect row: the root's architect claim, which
@@ -183,7 +200,7 @@ func (c *newsClaims) rootArchitect() (newsHolder, bool) {
 // its claim: the entry its role's phases row names, 0 where the row names none, and its run
 // (record.RoleRun: its queued starts and its claim). An architect's entry is read as a phase
 // worker's is: a root's architect holds a phases row that states the work it is owed
-// (dispatch://INFRA-2614), and a sub-architect, which no start hands an entry, holds none.
+// (dispatch://INFRA-2614), and a child's own architect, which no start hands an entry, holds none.
 type owedHolder struct {
 	newsHolder
 	entry int64
@@ -240,7 +257,7 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 }
 
 // holderTold is how the holder of a member owed news is told, from its claim, a phase worker's or
-// that of the sub-architect that owns a member in accepting (readMemberClaims): by a task now
+// that of the child's architect that owns a member in accepting (readMemberClaims): by a task now
 // when the reconcile queues a news-only start for the claim, which is when one reaches it
 // (recordedClaimTakesNews, the one rule the reconcile queues that start under and the start runs
 // under) and it holds no task its worker has not taken yet (holdsUntakenTask, the reconcile's other
@@ -256,19 +273,6 @@ func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
 		return workflow.NewsWaitsForTask
 	}
 	return workflow.NewsSentNow
-}
-
-// recordedClaimRuns is claimRuns over a claim as the record holds it: it has not ended, and it is
-// not suspended, but for a released claim, which keeps its role while its pod is released
-// (holdsRole). A token the record holds no claim of runs nothing.
-func recordedClaimRuns(held *record.RoleClaim) bool {
-	if held == nil {
-		return false
-	}
-	if held.State == supervise.StateSuspended {
-		return held.SuspendedBy == supervise.SuspendedByReleased
-	}
-	return !claimEnded(held.State)
 }
 
 // newsStartQueued says whether run holds a news-only start still to run (record.SuperviseRequest.News):
@@ -287,8 +291,8 @@ func newsStartQueued(run record.RoleRun) bool {
 // owed: the sweep queues the reconcile again (queueOwedDesignNews), which queues the start once
 // that task is taken, and the next start of the phase carries the news itself. The root
 // architect's summary reads the same rule over the same claim (holderTold), for a phase holder and
-// for the sub-architect that owns a member in accepting alike, and says that member's news waits
-// until the task is taken (workflow.NewsWaitsForTask).
+// for the child's architect that owns a member in accepting alike, and says that member's news
+// waits until the task is taken (workflow.NewsWaitsForTask).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), as
 // workflow's owed reads it for the same question: it carries only the sentence of what the

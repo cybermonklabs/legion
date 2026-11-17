@@ -1549,7 +1549,7 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	}
 }
 
-// treeNotices is the reason of every notice queued on tree, in queue order.
+// treeNotices is the payload, as JSON text, of every notice queued on tree, in queue order.
 func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 	t.Helper()
 	rows, err := w.pool.Query(context.Background(), "select payload::text from outbox where issue = $1 and kind = 'notice' order by id", tree)
@@ -1594,10 +1594,11 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	}
 }
 
-// A repository's recovery tells each tree's architect, once, which children its release_children
-// left for the repository the recovery still did not record, with what to release: here C, todo
-// under a backlog parent P, which the recovery records no child under. A child the recovery
-// recorded, E, is not named. Before, such a child stranded silently.
+// A repository's recovery tells the architect that owns each child's parent, else the tree root's
+// architect, once, which children a release_children left for the repository the recovery still
+// did not record, with what to release: here C, todo under a backlog parent P, which the recovery
+// records no child under. A child the recovery recorded, E, is not named. Before, such a child
+// stranded silently.
 func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -216,6 +217,12 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
 			return s.unenrollSessionKey(ctx, req.EnrollmentID)
 		})
+	case "version":
+		// version names the release THIS process was built as (buildversion), so a client can
+		// say which helper it is talking to even after a pin move has put the next release's
+		// binary on disk while this process still serves the socket. It needs no peer, no broker
+		// and no registry.
+		resp = Response{OK: true, Version: buildversion.String()}
 	default:
 		resp = Response{Code: CodeBadRequest, Error: "unknown op " + req.Op}
 	}

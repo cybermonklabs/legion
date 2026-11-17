@@ -456,9 +456,10 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 //     (recordedClaimTakesNews): none, behind the entry its phases row names — owed its phase start,
 //     which carries the news — retired, failed, or suspended by an operator, each of which the
 //     start that revives the claim tells;
-//   - a member in accepting is held by the architect that owns it (owningArchitect: a running
-//     sub-architect, else the tree root's), and its news goes to that architect's claim, in the
-//     holder form, by that claim's one news-only start;
+//   - a member in accepting is held by the architect that owns it (newsClaims.holderOf, the owner
+//     walk over the architect claims the record holds: its own architect while that claim holds its
+//     role, else the nearest one above it whose claim does, else the tree root's), and its news
+//     goes to that architect's claim, in the holder form, by that claim's one news-only start;
 //   - a member no claim can be named for (newsClaims.holderOf) is logged and told at its next
 //     start;
 //   - the tree root's architect row is settled the same way, and its news goes by the root
@@ -626,10 +627,13 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 // rootArchitect for the tree root's architect row). For a phase worker that is its member's holder
 // row while the role is the one the member's phase names; for an architect, its own summary when
 // issue is the tree root and its row is owed, and the holder form of each member in accepting it
-// owns. Each told row it speaks for carries the opening too, where the row owes it and the
-// standing gate is open. An architect is never handed a worker's news, and a worker never an
-// architect's. Where the tree's root is not among its issues, nothing is carried, since every
-// holder is named over the root's record (newsClaims).
+// owns. Which architect owns such a member is the owner walk over the machine's live view
+// (withLiveView, the outbox's holdsItsRole), as the outbox routes a notice of the member, so a
+// start carries a member's news to no architect a decision in flight is stopping. Each told row it
+// speaks for carries the opening too, where the row owes it and the standing gate is open. An
+// architect is never handed a worker's news, and a worker never an architect's. Where the tree's
+// root is not among its issues, nothing is carried, since every holder is named over the root's
+// record (newsClaims).
 func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFacts, issue record.Issue, role claim.Role,
 	token claim.Token) ([]record.DeliveryNewsItem, []record.DeliveryOpening, error) {
 	owed := record.OwedNews(facts)
@@ -650,7 +654,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 		return nil, nil, nil
 	}
 	root := facts.Members[rootAt]
-	claims := newNewsClaims(root, facts.Members)
+	claims := newNewsClaims(root, facts.Members).withLiveView(r.holdsItsRole)
 	if holder, held := claims.rootArchitect(); held && holder.token == token && owed.ArchitectOwed() {
 		tell(root.Key, record.AudienceArchitect, owed.Architect)
 	}

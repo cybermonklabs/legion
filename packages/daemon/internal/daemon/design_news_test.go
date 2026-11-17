@@ -902,6 +902,79 @@ func TestASubArchitectsStartIsQueuedForItsAcceptingChild(t *testing.T) {
 	}
 }
 
+// An issue in accepting is told an approved new version through the architect that owns it by the
+// owner walk (record.OwningIssue): the walk that routed the reviewer's approval notice which moved
+// it there, and the architect sign_off accepts it from. A child whose own architect holds its role
+// is owned by that architect, so the child's news goes to it, in the holder form, by a news-only
+// start of its own, and the root's architect is handed none of it. The root's architect still gets
+// its one summary of the tree, which names the child's own architect as the one told, never the
+// root's architect as the one to answer. The control is TestTheRootArchitectsStartIsQueuedOncePerTree:
+// the same tree with no architect on the child, whose news the root's architect carries and
+// answers itself.
+func TestAnAcceptingChildsOwnArchitectIsToldItsNewsAndTheRootsSummaryNamesIt(t *testing.T) {
+	r := newNewsReconcileRig(t)
+	r.member(reconcileRoot, "", phase.Implementing)
+	r.member(reconcileChild, reconcileRoot, phase.Accepting)
+	r.told(reconcileRoot, record.AudienceHolder, 5)
+	r.told(reconcileRoot, record.AudienceArchitect, 4)
+	r.told(reconcileChild, record.AudienceHolder, 4)
+	r.holder(reconcileRoot, claim.RoleArchitect, supervise.StateWorking, "", 0)
+	r.holder(reconcileChild, claim.RoleArchitect, supervise.StateWorking, "", 0)
+
+	if err := r.reconcile(0); err != nil {
+		t.Fatalf("reconcile the tree's news: %v", err)
+	}
+	starts := r.newsStarts()
+	if got := startsTo(starts); !reflect.DeepEqual(got, []string{reconcileRoot + "/architect@", reconcileChild + "/architect@"}) {
+		t.Fatalf("the news-only starts = %v, want the root architect's summary and the start of %s's own architect", got, reconcileChild)
+	}
+
+	// Both architects run when either start does, so each start reads the other's claim as the
+	// outbox holds it. The root's goes first, while the child's architect holds no task yet.
+	root := r.machine(reconcileRoot, claim.RoleArchitect, supervise.StateIdle, "", 0)
+	own := r.machine(reconcileChild, claim.RoleArchitect, supervise.StateIdle, "", 0)
+	for _, start := range starts {
+		if err := r.runner.execute(r.ctx, start.row); err != nil {
+			t.Fatalf("run the news-only start of %s's architect: %v", start.row.Issue, err)
+		}
+	}
+
+	const accepting = "The approved design of LEGION-600 changed for LEGION-601, which you hold in accepting:"
+	task, news := pendingNews(t, own)
+	for _, want := range []string{accepting, "sign LEGION-601 off with `sign_off`"} {
+		if !strings.Contains(task, want) {
+			t.Fatalf("the task of %s's own architect = %q, want it to say %q", reconcileChild, task, want)
+		}
+	}
+	if strings.Contains(task, "A person approved a new version of the design of LEGION-600.") {
+		t.Fatalf("the task of %s's own architect = %q, want no summary of the tree: the summary is the root architect's", reconcileChild, task)
+	}
+	if !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileChild, 4)}) {
+		t.Fatalf("the task of %s's own architect carries %+v, want the accepting child's item", reconcileChild, news)
+	}
+
+	summary, carried := pendingNews(t, root)
+	if !strings.Contains(summary, "A person approved a new version of the design of LEGION-600.") {
+		t.Fatalf("the root architect's task = %q, want its summary of the tree", summary)
+	}
+	if strings.Contains(summary, accepting) {
+		t.Fatalf("the root architect's task = %q, want no holder form of %s: its own architect holds it", summary, reconcileChild)
+	}
+	if want := []record.DeliveryNewsItem{newsItem(reconcileRoot, record.AudienceArchitect, record.DesignStepSpec, reconcileDoc, 4, 5)}; !reflect.DeepEqual(carried.Items, want) {
+		t.Fatalf("the root architect's task carries %+v, want its own item alone: %+v", carried.Items, want)
+	}
+	const prefix = "- LEGION-601, in accepting: "
+	var line string
+	for _, candidate := range strings.Split(summary, "\n") {
+		if strings.HasPrefix(candidate, prefix) {
+			line = candidate
+		}
+	}
+	if want := prefix + "owed version 5 of the spec document, since version 4, which its phase last took; a task tells its own architect now."; line != want {
+		t.Fatalf("the summary's line for %s = %q, want %q", reconcileChild, line, want)
+	}
+}
+
 // A told row that knows no version of a step is resolved into the record, once: the reconcile reads
 // the version approved before the new one from Dispatch's review history and writes it into that
 // row, so every later reader names the same pair. With an earlier approval the pair runs from it

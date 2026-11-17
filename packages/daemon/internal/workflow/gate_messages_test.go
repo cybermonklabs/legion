@@ -103,6 +103,59 @@ func TestAnOpeningGoesAsNewsToAnOwedReviewerAndAsTheMessageWithTheClauseToAnUnow
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
 }
 
+// A member in accepting is held by the architect that owns it (the owner walk,
+// record.OwningIssue), and the gate's opening reaches that architect with the member's news. A
+// child whose own architect holds its role, and whose holder row is owed the approved version, has
+// the opening settled as owed on that row, so the news-only start the reconcile queues for the
+// child's architect leads with the opening. That architect is sent no role message, at the close
+// or at the opening: a child's own architect is not told of the root's gate. The control is the
+// same child with no architect of its own, which the tree root's architect holds: its row owes no
+// opening, since the root's architect is told the opening once, on its own row.
+func TestTheOpeningIsOwedToAnAcceptingChildsRowOnlyWhereAChildsArchitectHoldsIt(t *testing.T) {
+	const root, child = "LEGION-208", "LEGION-209"
+	for _, tc := range []struct {
+		name string
+		own  bool
+		owed []string
+	}{
+		{"the child's own architect holds its role", true, []string{root + "/architect", root + "/holder", child + "/holder"}},
+		{"the child has no architect of its own", false, []string{root + "/architect", root + "/holder"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: root, Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 4, Status: "in_progress", Rank: "U"})
+			seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: root, Project: "LEGION", Title: "a child waiting for its acceptance", Parent: new(root), Phase: phase.Accepting,
+				Generation: 4, Status: "needs_review", Rank: "V"})
+			seedGate(t, pool, record.DesignGate{Issue: root, ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+			took3 := map[record.DesignStep]int{record.DesignStepSpec: 3}
+			seedTold(t, pool, root, record.AudienceHolder, took3)
+			seedTold(t, pool, child, record.AudienceHolder, took3)
+			seedTold(t, pool, root, record.AudienceArchitect, took3)
+			seedArchitectClaim(t, pool, root)
+			if tc.own {
+				seedChildArchitectClaim(t, pool, root, child)
+			}
+			engine := testEngine(config.DesignGateRootIssues, nil)
+
+			applyMirrored(t, pool, engine, "version-4", intake.DispatchArtifact{
+				Key: root, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
+			applyMirrored(t, pool, engine, "approved-4", intake.DispatchArtifact{
+				Key: root, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 4})
+
+			closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)
+			assertRoleMessages(t, pool, root, []record.RoleMessage{
+				{Role: treeRoleToken(t, root, claim.RolePlanner), Body: closed},
+				{Role: treeRoleToken(t, root, claim.RoleArchitect), Body: closed},
+			})
+			assertRoleMessages(t, pool, child, nil)
+			assertOpeningsOwed(t, pool, root, tc.owed...)
+		})
+	}
+}
+
 // A version whose only change is an answered decision block arrives as Dispatch writes it: the
 // approval it carries forward first, then the version (docs/mutation.go appends the carried
 // approval before the version), so the gate goes from open to open and never moves. Nothing is
@@ -357,6 +410,18 @@ func nothingChangedClause(version int) string {
 // version for the tree.
 func treeNothingChangedClause(version int) string {
 	return fmt.Sprintf("Nothing the tree holds changed since version %d, which you took.", version)
+}
+
+// seedChildArchitectClaim records the architect claim of child, a member of tree, as working: a
+// claim that holds its role (record.HoldsRole), which the owner walk reads.
+func seedChildArchitectClaim(t *testing.T, pool *pgxpool.Pool, tree, child string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'legion', $2, $3, 'architect', 4, 'ses', '/sessions/ses.jsonl', 'working', 0, 0, 0, 0)`,
+		treeRoleToken(t, child, claim.RoleArchitect), tree, child); err != nil {
+		t.Fatalf("seed the architect claim of %s: %v", child, err)
+	}
 }
 
 // seedTold records what issue's audience took of its tree's approved design: each step of versions

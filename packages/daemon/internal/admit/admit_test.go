@@ -241,11 +241,11 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // — and tells it to carry that phase on: the run whose handoff began the phase is over, and a start
 // with no task leaves the resumed agent holding its old transcript with nothing asked of it.
 //
-// A child in accepting waits on the tree's architect, which the promotion starts, so no task is
-// queued for it; its branch row is, because every member past admitted gets one. No child here
-// holds a claim row, the durable record that a role has run, so no role of any of them is brought
-// back by a task-less start — and such a start, which these effects leave out, would not be
-// counted here anyway.
+// A child in accepting waits on the architect that owns it, here the tree's, which the promotion
+// starts, so no task is queued for it; its branch row is, because every member past admitted gets
+// one. No child here holds a claim row, the durable record that a role has run, so no role of any
+// of them is brought back by a task-less start — and such a start, which these effects leave out,
+// would not be counted here anyway.
 //
 // The testing child's start waits for its issue's admission slot and the retro child's does not:
 // an issue past its review holds no slot (record.KeepsSlot), so the mark the start carries is
@@ -775,13 +775,13 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 	}
 }
 
-// A signed-off child reopened to todo belongs to its tree while the tree is live: it runs under
-// that tree's architect (decision 11; the shipped admitOnTodo) and needs no label of its own.
-// The workflow re-enters it, and the waiting line starts the child's next generation under the
-// open gate once a slot of its own is free; its tree stays the tree's. Under a lingering tree
-// the child is an orphan, and admission admits it
-// as a root of its own, as the shipped daemon does — handed to Legion by its label, as every
-// root is.
+// A signed-off child reopened to todo belongs to its tree while the tree is live: it runs in that
+// tree (decision 11; the shipped admitOnTodo) and needs no label of its own. The workflow
+// re-enters it, and the waiting line starts the child's next generation under the open gate once
+// a slot of its own is free, and with it the child's own architect, which every child's first
+// phase start starts (workflow.Engine.StartFirstPhase); its tree stays the tree's. Under a
+// lingering tree the child is an orphan, and admission admits it as a root of its own, as the
+// shipped daemon does — handed to Legion by its label, as every root is.
 //
 // The tree's architect hears twice about the live-tree re-entry, and the two sentences are
 // different: the re-entry says the child is todo and runs again (workflow.ChildReenteredNotice),
@@ -842,8 +842,8 @@ func TestAReopenedChildReentersALiveTreeAndIsAnOrphanRootOfALingeringOne(t *test
 				}
 			}
 			if !tc.lingering {
-				if reopened.Tree != root || reopened.Generation != 2 || reopened.Phase != phase.Planning || architectStarts != 0 || told != 2 {
-					t.Fatalf("reopened child = %#v with %d architect starts and %d child-status notices, want planning again in tree %s as the child's generation 2, no architect of its own, and the tree's architect told of the re-entry and of the start", reopened, architectStarts, told, root)
+				if reopened.Tree != root || reopened.Generation != 2 || reopened.Phase != phase.Planning || architectStarts != 1 || told != 2 {
+					t.Fatalf("reopened child = %#v with %d architect starts and %d child-status notices, want planning again in tree %s as the child's generation 2, its own architect started with its first phase, and the tree's architect told of the re-entry and of the start", reopened, architectStarts, told, root)
 				}
 				assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}, {Issue: child, Index: 1, AdmittedAt: fixedNow}})
 				return

@@ -7,7 +7,7 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
-You work one phase of one issue in a jj workspace every role of the issue shares; the architect owns the tree. Your role prompt gives the workspace binding, `gh`, the push, the handoff record, `handoff_complete` and how long your session stays; this skill adds the rest.
+You work one phase of one issue in a jj workspace every role of the issue shares; the architect your `Legion addressing` line names owns your issue. When an architect above it tells you that it takes your issue's work while your issue's own architect does not run, send to that architect instead. Your role prompt gives the workspace binding, `gh`, the push, the handoff record, `handoff_complete` and how long your session stays; this skill adds the rest.
 
 ## Every phase, in this order
 

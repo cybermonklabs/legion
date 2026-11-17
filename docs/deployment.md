@@ -657,8 +657,8 @@ written by whichever daemon wrote last — so the order matters:
    is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
    resumed without waiting that process out. Each workspace is provisioned before its first launch.
 4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
-   (an architect relaunches on its session; a phase worker whose issue is held for its own role
-   retries that phase).
+   (an architect relaunches on its session, or on a new one once supervise's `forgetSession` has
+   dropped it; a phase worker whose issue is held for its own role retries that phase).
 5. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
    was running has relaunched in a pane, and no claim the Kubernetes daemon suspended (a
    production check's checking role — the one the project's `production_check` names — waiting

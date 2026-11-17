@@ -11,7 +11,10 @@ body: |-
   except at an opening, where the task says that nothing changed. The tree's root architect gets
   one task that names every issue of the tree and what it is told, an issue whose holder holds a
   task it has not taken yet named as waiting for that task, and an issue in `accepting` is told
-  through the architect that owns it. The daemon
+  through the architect that owns it. That is the issue's own architect while its claim holds its
+  role, else the nearest architect above it whose claim does, else the root's. It gets the issue's
+  news task, which leads with the gate's opening where one is owed, and the root architect's task
+  names it as the one told. The daemon
   moves no issue and stops no turn: a running worker gets the task between its turns, and news that
   a worker did not confirm goes with its next start or with the entry sweep. The daemon's own
   message of what a relaunch ended is not a task the worker has not taken: a task with news takes

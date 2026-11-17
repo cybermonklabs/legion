@@ -94,12 +94,17 @@ func (c NewsChange) to() int {
 }
 
 // NewsMember is one member of a tree as the root architect's summary names it: its key, its phase,
-// what its news is (State), and, for a member owed news, the items its holder is owed.
+// what its news is (State), and, for a member owed news, the items its holder is owed. Architect
+// is the key of the issue whose architect holds the member in accepting, where that is an
+// architect other than the tree root's: the member's own, or one between it and the root (the
+// owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
+// member has none.
 type NewsMember struct {
-	Issue string
-	Phase phase.Phase
-	State NewsState
-	Items []NewsChange
+	Issue     string
+	Phase     phase.Phase
+	State     NewsState
+	Items     []NewsChange
+	Architect string
 }
 
 // NewsState is what one member of a tree is told of an approved version, as its root architect's
@@ -112,9 +117,9 @@ type NewsState string
 const (
 	// NewsSentNow is a member owed news whose holder gets a task carrying it now: a news-only
 	// start to the claim given its phase's current entry, or, for a member in accepting, to the
-	// sub-architect that owns it.
+	// child's architect that owns it (NewsMember.Architect).
 	NewsSentNow NewsState = "sent-now"
-	// NewsWaitsForTask is a member owed news whose holder, or the sub-architect that owns it in
+	// NewsWaitsForTask is a member owed news whose holder, or the child's architect that owns it in
 	// accepting, holds a task its worker has not taken yet. That claim takes no second task while
 	// one is pending, so no news-only start goes to it now: the news waits until a turn takes that
 	// task. The task can carry the news itself; otherwise the sweep's next reconcile queues the
@@ -124,7 +129,9 @@ const (
 	// claim owed its phase start, or a phase whose holder has not started yet.
 	NewsAtNextStart NewsState = "next-start"
 	// NewsYouAnswer is a member in accepting that the root architect owns: the architect holds
-	// its phase, so it answers the news itself, by sign_off or by a move back.
+	// its phase, so it answers the news itself, by sign_off or by a move back. A member in
+	// accepting that another architect owns is told as that architect's claim is told, and the
+	// summary names that architect (NewsMember.Architect).
 	NewsYouAnswer NewsState = "you-answer"
 	// NewsWorkUnchanged is a member told nothing because no version it is owed changes anything of
 	// its work: each approved version differs from the version it took in decision blocks alone,
@@ -369,7 +376,9 @@ func distinctPairs(news News) []NewsChange {
 }
 
 // memberWords is what the architect's summary says of one member: what it is owed, and who tells
-// it, or that it is told nothing and why.
+// it, or that it is told nothing and why. The holder of a member in accepting that another
+// architect than the tree root's owns is that architect (NewsMember.Architect): the member's own,
+// or the architect of the issue above it that the summary names.
 func memberWords(member NewsMember) string {
 	owes := "owed news of the approved design"
 	if len(member.Items) > 0 {
@@ -380,7 +389,12 @@ func memberWords(member NewsMember) string {
 		owes = "owed " + strings.Join(owed, ", and ")
 	}
 	holder := "the holder of its phase"
-	if role := phase.RoleFor(member.Phase); role != "" {
+	switch role := phase.RoleFor(member.Phase); {
+	case member.Architect == member.Issue:
+		holder = "its own architect"
+	case member.Architect != "":
+		holder = "the architect of " + member.Architect
+	case role != "":
 		holder = "its " + string(role)
 	}
 	switch member.State {

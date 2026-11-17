@@ -1079,9 +1079,9 @@ func (MemoryGuardKill) isFact() {}
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
-// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds a tree's root
-// architect already running, whose launch has no second ready (the outbox's start). Launch is the
-// claim's launch generation the ready belongs to, the running one for the second source.
+// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
+// already running, whose launch has no second ready (the outbox's start). Launch is the claim's
+// launch generation the ready belongs to, the running one for the second source.
 type ClaimReady struct {
 	Issue  string
 	Role   claim.Role
@@ -1098,8 +1098,8 @@ type ClaimReady struct {
 	// (supervise.EndedWork.Tells); "" otherwise. A record that still tells is one of the claim's
 	// current session's processes, since abandoning a session ends the record of its process
 	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
-	// (the daemon's applyTerminal): a root architect's catch-up opens with it (workflow's
-	// QueueCatchUp), because the first turn of a relaunched root architect can be that catch-up's
+	// (the daemon's applyTerminal): an architect's catch-up opens with it (workflow's
+	// QueueCatchUp), because the first turn of a relaunched architect can be that catch-up's
 	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
 	// prompt the claim's machine sends, at that prompt's confirmation.
 	Relaunch string
