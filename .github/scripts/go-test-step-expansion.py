@@ -228,7 +228,6 @@ EXCEPTIONS = (
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
         }),
         package="github.com/sjawhar/envoy/internal/broker/airlock",
         functions=("FuzzAirlock",),
@@ -238,8 +237,10 @@ EXCEPTIONS = (
             ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
-            "that same corpus, so both name the function; envoy-go runs the corpus as part of the "
-            "package."
+            "that same corpus, so both name the function. envoy-go runs the corpus as part of "
+            "./internal/broker/... in its step \"Count the database broker suites' skips\", "
+            "through packages/envoy/scripts/database-skips.sh, a script this tool does not read, "
+            "so no step of envoy-go appears here."
         ),
     ),
 )
