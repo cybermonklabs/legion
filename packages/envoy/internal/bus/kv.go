@@ -193,7 +193,8 @@ func namedRequest(request string, err error) error {
 // EnsureKeyValue opens the KV bucket config names on conn, through js, creating it with config when
 // it does not exist. config.Replicas is the deployment's replica count (ReplicasEnvVar): a new
 // bucket is created at it, and an existing bucket with fewer copies is raised to it
-// (raiseReplicas). A refused create or raise of more than one copy names the setting
+// (raiseStream, after the read of the bucket's stream every start makes of a bucket it finds).
+// A refused create or raise of more than one copy names the setting
 // (refusedSettings), and is returned as soon as the server answers it: nothing a server refuses is
 // waited out. A bucket a ConnectOwningStream client names (WithKeptBuckets) is raised to
 // the deployment's count again by that client's keeper from then on, which also ends a lowering by
@@ -204,7 +205,10 @@ func namedRequest(request string, err error) error {
 // server answers that create "stream name already in use"), is waited for on the member answering
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
 // before every member has applied it. A bucket this start raised is waited for until its copies
-// are current (awaitReplicasCurrent).
+// are current (awaitReplicasCurrent). A bucket this start created at more than one copy, one a
+// concurrent start created, and one it found with no leader, at any copy count of its own, are
+// waited for until the stream has a leader (awaitStreamLeader), since a write to a stream with no
+// leader draws no answer.
 //
 // Every wait of this call is on the cluster, and ends on what the cluster says: the fact it waits
 // for, or the server's own error, which is returned at once. Nothing else ends it but ctx, the
@@ -250,8 +254,10 @@ func namedRequest(request string, err error) error {
 // `KV_envoy_webhook_redelivery create: ...` for the create. A name is the step and not the
 // requests inside it, because which requests a send of the create makes depends on the answers it
 // draws (the comment on the create below lists them): a list of them would name requests the
-// server answered and leave out the one it did not (namedRequest). A raise names itself
-// (raiseReplicas), and a refused create names the setting behind it after the step:
+// server answered and leave out the one it did not (namedRequest). The read of a found bucket's
+// stream names the step it serves and the request, `read KV_<bucket>: KV_<bucket> STREAM.INFO:
+// ...` at one copy and `raise KV_<bucket>: KV_<bucket> STREAM.INFO: ...` above it; a raise names
+// itself (raiseStream), and a refused create names the setting behind it after the step:
 // `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`.
 //
 // The handle open this function ends with is sent again too when the server leaves it unanswered
