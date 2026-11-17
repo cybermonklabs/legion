@@ -252,19 +252,17 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	}
 }
 
-// Only the reviewer's own review-App session moves the commit (byReviewer), not every review the
-// review App submitted (byReviewApp): the controller, an architect and a sibling tree's role post
-// under the same login. A deciding review-App review whose footer names another session decides the
-// round when its author can write (DecidesRound), and the round's decision is that review's; the
-// commit is still the one the reviewer's newest recorded review read. The daemon never reads
-// write access for the review App's own login (daemon's reviewerCanWrite), so production never
-// delivers this review with AuthorCanWrite set: the fixture sets it so that a review of another
-// session reaches the write of the commit while the reviewer's session is recorded, the one case
-// in which byReviewer alone keeps the commit where it stands. The pull request moves to
-// headTwo before the other session's review, so a commit moved by that review would differ from
-// the reviewer's headOne. The reviewer completes round 1 after its review, as it does in
-// production.
-func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *testing.T) {
+// A deciding review that is not of the reviewer's session moves no commit (byReviewer), whatever
+// its body says: here a person with write access, whose review body holds the reviewer's own
+// Legion footer in a quote, naming the reviewer's session and the entry that stands
+// (lastLegionFooter reads the last footer wherever it stands in the body). The person's review
+// decides the round, as a person's always does, on the commit_id its webhook carried, and the
+// commit stays the one the reviewer's own review read: the session condition of the write is the
+// one thing that holds it there, since the entry the footer names is the row's. The pull request
+// moves to headTwo before the person's review, so a commit moved by it would differ from the
+// reviewer's headOne. TestAPersonsReviewDoesNotMoveTheReviewersCommit is the person's review with
+// no footer.
+func TestAPersonsReviewThatQuotesTheReviewersFooterDoesNotMoveItsCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -281,53 +279,23 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
 	}
 
-	apply("another-session-requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2, State: "changes_requested", CommitID: headTwo,
-		Author: testReviewApp, AuthorCanWrite: true, Body: roundReviewBody(t, pool, "ses-controller", "rename it", headTwo),
-		SubmittedAt: reviewTestedAt.Add(2 * time.Hour)})
+	quoted := "Agreed: rename it.\n\n> " + strings.ReplaceAll(roundReviewBody(t, pool, "ses-reviewer", "rename it", headTwo), "\n", "\n> ")
+	review := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2, State: "changes_requested", CommitID: headTwo,
+		Author: "a-writer", AuthorCanWrite: true, Body: quoted, SubmittedAt: reviewTestedAt.Add(2 * time.Hour)}
+	if review.LegionSession() != "ses-reviewer" || review.LegionEntry() != reviewerRow(t, pool).Entry {
+		t.Fatalf("the person's review names session %q and entry %d, want ses-reviewer and the row's entry %d: the quote must carry the reviewer's footer",
+			review.LegionSession(), review.LegionEntry(), reviewerRow(t, pool).Entry)
+	}
+	apply("person-requests-changes", review)
 	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("after the other session's request for changes the issue is in %s, want implementing: its author can write, so it decides the round", got)
+		t.Fatalf("after the person's request for changes the issue is in %s, want implementing: its author can write, so it decides the round", got)
 	}
 	row := reviewerRow(t, pool)
 	if row.Decision == nil || row.Decision.State != "changes_requested" || row.Decision.Head != headTwo {
-		t.Fatalf("round 2's decision = %+v, want the other session's request for changes at %s", row.Decision, headTwo)
+		t.Fatalf("round 2's decision = %+v, want the person's request for changes at %s", row.Decision, headTwo)
 	}
 	if row.ReviewedHead != headOne {
-		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s: a review from another review-App session is no review the reviewer read", row.ReviewedHead, headOne)
-	}
-}
-
-// In the reviewer's first round its row names no claim (seedRoundOneRows): the reviewer submits its
-// review before it completes, and only a completion writes the row's claim. The commit still moves
-// only for a review the session of the reviewer's own claim submitted, the session the daemon
-// records on the claim it starts the reviewer under. A deciding review that another review-App
-// session submitted at the head - the controller's, here - records none, so the next round reads
-// the whole change rather than only what came after a commit no review of the reviewer read. The
-// review is given AuthorCanWrite, which production never sets for the review App (daemon's
-// reviewerCanWrite), so that it decides the round and reaches the write of the commit; the
-// production shape, where it decides nothing, is TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides.
-// The reviewer's own review of round 1 records its head.
-func TestAReviewFromAnotherReviewAppSessionMovesNoCommitInTheReviewersFirstRound(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		session string
-		want    string
-	}{
-		{name: "round 1: another review-App session's review", session: "ses-controller"},
-		{name: "round 1: the reviewer's own review", session: "ses-reviewer", want: headOne},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedReviewOf(t, pool, headOne, "green")
-			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "changes_requested", CommitID: headOne,
-				Author: testReviewApp, AuthorCanWrite: true, Body: roundReviewBody(t, pool, tc.session, "rename it", headOne),
-				SubmittedAt: reviewTestedAt})
-			row := reviewerRow(t, pool)
-			if row.ReviewedHead != tc.want {
-				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q: the review came from session %s, and the reviewer's claim records ses-reviewer (row claim %q)",
-					row.ReviewedHead, tc.want, tc.session, row.Claim)
-			}
-		})
+		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s: a person's review is no review the reviewer read, whatever footer it quotes", row.ReviewedHead, headOne)
 	}
 }
 

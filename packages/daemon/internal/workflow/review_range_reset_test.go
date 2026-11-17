@@ -303,8 +303,10 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(
 // nothing says why in one log line: the row holds no entry's task, the footer names no entry, or
 // it names another entry than the row's. Round 2 here stands at headTwo, the commit round 1 read
 // is headOne, and each review is at headTwo. Round 1's entry is an older entry of the same issue
-// generation. Another review-App session's review of the entry that stands moves nothing either,
-// and logs no such line, since it is not the reviewer's.
+// generation. Another review-App session's review of the entry that stands decides nothing and
+// moves nothing, and logs no such line, since it is not the reviewer's. Each review is the review
+// App's as production delivers it: the daemon never reads write access for the review App's
+// login (daemon's reviewerCanWrite), so AuthorCanWrite is false.
 func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
 	const why = "workflow: the reviewer's own review moves no reviewed commit: "
 	for _, tc := range []struct {
@@ -314,18 +316,20 @@ func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
 		session, entry string
 		// taskless takes the entry's task off the reviewer's row before the review.
 		taskless bool
-		want     string
-		logged   func(first, standing int64) string
+		// decides is whether the review decides round 2.
+		decides bool
+		want    string
+		logged  func(first, standing int64) string
 	}{
-		{name: "an approval of the entry that stands", state: "approved", session: "ses-reviewer", entry: "standing", want: headTwo},
-		{name: "a request for changes of the entry that stands", state: "changes_requested", session: "ses-reviewer", entry: "standing", want: headTwo},
-		{name: "a footer that names no entry", state: "changes_requested", session: "ses-reviewer", entry: "none", want: headOne,
+		{name: "an approval of the entry that stands", state: "approved", session: "ses-reviewer", entry: "standing", decides: true, want: headTwo},
+		{name: "a request for changes of the entry that stands", state: "changes_requested", session: "ses-reviewer", entry: "standing", decides: true, want: headTwo},
+		{name: "a footer that names no entry", state: "changes_requested", session: "ses-reviewer", entry: "none", decides: true, want: headOne,
 			logged: func(int64, int64) string { return why + "its footer names no entry" }},
-		{name: "an older entry of the same generation", state: "changes_requested", session: "ses-reviewer", entry: "first", want: headOne,
+		{name: "an older entry of the same generation", state: "changes_requested", session: "ses-reviewer", entry: "first", decides: true, want: headOne,
 			logged: func(first, standing int64) string {
 				return fmt.Sprintf(why+"its footer names entry %d and the reviewer's row stands at entry %d", first, standing)
 			}},
-		{name: "a row that holds no entry's task", state: "changes_requested", session: "ses-reviewer", entry: "standing", taskless: true, want: headOne,
+		{name: "a row that holds no entry's task", state: "changes_requested", session: "ses-reviewer", entry: "standing", taskless: true, decides: true, want: headOne,
 			logged: func(int64, int64) string { return why + "the reviewer's row holds no entry's task" }},
 		{name: "another session's review of the entry that stands", state: "changes_requested", session: "ses-controller", entry: "standing", want: headOne},
 	} {
@@ -360,9 +364,13 @@ func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
 			}
 			logs.Reset()
 			apply("review-2", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2, State: tc.state, CommitID: headTwo,
-				Author: testReviewApp, AuthorCanWrite: true, Body: body, SubmittedAt: reviewTestedAt.Add(2 * time.Hour)})
-			if row := reviewerRow(t, pool); row.Decision == nil || row.Decision.State != tc.state || row.Decision.Head != headTwo {
-				t.Fatalf("round 2's decision = %+v, want the review's %s at %s: who decides the round does not change", row.Decision, tc.state, headTwo)
+				Author: testReviewApp, Body: body, SubmittedAt: reviewTestedAt.Add(2 * time.Hour)})
+			row := reviewerRow(t, pool)
+			switch {
+			case tc.decides && (row.Decision == nil || row.Decision.State != tc.state || row.Decision.Head != headTwo):
+				t.Fatalf("round 2's decision = %+v, want the review's %s at %s: the entry it names does not change who decides the round", row.Decision, tc.state, headTwo)
+			case !tc.decides && (row.Decision != nil || issuePhase(t, pool) != phase.Reviewing):
+				t.Fatalf("round 2's decision = %+v in %s, want none in reviewing: a review-App review of another session decides nothing", row.Decision, issuePhase(t, pool))
 			}
 			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
 				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q", got, tc.want)
