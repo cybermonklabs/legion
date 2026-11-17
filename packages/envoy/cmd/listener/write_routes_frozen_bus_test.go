@@ -135,7 +135,7 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 	rig.register(t, control, controlLeaver, claimant, leaver)
 	for _, id := range []string{cachedSub, cachedUnsub} {
 		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id},
-			[]string{contracts.AgentSubject(id), topic, otherTopic}); err != nil {
+			[]string{contracts.LegacyAgentSubject(id), topic, otherTopic}); err != nil {
 			t.Fatalf("write %s's interest record: %v", id, err)
 		}
 	}

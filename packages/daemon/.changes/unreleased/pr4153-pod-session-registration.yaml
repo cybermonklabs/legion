@@ -1,0 +1,27 @@
+kind: Added
+body: |-
+  With `runtime.kubernetes.agent_secrets.exchange_audience` set, the daemon registers each role's
+  session for its pod at the secrets broker (`POST /v1/oauth/exchange/pod-sessions`, under the
+  daemon's own ServiceAccount token), bound to the role's own key: every write sends the
+  thumbprint the role's shim hello names, and the broker refuses a trade for that session proved
+  with any other key. No registration is sent before the role's hello names its thumbprint: an Oh
+  My Pi role's is made when its agent registers, a Claude Code role's at its shim's hello, and a
+  relaunched role's for the session it resumes, at its new hello. A registration keeps the key its
+  process's first hello names: a later hello of the same process naming another key is logged and
+  changes nothing. It writes each live registration
+  again every 6 hours and retries a failed write at 15 seconds doubling to 5 minutes,
+  `403 POD_REGISTRAR_NOT_LISTED` included. When a role's process ends, the daemon waits for that
+  registration's write in flight, up to the RPC timeout, before the next process writes its own.
+  Every write also sends the claim's launch generation, and the broker keeps the registration of
+  the latest one, so a late write of an earlier process cannot put its key back; an answer at a
+  later generation ends that registration's writes, logged at error level with the pod, the
+  session and both generations, as a later process of the claim's registration, or, when the
+  answered generation is above the claim's current one, as a registration this daemon never made. An
+  answer that names another pod or another key than the daemon sent ends them
+  too, logged with the pod, the session and both values. The registration needs this release's
+  broker, which binds and orders it; an earlier broker refuses the `thumbprint` and `generation`
+  fields. Until t-e-54
+  holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with
+  its own key, the daemon registers whatever session id a role's agent reports and a role's own
+  trade is refused, so set no `exchange_audience` before both are in. Unset, no registration is
+  made.

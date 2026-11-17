@@ -100,7 +100,7 @@ func TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer(t *testing.T
 func TestARestoredConsumerDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 	rig := newRelayRig(t)
 	sessionID := "ses_acked_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	var written []contracts.Envelope
@@ -180,7 +180,7 @@ const sessionEntryWriteDelay = 400 * time.Millisecond
 func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *testing.T) {
 	rig := newRelayRig(t)
 	sessionID := "ses_entry_write_race_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	hub := testnats.StartProxy(t, rig.url, testnats.ProxyLatency(sessionEntryWriteDelay))
 	slow, err := session.OpenSessionRegistry(testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
 	if err != nil {
@@ -271,7 +271,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 	registering := newRelayRig(t)
 	deleting := newSessionConsumerRig(t)
 	sessionID := "ses_register_repair_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, registering.url, sessionID, answerDone)
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	// The frames the session acks before the registration below: its floor stands at the last of
@@ -399,7 +399,7 @@ func TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf(t *testing.T)
 	deleting := newSessionConsumerRig(t)
 	const sessionID = "ses_cache_behind"
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	registering.store(t, contracts.AgentSubject(sessionID))
+	registering.store(t, contracts.LegacyAgentSubject(sessionID))
 	registering.awaitPending(t, sessionID, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -469,7 +469,7 @@ func TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf(t *testing.
 	const sessionID = "ses_topics_behind"
 	const probe = "notifications.dispatch.issue.PROBE.>"
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	awaitCachedTopics(t, deleting.deps.registry, sessionID, contracts.AgentSubject(sessionID))
+	awaitCachedTopics(t, deleting.deps.registry, sessionID, contracts.LegacyAgentSubject(sessionID))
 	deleting.deps.registry.StopWatch()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

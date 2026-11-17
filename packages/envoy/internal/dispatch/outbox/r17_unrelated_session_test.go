@@ -49,7 +49,7 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	firstPass := time.Since(start)
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	attempts, due := nextAttempt(t, rig.database, comment.ID)
-	sentFirst := slices.Contains(reached, contracts.AgentSubject(author))
+	sentFirst := slices.Contains(reached, contracts.LegacyAgentSubject(author))
 	var reread time.Duration
 	if due != nil {
 		reread = time.Until(*due)

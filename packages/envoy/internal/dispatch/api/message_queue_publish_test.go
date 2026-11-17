@@ -48,9 +48,9 @@ func assertQueuedEnvelope(
 ) {
 	t.Helper()
 	wantKey := contracts.AgentSendDedupeKey(session, message.ID+":"+mode)
-	if envelope.Topic != contracts.AgentSubject(session) || envelope.DedupeKey != wantKey || envelope.Source != "dispatch" {
+	if envelope.Topic != contracts.LegacyAgentSubject(session) || envelope.DedupeKey != wantKey || envelope.Source != "dispatch" {
 		t.Fatalf("queued envelope on %q under %q from %q, want %q under %q from dispatch",
-			envelope.Topic, envelope.DedupeKey, envelope.Source, contracts.AgentSubject(session), wantKey)
+			envelope.Topic, envelope.DedupeKey, envelope.Source, contracts.LegacyAgentSubject(session), wantKey)
 	}
 	frame := decodeDeliveryFrame(t, map[string]any{"payload": envelope.Payload})
 	if frame.Event.Type != "message.created" || frame.Event.Payload.ID != message.ID ||
@@ -461,7 +461,7 @@ func TestTheQueuedTestHookListsWhatThisProcessQueued(t *testing.T) {
 		t.Fatalf("list queued messages: status=%d body=%s", read.Code, read.Body.String())
 	}
 	listed := decodeBody[queuedMessages](t, read).Queued
-	if len(listed) != 1 || listed[0].Subject != contracts.AgentSubject("s1") ||
+	if len(listed) != 1 || listed[0].Subject != contracts.LegacyAgentSubject("s1") ||
 		listed[0].DedupeKey != contracts.AgentSendDedupeKey("s1", message.ID+":steer") || listed[0].Source != "dispatch" ||
 		listed[0].PayloadSummary != "Restart the deploy." {
 		t.Fatalf("queued messages = %#v, want the one Send queued on s1's subject under its send's key", listed)

@@ -61,9 +61,9 @@ func MessageEnvelope(m Message, topic, dedupeKey string) Envelope {
 }
 
 // AgentSendEnvelope is the envelope of a direct message to targetSession as the stream stores it:
-// on the session's own topic (AgentSubject) under AgentSendDedupeKey(targetSession,
-// idempotencyKey), with a key minted here for a send that names none, which only a re-send of
-// that very envelope repeats (MintedDedupeKeyPattern).
+// on the session's own topic, in the form every reader takes (LegacyAgentSubject), under
+// AgentSendDedupeKey(targetSession, idempotencyKey), with a key minted here for a send that names
+// none, which only a re-send of that very envelope repeats (MintedDedupeKeyPattern).
 //
 // Two senders build it, and both build it here so the two cannot drift apart: the listener's send
 // route (POST /v1/messages/send), which stores it for a session it holds a record of, and
@@ -76,5 +76,5 @@ func AgentSendEnvelope(targetSession, idempotencyKey string, m Message) Envelope
 	if idempotencyKey == "" {
 		idempotencyKey = id.New()
 	}
-	return MessageEnvelope(m, AgentSubject(targetSession), AgentSendDedupeKey(targetSession, idempotencyKey))
+	return MessageEnvelope(m, LegacyAgentSubject(targetSession), AgentSendDedupeKey(targetSession, idempotencyKey))
 }

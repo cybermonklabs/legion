@@ -50,7 +50,7 @@ func captureLaneForwards(t *testing.T, url, sessionID string) <-chan contracts.E
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	t.Cleanup(conn.Close)
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	forwards := make(chan contracts.Envelope, 16)
 	if _, err := conn.Subscribe(agent, func(msg *natsgo.Msg) {
 		var item contracts.Envelope
@@ -134,7 +134,7 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 
 	run := id.New()
 	sessionID := "ses_current_registration_" + run
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	const firstDir, secondDir = "/work/first-registration", "/work/second-registration"
 	followed := "notifications.dispatch.issue.INFRA-889-" + run + ".>"
 	comment := "notifications.dispatch.issue.INFRA-889-" + run + ".comment"

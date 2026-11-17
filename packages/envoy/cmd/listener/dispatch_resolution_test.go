@@ -731,7 +731,7 @@ func (rig *dispatchRig) claim(
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 	rig := newDispatchRig(t)
 	const released = "ses_released"
-	subject := contracts.AgentSubject(released)
+	subject := contracts.LegacyAgentSubject(released)
 	if _, err := rig.warm.registry.Upsert(store.Interest{SessionID: released, MachineID: rigMachineID}, []string{subject}); err != nil {
 		t.Fatalf("register %s's interest naming this listener: %v", released, err)
 	}

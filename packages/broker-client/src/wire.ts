@@ -52,3 +52,8 @@ export const ACTOR_TOKEN_TYPE_MACHINE = "urn:envoy:params:oauth:token-type:machi
 /** The only `token_type` this grant mints: every token it answers is bound to the key the caller
  *  proved, and is presented as `Authorization: DPoP <token>` beside a proof of that key. */
 export const TOKEN_TYPE_DPOP = "DPoP";
+
+/** Followed by a colon, begins the `error_description` of the broker's `invalid_grant` for a pod
+ *  whose session no registration names yet (`oauthwire.PodSessionNotRegistered`): the one refusal
+ *  of the broker's state a later trade cures, which a client trades again on rather than stop. */
+export const POD_SESSION_NOT_REGISTERED = "pod_session_not_registered";

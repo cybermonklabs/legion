@@ -356,6 +356,11 @@ IMAGE_FROM = {
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
     ),
+    ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "nats_image"): (
+        "scripts/e2e/lib/nats-image.sh sets it to testnats.HubImage, the Go string constant "
+        "packages/envoy/internal/testnats/nats.go declares, which is in the reach above and whose "
+        "reference this check reads (scripts/e2e/lib/nats-image.test.ts holds the helper to it)"
+    ),
     (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"
