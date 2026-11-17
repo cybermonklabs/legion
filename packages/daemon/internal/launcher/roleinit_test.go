@@ -90,11 +90,13 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 
 // Every start of a role runs in namespaces of its own. The role reads its own gh bundle and its
 // generation's credentials at the fixed paths every role is told; a sibling role's directory and
-// every launcher token, its own included, are gone; it sees and can signal only its own
-// processes; what it writes under its home and in its temporary directories lands on its own
-// layer, invisible to the container; every mount its home carried is still there; its config home
-// is its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
-// nothing of the role is left, not even a detached process that ignores SIGTERM.
+// every launcher token, its own included, are gone; it reads the log of the pod's test database
+// at its fixed path, the one file from under the roles directory it sees, and cannot write it; it
+// sees and can signal only its own processes; what it writes under its home and in its temporary
+// directories lands on its own layer, invisible to the container; every mount its home carried is
+// still there; its config home is its own, a copy of the pod's shared one that no sibling reads;
+// and when the role's init exits nothing of the role is left, not even a detached process that
+// ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -189,6 +191,13 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent pty", "opened", "the role's agent can open a terminal of its own"},
 		{"agent pts-own", "1", "the terminal the role opened is in its own /dev/pts"},
 		{"agent2 pts-entries", "0", "the relaunch's /dev/pts holds none of the container's terminals either"},
+		// The pod's test database log: the one file from under the roles directory a role reads,
+		// through a read-only bind of that file alone.
+		{"agent testpg-log", "testpg-line-1", "the role reads the pod's test database log at the fixed path every role is told"},
+		{"agent testpg-log-write", "refused", "the role cannot write the log: role-init binds it read-only"},
+		{"stage testpg-source", "testpg-line-1", "the role's write never reached the server's log, which holds what the stage wrote and nothing else"},
+		{"agent2 testpg-log", "testpg-line-1; testpg-line-2", "the relaunched role reads what the server has logged since, both lines"},
+		{"agent-sibling testpg-log", "", "a role of a pod that serves no test database starts with an empty mount point where the log would be"},
 	} {
 		if got, ok := report[want.key]; !ok || got != want.value {
 			t.Errorf("%s = %q, want %q: %s\n%s", want.key, got, want.value, want.why, output)
@@ -349,6 +358,19 @@ func runStage(plan stagePlan) error {
 			return err
 		}
 	}
+	// The pod's test database log, as the launcher makes it under the roles directory before any
+	// role starts, holding the server's first line, and its mount point under the fixed root,
+	// the empty file the worker image makes.
+	serverLog := testPGLog(rolesDir)
+	if err := os.MkdirAll(filepath.Dir(serverLog), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(serverLog, []byte("testpg-line-1\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(fixedRoot, RoleTestPGLog), nil, 0o444); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return err
 	}
@@ -438,6 +460,8 @@ func runStage(plan stagePlan) error {
 	fmt.Printf("stage container-tmp=%s\n", presence(filepath.Join("/tmp", "planted")))
 	fmt.Printf("stage container-shm=%s\n", presence(filepath.Join("/dev/shm", "planted")))
 	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached))
+	// The log's lines go on the one line a report carries (oneLine), here and in the agent.
+	fmt.Printf("stage testpg-source=%s\n", oneLine(content(serverLog)))
 
 	// The role's relaunch: a second generation over the same role-homes volume, with the
 	// agent-secrets directory gone, as a pod that is not enrolled with the secrets broker has it.
@@ -458,6 +482,18 @@ func runStage(plan stagePlan) error {
 			return err
 		}
 	}
+	// The server has gone on logging since the role's first generation: a second line, appended
+	// to the same file as the server appends.
+	appending, err := os.OpenFile(serverLog, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := appending.WriteString("testpg-line-2\n"); err != nil {
+		return err
+	}
+	if err := appending.Close(); err != nil {
+		return err
+	}
 	layout.Detached = plan.Detached + "2"
 	// What the links named is reported even when the generation failed, so a role-init that
 	// followed one shows where it wrote.
@@ -475,6 +511,11 @@ func runStage(plan stagePlan) error {
 	// midway, or anything else, would leave: it holds no marker of a finished copy, so the
 	// sibling's role-init makes the copy again.
 	if err := os.MkdirAll(filepath.Join(siblingConfig, "stale"), 0o755); err != nil {
+		return err
+	}
+	// The sibling starts as a role of a pod that serves no test database does: with no log under
+	// the roles directory, so role-init binds nothing over the mount point.
+	if err := os.Remove(serverLog); err != nil {
 		return err
 	}
 	siblingPlan := plan
@@ -587,6 +628,10 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	say("own-gh", content(filepath.Join(plan.FixedRoot, RoleGHDir, plan.Owner, "hosts.yml")))
 	say("own-boot-token", content(filepath.Join(plan.FixedRoot, RolePrivateDir, "g1", "LEGION_BOOT_TOKEN")))
 	say("own-state", writable(filepath.Join(plan.FixedRoot, RoleStateDir)))
+	// The pod's test database log at its fixed path: what the server has written so far, which
+	// the role reads and cannot add to.
+	say("testpg-log", oneLine(content(filepath.Join(plan.FixedRoot, RoleTestPGLog))))
+	say("testpg-log-write", appended(filepath.Join(plan.FixedRoot, RoleTestPGLog)))
 	// The agent-secrets directory is bound only when the pod is enrolled with the broker: its
 	// key is the role's own in the first generation, and the second runs with none.
 	say("own-agent-secrets", presence(filepath.Join(plan.FixedRoot, RoleAgentSecretsDir, "key.pem")))
@@ -859,6 +904,24 @@ func content(path string) string {
 		return "unreadable: " + err.Error()
 	}
 	return strings.TrimSpace(string(body))
+}
+
+// appended is what the role gets when it tries to add a line to the file at path: `refused` where
+// the open is denied, because the file is on a read-only mount (EROFS) or is not the role's to
+// write, `written` when the line went in, and the error's own text for anything else.
+func appended(path string) string {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	switch {
+	case errors.Is(err, syscall.EROFS), errors.Is(err, fs.ErrPermission):
+		return "refused"
+	case err != nil:
+		return err.Error()
+	}
+	defer file.Close()
+	if _, err := file.WriteString("written-by-the-role\n"); err != nil {
+		return err.Error()
+	}
+	return "written"
 }
 
 func writable(dir string) string {

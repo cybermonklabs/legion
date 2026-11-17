@@ -962,6 +962,14 @@ COPY packages/daemon/docker/tls-roots /usr/share/legion/tls-roots
 # legion-testpg: root-owned and mode 0555, like every other program on the image's PATH, so a role
 # cannot rewrite the script the roles container's launcher runs.
 COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-testpg
+# /var/run/legion/testpg.log is the mount point an issue pod's role-init binds the pod's test
+# server log at, read-only (packages/daemon/internal/launcher, roleinit_linux.go; legion-testpg
+# says what the server logs there): inside a role's namespaces the role is the runtime user, which
+# can create nothing under the root-owned /var/run, so the image makes the file, as it makes the
+# role mount points beside it. It is empty, root's and mode 0444: a role of a pod that serves no
+# test database reads an empty file there. The final step refuses an image where it is anything
+# else.
+RUN install -m 0444 -o root -g root /dev/null /var/run/legion/testpg.log
 # Keep Debian's chromium package for its shared-library dependency closure, but make its vulnerable
 # executable unreachable and expose the pinned Chrome for Testing binary under the usual name.
 RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
@@ -1131,7 +1139,8 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # role changes the image's copy
 # of the plugin code (a launch that installs the plugins loads them instead from the role's state
 # home on the issue volume, which every role of the issue can write); the role mount points under
-# /var/run/legion are root's, mode 0755 and empty;
+# /var/run/legion are root's, mode 0755 and empty, and the mount point of the pod's test server
+# log there, /var/run/legion/testpg.log, is root's, mode 0444 and empty;
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
@@ -1230,6 +1239,8 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     for dir in /var/run/legion/gh /var/run/legion/private /var/run/legion/state /var/run/legion/agent-secrets; do \
       test -z "$(ls -A "$dir")"; \
     done; \
+    testpg_log="$(stat -c '%u:%g %a %s' /var/run/legion/testpg.log)"; echo "/var/run/legion/testpg.log: $testpg_log"; \
+    test "$testpg_log" = "0:0 444 0"; \
     plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
     echo "plugin files not root's alone: ${plugins:-none}"; test -z "$plugins"; \
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \

@@ -38,9 +38,14 @@ const (
 // home at that path instead (RoleConfigHomeDir under the role's directory of RoleHomesDir), made
 // once per pod as a copy of the shared one, so what one role writes there — a git `core.fsmonitor`
 // or a jj alias, which run in whatever git or jj reads them — never reaches another role.
+//
+// RoleTestPGLog is the file under FixedRoot at which role-init binds, read-only, the log of the
+// pod's own test database (testpg.go), the one file from under the roles directory every role of
+// the pod reads: the worker image makes it an empty root-owned file, the mount point.
 const (
 	FixedRoot     = "/var/run/legion"
 	Home          = "/home/legion"
 	HomeMountsDir = FixedRoot + "/home"
 	ConfigHomeDir = ".config"
+	RoleTestPGLog = "testpg.log"
 )

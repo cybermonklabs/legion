@@ -326,6 +326,25 @@ Then:
   what bounds it is the pod's own ephemeral-storage limit, and a runaway test that fills the node's disk through it is evicted with all six roles.
   The WAL settings below bound the server's steady state, not a test writing rows.
 
+- The **server's log** is `server.log` in that directory.
+  The launcher names the file to the script (`LEGION_TESTPG_LOG`) and creates it before the first `ensure`, and every role reads it at `/var/run/legion/testpg.log`, the path `LEGION_TEST_PG_LOG` names:
+  role-init binds that one file there read-only, over an empty root-owned file the image makes.
+  It binds the file and not its directory because gVisor does not lock a read-only bind.
+  Measured in an issue pod on 2026-11-17, a role's own `unshare -Urm` remounted a read-only bind read-write, which Linux refuses; the cover over the roles directory held (its unmount answered `EINVAL`).
+  A role with a writable view of the directory could replace `server.log` with a link, and the next `pg_ctl start` or `ensure` would write the server's output through it, into `postgresql.auto.conf` for one.
+  A bound file can at worst be written to, and nothing that reads the cluster's configuration reads the log; it cannot be replaced or removed, since it is a mount point.
+  The script and the server only ever append to the file or truncate it in place, so every role's bind keeps pointing at the file the server writes.
+  The daemon's image probe (`legion probe-image --role-namespaces`) makes the same read-only bind of a file, so a runtime that refuses it fails the boot probe rather than every role's start.
+  The server logs every connection with `log_connections=all`: a `connection received` line with the client's port the moment the postmaster accepts it, then the authentication, the authorization, and the setup time with the fork's share of it.
+  With `log_disconnections` it logs each session's end.
+  That costs about 350 bytes a connection (measured over 4,241 connections), for the pod's life:
+  the pod's ephemeral-storage limit bounds the log, as it bounds the data directory.
+  So a connect that failed with lines of its own failed in the server, and the log names why, while a connect with no `connection received` line never reached the postmaster.
+  The listen queue Postgres asks for is twice `max_connections`, 942, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
+  under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
+  No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
+
 - The DSN's user is `legion_test`, created `LOGIN CREATEDB CREATEROLE NOSUPERUSER` after the start;
   `initdb`'s superuser is the container's own OS user (`legion`).
   A test gets `create
@@ -340,6 +359,8 @@ Then:
   A plain `drop database` makes the server end that autovacuum worker itself and needs no such right:
   the clause is there to end a connection a test left open, which is why the helpers write it.
   Without the grant `packages/daemon/internal/workflow`'s tests fail in the pod alone, at a different three each run, with `permission denied to terminate process` (SQLSTATE 42501), and pass in CI, whose login is a superuser.
+  It is granted `pg_monitor` too — `pg_read_all_settings`, `pg_read_all_stats` and `pg_stat_scan_tables` — so a role looking for why a connect failed reads every backend's row of `pg_stat_activity`, its siblings' included, and the server's settings;
+  it reads no file, since it does not hold `pg_read_server_files`, and runs no program.
 
 - `ensure` is idempotent and cheap when the server is up:
   it returns after one connection through the DSN itself (`psql … select 1`, with a connect timeout), and otherwise initialises and starts under `flock -o`.
