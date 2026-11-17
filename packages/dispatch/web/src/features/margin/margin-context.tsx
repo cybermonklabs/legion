@@ -536,8 +536,13 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   const revealCompose = useCallback((artifact: string) => show(artifact, false), [show]);
   const retypeCompose = useCallback(
     (kind: ComposerKind): string | undefined => {
-      const open = openCompose.current;
       const bridge = bridgeRef.current;
+      // The open compose stays open while the reader is on another document (`useMarginSheet`),
+      // so it is this switch's only while its document is the one registered here.
+      const open =
+        bridge === undefined || openCompose.current?.request.anchor.artifact === bridge.artifactId
+          ? openCompose.current
+          : undefined;
       const held =
         open === undefined && bridge !== undefined
           ? store.get(marginComposeSendKey(bridge.artifactId))

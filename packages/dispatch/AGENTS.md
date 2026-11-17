@@ -116,6 +116,20 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   A move of the host's - another row, another thread, a Reply on a message, a newer message in an
   Inbox agent thread, a phone thread's Back and Escape - carries nothing: the text stays with the
   address it was written for, and is there when the reader comes back to it.
+  A composer its host moves from reply to reply - the docked composer, a phone thread's, an Agents
+  row's - keeps what the field holds for the reply it was written for, or for none (`AwayDraft` in
+  `features/conversation/unsent-drafts.ts`, under the send name, `MentionComposer`'s `awayName`),
+  and the reply it arrives at shows what it keeps in place of a new reply's prefill. While the
+  composer shows another address it says the text is kept, whose message it answers and the way
+  back (`keptAwayLine`: `Your reply to the message by <author> is kept. Press Reply on that message
+  to go on with it.`, or `The message you wrote for CORE-1 is kept. Press Cancel reply to go on
+  with it.`). What it holds when its host takes it off the page - the tab, the Agents page, the
+  margin's document - waits the same way for the composer drawn at that address next. Leaving a
+  document leaves the margin's unsent compose open for it (`useMarginSheet`), so the compose and
+  its text are there when the reader comes back. The reader's own move onto an address that keeps
+  a draft of its own - Cancel reply back to a message kept for the issue, or to a refusal's own
+  address - carries nothing either, so nothing is written over: each draft stays where it was
+  written, as the phone thread composer's Cancel reply over the docked composer's draft (below).
   Neither move lets what the reader wrote go with no word. A composer whose own controls have no
   other composer to carry the draft to keeps it under its own send name: an inline reply's Cancel
   reply (and Escape in its field) ends the reply and drops nothing, so its text waits as a standing
@@ -134,7 +148,11 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   refusal's draft lives (`sameAddress` in `features/conversation/send-request.ts`), and
   `MentionComposer` turns Send and Retry off, offers Discard, and says where the draft was
   written for (`writtenElsewhere`); back on that address its Retry goes there, and while it is
-  elsewhere nothing typed is written into that refusal's draft, and a Reply's prefill leaves it.
+  elsewhere nothing typed is written into that refusal's draft. What the reader types there is
+  that address's: kept for it when the host moves the composer on or takes it off the page (for a
+  standing box, under the send name), while the field shows the refusal's own draft again at the
+  refusal's address, and a Reply's prefill leaves the field to the refusal's draft, or to the
+  draft kept for that reply.
   A file that lands, or is refused, while the host has the composer elsewhere waits for the
   composer to be back where its draft lives, and the composer says so (`landedFor`,
   `pastedElsewhere`).
@@ -148,7 +166,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   the first one was.`).
   A standing box (`standing`) answers what its host hands it, not a Reply the reader pressed, so
   its sentence offers Discard alone: an Inbox agent thread's box replies to the thread's newest
-  message, and a message that comes after the refusal moves the box onto it.
+  message, and a message that comes after the refusal moves the box onto it. Its draft is its
+  thread's, so a newer message the box moves onto leaves what the reader wrote in the field.
   The Inbox's agent thread boxes, in the reading pane and on a card (`AgentThreadBody` in
   `features/inbox/ThreadBody.tsx`), name their send by the thread (`threadSendKey`), as its comment
   and message boxes do, and show only the session's sends that answer that thread (`thread` on

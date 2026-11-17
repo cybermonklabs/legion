@@ -364,22 +364,24 @@ export function useMarginSheet(): MarginSheetModel {
     setTab("comments");
     openCompactSheet();
   }, [openCompactSheet, shownCompose]);
-  // An unsent compose ends when the reader leaves its document, and an unsent suggestion or ask
-  // when its issue closes, which refuses both; a comment compose stays, since a closed issue takes
-  // comments. One that was sent is the held-send store's (`MarginProvider` hands it over at Send)
-  // and stays.
+  // An unsent suggestion or ask compose ends when its issue closes, which refuses both; a comment
+  // compose stays, since a closed issue takes comments. `isClosed` is the open document's issue,
+  // so only a compose on that document is judged by it. Leaving the compose's document is the
+  // host's move, which carries nothing and drops nothing: the compose stays open for its document
+  // while the reader is on another, and its composer keeps what the reader wrote for it under its
+  // send name (`MentionComposer`'s `awayName`), so the compose shown when they come back holds it.
+  // One that was sent is the held-send store's (`MarginProvider` hands it over at Send) and stays.
   useEffect(() => {
-    if (pendingCompose === undefined) return;
-    if (
-      pendingCompose.anchor.artifact !== visibleArtifactId ||
-      (isClosed && pendingCompose.kind !== "comment")
-    ) {
+    if (pendingCompose === undefined || pendingCompose.anchor.artifact !== visibleArtifactId) {
+      return;
+    }
+    if (isClosed && pendingCompose.kind !== "comment") {
       cancelCompose(pendingCompose.seq);
     }
   }, [cancelCompose, isClosed, pendingCompose, visibleArtifactId]);
-  // Coming back to a document that holds a send of the margin's shows it: the compose held for
-  // the document, and a thread whose reply is held, opened as the reader left it. Once per arrival,
-  // once the document's threads are in.
+  // Coming back to a document that holds a compose of the margin's shows it: the compose held for
+  // the document, or the one still open for it, and a thread whose reply is held, opened as the
+  // reader left it. Once per arrival, once the document's threads are in.
   const arrivedAt = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (visibleArtifactId === undefined) {
@@ -388,7 +390,10 @@ export function useMarginSheet(): MarginSheetModel {
     }
     if (arrivedAt.current === visibleArtifactId || commentsPending) return;
     arrivedAt.current = visibleArtifactId;
-    if (store.get(marginComposeSendKey(visibleArtifactId)) !== undefined) {
+    if (
+      store.get(marginComposeSendKey(visibleArtifactId)) !== undefined ||
+      pendingCompose?.anchor.artifact === visibleArtifactId
+    ) {
       revealCompose(visibleArtifactId);
     }
     const heldThread = [...heldReplyKeys].find((key) => threadsByKey.has(key));
@@ -396,6 +401,7 @@ export function useMarginSheet(): MarginSheetModel {
   }, [
     commentsPending,
     heldReplyKeys,
+    pendingCompose,
     revealCompose,
     selectMarginItem,
     store,
