@@ -40,18 +40,19 @@ body: |-
   cycle: its recovery episode's reports wait for the hour, but a rise, raised in each cycle where
   two reported sweeps in a row start five points or more above the lowest start of that cycle's
   reported sweeps before them, is told without waiting. Each rise episode of a cycle, up to
-  (100 − A) / 5 of them for a cycle whose anchor is A at its first rise, costs up to three
-  notices that skip the hour, so a cycle costs at most nine such notices at the default high
-  mark, besides the recovery episode's reports, at most one an hour. Measured for one pod over a
-  day of 60-second intervals, sweeps taken as instant, with the least fill rate each cycle needs
-  on a 49 GiB volume: with sweeps that pause between reported starts of 86%, 91% and 92% and then
-  one leaving 69.9%, 42 notices a day at a 35-minute cycle (18.6 GiB an hour), 33 at 45 minutes
-  (14.4 GiB an hour) and 8 at six hours (1.8 GiB an hour); with that fill going on to 93% and
-  94%, 76 at 57 minutes (12.4 GiB an hour); with pauses and starts of 86%, 91% to 94% and 96% to
-  99%, two rise episodes a cycle, 86 at 101 minutes (8.5 GiB an hour); with no pause and starts
-  of 85%, three of 90%, three of 95% and four of 100%, three rise episodes a cycle, 999 at 13
-  minutes (90.7 GiB an hour). The shortest cycle of each of those fills needs the volume back
-  from 69.9% to the high mark or above within two minutes of the sweep that left it there, and
+  (100 − A) / 5 of them, rounded down, for a cycle whose anchor is A at its first rise, costs up
+  to three notices that skip the hour, so a cycle costs at most nine such notices at the default
+  high mark, besides the recovery episode's reports, at most one an hour. Measured for one pod
+  over a day of 60-second intervals, sweeps taken as instant, with the least fill rate each
+  cycle needs on a 49 GiB volume: with sweeps that pause between reported starts of 86%, 91% and
+  92% and then one leaving 69.9%, 42 notices a day at a 35-minute cycle (18.6 GiB an hour), 33
+  at 45 minutes (14.4 GiB an hour) and 8 at six hours (1.8 GiB an hour); with that fill going on
+  to 93% and 94%, 76 at 57 minutes (12.4 GiB an hour); with pauses and starts of 86%, 91% to 94%
+  and 96% to 99%, two rise episodes a cycle, 86 at 101 minutes (8.5 GiB an hour); with no pause
+  and starts of 85%, three of 90%, three of 95% and four of 100%, three rise episodes a cycle, 999
+  at 13 minutes (90.7 GiB an hour). Those fills need the volume back from 69.9% to their first
+  start within two minutes of the sweep that left it there, and their shortest cycles within one
+  minute, which costs more: 1,081 a day at a 12-minute cycle of the last fill (98.2 GiB an hour).
   docs/kubernetes.md gives the rest of the figures. The switched-off notice is sent whatever the
   bounds stand at. A rollback below this release has the operator delete the queued notices
   first, as docs/kubernetes.md says.

@@ -638,8 +638,9 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 // Measured for one pod over a day of 60-second intervals, through this loop and those bounds,
 // with each sweep taken as instant, and with the least fill rate each figure needs: what the
 // sweeps of one cycle free, which the roles wrote in that cycle, over the cycle's length, on a
-// volume of 49 GiB, a sweep that pauses taken to free nothing and one that does not to free one
-// point:
+// volume of 49 GiB, a reported sweep that pauses taken to free nothing, one that does not to free
+// one point, and the sweep that leaves 69.9% to free from where the last reported sweep left the
+// volume down to 69.9%:
 //   - sweeps that pause between reported starts of 86%, 91% and 92%, and then one that leaves
 //     69.9%: 42 notices a day at a 35-minute cycle (18.6 GiB an hour), 33 at 45 minutes (14.4 GiB
 //     an hour), 41 at 71 (9.2 GiB an hour) and 8 at six hours (1.8 GiB an hour);
@@ -654,11 +655,13 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 //     999 at 13 minutes (90.7 GiB an hour); two of 86%, four of 91% and three of 96%, which make
 //     two: 656 at 11 (91.1 GiB an hour).
 //
-// The shortest cycle of each fill there has one interval between the marks after the sweep that
-// leaves 69.9%, so the volume climbs back from there to its first start, 15.1 points or more, 7.4
-// GiB or more, in the two minutes after that sweep; back at that start the next interval, each is
-// a minute shorter and costs more, as 43 at 34 minutes, 78 at 56, 87 at 100 and 1,081 at 12. A
-// longer cycle of the same fill is a longer wait between the marks.
+// With one interval between the marks after the sweep that leaves 69.9%, the volume climbs back
+// from there to its first start, 15.1 points or more, 7.4 GiB or more, in the two minutes after
+// that sweep. The shortest cycle of each fill has none, the volume back at that start the next
+// interval, and each such cycle is a minute shorter and costs more, as 43 at 34 minutes (19.1 GiB
+// an hour), 78 at 56 (12.7 GiB an hour), 87 at 100 (8.6 GiB an hour), 721 at 10 for the fill of
+// two rise episodes with no pause (100 GiB an hour) and 1,081 at 12 for that of three (98.2 GiB
+// an hour). A longer cycle of the same fill is a longer wait between the marks.
 func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 	switch {
 	case t.episode == 0:

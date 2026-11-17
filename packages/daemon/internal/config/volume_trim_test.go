@@ -40,7 +40,7 @@ func TestVolumeTrimSettlesEachMemberTheFileLeavesOut(t *testing.T) {
 		// The accepted side of two refusals below, each one step from it: a high mark at 99,
 		// where 100 is refused, and a low mark one below the high one, where marks that meet
 		// are refused. R2 has the marks "whole numbers from 1 to 99 with low_percent below
-		// high_percent", and the rows above stand ten points or more inside either bound.
+		// high_percent", and the rows above stand four points or more inside either bound.
 		{"a high mark at the maximum", "    volume_trim: {high_percent: 99}\n", VolumeTrimConfig{Enabled: true, HighPercent: 99, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 60}},
 		{"a low mark one below the high one", "    volume_trim: {high_percent: 80, low_percent: 79}\n", VolumeTrimConfig{Enabled: true, HighPercent: 80, LowPercent: 79, MinAgeMinutes: 15, IntervalSeconds: 60}},
 		// The age at the maximum, and the refusal above it below, are written from the wire's
