@@ -707,16 +707,25 @@ func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
 	reason := "Legion moved this issue from testing back to implementing: the head conflicts with main: GitHub runs no checks on it; merge main forward (pull request #42 at head c0de)."
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
 	row.ID = 57
-	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}}
+	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}
+	runner := &outbox{dispatch: client}
 
-	if err := (&outbox{dispatch: client}).execute(context.Background(), row); err != nil {
-		t.Fatalf("execute the move: %v", err)
+	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "refused the message") {
+		t.Fatalf("first attempt = %v, want the message's failure", err)
 	}
-	if want := reason + "\n\n<!-- legion-outbox:57 -->"; len(client.messages) != 1 || client.messages[0] != want {
-		t.Fatalf("messages %q, want the reason once under the row's marker", client.messages)
+	if len(client.statuses) != 0 {
+		t.Fatalf("status writes %v after the reason failed to post, want none: the reason goes on the issue first", client.statuses)
+	}
+
+	client.postErr = nil
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if want := reason + "\n\n<!-- legion-outbox:57 -->"; len(client.messages) != 2 || client.messages[1] != want {
+		t.Fatalf("messages %q, want the reason posted again under the row's marker", client.messages)
 	}
 	if fmt.Sprint(client.statuses) != "[in_progress]" {
-		t.Fatalf("statuses %v, want the one move to in_progress", client.statuses)
+		t.Fatalf("statuses %v, want the one move to in_progress once its reason is on the issue", client.statuses)
 	}
 }
 
