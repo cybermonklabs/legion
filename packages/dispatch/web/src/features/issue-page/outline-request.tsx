@@ -12,10 +12,10 @@ import {
 import type { OutlineRequest } from "./IssueTree";
 
 /**
- * What the Contents list asks of the outline, and its Focus branch (dispatch://INFRA-1196 R14,
- * decision 29): the list is drawn in the Contents pane from 1024 px up and in the Outline sheet
- * below it, and the outline is drawn in the body, so the request and Focus branch are held above
- * all three, in `slots/providers.tsx`, and a width that swaps the pane for the sheet keeps both.
+ * What the Contents list asks of the outline, and its Focus branch: the list is drawn in the
+ * Contents pane from 1024 px up and in the Outline sheet below it, and the outline is drawn in
+ * the body, so the request and Focus branch are held above all three, in `slots/providers.tsx`,
+ * and a width that swaps the pane for the sheet keeps both.
  *
  * Each call of `useAskOutline()`'s function is a new request with a `seq` one past the last, and
  * an outline acts on each `seq` once (`useTakeOutlineRequest`). What was acted on is held here

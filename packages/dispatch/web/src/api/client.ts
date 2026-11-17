@@ -1652,8 +1652,8 @@ export class DispatchApiClient {
   /** What many `dispatch://` references point at, in one read: one member per `ref` in the
    *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
    *  all their names through this, in as few requests as both bounds allow
-   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference
-   *  (R21 of dispatch://INFRA-1196/spec#b-r-requests). At most `REFERENCE_TARGETS_MAX` references:
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
    *  past that the server answers `400 CAP_EXCEEDED`. */
   getReferenceTargets(refs: readonly string[]) {
     return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });

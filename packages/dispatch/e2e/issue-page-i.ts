@@ -7,17 +7,17 @@ import { gotoIssue, issuePage, openMenu, presetChooser, presetRow } from "./issu
 import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
 
 /**
- * How part I's rows read the outline of the new issue page (dispatch://INFRA-1196 part I,
- * `e2e/issue-page-i.e2e.ts`): the readers that D's `e2e/issue-page.ts` (the page's root and its
- * frame) and G's `e2e/issue-page-g.ts` (one node's row, and the tree as rows) do not hold
- * (decision 2 of the parts). No later part changes this file; a later part's rows import from it.
+ * How the outline's rows read the outline of the new issue page (`e2e/issue-page-i.e2e.ts`):
+ * the readers that `e2e/issue-page.ts` (the page's root and its frame) and
+ * `e2e/issue-page-g.ts` (one node's row, and the tree as rows) do not hold. Later rows import
+ * from this file rather than change it.
  *
- * What the outline draws, beyond what G's file names:
+ * What the outline draws, beyond what `e2e/issue-page-g.ts` names:
  *
- * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (G's `tree`), its rows `treeitem`s
- *   carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A row of the
- *   outline carries `data-row-key`, which G's `NodeRow.tsx` draws and no view's row does: every
- *   view draws a tree of its own (decision 59), so a tree is no sign that the outline is drawn.
+ * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (`issue-page-g.ts`'s `tree`), its
+ *   rows `treeitem`s carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A
+ *   row of the outline carries `data-row-key`, which `NodeRow.tsx` draws and no view's row does:
+ *   every view draws a tree of its own, so a tree is no sign that the outline is drawn.
  * - **The stage** the outline is drawn in: the column `[data-testid="issue-column"]` that holds
  *   the stage and the foot (`IssueOutlinePage.tsx`).
  * - **A row's bullet** `[data-node-bullet]`: its column, or its fold control where its node holds
@@ -31,13 +31,13 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * - **What a key reports** where it has nowhere to go: `[data-row-report]`, a `role="status"`
  *   drawn at the row the key was pressed on.
  * - **The children**: rows of the outline, `[data-node-type="child_issue"]`, one group; and the
- *   section the page drew above the outline before ruling 5, `[data-testid="issue-children"]`,
- *   which no address draws now.
+ *   section the page drew above the outline before the children became its rows,
+ *   `[data-testid="issue-children"]`, which no address draws now.
  * - **What stays at the top of the screen**: the header's band `[data-identity-block]` from
  *   761 px up, and the view row's band at 760 px and below.
- * - **What stays at the foot of the screen**: part L's box, whose height the page publishes on
- *   the document element as `--issue-composer-height` (`FOOT_HEIGHT_PROPERTY` of
- *   `identity-block.ts`). Until L draws it, `standInFootBox` draws a box in its place.
+ * - **What stays at the foot of the screen**: the box to write in, whose height the page
+ *   publishes on the document element as `--issue-composer-height` (`FOOT_HEIGHT_PROPERTY` of
+ *   `identity-block.ts`). Until it is drawn, `standInFootBox` draws a box in its place.
  * - **A control under the outline**, which a body closing above it moves: none of the page's own
  *   at this head. `standInControlBelow` draws one in its place.
  */
@@ -51,7 +51,7 @@ const SELECTORS = {
   issuePage: "[data-issue-page]",
   nodeBody: "[data-node-body]",
   nodeBullet: "[data-node-bullet]",
-  /** A shape a row draws beside its type, its state or its author (G's `NodeGlyph.tsx`). */
+  /** A shape a row draws beside its type, its state or its author (`NodeGlyph.tsx`). */
   nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
   nodeTag: "[data-node-margin] [data-node-tag]",
@@ -100,13 +100,13 @@ export function rowGaps(row: Locator): Locator {
   return row.locator(SELECTORS.gap);
 }
 
-/** The children's section the page drew above the outline before the architect's ruling 5: no
- *  view draws one now, and a row reads this to say so. */
+/** The children's section the page drew above the outline before the architect ruled that the
+ *  children are rows of it: no view draws one now, and a row reads this to say so. */
 export function childrenSection(page: Page): Locator {
   return page.getByTestId("issue-children");
 }
 
-/** The children as the page draws them: rows of the outline, one group of them (ruling 5). */
+/** The children as the page draws them: rows of the outline, one group of them. */
 export function childRows(page: Page): Locator {
   return tree(page).locator('[data-node-row][data-node-type="child_issue"]');
 }
@@ -130,7 +130,7 @@ export function outlineRows(page: Page): Locator {
 }
 
 /** The outline's one row in the tab order, which takes the focus back when the reader comes
- *  back to the tree (the WAI-ARIA tree pattern, R9). */
+ *  back to the tree (the WAI-ARIA tree pattern). */
 export function tabStopRow(page: Page): Locator {
   return tree(page).locator(`${SELECTORS.nodeRow}[tabindex="0"]`);
 }
@@ -151,8 +151,8 @@ export function idsOf(rows: readonly DrawnRow[]): string[] {
   return rows.map((row) => row.id ?? "<no id>");
 }
 
-/** The text of each row's tag, by its node's id: a typed kind's word, or a child's key (the
- *  architect's ruling 5). A row that draws no tag is not in it. */
+/** The text of each row's tag, by its node's id: a typed kind's word, or a child's key. A row
+ *  that draws no tag is not in it. */
 export async function rowTags(page: Page): Promise<ReadonlyMap<string, string>> {
   const tags = await page.evaluate(
     (selectors) =>
@@ -186,10 +186,10 @@ export function placeInStage(
   }, SELECTORS);
 }
 
-/** The box of each visible row's bullet, in document order, as G's `rowLayouts` reads the rows:
- *  the bullet's column on a node that holds no other, and its fold control on one that does.
- *  G's reader gives the left of the bullet's dot, which stands where every bullet's does, and
- *  not the edges of the box it stands in. */
+/** The box of each visible row's bullet, in document order, as `issue-page-g.ts`'s `rowLayouts`
+ *  reads the rows: the bullet's column on a node that holds no other, and its fold control on
+ *  one that does. That reader gives the left of the bullet's dot, which stands where every
+ *  bullet's does, and not the edges of the box it stands in. */
 export function bulletBoxes(
   page: Page
 ): Promise<{ readonly id: string; readonly left: number; readonly right: number }[]> {
@@ -363,7 +363,7 @@ export async function onScreen(scope: Locator): Promise<boolean> {
  *  1.4.11, non-text contrast). */
 export const SHAPE_CONTRAST = 3;
 
-/** One shape a row draws (`svg[data-glyph]`, G's `NodeGlyph.tsx`), as the screen shows it. */
+/** One shape a row draws (`svg[data-glyph]`, `NodeGlyph.tsx`), as the screen shows it. */
 export interface PaintedShape {
   /** The highest contrast ratio (WCAG's, 1 to 21) any mark of the shape has against what is
    *  behind that mark: 1 where it paints nothing that stands out, an empty or hidden box
@@ -375,10 +375,10 @@ export interface PaintedShape {
 
 /**
  * How each row's shapes stand out from what is behind them, row by row in document order as
- * G's `drawnRows` reads the rows. A shape's marks are the stroke and the fill of each outline in
- * it and the background of its own box and of each box inside it, each weighed by its own alpha
- * and the opacity of everything it stands in; what is behind a mark is every background under
- * it down to the first opaque one, laid over the page's canvas.
+ * `issue-page-g.ts`'s `drawnRows` reads the rows. A shape's marks are the stroke and the fill of
+ * each outline in it and the background of its own box and of each box inside it, each weighed
+ * by its own alpha and the opacity of everything it stands in; what is behind a mark is every
+ * background under it down to the first opaque one, laid over the page's canvas.
  *
  * It reads the computed colours, which are what forced colours change: with them on, the
  * browser puts one of the reader's own colours in place of each colour the page asked for,
@@ -584,12 +584,12 @@ export async function openPreset(page: Page, key: string, preset: Preset): Promi
 }
 
 /**
- * Draws a stand-in for the box part L draws at the foot of the screen (`slots/foot.tsx`),
- * `height` px tall, until L draws it: the column's last part, staying at the screen's foot, with
- * its height published on the document element as L's box publishes it, which is how the page's
- * `bringOnScreen` and this file's `onScreen` know it is there. It takes its height at the
- * column's end as a box at the foot does, so the outline's last row can be scrolled above it.
- * Answers what takes it away again.
+ * Draws a stand-in for the box to write in at the foot of the screen (`slots/foot.tsx`),
+ * `height` px tall, until the page draws it: the column's last part, staying at the screen's
+ * foot, with its height published on the document element as that box publishes it, which is
+ * how the page's `bringOnScreen` and this file's `onScreen` know it is there. It takes its
+ * height at the column's end as a box at the foot does, so the outline's last row can be
+ * scrolled above it. Answers what takes it away again.
  */
 export async function standInFootBox(page: Page, height: number): Promise<() => Promise<void>> {
   const drawn = await page.evaluate(
@@ -616,15 +616,15 @@ export async function standInFootBox(page: Page, height: number): Promise<() => 
 
 /**
  * Draws a stand-in for a control of the page under the outline: nothing of the page's own stands
- * there at this head - part L's line at the foot is not drawn (`slots/foot.tsx`), Details is a
+ * there at this head - the line at the foot is not drawn (`slots/foot.tsx`), Details is a
  * drawer fixed at the right of the screen, and the Contents pane stays where it is as the page
  * scrolls - and a control under the outline is the one a body closing above it moves. It is a
- * button, the column's last part, where L's line will stand, that counts the presses that fire
- * it, with a screen's height of page under it: a row can put it in the middle of the screen,
- * where a body closing above it moves it. With the page scrolled to its foot, the browser keeps
- * the foot on the screen as the page shortens, and the button with it, so no press there could
- * tell a body closing from one that stays. Answers the button, how many presses fired it, and
- * what takes it away again.
+ * button, the column's last part, where the line at the foot will stand, that counts the presses
+ * that fire it, with a screen's height of page under it: a row can put it in the middle of the
+ * screen, where a body closing above it moves it. With the page scrolled to its foot, the
+ * browser keeps the foot on the screen as the page shortens, and the button with it, so no press
+ * there could tell a body closing from one that stays. Answers the button, how many presses
+ * fired it, and what takes it away again.
  */
 export async function standInControlBelow(page: Page): Promise<{
   readonly control: Locator;
@@ -668,7 +668,7 @@ const BRANCHES_OPENED_AT_MOST = 200;
 
 /** Opens every branch the tree folded to one line because it sits below the drawn levels
  *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a row reads the nodes such a branch holds as rows of
- *  their own, as G's `unfoldEveryBranch` does with a fold control. */
+ *  their own, as `issue-page-g.ts`'s `unfoldEveryBranch` does with a fold control. */
 export async function openEveryDeeperBranch(page: Page): Promise<void> {
   const controls = branchMoreRows(page).getByRole("button");
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {

@@ -3,10 +3,15 @@ import { createContext, type ReactNode, useContext, useId, useMemo, useState } f
 
 import { api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
   dangerText,
   inputClasses,
+  pageFailedText,
+  pageLineBorder,
+  pageMutedText,
+  pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
@@ -42,6 +47,24 @@ export function rowActionSelector(action: RowAction): string {
 const DECISION_BUTTON =
   "rounded-[7px] border-[1.5px] border-page-decision px-3 py-0.5 text-xs leading-5 font-semibold";
 
+/** The colours of the lines Keep and Change draw under them, by the surface they are drawn on
+ *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`); on
+ *  today's page, `main`'s. */
+const TONES = {
+  main: {
+    failed: dangerText,
+    muted: textMutedOnCanvas,
+    rule: borderDefault,
+    words: textSecondaryOnCanvas,
+  },
+  page: {
+    failed: pageFailedText,
+    muted: pageMutedText,
+    rule: pageLineBorder,
+    words: pageWordsText,
+  },
+} as const;
+
 /**
  * Moves the focus off `control` onto its decision's own row, where `control` holds it, before a
  * write disables or removes `control`. A focused control that is disabled drops the focus to the
@@ -75,7 +98,7 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
 }
 
 /**
- * What a reader does with a decision, on the decision's own node (dispatch://INFRA-1196 R7, the
+ * What a reader does with a decision, on the decision's own node (R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
  *
  * The old Decisions tab drew four sections of cards in a panel of its own and put Keep and
@@ -133,6 +156,7 @@ function DecisionControls({
   tabStops: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const tones = TONES[useTooltips() ? "main" : "page"];
   const drafts = useContext(ChangeDrafts);
   // A Change the reader left open on this decision opens again with the body.
   const [changing, setChanging] = useState(() => drafts?.has(decision.ref) === true);
@@ -212,7 +236,7 @@ function DecisionControls({
         )}
       </p>
       {keep.error === null ? null : (
-        <p className={`text-xs ${dangerText}`} role="alert" {...pageChrome}>
+        <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
           {keep.error.message}
         </p>
       )}
@@ -253,6 +277,7 @@ function ChangeComposer({
   // The words the reader typed before the body last closed, if it did.
   const [body, setBody] = useState(() => drafts?.get(decision.ref) ?? "");
   const queryClient = useQueryClient();
+  const tones = TONES[useTooltips() ? "main" : "page"];
   const fieldId = useId();
   const send = useKeyedWrite({
     inline: true,
@@ -345,13 +370,13 @@ function ChangeComposer({
       }}
     >
       <blockquote
-        className={`border-l-2 pl-2 text-xs break-words ${borderDefault} ${textSecondaryOnCanvas}`}
+        className={`border-l-2 pl-2 text-xs break-words ${tones.rule} ${tones.words}`}
         data-testid="decision-quote"
         {...authorText}
       >
         {quote}
       </blockquote>
-      <label className={`text-xs ${textMutedOnCanvas}`} htmlFor={fieldId} {...pageChrome}>
+      <label className={`text-xs ${tones.muted}`} htmlFor={fieldId} {...pageChrome}>
         {CONTROL_LABELS.your_change}
       </label>
       <textarea
@@ -367,13 +392,13 @@ function ChangeComposer({
         value={body}
       />
       {send.error === null ? null : (
-        <p className={`text-xs ${dangerText}`} role="alert" {...pageChrome}>
+        <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
           {ANSWER_LINES.change_not_sent}
         </p>
       )}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         <button
-          className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+          className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
           disabled={send.isPending || reading || body.trim() === ""}
           type="submit"
           {...pageChrome}
@@ -381,7 +406,7 @@ function ChangeComposer({
           {CONTROL_LABELS.send_change}
         </button>
         <button
-          className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+          className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
           onClick={onDone}
           type="button"
           {...pageChrome}

@@ -4,10 +4,8 @@ import { scrollElementToTop } from "../doc/scroll-block";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
 /**
- * Putting the caret in a node's own text, where that text lives (dispatch://INFRA-1196 R9,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t17`), and holding the editor that text is drawn in
- * to the window while the row holds it (decision 124 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * Putting the caret in a node's own text, where that text lives, and holding the editor that
+ * text is drawn in to the window while the row holds it.
  *
  * The edit key draws the node's document in the row (`document-stage.tsx`) and then calls these:
  * `caretInBlock` places the caret at the start of that node's own block, and `holdEditorAtBlock`
@@ -71,14 +69,14 @@ export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined):
 /**
  * Opens the editor in `host` at `blockId`'s block, in a box no taller than the window. The
  * editor holds the whole document, and drawn whole in the row it made the row as tall as the
- * document - 35,635 px for INFRA-1196's spec - and took everything under the row down by as
- * much. So the box it scrolls in (`EDITOR_BOX_ATTRIBUTE`) reaches from where it stands down to
- * the box at the foot of the screen and no further: the page stays where the reader had it, and
- * every line of the box is on screen, so the editor, which keeps its caret in view as the reader
- * writes, scrolls the box and never the page. The box - never the page - is then scrolled so
- * the block stands at its top, where the row's words stood, and once more after the drawing
- * above the block has settled (`refocusWhenSettled`): a picture or a diagram above it draws
- * after the editor opened, and pushes it down.
+ * document - 35,635 px for the spec of a real issue of some 160 rows - and took everything
+ * under the row down by as much. So the box it scrolls in (`EDITOR_BOX_ATTRIBUTE`) reaches from
+ * where it stands down to the box at the foot of the screen and no further: the page stays where
+ * the reader had it, and every line of the box is on screen, so the editor, which keeps its
+ * caret in view as the reader writes, scrolls the box and never the page. The box - never the
+ * page - is then scrolled so the block stands at its top, where the row's words stood, and once
+ * more after the drawing above the block has settled (`refocusWhenSettled`): a picture or a
+ * diagram above it draws after the editor opened, and pushes it down.
  *
  * A row so low on the screen that less than half the room between the band at the top and the
  * box at the foot stands under it would leave an editor a line or two tall, so its box takes

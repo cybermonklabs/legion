@@ -134,15 +134,14 @@ export function claimIsTakeable(
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the chip carries no
  * `title`, so everything a reader there acts on is drawn instead, in that page's words with
- * their marks (dispatch://INFRA-1196 R19, R22): both instants after their ages (`Timestamp`'s
- * `exact`), the moment the issue comes free as "free for another agent from" and the date and
- * time, and "· running state unknown" where the registry could not be read at all, which is a
- * claim nobody has judged rather than a held one. There no part is cut: the holder's name
- * wraps rather than ellipsizes, in the pill too (decision 104 of
- * dispatch://INFRA-1196/artifact/part-decisions-md). There `author` names the holder as that
- * page names an author (`AgentName`'s `author`), and `inRow` draws the claim as the value of a
- * row of Details, which draws the label: plain words in the ink that wrap and cut no word, not
- * a pill. Outside it, neither changes anything.
+ * their marks: both instants after their ages (`Timestamp`'s `exact`), the moment the issue
+ * comes free as "free for another agent from" and the date and time, and "· running state
+ * unknown" where the registry could not be read at all, which is a claim nobody has judged
+ * rather than a held one. There no part is cut: the holder's name wraps rather than ellipsizes,
+ * in the pill too. There `author` names the holder as that page names an author (`AgentName`'s
+ * `author`), and `inRow` draws the claim as the value of a row of Details, which draws the
+ * label: one sentence in the ink, its parts divided by spaces, that wraps between words and cuts
+ * no word, not a pill. Outside it, neither changes anything.
  */
 export function ClaimChip({
   author = false,
@@ -205,22 +204,28 @@ export function ClaimChip({
   };
   const inDetails = page !== null && inRow;
   // Inside `NoTooltips` nothing of the claim stops its line from wrapping, in a row of Details
-  // (dispatch://INFRA-3935 R4) and in the header's pill alike: each part may shrink, and a long
-  // one breaks inside itself only where no break between words is left, since the holder's name
-  // and the instants are values, which wrap there (decision 104 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md). Outside it each part stays whole, as on
-  // `main`.
+  // and in the header's pill alike: in the pill each part may shrink, and in both a long part
+  // breaks inside itself only where no break between words is left, since the holder's name and
+  // the instants are values, which wrap there. Outside it each part stays whole, as on `main`.
   const part = page === null ? "shrink-0" : "min-w-0 [overflow-wrap:anywhere]";
+  // In a row of Details the parts are the words of one sentence, so a space stands between each
+  // two of them where the pill's gap stands, and a line breaks there as between any two words.
+  // The pill draws none, as on `main`.
+  const space = inDetails ? " " : null;
   return (
     <span
       className={
         inDetails
-          ? // Below 1280 px an inline link takes 6 px of padding above and below for a finger
-            // (`styles.css`'s `.dispatch-inline-link`), so wrapped lines stand that far apart.
-            `inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 gap-y-3 text-sm xl:gap-y-0 ${pageInkText}`
+          ? // A block of text, not a flex box, so a part that does not fit breaks across lines as
+            // a sentence does rather than moving whole to a line of its own. Below 1280 px the
+            // holder's name, an inline link, takes 6 px of padding above and below for a finger
+            // (`styles.css`'s `.dispatch-inline-link`), which moves no line: the 28 px line keeps
+            // that padded box off the letters of the lines above and below it, which text-sm's
+            // own 20 px line would let it reach into. From 1280 px the link has no padding, and
+            // the line is text-sm's own.
+            `block min-w-0 max-w-full text-sm leading-7 [overflow-wrap:anywhere] xl:leading-5 ${pageInkText}`
           : // Inside `NoTooltips` the pill's tone is the new issue page's (`pillClassName`'s
-            // `onPage`, dispatch://INFRA-3935 R6, decision 56 of
-            // dispatch://INFRA-1196/artifact/part-decisions-md).
+            // `onPage`).
             `${pillClassName(takeable ? "label" : "selected-label", page !== null)} min-w-0 max-w-full gap-1`
       }
       data-testid="issue-claim"
@@ -238,15 +243,19 @@ export function ClaimChip({
         className={page === null ? "min-w-0 truncate" : undefined}
         inline
       />
+      {space}
       <span aria-hidden="true" className={part} {...page?.pageChrome}>
         ·
       </span>
+      {space}
       <Timestamp at={claim.at} className={part} exact />
       {lapsed ? (
         <>
+          {space}
           <span aria-hidden="true" className={part} {...page?.pageChrome}>
             ·
           </span>
+          {space}
           <span className={part} data-testid="issue-claim-lapsed" {...page?.pageChrome}>
             {page?.CONTROL_LABELS.not_running ?? "not running"}
           </span>
@@ -254,9 +263,11 @@ export function ClaimChip({
       ) : null}
       {unresponsive ? (
         <>
+          {space}
           <span aria-hidden="true" className={part} {...page?.pageChrome}>
             ·
           </span>
+          {space}
           <span className={part} data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
             {page?.CONTROL_LABELS.unresponsive ?? "unresponsive"}
             {heardAt === null ? null : (
@@ -295,9 +306,11 @@ export function ClaimChip({
           phone or on the keyboard has no other way to that. */}
       {unchecked && page !== null ? (
         <>
+          {space}
           <span aria-hidden="true" className={part} {...page.pageChrome}>
             ·
           </span>
+          {space}
           <span className={part} data-testid="issue-claim-unchecked" {...page.pageChrome}>
             {page.CONTROL_LABELS.unchecked}
           </span>

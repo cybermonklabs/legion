@@ -1,23 +1,26 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
+import { focusOnDocument } from "../../shell/roving";
 import { DocumentStages } from "../document-stage";
+import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { TAB_STOP_ROW } from "../tree-focus";
 import { BodySlot } from "./body";
+import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
 import { ViewVerificationSlot } from "./view-verification";
 
 /**
- * The stage: the outline, or one view in its place (dispatch://INFRA-1196 R2, part I's R1). The
- * `preset` the address opens chooses one slot: the body, which draws the outline, with no view
- * on, and that view's own slot under Spec, Verification, Plan or Decisions. Each slot draws its
- * own measure, so the stage adds no box and no width. A view whose part has not filled its slot
- * yet draws nothing.
+ * The stage: the outline, or one view in its place, never both. The `preset` the address opens
+ * chooses one slot: the body, which draws the outline, with no view on, and that view's own
+ * slot under Spec, Verification, Plan or Decisions. Each slot draws its own measure, so the
+ * stage adds no box and no width. A view whose slot is not filled yet draws nothing.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`).
@@ -49,46 +52,108 @@ const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | un
   verification: ViewVerificationSlot,
 };
 
-/** The row of a view's tree that holds its one tab stop (the WAI-ARIA tree pattern, R9). */
-const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
+/** A view's tree itself, which holds the focus only where it has no row to give it to. */
+const VIEW_TREE = '[role="tree"]';
 
 /**
  * One view, drawn where the outline is, which takes the keyboard focus on its tree's tab-stop
- * row once that row is drawn (the tester's finding F23): a page opened at a view's address, or
- * a view turned on while the focus was on the outline it replaced, leaves the focus on the
- * view and never on the page's body. The focus is taken only while nothing holds it, so a
- * reader who pressed a control keeps it there, and once it is taken this does nothing more for
- * that view.
+ * row once that row is drawn, where the tester found the focus left on the page's body: a page
+ * opened at a view's address, or a view turned on while the focus was on the outline it
+ * replaced, leaves the focus on the view and never on the page's body. A view whose read failed
+ * draws that read's Retry (`FailedReadLine`) and no row, which left the focus on the body all the
+ * same, so there the Retry takes it. The focus is taken only while nothing holds it, so a reader
+ * who pressed a control keeps it there, and once it is taken this does nothing more for that view
+ * until the view's tree itself takes the focus.
+ *
+ * The chord that opens a view (`t` then the view's key) reaches the stage through the view's
+ * tree: where the tree draws no tab-stop row the chord focuses the tree itself (`reachPart`,
+ * `useIssueKeymap.ts`), from wherever the focus was. A tree with no row holds nothing to act on,
+ * and Tab from it never reaches the Retry over it, so a focus on the tree itself is taken as held
+ * by nothing: the stage gives it to a failed read's Retry, or to the tab-stop row, now or once the
+ * view draws one. Where rows are drawn a focus on the tree stays there, since a press on what the
+ * tree draws outside its rows focuses the tree and moves no row's focus.
+ *
+ * A failed read's line that leaves the page with the focus in it says so (`FailedLineLeaves`),
+ * and the stage puts the focus on the next failed read's Retry, on the tab-stop row, or on the
+ * tree itself, in that order, unless something else took it in the render the line left in.
  *
  * It adds no box (`display: contents`): it is a place to look for the tree, and the view draws
  * its own measure.
  */
 export function ViewStage({ children, view }: { children: ReactNode; view: Preset }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
+  // The line calls this while React takes it off the page, before what replaces it is drawn: the
+  // focus is placed once that render is on the page.
+  const lineLeaves = useCallback(() => {
+    queueMicrotask(() => {
+      const stage = box.current;
+      if (stage === null || !focusOnDocument()) return;
+      const to =
+        stage.querySelector<HTMLElement>(FAILED_READ_RETRY) ??
+        stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
+        stage.querySelector<HTMLElement>(VIEW_TREE);
+      if (to !== null) focusOn(to);
+    });
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each view takes the focus once, so a new view is what starts this again.
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
-    // True once the focus is placed, or once something else holds it.
+    // Whether the focus placed is brought on screen too: once a focus on the tree itself started
+    // the take again, as the chord's does, which scrolls the tree to the screen's top.
+    let bring = false;
+    // True once the focus is placed, or once something other than the view's tree holds it.
     const take = (): boolean => {
       const active = document.activeElement;
-      if (active !== null && active !== document.body) return true;
-      const row = stage.querySelector<HTMLElement>(TAB_STOP_ROW);
-      if (row === null) return false;
-      row.focus({ preventScroll: true });
+      const onTree = active?.matches(VIEW_TREE) === true && stage.contains(active);
+      if (!focusOnDocument() && !onTree) return true;
+      const to =
+        stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
+        stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
+      if (to === null) return false;
+      if (bring) focusOn(to);
+      else to.focus({ preventScroll: true });
       return true;
     };
-    if (take()) return;
     // A view draws its tree once its reads have answered, a frame or several after it mounts.
     const drawn = new MutationObserver(() => {
       if (take()) drawn.disconnect();
     });
-    drawn.observe(stage, { childList: true, subtree: true });
-    return () => drawn.disconnect();
+    const watch = () => {
+      if (!take()) drawn.observe(stage, { childList: true, subtree: true });
+    };
+    watch();
+    // A focus on the tree itself, where it draws no tab-stop row, starts the take again,
+    // whatever held the focus before: the chord's, or the stage's own once a line left.
+    const treeFocused = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.matches(VIEW_TREE)) return;
+      if (stage.querySelector(TAB_STOP_ROW) !== null) return;
+      bring = true;
+      watch();
+    };
+    stage.addEventListener("focusin", treeFocused);
+    return () => {
+      drawn.disconnect();
+      stage.removeEventListener("focusin", treeFocused);
+    };
   }, [view]);
   return (
-    <div className="contents" ref={box}>
-      {children}
-    </div>
+    <FailedLineLeaves.Provider value={lineLeaves}>
+      <div className="contents" ref={box}>
+        {children}
+      </div>
+    </FailedLineLeaves.Provider>
   );
+}
+
+/** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame
+ *  where it still holds the focus (`bringOnScreen`). The frame is for the chord that opens a view:
+ *  `reachPart` scrolls the tree to the screen's top after it focuses it, which would leave a Retry
+ *  that stands over the tree above the screen. */
+function focusOn(to: HTMLElement): void {
+  to.focus({ preventScroll: true });
+  requestAnimationFrame(() => {
+    if (document.activeElement === to) bringOnScreen(to);
+  });
 }

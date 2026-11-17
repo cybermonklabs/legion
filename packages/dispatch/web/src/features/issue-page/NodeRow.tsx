@@ -30,6 +30,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
+import { type Clamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -64,9 +65,8 @@ import {
 import { documentWord, RowText } from "./RowText";
 
 /**
- * One row of the issue's outline, and the body it opens on focus (dispatch://INFRA-1196 R1,
- * R6, R9, R34, and the architect's rulings 1, 4, 5 and 6 in
- * dispatch://INFRA-1196/artifact/build-rulings-md).
+ * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
+ * architect's rulings 1, 4, 5 and 6).
  *
  * A row reads from the left as the prototype's `.card` does: its bullet in its kind's colour,
  * which is also its fold control where it holds nodes, then its words, and at their end the
@@ -168,10 +168,11 @@ export function NodeRow({
   ownAnswer: boolean;
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
-   *  every row does but two of the outline's: its first row as the page opens on it with no
-   *  question waiting on the reader, which stays where it stands until the reader acts (R8), and
-   *  the row the reader is editing, which the editor's own caret keeps in view while it grows
-   *  (decision 123). Both are `IssueTree.tsx`'s to set. */
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -217,7 +218,7 @@ export function NodeRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
-  const press = useRowOnScreen(row, focused, placesItself);
+  const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
   const depth = level - 1;
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
@@ -470,17 +471,20 @@ export const NODE_ROW_LAYOUT = {
  * they could see, so there is nothing to bring on screen.
  *
  * Answers the row's own `onPointerDown`, which marks a press. Every row of the outline and of a
- * filter's body places itself by this one hook.
+ * filter's body places itself by this one hook. `below` is how far below what stays a row that
+ * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own,
+ * as a view whose sticky heads stand taller than the outline's does.
  *
  * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
  * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
- * focus (R7), so a row taller than the screen would be put at its top under the band and the
- * page would open scrolled past its header (R8). Read when the row is placed rather than as a
+ * focus, so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header. Read when the row is placed rather than as a
  * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
   focused: boolean,
+  below: number = BELOW_WHAT_STAYS,
   placesItself = true
 ): () => void {
   const pressed = useRef(false);
@@ -503,14 +507,14 @@ export function useRowOnScreen(
       if (!placing.current) return;
       if (pressed.current) return;
       bringOnScreen(element);
-      belowWhatStays(element);
+      belowWhatStays(element, below);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;
     const grown = new ResizeObserver(place);
     grown.observe(element);
     return () => grown.disconnect();
-  }, [focused, row]);
+  }, [below, focused, row]);
   return press;
 }
 
@@ -519,9 +523,9 @@ export function useRowOnScreen(
 const BELOW_WHAT_STAYS = 8;
 
 /**
- * Scrolls `element`, which `bringOnScreen` has placed, down below everything that stays at the
- * top of the screen above the rows where its top still lies under it (decision 113 of
- * dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
+ * Scrolls `element`, which `bringOnScreen` has placed, down to `below` px below everything that
+ * stays at the top of the screen above the rows where its top still lies under it: at 760 px and
+ * below, a focused row there lay under the view row that stays. That height is the page's
  * `scroll-padding-top`, which `styles.css` keeps equal to it, so this reads the padding itself
  * and no height of its own. `bringOnScreen` clears the header's band alone, which at 760 px and
  * below, under a header that publishes no band, leaves the view row that stays over the row.
@@ -530,12 +534,12 @@ const BELOW_WHAT_STAYS = 8;
  * A row in Details' drawer is brought into the drawer's own scroll box, which stands over the
  * page and nothing of the page's top covers, so it is left where `bringOnScreen` put it.
  */
-function belowWhatStays(element: HTMLElement): void {
+function belowWhatStays(element: HTMLElement, below: number): void {
   if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) return;
   const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
   if (!Number.isFinite(stays)) return;
   const top = element.getBoundingClientRect().top;
-  if (top < stays) window.scrollBy({ top: top - stays - BELOW_WHAT_STAYS });
+  if (top < stays) window.scrollBy({ top: top - stays - below });
 }
 
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
@@ -864,11 +868,11 @@ export function NodeOptions({
  * What the reader can do with the focused row, on one quiet line under it (the prototype's
  * `.acts`, drawn on the focused row alone): Reply on every row that takes a reply - a comment, a
  * message, an ask whatever its state, and the issue itself, whose reply is a new comment on it
- * (R16, dispatch://INFRA-3677) - Answer on an open question, and Change answer on a question the
+ * (R16) - Answer on an open question, and Change answer on a question the
  * reader answered. Each sets the line at the foot of the outline and puts the caret in it; `r`
  * and `a` press the first two from the keyboard (`useTreeKeymap.ts`). A typed node - a
  * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
- * block (dispatch://INFRA-1253), so it draws none; and with no writer (`OutlineWriterProvider`)
+ * block, so it draws none; and with no writer (`OutlineWriterProvider`)
  * the row draws none of the three.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
@@ -957,7 +961,7 @@ export function RowActs({
 
 /**
  * A person's answer to an ask, which is part of the ask and no node of its own
- * (dispatch://INFRA-1150 R3, dispatch://INFRA-1196 R1): the page's word for it, who answered by
+ * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
  * to mark it in, and what they wrote, whole and character for character, keeping the line breaks
  * they typed (R9, ruling 1). The reader's own answer carries the ink rule their own words carry
@@ -1311,29 +1315,13 @@ export function MoreWords({
   );
 }
 
-/** The prototype's `CUT_LINES`: how many lines of an agent's words or an answered question a row
- *  draws before it cuts them. */
-const CUT_LINES = 6;
-
-/** How many words a cut must hide before it is made: fewer are drawn whole. */
-const CUT_WORDS = 20;
-
-/** How far past six lines a text may run and still be drawn whole, as the prototype allows. */
-const CUT_SLACK = 12;
-
-/** What a row draws of words it cuts: how tall it draws them, how many words it holds back,
- *  and whether the cut was moved to the foot of a row of pictures the sixth line crossed. */
-export interface Clamp {
-  readonly height: number;
-  readonly hidden: number;
-  readonly pictures: boolean;
-}
-
 /**
  * Where a row cuts its words, read from the words as the browser laid them out, which is the
- * prototype's own reading (`measureClamps`): one layout read per row that may be cut - an
- * agent's words and an answered question - and again when its width or its words change, never
- * one for any other row. Undefined where the words are drawn whole.
+ * prototype's own reading (`measureClamps`), by the page's one measurer (`clamp-measurer.ts`):
+ * for a row that may be cut - an agent's words and an answered question - while it stands within
+ * one screen of the viewport, and again when its width or its words change; never for any other
+ * row. Undefined where the words are drawn whole, or not measured yet; a row the reader scrolled
+ * away from keeps the cut it last had.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
@@ -1346,73 +1334,15 @@ export function useClamp(
       setClamp(undefined);
       return;
     }
-    const measure = () => {
-      const next = measureClamp(element);
+    return watchClamp(element, (next) =>
       setClamp((held) =>
         held?.height === next?.height &&
         held?.hidden === next?.hidden &&
         held?.pictures === next?.pictures
           ? held
           : next
-      );
-    };
-    measure();
-    // The page's typeface arrives after the first frame (`font-display: swap`), and the words
-    // laid out again in it can cross the sixth line where the fallback's did not, or hold back
-    // another count of words, with no change of the box a resize would see.
-    const fonts: FontFaceSet | undefined = document.fonts;
-    fonts?.addEventListener("loadingdone", measure);
-    const observer =
-      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
-    observer?.observe(element);
-    // The words' own box is held to the cut while it is drawn, so their growing - a reading
-    // that paints after the row, a picture that loads - is seen on what they are drawn in.
-    for (const child of element.children) observer?.observe(child);
-    return () => {
-      fonts?.removeEventListener("loadingdone", measure);
-      observer?.disconnect();
-    };
+      )
+    );
   }, [cuttable, words]);
   return cuttable ? clamp : undefined;
-}
-
-/** The cut of the words `element` holds, as the prototype's `measureClamps` reads it. */
-function measureClamp(element: HTMLElement): Clamp | undefined {
-  const pitch = Number.parseFloat(getComputedStyle(element).lineHeight);
-  const limit = CUT_LINES * (Number.isFinite(pitch) ? pitch : 24);
-  if (element.scrollHeight <= limit + CUT_SLACK) return undefined;
-  const top = element.getBoundingClientRect().top;
-  // The words a cut would hide, block by block: a block below the line whole, and of a block the
-  // line crosses the share of its words below it.
-  let hidden = 0;
-  for (const block of blocksOf(element)) {
-    const box = block.getBoundingClientRect();
-    const from = box.top - top;
-    const to = box.bottom - top;
-    const count = (block.textContent ?? "").split(/\s+/u).filter(Boolean).length;
-    if (from >= limit) hidden += count;
-    else if (to > limit && box.height > 0) hidden += count * ((to - limit) / box.height);
-  }
-  const held = Math.round(hidden);
-  if (held <= CUT_WORDS) return undefined;
-  // A row of pictures the line crosses is drawn whole, and the cut moves to its foot.
-  let height = limit;
-  let pictures = false;
-  for (const picture of element.querySelectorAll("img")) {
-    const box = picture.getBoundingClientRect();
-    if (box.top - top < limit && box.bottom - top > limit) {
-      height = Math.max(height, box.bottom - top + 6);
-      pictures = true;
-    }
-  }
-  return { height, hidden: held, pictures };
-}
-
-/** The blocks of the words `element` holds: the paragraphs, lists and pictures of a text drawn
- *  from its reading, and the one paragraph of a text drawn as stored. */
-function blocksOf(element: HTMLElement): Element[] {
-  const drawn = element.querySelector(".dispatch-markdown");
-  if (drawn !== null && drawn.children.length > 0) return [...drawn.children];
-  const first = element.firstElementChild;
-  return first === null ? [] : [first];
 }

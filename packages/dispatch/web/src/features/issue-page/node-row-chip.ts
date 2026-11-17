@@ -1,6 +1,6 @@
 /**
- * The words a chip names its target by, on the node's own line (dispatch://INFRA-1196 ruling 5,
- * `dispatch://INFRA-1196/artifact/build-rulings-md`): the target's short name where the model
+ * The words a chip names its target by, on the node's own line (the architect's ruling 5): the
+ * target's short name where the model
  * holds one, and until then the target's first words, cut at a word within `CHIP_LIMIT`
  * characters, the ellipsis included. No address, slug or document name is drawn in its place
  * (R22): a target with no words of its own answers `""`, and its chip draws nothing to name it by.

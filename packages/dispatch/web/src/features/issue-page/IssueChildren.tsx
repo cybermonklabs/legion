@@ -9,7 +9,7 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { issueStatusWord } from "./page-words";
 
 /**
- * What a child issue's row of the outline draws beside its title (dispatch://INFRA-1196 R12, the
+ * What a child issue's row of the outline draws beside its title (R12, the
  * architect's ruling 5, the prototype's `.kr`): the children are one group of rows of the outline,
  * each child a row the reader focuses and moves through as any other, and no section above the
  * outline. The row's words are the child's title (`tree-drafts.ts`'s `addChildren`); after them,

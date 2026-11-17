@@ -21,8 +21,7 @@ const DOT_CLASS_BY_STATE: Record<ConnectionState, string> = {
   offline: connectionDotOffline,
 };
 
-/** Each dot inside `NoTooltips`, in the new issue page's colours (dispatch://INFRA-3935 R6,
- *  decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): connected is the passed
+/** Each dot inside `NoTooltips`, in the new issue page's colours: connected is the passed
  *  green (`pageSegmentDoneBg` is that fill), connecting the waiting orange, failed the failed
  *  red and offline the not-run grey. The dot is decoration; its name says the state. */
 const PAGE_DOT_CLASS_BY_STATE: Record<ConnectionState, string> = {
@@ -47,8 +46,8 @@ export function ConnectionDot({
   const label = connectionLabel(connection, notice);
   // Inside `NoTooltips` the dot is named by `aria-label`, not by a `title`: that surface draws
   // no tooltip (`components/tooltips.tsx`, the new issue page), and the indicator still has to
-  // say which state it is in (dispatch://INFRA-1196 R19). The socket's state and the count of
-  // unsent edits are a reading of the document, not a word of the page.
+  // say which state it is in. The socket's state and the count of unsent edits are a reading of
+  // the document, not a word of the page.
   return (
     <span
       aria-label={tooltips ? undefined : label}
@@ -66,8 +65,7 @@ export function ConnectionDot({
       />
       {notice === undefined ? null : (
         // Inside `NoTooltips` the notice is a reading of the document, a value, so it keeps
-        // `max-w-full` and breaks anywhere (decision 104 of
-        // dispatch://INFRA-1196/artifact/part-decisions-md).
+        // `max-w-full` and breaks anywhere.
         <span
           aria-hidden
           className={`text-xs ${tooltips ? textMutedOnSurface : `max-w-full [overflow-wrap:anywhere] ${pageQuietText}`}`}

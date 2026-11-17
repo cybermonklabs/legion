@@ -12,12 +12,10 @@ import { type DrawnRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 
 /**
- * The tree's keyboard: every row of the key table in the Design section of
- * dispatch://INFRA-1196's spec that acts on the tree itself
- * (`dispatch://INFRA-1196/artifact/plan-md#b-t15`), and `t h`, which takes the reader to the
- * issue's children, the outline's own rows. The chords that open a view, Details or the node
- * menu are the page's (`useIssueKeymap.ts`), because each of those is an address the outline
- * does not draw.
+ * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,
+ * and `t h`, which takes the reader to the issue's children, the outline's own rows. The chords
+ * that open a view, Details or the node menu are the page's (`useIssueKeymap.ts`), because each
+ * of those is an address the outline does not draw.
  *
  * Every binding is registered in the page's own `issue` scope, so the registry suspends all of
  * them while a caret is in a node's text: reading mode is where no caret is, which the keymap
@@ -31,7 +29,7 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * reader is.
  *
  * The controls a row draws are worked by keys too, and for the same reason the moves are: the
- * tree is one tab stop (R9), so nothing inside a row takes the focus and Tab from a row leaves
+ * tree is one tab stop, so nothing inside a row takes the focus and Tab from a row leaves
  * the tree. The arrows press the fold control, `o` the one that pins the body open, `r` and `a`
  * Reply and Answer - the line `a` sets draws an open question's options as chips of its own -
  * `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it opens, and
@@ -83,7 +81,9 @@ export interface TreeKeyboard {
    *  nothing, and never undefined where the tree is read one node at a time. */
   readonly zoom: string | undefined;
   /** Where the reader writes, which `r` and `a` set to reply to the focused row and to answer
-   *  the focused open question (R16); undefined where the page draws no line to write in. */
+   *  the focused open question. It is provided wherever the page's writer provider stands above
+   *  the tree (`slots/providers.tsx`), a page that draws no line to write in yet included, and
+   *  undefined only for a tree drawn with no such provider above it. */
   readonly writer: OutlineWriter | undefined;
 }
 
@@ -119,14 +119,14 @@ function pressedByAKey(control: HTMLElement): boolean {
 }
 
 /**
- * The key that enters a tree drawn as one tab stop (R9): Tab or Shift+Tab pressed on the page
+ * The key that enters a tree drawn as one tab stop: Tab or Shift+Tab pressed on the page
  * itself enters it at the row that holds the stop, the one the reader last stood on, or at its
  * first row where none holds it yet. Tab from inside the tree is the browser's own, which leaves
  * the tree because every row but that one takes no focus. `rows` answers the tree's rows as the
  * browser holds them, in order, and `moveTo` moves the reader to the row at an index of them.
  *
- * It is exported because part K imports it, so its chart is entered as the outline is (the
- * architect's decision 94).
+ * It is exported for the Plan view's chart, which is to enter its rows as the outline is
+ * entered.
  */
 export function treeEnterKey({
   moveTo,
@@ -148,6 +148,21 @@ export function treeEnterKey({
   };
 }
 
+/**
+ * The move a key makes to `target`, one row of a tree drawn as one tab stop: the focus goes to
+ * it, with `options`, and the row places itself on screen as it takes the focus. Where the row
+ * already holds the focus or a control inside it does - a key that moves no focus, Home on the
+ * first row or End on the last, or one pressed from a link `f` stopped on - the row's own
+ * placing may not run, and a row the reader scrolled off would stay off, so it is brought on
+ * screen here.
+ *
+ * It is exported so another drawing of the page moves to its rows as the outline does.
+ */
+export function moveToRow(target: HTMLElement, options?: FocusOptions): void {
+  if (target.contains(document.activeElement)) bringOnScreen(target);
+  target.focus(options);
+}
+
 export function useTreeKeymap(tree: TreeKeyboard): void {
   // The row the caret was taken from, so Escape puts the reader back on it rather than on
   // whichever row the tree would otherwise offer.
@@ -167,7 +182,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
   /** Which row holds the focus itself, or -1 when a control inside one holds it instead: the
    *  row is the reader's place in the tree, and a control in it - a chip, Keep, Change, the
-   *  form that sends a change - is a thing of its own, which takes its own keys (R9). */
+   *  form that sends a change - is a thing of its own, which takes its own keys. */
   const onRowItself = (elements: readonly HTMLElement[]): number =>
     elements.indexOf(document.activeElement as HTMLElement);
   const inTheTree = (): boolean => {
@@ -196,9 +211,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
   /** What `f` steps through on the focused row: first the chips - the edges the row names, each
    *  a target of its own - then the links its words hold, which the row draws above its chips
-   *  (R34), then each other control of the row that no key here presses (`pressedByAKey`). None
-   *  of them is in the tab order (R9), so this key is how a reader reaches one; Enter on a link
-   *  the key left the focus on follows it, and Enter or Space on a button presses it. */
+   *  (`NodeRow.tsx`), then each other control of the row that no key here presses
+   *  (`pressedByAKey`). None of them is in the tab order, the tree being one tab stop, so this
+   *  key is how a reader reaches one; Enter on a link the key left the focus on follows it, and
+   *  Enter or Space on a button presses it. */
   const rowStops = (): HTMLElement[] => {
     const row = rowElement();
     if (row === null) return [];
@@ -209,17 +225,14 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
   };
-  /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported.
-   *  A move that lands on the row already holding the focus - Home on the first row, End on the
-   *  last - moves no focus, so the row's own placing never runs, and a row the reader scrolled
-   *  off would stay off: that row is brought on screen here (decision 177). */
+  /** Moves to the row `index`, clamped to the tree's ends (`moveToRow`), and clears whatever a
+   *  key reported. */
   const moveTo = (index: number): void => {
     const { elements } = drawn();
     if (elements.length === 0) return;
     tree.onReport("");
     const target = elements[Math.min(Math.max(index, 0), elements.length - 1)];
-    if (target !== undefined && target === document.activeElement) bringOnScreen(target);
-    target?.focus();
+    if (target !== undefined) moveToRow(target);
   };
   /** Takes the reader to `id`, unfolding whatever stands between them and it. */
   const goTo = (id: string): void => {
@@ -228,7 +241,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
 
   useKeymap("issue", [
-    // The tree is one tab stop (R9), which Tab from the page itself enters (`treeEnterKey`).
+    // The tree is one tab stop, which Tab from the page itself enters (`treeEnterKey`).
     treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
       id: "tree-next",
@@ -285,7 +298,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const row = rows[on];
         if (row === undefined) return;
         tree.onReport("");
-        if (tree.oneNodeAtATime) {
+        // The row the tree is zoomed to is the view's own root, drawn open over what it holds:
+        // where the tree is read one node at a time, zooming into it again moved nothing and
+        // said nothing, so the key steps into it as into any open row, and says where it holds
+        // nothing to step into.
+        const zoomRoot = row.node.id === tree.zoom;
+        if (zoomRoot && row.expanded === undefined) {
+          tree.onReport(KEY_REPORTS.nothing_under);
+          return;
+        }
+        if (tree.oneNodeAtATime && !zoomRoot) {
           if (row.expanded !== undefined) tree.onZoom(row.node.id);
           return;
         }
@@ -345,7 +367,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     },
     {
       // Keep and Change are controls a row draws, and the tree is one tab stop, so no Tab
-      // reaches them (R9): each takes a key instead, and a reader on the keyboard works every
+      // reaches them: each takes a key instead, and a reader on the keyboard works every
       // control of the row they are standing on (WCAG 2.1.1). The key presses the control the
       // row draws, which is what a pointer does, and is offered exactly while that control is
       // drawn and would take a click.
@@ -460,7 +482,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: reading,
     },
     {
-      // Reply to the focused row (R16): a comment, a message or an ask whatever its state sets
+      // Reply to the focused row: a comment, a message or an ask whatever its state sets
       // the line at the outline's foot to reply to it, as the row's own Reply does; the caret
       // goes to the line.
       id: "tree-reply",
@@ -479,7 +501,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       },
     },
     {
-      // Answer the focused open question (R16): the line answers it, its options its chips.
+      // Answer the focused open question: the line answers it, its options its chips.
       id: "tree-answer",
       keys: "a",
       label: `${CONTROL_LABELS.answer} the focused question`,
@@ -505,9 +527,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: reading,
     },
     {
-      // The children are rows of the outline, one group under the issue (R20, ruling 5), so the
-      // chord that reaches them is the tree's: it puts the focus on the group's first row and
-      // opens their own address, `/children` (`IssueTree`'s `onChildren`).
+      // The children are rows of the outline, one group under the issue, which the header
+      // stands for and draws no row of, so the chord that reaches them is the tree's: it puts
+      // the focus on the group's first row and opens their own address, `/children`
+      // (`IssueTree`'s `onChildren`).
       id: "tree-children",
       keys: "t h",
       label: "Move to the issue's children",

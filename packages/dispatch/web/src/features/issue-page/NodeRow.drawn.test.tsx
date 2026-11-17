@@ -6,12 +6,14 @@ import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
 import type { DisplayTree, IssueChild } from "../../api/types";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { measureNearWords } from "./clamp-fixtures";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
@@ -32,7 +34,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
 
 /**
- * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
+ * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
  * R34, and the architect's ruling 1 on R1).
  *
  * The row is rendered on its own rather than through `IssueTree`, because what these rows are
@@ -289,7 +291,7 @@ test("a folded branch's line writes a bare address as its short form", () => {
   }
 });
 
-// R1, R9, INFRA-1150 R3, ruling 1: an answered ask carries the person's answer in its own row,
+// R1, R9, ruling 1: an answered ask carries the person's answer in its own row,
 // and no row of its own: who answered by a name and a shape, what they chose among the ask's own
 // options, and what they wrote as the store holds it, character for character and whole.
 test("an answered ask draws the answer in its own row, word for word", () => {
@@ -990,7 +992,7 @@ test("a link in a row's words to the address the reader is at replaces it", asyn
 
 /** Lays every element out `height` px tall for the rows drawn until the answer is called: no
  *  DOM of a unit test lays anything out, and the cut reads the words' own boxes
- *  (`measureClamp`). */
+ *  (`clamp-measurer.ts`'s `measureClamp`). */
 function layOut(height: number): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
@@ -1010,16 +1012,19 @@ function layOut(height: number): () => void {
 // Ruling 1, and the reviewer's reading of it: "more · N words" opens the rest of a cut text, so
 // it is drawn only while the words are cut. A row whose body is open draws its words whole, and
 // no control that would open what is already open. The count is written with its thousands
-// separator.
-test("more is drawn on a cut row and never beside words a body draws whole", () => {
+// separator. The page measures only the words of rows near the viewport, so each
+// row's words are brought near and measured before the row is read.
+test("more is drawn on a cut row and never beside words a body draws whole", async () => {
   const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
   const long = node({ id: "message-1", text, type: "message" });
   const planner: Author = { kind: "agent", name: "Planner", reader: false };
   // 3,000 words over 400 lines of 24 px: six lines are drawn and 394 of 400 parts are held back.
   const restore = layOut(9600);
+  const near = installIntersectionObserver();
   try {
     const cut = renderRow(long, { author: planner, body: false });
     try {
+      await measureNearWords(near);
       expect(cut.container.querySelector("[data-node-more]")?.textContent).toBe(
         `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
       );
@@ -1031,6 +1036,7 @@ test("more is drawn on a cut row and never beside words a body draws whole", () 
     }
     const open = renderRow(long, { author: planner, body: true });
     try {
+      await measureNearWords(near);
       expect(
         open.container.querySelector("[data-node-more]"),
         "a row whose body is open still draws more"
@@ -1047,6 +1053,7 @@ test("more is drawn on a cut row and never beside words a body draws whole", () 
       body: false,
     });
     try {
+      await measureNearWords(near);
       expect(statement.container.querySelector("[data-node-more]")).not.toBeNull();
     } finally {
       statement.unmount();
@@ -1056,11 +1063,13 @@ test("more is drawn on a cut row and never beside words a body draws whole", () 
       body: false,
     });
     try {
+      await measureNearWords(near);
       expect(person.container.querySelector("[data-node-more]")).toBeNull();
     } finally {
       person.unmount();
     }
   } finally {
+    near.restore();
     restore();
   }
 });
@@ -1436,10 +1445,10 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
 });
 
 /** A focused row whose box the browser lays out at `top`, 24 px tall, placed by the hook every
- *  row of the outline places itself with. */
-function FocusedRowAt({ top }: { top: number }): ReactNode {
+ *  row of the outline places itself with, by its default step or by `below`. */
+function FocusedRowAt({ below, top }: { below?: number; top: number }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
-  useRowOnScreen(row, true);
+  useRowOnScreen(row, true, below);
   return (
     <div
       ref={(element) => {
@@ -1469,6 +1478,21 @@ test("a focused row under the view row that stays is placed below it, and one be
     scrollBy.mockClear();
     render(<FocusedRowAt top={60} />).unmount();
     expect(scrollBy, "a row already below the view row was scrolled").not.toHaveBeenCalled();
+  } finally {
+    scrollBy.mockRestore();
+    document.documentElement.style.removeProperty("scroll-padding-top");
+  }
+});
+
+// A view that places its rows by a step of its own passes it, and a focused row
+// under what stays is placed that far below it rather than 8 px.
+test("a focused row under the view row that stays is placed the step it is given below it", () => {
+  document.documentElement.style.setProperty("scroll-padding-top", "44px");
+  const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    render(<FocusedRowAt below={20} top={10} />).unmount();
+    expect(scrollBy).toHaveBeenCalledTimes(1);
+    expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 20 });
   } finally {
     scrollBy.mockRestore();
     document.documentElement.style.removeProperty("scroll-padding-top");

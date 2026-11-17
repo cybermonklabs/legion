@@ -241,7 +241,7 @@ function IssuePageFallback(): ReactNode {
 }
 
 /**
- * What the new issue page's frame holds while the page's code loads (dispatch://INFRA-1196 R10):
+ * What the new issue page's frame holds while the page's code loads (R10):
  * the header's two lines, the view row's five controls and the first rows, as boxes with no word
  * in them, so no name of a control flashes on screen and none of today's nine tab names does.
  * It takes the inset the page's own column takes, since the frame gives `<main>` no padding.
@@ -474,7 +474,7 @@ function NavigationContents({
 
 /**
  * The providers the shell mounts around everything it draws: the margin's own, and the four the
- * new issue page's frame reads (dispatch://INFRA-1196 R12, R14). `drawer` is Details, which only
+ * new issue page's frame reads (R12, R14). `drawer` is Details, which only
  * the frame passes: with it undefined the margin is the column it has always been, and no page
  * fills its slot. `navigation` is what the page's header draws its `☰` from, and `openHelp` what
  * its Keys control opens. A page publishes the names it read for its references to everything
@@ -537,7 +537,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
-  // The new issue page's frame (dispatch://INFRA-1196 R1, R14), computed here once: an issue's
+  // The new issue page's frame (R1, R14), computed here once: an issue's
   // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
   // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
   // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over

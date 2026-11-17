@@ -10,7 +10,7 @@ import { CONTROL_LABELS } from "./page-words";
 
 /**
  * Hands the shell's Details drawer what it draws in the new page's words and the address rule it
- * follows, for as long as the page's root is mounted (dispatch://INFRA-1196 R4, R5, R12): the
+ * follows, for as long as the page's root is mounted (R4, R5, R12): the
  * drawer is the shell's and is loaded with every page, so it imports neither the page's word list
  * nor its model, and reads both from here through `MarginDrawer.page`.
  *

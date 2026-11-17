@@ -12,10 +12,10 @@ import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
 /**
- * The header's one overflow menu (dispatch://INFRA-1196 R13): the pin, close, reopen, and the
- * control that gives the issue a parent. It holds actions, never a property: every property
- * with a value is drawn, and a property with none is reached from Details' one add control (R13,
- * which bans a "more" that hides a property). It is the prototype's `#more-btn` and `#menu`.
+ * The header's one overflow menu: the pin, close, reopen, and the control that gives the issue a
+ * parent. It holds actions, never a property: every property with a value is drawn, and a
+ * property with none is reached from Details' one add control, since a "more" that hides a
+ * property is not allowed. It is the prototype's `#more-btn` and `#menu`.
  *
  * Each action is a plain `button`, in a group rather than a `role="menu"` of `menuitem`s: these
  * are the controls the old header drew as buttons, and a reader - or the check that reads every
@@ -26,11 +26,19 @@ import { CONTROL_LABELS } from "./page-words";
  *
  * The group is drawn while it is shut too, hidden, so the keys that act on one of its controls -
  * `Shift+P`, the pin (`useHeaderKeys.ts`) - press the same control a reader presses.
+ *
+ * Escape, and an action pressed from the open group, give the focus back to the group's control,
+ * 'Issue actions', as the ARIA menu-button pattern does (WCAG 2.4.3): the group hides the focused
+ * action as it closes, and with no control focused the browser would leave the focus on the
+ * page's body, so the next Tab would start again from the top of the page. A press outside the
+ * group leaves the focus where the press lands, and `Shift+P`, which presses the hidden pin while
+ * the group is shut, leaves it where it was.
  */
 export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] }): ReactNode {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const wrapper = useRef<HTMLDivElement>(null);
+  const control = useRef<HTMLButtonElement>(null);
   // A press outside the group, or Escape, closes it: an open group would otherwise cover the
   // page's own first row until the reader pressed the control again.
   useEffect(() => {
@@ -46,6 +54,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
       if (event.key !== "Escape") return;
       event.preventDefault();
       setOpen(false);
+      control.current?.focus();
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);
@@ -65,6 +74,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         aria-label={CONTROL_LABELS.issue_actions}
         className={pageHeaderControl}
         onClick={() => setOpen((shown) => !shown)}
+        ref={control}
         type="button"
       >
         <span aria-hidden="true" {...pageChrome}>
@@ -75,10 +85,9 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
           the control: placed from the flex wrapper itself, its top was the wrapper's top and it
           covered the control, which then could not be pressed again to close it. At 760 px and
           below the panel is fixed at the anchor's height and spans the screen less the page's
-          14 px insets, so it never reaches past the right edge (R17); from 761 px it is absolute
+          14 px insets, so it never reaches past the right edge; from 761 px it is absolute
           at the anchor, at the prototype's menu width. Each action keeps `main`'s 44 px floor
-          below 1280 px, where that floor applies, as a menu a header control opens does
-          (decision 58 of dispatch://INFRA-1196/artifact/part-decisions-md). */}
+          below 1280 px, where that floor applies, as a menu a header control opens does. */}
       <div className="absolute top-full left-0">
         <div
           className={`fixed inset-x-3.5 z-30 mt-1 flex flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] min-[761px]:absolute min-[761px]:inset-x-auto min-[761px]:top-0 min-[761px]:left-0 min-[761px]:w-64 ${pageHairBorder} ${pagePaperBg}`}
@@ -93,8 +102,12 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
               disabled={action.disabled}
               key={action.id}
               onClick={() => {
+                // `Shift+P` presses the hidden pin while the group is shut (`useHeaderKeys.ts`):
+                // that press moves no focus.
+                const fromTheMenu = open;
                 setOpen(false);
                 action.run();
+                if (fromTheMenu) control.current?.focus();
               }}
               type="button"
               {...pageChrome}

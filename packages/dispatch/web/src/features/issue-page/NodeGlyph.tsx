@@ -6,7 +6,7 @@ import { GLYPH_NAMES } from "./page-words";
 const ASK_CLOSED = "M3 3 l10 10 M13 3 l-10 10";
 
 /**
- * The shape the page draws beside a node's type and beside its state (dispatch://INFRA-1196 R21):
+ * The shape the page draws beside a node's type and beside its state (R21):
  * an inline `<svg>` carrying its `GLYPH_TOKENS` token in `data-glyph` and its own accessible
  * name from `GLYPH_NAMES`, drawn beside the word rather than in place of it, so a type and a
  * state are told apart by a word and a shape and never by colour alone.

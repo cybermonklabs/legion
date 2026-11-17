@@ -28,12 +28,28 @@ export interface NodeEditing {
 /** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
  *  (`IssueTree.tsx`), and the caret's in the row being edited below: a key, a press, a wheel and
  *  a touch. */
-export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+
+/** A controller the reader's first act (`READER_ACTS`, read on the window in the capture phase)
+ *  aborts, calling `then` after it. Aborted any other way, it calls nothing. */
+export function abortOnReaderAct(then?: () => void): AbortController {
+  const acts = new AbortController();
+  for (const type of READER_ACTS) {
+    window.addEventListener(
+      type,
+      () => {
+        acts.abort();
+        then?.();
+      },
+      { capture: true, signal: acts.signal }
+    );
+  }
+  return acts;
+}
 
 /**
  * The caret in a node's own text, where that text lives: the node's block of its own document,
- * with the collaborative cursors and the comment chord it has there (dispatch://INFRA-1196 R9,
- * the Design section's "Editing").
+ * with the collaborative cursors and the comment chord it has there.
  *
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`slots/body.tsx`, through `onEditing`), `document-stage.tsx` moves it onto the
@@ -52,7 +68,9 @@ export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as 
  * binding stands for every other surface (`useTreeKeymap`'s `tree-leave-caret`). The editor
  * then asserts its own selection again a moment after the blur (`prosemirror-view`'s focus
  * handler) and its stage moves off the row in the same commit, so the row takes the focus once
- * more on the next frame as well as the moment Escape was pressed.
+ * more on the next frame as well as the moment Escape was pressed, where the focus has fallen to
+ * nothing by then and the reader has not acted since: a key or a press after Escape, or a focus
+ * something else took, is where the focus stays.
  */
 export function useNodeEditing({
   artifacts,
@@ -93,8 +111,8 @@ export function useNodeEditing({
 
   const editingArtifact = editing?.artifactId;
   const editingBlock = editing?.blockId;
-  // The row the caret went into, not the node it holds: one node is drawn under two parents
-  // (R23), so its id answers with whichever copy the fold drew first, which is the wrong row
+  // The row the caret went into, not the node it holds: one node may be drawn under two
+  // parents, so its id answers with whichever copy the fold drew first, which is the wrong row
   // whenever the reader is editing the second. The row's key is the one thing that tells two
   // placements apart (`tree-keys.ts`'s `rowKeyOf`, `[data-row-key]`).
   const editingRow = editing?.row;
@@ -127,7 +145,9 @@ export function useNodeEditing({
     // not acted, a focus fallen to nothing and a caret moved out of the node's block go back to
     // the block; from their first act the focus and the caret are theirs.
     let settled: (() => void) | undefined;
-    const acts = new AbortController();
+    const acts = abortOnReaderAct(() => {
+      if (settled !== undefined) watch.disconnect();
+    });
     // Places the caret, or places it again where the focus has fallen to nothing or the caret
     // has left the block, and answers whether the row is done with: the caret placed and the
     // reader acted since.
@@ -150,16 +170,6 @@ export function useNodeEditing({
       if (place()) watch.disconnect();
     };
     const watch = new MutationObserver(changed);
-    for (const type of READER_ACTS) {
-      window.addEventListener(
-        type,
-        () => {
-          acts.abort();
-          if (settled !== undefined) watch.disconnect();
-        },
-        { capture: true, signal: acts.signal }
-      );
-    }
     const frame = requestAnimationFrame(() => {
       if (place()) return;
       watch.observe(box, {
@@ -260,12 +270,17 @@ export function useNodeEditing({
     const left = leaving.current;
     if (editingRow !== undefined || left === undefined) return;
     leaving.current = undefined;
+    const acted = abortOnReaderAct();
     const frame = requestAnimationFrame(() => {
+      if (acted.signal.aborted || !focusOnDocument()) return;
       container.current
         ?.querySelector<HTMLElement>(`[data-node-row][data-row-key="${CSS.escape(left)}"]`)
         ?.focus();
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      acted.abort();
+    };
   }, [container, editingRow]);
 
   return { edit, editing, stopEditing };

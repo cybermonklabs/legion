@@ -260,8 +260,12 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		arrivals []int64
+		marks    markers
 	)
 	sub, err := rig.conn.Subscribe(contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg) {
+		if marks.took(msg) {
+			return
+		}
 		id := envelopeEventID(t, msg.Data)
 		mu.Lock()
 		arrivals = append(arrivals, id)
@@ -320,6 +324,11 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
+	// Each event is marked published once the stream acknowledged its forward to S, and S is
+	// handed the same message on its own connection, which can arrive just after that
+	// acknowledgement on a busy machine: S is read once it has taken every forward sent to it
+	// (markers.await).
+	marks.await(t, rig.client, contracts.LegacyAgentSubject(holder))
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {
@@ -876,6 +885,18 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 	claim := claims[0]
 	// Ten more due events, so the statement measured and explained has a batch to choose.
 	unpublished := fresh()
+	// The scan's publish left the old versions of the events it published dead, with their
+	// entries in the indexes of events. The first claim to step over such an entry once no
+	// snapshot can see its row marks it dead and reads its page again to do it, and whether a
+	// snapshot can still see the row is judged from the oldest transaction on the whole server,
+	// not on this database alone. On a Postgres other packages' tests share, a transaction open
+	// in another database keeps the explains below from marking those entries, and the first
+	// measured run pays for the marking instead: 38 blocks and then 37, or 39 and 37 at the larger
+	// size. A vacuum removes the dead rows and their index entries outright, judging by this
+	// database's own transactions, so the runs below measure the claim and none of that cleanup.
+	if _, err := database.Pool.Exec(ctx, `vacuum (index_cleanup on) events`); err != nil {
+		t.Fatalf("vacuum events: %v", err)
+	}
 
 	// The fastest of several runs: the box is small and shared, and a run another test's work
 	// delayed says nothing about the statement.
@@ -917,14 +938,11 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
 			rowsRead, secondRowsRead)
 	}
-	// The blocks are as steady as the rows once the claim has run on this database: 37 on both
-	// runs of each size, in all 12 readings of 3 runs of the healthy claim on 2026-11-09, and 56
-	// and 113 on both runs of the mutated one. The 20 explains above run it first. A claim run
-	// for the first time marks the dead index entries the scan's publish left, and reads those
-	// pages again to do it: measured before the explains, a pair read 38 and 37, and 39 and 37
-	// (the review of INFRA-2065, round 2). So the pair stays after the explains.
+	// The blocks are as steady as the rows once the dead entries the scan's publish left are
+	// vacuumed away (above): 37 on both runs of each size, in all 12 readings of 3 runs of the
+	// healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one.
 	if indexBlocks != secondIndexBlocks {
-		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and once the explains above have run the claim, a second run on the same connection fetches the same blocks",
+		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and with no dead index entry left for the first run to mark, a second run on the same connection fetches the same blocks",
 			indexBlocks, secondIndexBlocks)
 	}
 	if rowsRead == 0 && secondRowsRead == 0 {

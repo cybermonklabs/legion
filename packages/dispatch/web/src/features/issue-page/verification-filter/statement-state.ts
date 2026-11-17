@@ -4,8 +4,7 @@ import type { CheckState, StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults } from "../tree-drafts";
 
 /**
- * How each statement of the issue stands, and the one commit the page names for its results
- * (dispatch://INFRA-1196 R17, R2's Verification clauses).
+ * How each statement of the issue stands, and the one commit the page names for its results.
  *
  * The Verification filter draws each statement with the checks that serve it and their latest
  * results. R17 adds three readings over that, and all three are here, pure, so the body draws
@@ -19,8 +18,7 @@ import { checkStanding, newestFirst, standingResults } from "../tree-drafts";
  *   reads only the results a retraction left standing), so a withdrawal may not move the commit
  *   the page names; and a result recorded against words its check no longer has stands for
  *   nothing either (the server's `standingCommit`), so it names no commit. It is what the body
- *   names, and nothing more: it decides no check's state and no statement's
- *   (dispatch://INFRA-1196 decision 152).
+ *   names, and nothing more: it decides no check's state and no statement's.
  * - **Met, Not met, Unknown.** A statement reads Met where every check of it reads Passed, Not
  *   met where one reads Failed, and Unknown otherwise - no check at all, a result recorded
  *   against another commit than its check compares with, a withdrawn one, or a check Dispatch
@@ -35,7 +33,7 @@ import { checkStanding, newestFirst, standingResults } from "../tree-drafts";
  * check's words now at that basis decides - a fail there is Failed whatever older pass the
  * server still counts, and a newer result at another commit says nothing about it. Two checks
  * of one issue compare with different commits, so no check is read against the one commit the
- * page names (decision 152).
+ * page names.
  * The tree's check node holds the same reading (`addChecks`), so this body, the outline's row,
  * the fold's frontier and the filter row's failing count say one word for one check, and it is
  * the word the check's result says of itself (`check-facts.ts`'s `resultFacts`).
@@ -58,8 +56,7 @@ export interface CheckReading {
    *  recorded against the check's words now, as the server's `standingCommit` reads it. */
   readonly atBasis: boolean;
   /** Every other result of the check, newest first, which the body folds into one line with
-   *  their count under the latest (ruling 6 of build-rulings-md: a check with 431 results drew
-   *  a page 149,936 px tall). */
+   *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */
   readonly earlier: readonly TreeNode[];
   /** The result the body draws under the check: the newest that still stands, or, where every
    *  result of it was withdrawn, the newest withdrawn one, since that is what the reader is
@@ -121,7 +118,7 @@ export function shortCommit(sha: string): string {
  *
  * It is the commit the Verification filter's body names, and nothing reads a check's or a
  * statement's state at it: each check is read at the commit the server names for that check
- * (`tree-drafts.ts`'s `checkStanding`, dispatch://INFRA-1196 decision 152).
+ * (`tree-drafts.ts`'s `checkStanding`).
  */
 export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
   const named = checks.flatMap((check) =>
@@ -210,11 +207,10 @@ export function statementStandings(
 }
 
 /**
- * How a statement stands, from its checks' own states (R17, dispatch://INFRA-1196 decision 152):
- * Met where every check of it reads Passed, Not met where one reads Failed, and Unknown
- * otherwise, which is where it carries no check, where a check's evidence was recorded against
- * another commit than the one the server names for it, and where a check stands in any of the
- * other five states.
+ * How a statement stands, from its checks' own states (R17): Met where every check of it reads
+ * Passed, Not met where one reads Failed, and Unknown otherwise, which is where it carries no
+ * check, where a check's evidence was recorded against another commit than the one the server
+ * names for it, and where a check stands in any of the other five states.
  */
 export function statementState(checks: readonly CheckReading[]): StatementState {
   if (checks.length === 0) return "unknown";

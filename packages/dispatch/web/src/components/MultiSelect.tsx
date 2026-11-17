@@ -34,17 +34,15 @@ function fold(value: string | undefined): string {
 }
 
 /**
- * Each colour the picker draws inside `NoTooltips`, the new issue page's (dispatch://INFRA-3935
- * R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md), by the role `main`'s
+ * Each colour the picker draws inside `NoTooltips`, the new issue page's, by the role `main`'s
  * colour has: the trigger is the page's header control (its rule and muted words on the
  * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
  * paper), whose rows are its items, in the ink with the mark grey under the pointer and on the
  * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
  * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
  * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
- * scheme, under the 4.5:1 its words need (decision 99(c) of the same artifact). The search box
- * keeps `main`'s focus rule, the one focus indicator of the application (decision 58 of the same
- * artifact).
+ * scheme, under the 4.5:1 its words need. The search box keeps `main`'s focus rule, the one
+ * focus indicator of the application.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -306,8 +304,7 @@ export function MultiSelect({
                     </TruncatedText>
                   ) : (
                     // Inside `NoTooltips` (the new issue page) no `title` can give back what an
-                    // ellipsis cut, so the label wraps instead and is read whole
-                    // (dispatch://INFRA-1196 R6, R19).
+                    // ellipsis cut, so the label wraps instead and is read whole.
                     <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
                   )}
                   {detail === undefined ? null : (

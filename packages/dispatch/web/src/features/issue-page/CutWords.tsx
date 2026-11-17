@@ -5,7 +5,7 @@ import { FOCUSABLE, useOutOfTabOrder } from "./RowText";
 
 /**
  * A node's words as a filter's own body draws them, cut as the outline cuts an agent's words
- * (ruling 1 and ruling 6 of dispatch://INFRA-1196's build-rulings-md, the prototype's
+ * (the architect's rulings 1 and 6, the prototype's
  * `CUT_LINES`): at six lines where more than 20 words would be hidden, with "more · N words"
  * opening the rest in place, and whole while `whole` holds - the focused node, or one the
  * reader opened. The cut is measured by `NodeRow.tsx`'s `useClamp`, so a row of the outline and

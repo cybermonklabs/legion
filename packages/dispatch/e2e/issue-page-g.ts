@@ -35,9 +35,9 @@ import { ONE_PIXEL_PNG } from "./sends";
 import { asUser } from "./users";
 
 /**
- * What the rows of part G of dispatch://INFRA-1196 (`e2e/issue-page-g.e2e.ts`) read of the new
+ * What the rows of part G (`e2e/issue-page-g.e2e.ts`) read of the new
  * issue page, and the one issue they seed. A later part imports these readers and does not copy
- * them (decision 2 of dispatch://INFRA-1196/artifact/part-decisions-md).
+ * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
  * with `page.goto`; the body is G's `ConversationRows.tsx`, every branch unfolded at load, and
@@ -194,8 +194,8 @@ function cssValue(value: string): string {
 const BRANCHES_OPENED_AT_MOST = 200;
 
 /**
- * Opens every branch a fold left shut, as a reader does to read past one: G's rows were drawn
- * with every branch open before part I's outline, which folds to the frontier and draws a
+ * Opens every branch a fold left shut, as a reader does to read past one: these rows were drawn
+ * with every branch open before the outline, which folds to the frontier and draws a
  * branch deeper than the levels it draws - one below 1024 px, three from there up - as one
  * `[data-branch-more]` line counting its nodes. So a row that reads what a branch holds presses
  * each fold control and each such line's control, until neither is left, rather than asserting
@@ -983,7 +983,7 @@ async function uploadPicture(key: string, name: string): Promise<string> {
 
 /**
  * One issue holding every node part G's rows read (c-row-layout, c-cut, c-author, c-writer of
- * dispatch://INFRA-3947/artifact/verification-md): a child with a blocker and a session's
+ * part G's Verification document): a child with a blocker and a session's
  * claim; the reader's comment; an agent's message with a link and "UTF-16", and the reader's
  * reply to each of the agent's messages; the statement `r-cites`, citing `notes.md` and the
  * child, with bold words and two paragraphs (a `requirement` holds paragraphs and no list,

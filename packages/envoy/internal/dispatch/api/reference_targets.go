@@ -18,12 +18,12 @@ import (
 // referenceTargetsMax is how many references one batched read may name. Its value is
 // contracts.ReferenceTargetsMax, the literal REFERENCE_TARGETS_MAX in packages/contracts, which
 // the client batches by too, and whose comment gives the measurement it is set above: the 247
-// distinct references that dispatch://INFRA-1196 and its four largest documents name. So the
-// count of references splits no such load into a second request, and a set at the cap costs one
-// statement per node kind (refs.TargetNames), not one per reference. The ids that the set writes
-// short cost one statement per kind of item (refs.ResolvePrefixes), except the blocks of a
-// document, which cost two: one for the blocks of the latest version of each document, and one
-// for the blocks of the versions that the references pin.
+// distinct references that the issue the new issue page was designed on and its four largest
+// documents name. So the count of references splits no such load into a second request, and a
+// set at the cap costs one statement per node kind (refs.TargetNames), not one per reference.
+// The ids that the set writes short cost one statement per kind of item (refs.ResolvePrefixes),
+// except the blocks of a document, which cost two: one for the blocks of the latest version of
+// each document, and one for the blocks of the versions that the references pin.
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
 // own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load
@@ -233,7 +233,7 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	}
 	contents := make(map[refs.Target]string, len(texts))
 	for target, whole := range texts {
-		contents[target] = blockTextContent(whole)
+		contents[target] = blockTextContent(whole, target.Kind == "block")
 	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
@@ -244,9 +244,10 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 }
 
 // blockTextContent is the markdown a block's text_tree is read from, given the block's whole
-// text as the index holds it. A typed block's text opens with its directive line and closes
-// with its fence, which are no part of what the block says: its tree is of its own content, the
-// tree GET /api/v1/issues/{key}/coverage and /results answer for the same block
+// text as the index holds it and whether the block is a document's (the target kind "block")
+// rather than a comment's, a message's or an ask's. A typed block's text opens with its directive
+// line and closes with its fence, which are no part of what the block says: its tree is of its
+// own content, the tree GET /api/v1/issues/{key}/coverage and /results answer for the same block
 // (typedBlocksIn). Every other block's text is its content already.
 //
 // The content is cut from the text itself and is never rendered again. A parse gives each typed
@@ -254,33 +255,57 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // into the block's opening line. So for a block that holds a typed block written without an id, a
 // content rendered from a parse would change on every read, and its tree and the ETag with it.
 //
-// The cut drops the first line and the last one, and takes out of each line between them the
-// indentation of the last line, the closing fence. The text starts at the directive, so a block
-// in a list item carries that indentation on every line but its first; left in, it would make the
-// content after a marker such as `10. ` an indented code block. A blank line, which the renderer
-// can write without that indentation, is kept as it stands. The blank lines at the start and at
-// the end of the content are no part of it, so a block that holds nothing has no content. A first
-// line `---` is written `***`, the same rule: at the start of a document of its own, `---` opens
-// front matter, which it does not in the block.
+// The cut drops the first line and the last one, the closing fence, and reads the lines between
+// them by the block's kind. A document's block can stand in a list item or in a footnote
+// definition. Its text starts at the directive, so there it carries the container's indentation
+// on every line but its first, and left in, that indentation would make the content after a
+// marker such as `10. ` an indented code block. So the cut takes the closing fence's indentation
+// out of each line of a document's block. A blank line, which the renderer can write without
+// that indentation, is kept as it stands, and a text with a line that is not blank and does not
+// carry that indentation is answered as it stands. A block of a comment, a message or an ask is a
+// top-level block of its item's own text, stored from the start of its line, so its opening line
+// can stand up to three spaces in. The cut takes that indentation off the opening line before it
+// reads the directive, and off each later line as the item's own parse takes it (columnsOff). An
+// opening line that stands a tab or four spaces in opens no typed block, so its text is answered
+// as it stands. With an opener at column 0 every line is as written: under a fence two spaces in,
+// a line four spaces in is an indented code block, as the item reads it, and a line at column 0
+// stays at column 0. Wherever the opener stands, a fence fewer than four columns in closes the
+// block.
 //
-// The text is cut only where its last line is a fence and its first line, the cut lines and that
-// fence read back as one typed block (pmdoc.ParseRendering). The parse checks the shape alone;
-// nothing of the content comes from it. A text that opens like a typed block and fails that
-// check is answered as it stands: one with a line between its fences that does not carry the
-// fence's indentation, one that carries the `>` of a quote it stands in, or one whose fence does
-// not close it.
+// Of either kind, the blank lines at the start and at the end of the content are no part of it,
+// so a block that holds nothing has no content; nor is a line of only spaces and tabs that ends an
+// indented code block before an item's fence, though the item's own parse holds that line in the
+// code. A first line `---` is written `***`, the same rule: at the start of a document of its own,
+// `---` opens front matter, which it does not in the block.
+//
+// The text is cut only where its last line is a fence and its first line, the lines as the kind
+// reads them and that fence read back as one typed block (pmdoc.ParseRendering): a document's
+// block with the fence's indentation taken out of the fence too, an item's block as it stands.
+// The parse checks the shape alone; nothing of the content comes from it. A text that fails that
+// check is answered as it stands. So is an item's block whose fence stands four spaces or a tab
+// in: its lines start at column 0, where such a fence closes nothing, so the lines above it are no
+// typed block. So is a typed block in a quote, whose lines after the first carry the quote's `>`:
+// its last line is no fence, and its tree is the tree of its whole stored text, the line that
+// opens the typed block included.
 //
 // In the markdown a document stores, which gives every typed block its id, the cut reads back as
 // a rendering of the block's content does (blockContent), and it is the same bytes except in
 // lines that read as nothing or as the same text: an escape that keeps a line from closing the
 // block, the blank line of an empty code block, the blank lines a rendering writes for the empty
-// paragraph an ask holds ahead of a list. One shape reads back otherwise: in a footnote
-// definition, a blank line of code is written without the definition's indentation, and the cut
-// cannot tell those columns from the code's, so such a line can keep other spaces than the
-// document reads in it.
-func blockTextContent(whole string) string {
+// paragraph an ask holds ahead of a list. One shape reads otherwise. In a footnote definition, a
+// blank line of code is written without the definition's indentation, and the cut cannot tell
+// those columns from the code's, so such a line can keep other spaces than the document reads in
+// it.
+func blockTextContent(whole string, document bool) string {
 	opening, rest, _ := strings.Cut(whole, "\n")
-	if _, _, typed := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(opening, "\r")); !typed {
+	columns := 0
+	if !document {
+		columns = len(opening) - len(strings.TrimLeft(opening, " "))
+	}
+	if columns > 3 {
+		return whole
+	}
+	if _, _, typed := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(opening[columns:], "\r")); !typed {
 		return whole
 	}
 	inner, closing := "", rest
@@ -288,17 +313,16 @@ func blockTextContent(whole string) string {
 		inner, closing = rest[:end+1], rest[end+1:]
 	}
 	fence := strings.TrimLeft(closing, " \t")
-	indent := closing[:len(closing)-len(fence)]
 	if colons := strings.TrimRight(fence, " \t\r"); colons == "" || strings.Trim(colons, ":") != "" {
 		return whole
 	}
-	lines, cut := outdented(inner, indent)
-	if !cut {
-		return whole
-	}
-	standing := whole
-	if indent != "" {
-		standing = opening + "\n" + lines + closing[len(indent):]
+	lines, standing := columnsOff(inner, columns), whole
+	if indent := closing[:len(closing)-len(fence)]; document && indent != "" {
+		outdent, cut := outdented(inner, indent)
+		if !cut {
+			return whole
+		}
+		lines, standing = outdent, opening+"\n"+outdent+fence
 	}
 	tree, err := pmdoc.ParseRendering(standing)
 	if err != nil || len(tree.Children) != 1 || !pmdoc.IsTypedBlock(tree.Children[0].Type) {
@@ -315,9 +339,6 @@ func blockTextContent(whole string) string {
 // line that carries it. A blank line, one of no more than spaces and tabs, that does not carry
 // indent is kept as it stands. cut is false when a line that is not blank does not carry indent.
 func outdented(lines, indent string) (text string, cut bool) {
-	if indent == "" {
-		return lines, true
-	}
 	var written strings.Builder
 	written.Grow(len(lines))
 	for line := range strings.Lines(lines) {
@@ -328,6 +349,112 @@ func outdented(lines, indent string) (text string, cut bool) {
 		written.WriteString(rest)
 	}
 	return written.String(), true
+}
+
+// columnsOff is lines with columns columns of indentation taken off each line, as the item's own
+// parse reads a typed block whose opening line stands columns spaces in
+// (pmdoc.typedDirectiveParser.Continue). With columns 0 it is lines. With columns above 0, a
+// line's columns are counted as it is stored, a space one column and a tab reaching the next
+// multiple of four from its column in the stored text, and the line is written again. The spaces
+// and tabs it starts with, a blank line's included, are written as spaces: as many as the columns
+// they reach, less columns, and never fewer than none. Then, while what follows starts with a
+// container marker (containerMarker), the marker is kept and the spaces and tabs after it are
+// written as spaces, as many as the columns they span. The walk stops at a run of them that
+// reaches the line's end, which is kept as it stands, and after a run five columns or more wide.
+// The rest of the line is kept as it stands.
+//
+// The item's own parse measures every tab from the column it stands at, a tab after a list
+// marker or `>` too (pmdoc's listItemColumns). Kept as a tab, a tab past columns would reach
+// another stop once the line starts columns earlier, so the content would read with another
+// block structure than the item gives it: under an opening line two spaces in, `-\tItem.` holds
+// its text one column past the marker, and at column 0 three, so a second paragraph two columns
+// in would fall out of the list item. A run that reaches the line's end decides no column, since
+// a list item whose marker ends its line takes its content a column past the marker, and written
+// as spaces it could end a paragraph's line in a hard break. Of a run five columns or more wide,
+// the list item or the quote takes one column, and what follows is code or a paragraph's text,
+// where no container opens.
+//
+// A tab past the opener's columns that the item's own parse keeps as text, in code (indented or
+// fenced) or after a marker that opens no container, is written as spaces all the same, so that
+// text can hold spaces where the item holds a tab; the block structure is the same.
+func columnsOff(lines string, columns int) string {
+	if columns == 0 {
+		return lines
+	}
+	var written strings.Builder
+	written.Grow(len(lines))
+	for line := range strings.Lines(lines) {
+		at, column := blankRun(line, 0, 0)
+		writeSpaces(&written, column-columns)
+		for {
+			marker := containerMarker(line[at:])
+			if marker == 0 {
+				break
+			}
+			written.WriteString(line[at : at+marker])
+			at, column = at+marker, column+marker
+			end, reached := blankRun(line, at, column)
+			if end == len(line) || line[end] == '\n' || line[end] == '\r' {
+				break
+			}
+			width := reached - column
+			writeSpaces(&written, width)
+			at, column = end, reached
+			if width >= 5 {
+				break
+			}
+		}
+		written.WriteString(line[at:])
+	}
+	return written.String()
+}
+
+// blankRun is where the run of spaces and tabs in line from at ends, and the column it reaches
+// from column, counted as columnsOff counts a line's columns.
+func blankRun(line string, at, column int) (end, reached int) {
+	for ; at < len(line) && (line[at] == ' ' || line[at] == '\t'); at++ {
+		if line[at] == '\t' {
+			column += 4 - column%4
+		} else {
+			column++
+		}
+	}
+	return at, column
+}
+
+// writeSpaces writes count spaces, and none when count is below one.
+func writeSpaces(written *strings.Builder, count int) {
+	for ; count > 0; count-- {
+		written.WriteByte(' ')
+	}
+}
+
+// containerMarker is the length of the container marker rest starts with, or 0 when it starts
+// with none: a quote's `>`, or a list item's `-`, `*`, `+` or one to nine digits and `.` or `)`
+// followed by a space, a tab or the line's end.
+func containerMarker(rest string) int {
+	if rest == "" {
+		return 0
+	}
+	length := 1
+	switch rest[0] {
+	case '>':
+		return 1
+	case '-', '*', '+':
+	default:
+		digits := 0
+		for digits < len(rest) && digits <= 9 && '0' <= rest[digits] && rest[digits] <= '9' {
+			digits++
+		}
+		if digits == 0 || digits > 9 || digits == len(rest) || (rest[digits] != '.' && rest[digits] != ')') {
+			return 0
+		}
+		length = digits + 1
+	}
+	if length < len(rest) && rest[length] != ' ' && rest[length] != '\t' && rest[length] != '\r' && rest[length] != '\n' {
+		return 0
+	}
+	return length
 }
 
 // withoutBlankEnds is lines from the first that holds more than whitespace to the line ending

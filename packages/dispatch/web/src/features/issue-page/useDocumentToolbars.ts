@@ -42,12 +42,12 @@ const DocumentToolbarsContext = createContext<DocumentToolbars>(NO_TOOLBARS);
 const ToolbarSinkContext = createContext<ToolbarSink>(NO_TOOLBARS.toolbarSink);
 
 /**
- * Holds one toolbar and one diff per document, by its artifact id, for one issue page
- * (dispatch://INFRA-1196 R16): every editor on the page reports its own toolbar through a
- * callback of its own, for the page's version control to draw the toolbar of whichever document
- * is open. It stands in `slots/providers.tsx`, above the body, whose row editor reports here
- * through `useToolbarSink`, and above the view row, where part N's version control is to read
- * the toolbars; nothing reads them yet.
+ * Holds one toolbar and one diff per document, by its artifact id, for one issue page: every
+ * editor on the page reports its own toolbar through a callback of its own, for the page's
+ * version control to draw the toolbar of whichever document is open. It stands in
+ * `slots/providers.tsx`, above the body, whose row editor reports here through
+ * `useToolbarSink`, and above the view row, where the page's version control is to read the
+ * toolbars; nothing reads them yet.
  */
 export function DocumentToolbarsProvider({ children }: { children: ReactNode }): ReactNode {
   const held = useHeldToolbars();

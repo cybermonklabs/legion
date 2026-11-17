@@ -96,8 +96,8 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
- *  header that part P fills, which draws the key and the title, the view row that part D fills,
- *  the outline's one line for an issue that holds nothing, and nothing else. */
+ *  header, which draws the key and the title, the view row, the outline's one line for an issue
+ *  that holds nothing, and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -105,11 +105,11 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part P fills the header
-  // (`[data-issue-header]`), part D the view row (`[data-filter-row]`), part I's outline draws
+  // A part that fills another slot adds its selector here: so far the header
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, the outline draws
   // its one line for an issue that holds nothing at the issue's own address, and each other slot
   // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
-  // until part J fills it.
+  // until that view's own slot is filled.
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);

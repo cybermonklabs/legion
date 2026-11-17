@@ -16,10 +16,9 @@ import { sessionOfAddress } from "../refs/routes";
 // Inside `NoTooltips` every marker here is the new issue page's warning, the waiting orange of
 // what needs a person's eye: a route that reaches nobody is the page's waiting chip, and a reach
 // nobody could judge or a holder that stopped answering is its words in that colour, as the
-// page's margin says such a state (dispatch://INFRA-3935 R6, decision 56 of
-// dispatch://INFRA-1196/artifact/part-decisions-md). There a route a marker names is a value, so
-// it breaks anywhere rather than ellipsize behind a tooltip that page does not draw (decision 104
-// of the same artifact); everywhere else it ellipsizes, as on `main`.
+// page's margin says such a state. There a route a marker names is a value, so it breaks
+// anywhere rather than ellipsize behind a tooltip that page does not draw; everywhere else it
+// ellipsizes, as on `main`.
 
 type RoutedIssue = Pick<
   IssueDetails,

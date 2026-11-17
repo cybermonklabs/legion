@@ -99,7 +99,7 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // that holds the stage and the foot, 10 px under the row and inset 28 px each side (14 px
   // below 768 px), at least the screen's height so the foot stands at the screen's foot however
   // short the stage is; then Details' slot, whose fill the shell draws in its drawer
-  // (dispatch://INFRA-1196 R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide:
+  // (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide:
   // under a view the stage has 1328 px inside its insets, and beside the 260 px pane 1068 px.
   const props: SlotProps = { issue: issue.data, route };
   return (

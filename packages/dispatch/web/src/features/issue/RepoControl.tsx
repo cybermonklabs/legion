@@ -49,9 +49,9 @@ export function repoControlName(issueKey: string): string {
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) it says that page's words
  * with their marks and carries no `title`, so the words "inherited or the project's default"
- * are drawn beside the badge, where the `title` said them (dispatch://INFRA-1196 R19). There
- * `inRow` draws it as the value of a row of Details, which draws the label: no `Repository:` of
- * its own, a line that wraps, and None where no item shows.
+ * are drawn beside the badge, where the `title` said them. There `inRow` draws it as the value
+ * of a row of Details, which draws the label: no `Repository:` of its own, a line that wraps,
+ * and None where no item shows.
  */
 export function RepoControl({
   disabled = false,
@@ -99,7 +99,7 @@ export function RepoControl({
   if (resolvedRepo === null && !mappings.isError && (mappings.isPending || mapped.length === 0)) {
     return page !== null && inRow ? (
       // The prototype's `.none` is the bullet grey, which no page pair registers for words
-      // (2.5:1 on the paper); the page's quiet words take it (dispatch://INFRA-3935 R6).
+      // (2.5:1 on the paper); the page's quiet words take it.
       <span className={pageQuietText} {...page.pageChrome}>
         {page.CONTROL_LABELS.none}
       </span>
@@ -115,8 +115,7 @@ export function RepoControl({
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
-  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
-  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the issue's own repository
+  // Inside `NoTooltips` each colour is one of the new issue page's: the issue's own repository
   // is the page's label chip, one it inherits or none is the quiet words on the same ground; the
   // line is the ink in a row of Details (the prototype's `.frow .fv`) and the muted grey
   // elsewhere (its `#hdr-props`).
@@ -142,8 +141,7 @@ export function RepoControl({
   // Nothing resolved and no list to pick from: the failure is all there is to show. Inside
   // `NoTooltips` the repository is a value, so it keeps `max-w-full` and breaks anywhere, and
   // neither its chip nor anything around it keeps its width: a 44-character name with no space
-  // ran 101 px past Details' row at 1440 px (dispatch://INFRA-3935 R4 and R6, decision 104 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  // ran 101 px past Details' row at 1440 px.
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
       <span

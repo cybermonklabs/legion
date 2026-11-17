@@ -45,9 +45,9 @@ export function assigneeControlName(issueKey: string): string {
  * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
  * is queued behind the save. Named by `assigneeControlName`.
  *
- * `variant="header"` draws the new issue page header's shape (the prototype's `.person`,
- * dispatch://INFRA-1196 R13): the person's initial in a filled circle beside their name in the
- * ink, or Unassigned in the quiet grey. The select over it is the same either way.
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.person`): the
+ * person's initial in a filled circle beside their name in the ink, or Unassigned in the quiet
+ * grey. The select over it is the same either way.
  */
 export function AssigneeControl({
   assignee,
@@ -72,8 +72,7 @@ export function AssigneeControl({
   const tone = assignee === null ? badgeLow : badgePrimary;
   // Inside `NoTooltips` the badge is the new issue page's label chip, and Unassigned its quiet
   // words on the same ground, as the header variant says it in the quiet grey: each colour there
-  // is one of that page's (dispatch://INFRA-3935 R6, decision 56 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  // is one of that page's.
   const badgeTone =
     page === null
       ? `${tone.bg} ${tone.text}`
@@ -83,9 +82,8 @@ export function AssigneeControl({
   const shown = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
   const mark = assignee === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the person is a value, so it keeps `max-w-full` and breaks anywhere, and
-  // its wrapper narrows to the line rather than keep its width (dispatch://INFRA-3935 R6,
-  // decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). The header variant is the
-  // new page's shape alone, so it wraps on every surface.
+  // its wrapper narrows to the line rather than keep its width. The header variant is the new
+  // page's shape alone, so it wraps on every surface.
   return (
     <>
       <span

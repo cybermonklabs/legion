@@ -43,10 +43,10 @@ import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
- * Part G of dispatch://INFRA-1196, "A node's row" (dispatch://INFRA-3947): one node of an issue
+ * Part G of the new issue page, "A node's row": one node of an issue
  * drawn as one row of the approved design, in the new page's body, which draws the
  * conversation's rows with every branch unfolded until part I's outline replaces them. Each row
- * is one `check` block of dispatch://INFRA-3947/artifact/verification-md,
+ * is one `check` block of part G's Verification document,
  * named by its `-g` string, and reads the page through `e2e/issue-page-g.ts`; every row unfolds
  * each folded branch before it reads, so it holds on part I's outline too.
  *
@@ -116,8 +116,8 @@ test("a node draws its kind at the right of its row and every node starts at one
       await expectLoadSettled(settling);
       const where = `the conversation at ${size.width} px`;
       if (size.width === PHONE.width) {
-        // Part I's load puts the focus on the first question that waits on the reader, in the
-        // outline's order, and holds its row on screen (its R8): the seed holds two such.
+        // The outline's load puts the focus on the first question that waits on the reader, in
+        // the outline's order, and holds its row on screen: the seed holds two such.
         const waiting = [seeded.waitingLong, seeded.openQuestion];
         const first = (await drawnRows(page)).find((row) => waiting.includes(row.id ?? ""));
         expect(first, `${where} draws no question that waits on the reader`).toBeDefined();
@@ -304,8 +304,9 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // only the row's own placement (`useRowOnScreen`) can move it: under part G the header publishes
 // no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
 // page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
-// places. Under part I the Spec view draws nothing until part J fills it (I's R1), so `t s` goes
-// on to `t c`, whose outline takes the focus (decision 159); part J reads `t s` again.
+// places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
+// goes on to `t c`, whose outline takes the focus; reading `t s` again is left to the Spec view's
+// own rows, which this tree does not hold yet.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({
@@ -358,7 +359,7 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
     await expect(page, "t s did not open Spec").toHaveURL(
       new RegExp(`${presetPath(seeded.key, "spec")}$`)
     );
-    // Part I's Spec view is empty until part J, so Conversation brings the outline back.
+    // The Spec view is empty until its own slot is filled, so Conversation brings the outline back.
     await page.keyboard.press("t");
     await page.keyboard.press("c");
     await expect(page, "t c did not open Conversation").toHaveURL(
@@ -386,10 +387,18 @@ test("an agent message and an answered question are cut at six lines, and the wo
     await openIssue(page, seeded.key);
     await expectSeedDrawn(page, seeded);
     const agent = nodeRow(page, seeded.longMessage).first();
-    const cut = (await rowLayouts(page)).find((row) => row.id === seeded.longMessage);
-    expect(cut?.more ?? "", "the agent's long message draws no more").toMatch(
-      /^more · [\d,]+ words$/u
-    );
+    // The page measures a row's cut once the row stands within a screen of the viewport, in the
+    // frame after it comes there, so each cut read here is of a row brought there.
+    const cutOf = async (id: string) => {
+      await nodeRow(page, id).first().scrollIntoViewIfNeeded();
+      await expect
+        .poll(async () => (await rowLayouts(page)).find((row) => row.id === id)?.more ?? "", {
+          message: `${id} draws no more`,
+        })
+        .toMatch(/^more · [\d,]+ words$/u);
+      return (await rowLayouts(page)).find((row) => row.id === id);
+    };
+    const cut = await cutOf(seeded.longMessage);
     expect(
       Number(/([\d,]+)/u.exec(cut?.more ?? "")?.[1]?.replace(",", "")),
       "the cut holds back 20 words or fewer"
@@ -431,7 +440,7 @@ test("an agent message and an answered question are cut at six lines, and the wo
       more: null,
       wordsHidden: 0,
     });
-    expect(layouts.find((row) => row.id === seeded.answeredLong)?.more ?? "").toMatch(/^more · /u);
+    expect((await cutOf(seeded.answeredLong))?.more ?? "").toMatch(/^more · /u);
 
     // Focused, the answered question is whole, with no more, on the focused card.
     const answered = await focusRow(page, seeded.answeredLong);

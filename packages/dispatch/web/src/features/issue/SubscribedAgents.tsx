@@ -8,8 +8,7 @@ import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/Sess
 import { Timestamp } from "../refs/Timestamp";
 import { UnsubscribeDialog } from "./UnsubscribeDialog";
 
-/** A session's chip and its remove control inside `NoTooltips`, in the new issue page's colours
- *  (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md),
+/** A session's chip and its remove control inside `NoTooltips`, in the new issue page's colours,
  *  on `SessionChip`'s shapes: the page's label chip, and muted words that turn the failed red
  *  under the pointer, as `main`'s turn the danger red. */
 const PAGE_SESSION_CHIP = `flex items-center gap-2 rounded-full px-3 py-1 text-sm ${pageLabelChip}`;
@@ -36,8 +35,7 @@ export interface SubscribedAgentsProps {
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the session's own id is no
  * tooltip, and a subscription wider than this owner says so in the page's words in place of
- * "via" and its topic, because a disabled Unsubscribe raises no tooltip that could say why
- * (dispatch://INFRA-1196 R19).
+ * "via" and its topic, because a disabled Unsubscribe raises no tooltip that could say why.
  */
 export function SubscribedAgents({
   onUnsubscribe,

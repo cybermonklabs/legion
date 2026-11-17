@@ -44,8 +44,9 @@ import {
 
 export const PROJECT = "LAY";
 const ARCHITECTURE_REPO = "legion/issue-layout-arch";
-/** The repository the whole issue carries; the request baseline carries its own, so the two never
- *  share the App's cached answer about one repository. */
+/** The repository the whole issue carries, which each seed suffixes with a name of its own
+ *  (`seedIssueWithDocuments`); the request baseline carries its own, so the two never share the
+ *  App's cached answer about one repository. */
 export const WHOLE_REPO = "acme/issue-layout";
 export const BASELINE_REPO = "acme/issue-baseline";
 /** The commit the seeded pull request's head is at, so a result recorded there reads `current`. */
@@ -67,9 +68,9 @@ export const plannerActor: Actor = {
 };
 export const asPlanner = { actor: plannerActor, as: "agent" as const };
 /** The agent session that records every seeded result. An Envoy session id is a UUID
- *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place
- *  (dispatch://INFRA-1196 R9); the registry lists no such session, so the title the session
- *  stamped on its write is the only name it has. */
+ *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place;
+ *  the registry lists no such session, so the title the session stamped on its write is the
+ *  only name it has. */
 export const recorderActor: Actor = {
   id: "019a1c0a-6d4b-7e8a-bf39-4a1b5c8d9e07",
   kind: "session",
@@ -303,17 +304,22 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     title: shape.title,
   });
   const specArtifactId = issue.primary_artifact_id ?? "";
-  await seedProjectSurroundings(issue.key, shape.repository);
+  // The server keeps what it last read of a repository - its default branch, or that the App
+  // cannot read it - for five minutes, across rows, and the after-merge checks stand on that
+  // answer once the App is gone. A repository of this seed's own is read afresh here, while the
+  // App is installed, so no answer an earlier row left behind decides them.
+  const repository = `${shape.repository}-${crypto.randomUUID().slice(0, 8)}`;
+  await seedProjectSurroundings(issue.key, repository);
   await seedSessions(issue.key, [PLANNER, REVIEWER, TESTER]);
   await patchIssue(issue.key, {
     assignee: "alice",
     components: { ids: COMPONENT_IDS, mode: "explicit" },
     external_links: [
-      { kind: "github_pr", url: `https://github.com/${shape.repository}/pull/${PULL_NUMBER}` },
+      { kind: "github_pr", url: `https://github.com/${repository}/pull/${PULL_NUMBER}` },
     ],
     labels: ["dispatch", "layout", "redesign"],
     priority: 1,
-    repo: shape.repository,
+    repo: repository,
     route: `session:${PLANNER}`,
     status: "in_progress",
   });

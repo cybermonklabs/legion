@@ -1,7 +1,7 @@
 import type { TreeNode } from "./issue-tree";
 
 /** The issue's summary: the first `callout` block of its spec, which is the nearest thing
- *  today's block schema holds to a summary node (dispatch://INFRA-1278 adds one). The outline
+ *  today's block schema holds to a summary node, which it does not hold yet. The outline
  *  draws no row of it (`slots/body.tsx`), and the Spec view draws it as the issue's three
  *  sentences. */
 export function specSummary(root: TreeNode, specSlug: string): TreeNode | undefined {

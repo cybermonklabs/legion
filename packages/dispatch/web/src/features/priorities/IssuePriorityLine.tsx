@@ -75,7 +75,7 @@ export function addPriorityControlName(issueKey: string): string {
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
  * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
- * priority" on its add control while the issue advances none (dispatch://INFRA-1196 R13, R19).
+ * priority" on its add control while the issue advances none.
  */
 export function IssuePriorityLine({
   disabled,
@@ -125,6 +125,11 @@ export function IssuePriorityLine({
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
   const busy = disabled || write.isPending;
+  // Inside `NoTooltips` the add control is `aria-disabled` while the write is out, in place of
+  // `disabled`, so it can hold the focus, and a press of it does nothing then; the line's own
+  // `disabled` still disables it, on both sides. Outside it is `disabled` while the write is out,
+  // as on `main`.
+  const addHoldsFocus = page !== null && !disabled;
   const addControl = useRef<HTMLButtonElement>(null);
   const picker = useRef<HTMLSelectElement>(null);
   // Opening the form puts the focus in its first field: the add control the form replaces leaves
@@ -134,33 +139,58 @@ export function IssuePriorityLine({
     if (adding) picker.current?.focus();
   }, [adding]);
   // Closing it - Add, Cancel or Escape - owes the add control, drawn again in its place, the
-  // focus the form held, for the same reason. The control takes it once it can hold it: Add's
-  // write disables the control until the write settles, and a disabled control holds no focus,
-  // so after an add the focus waits on the body until then. Only a focus still on the document
-  // is taken back (`focusOnDocument`): anywhere else, the reader put it there in between.
+  // focus the form held, for the same reason. The control takes it once it can hold it: outside
+  // `NoTooltips` Add's write disables the control until the write settles, and a disabled control
+  // holds no focus, so after an add the focus waits on the body until then; inside, the control
+  // holds it while the write is out (`addHoldsFocus`) and takes it at once. Only a focus still on
+  // the document is taken back (`focusOnDocument`): anywhere else, the reader put it there in
+  // between.
   const focusAddControl = useRef(false);
+  const addWaitsForWrite = write.isPending && !addHoldsFocus;
   useEffect(() => {
-    if (adding || write.isPending || !focusAddControl.current) return;
+    if (adding || addWaitsForWrite || !focusAddControl.current) return;
     focusAddControl.current = false;
     if (focusOnDocument()) addControl.current?.focus();
-  }, [adding, write.isPending]);
+  }, [adding, addWaitsForWrite]);
   const closeForm = () => {
     setPicked("");
     setAdding(false);
     focusAddControl.current = true;
   };
-  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
-  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
+  // Inside `NoTooltips` a press of a priority's Remove is remembered with the issue's own entries
+  // drawn after it and then before it, the nearest first, and each Remove is kept by its entry's
+  // id. Once the write is no longer out, a focus that fell to the document (`focusOnDocument`)
+  // goes to the pressed Remove while its entry is drawn, else to the Remove of the nearest of
+  // those entries still drawn, else to the add control; the press is forgotten once its entry is
+  // gone or the write failed. A focus anywhere else is left where it is.
+  const removePressed = useRef<{ id: string; nearest: readonly string[] } | null>(null);
+  const removeButtons = useRef(new Map<string, HTMLButtonElement>());
+  useEffect(() => {
+    const pressed = removePressed.current;
+    if (pressed === null || write.isPending) return;
+    const drawn = (issue.advances ?? []).some(
+      (entry) => entry.id === pressed.id && !entry.inherited
+    );
+    if (focusOnDocument()) {
+      const buttons = removeButtons.current;
+      const target = drawn
+        ? buttons.get(pressed.id)
+        : (pressed.nearest.map((id) => buttons.get(id)).find((button) => button !== undefined) ??
+          addControl.current);
+      target?.focus();
+    }
+    if (!drawn || write.isError) removePressed.current = null;
+  }, [issue.advances, write.isError, write.isPending]);
+  // Inside `NoTooltips` each colour is one of the new issue page's: the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
   // priority is a link in the ink; what qualifies it is quiet words, a refusal the failed red;
   // the controls are muted words that turn ink under the pointer, the add control on the page's
   // pane, Add with the header control's rule, and the picker the page's field, which keeps
-  // `main`'s focus rule, the application's one focus indicator (decision 58 of the same
-  // artifact).
+  // `main`'s focus rule, the application's one focus indicator.
   const quiet = page === null ? textMutedOnSurface : pageQuietText;
   const failed = page === null ? dangerText : pageFailedText;
   // A failed save shows the server's reason, else the page's own line; each carries the mark of
-  // whose words it is (dispatch://INFRA-3935 R6).
+  // whose words it is.
   const notSaved =
     page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances.";
   const saveFailure = apiErrorMessage(write.error, notSaved);
@@ -168,11 +198,11 @@ export function IssuePriorityLine({
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
-  // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details (R4) and in the
-  // header alike: a priority's title and a refusal's reason are values, which keep `max-w-full`
-  // and break rather than push the line past its row (dispatch://INFRA-3935 R4 and R6, decision
-  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as
-  // on `main`.
+  // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details and in the
+  // header alike: a priority's title and a refusal's reason are values, which break anywhere and
+  // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
+  // after it, the reason with `max-w-full` - rather than push the line past its row. Outside,
+  // each part stays whole, as on `main`.
   const wraps = page !== null;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
@@ -200,9 +230,9 @@ export function IssuePriorityLine({
             key={entry.id}
           >
             {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
-                widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
+                widening it; its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${wraps ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              className={`dispatch-inline-link ${wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}
@@ -218,7 +248,20 @@ export function IssuePriorityLine({
                 aria-label={`Remove ${label} from ${issue.key}`}
                 className={`shrink-0 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
                 disabled={busy}
-                onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
+                onClick={() => {
+                  if (page !== null) {
+                    const at = own.indexOf(entry.id);
+                    removePressed.current = {
+                      id: entry.id,
+                      nearest: [...own.slice(at + 1), ...own.slice(0, at).reverse()],
+                    };
+                  }
+                  writeOwn(own.filter((id) => id !== entry.id));
+                }}
+                ref={(button) => {
+                  if (button === null) removeButtons.current.delete(entry.id);
+                  else removeButtons.current.set(entry.id, button);
+                }}
                 type="button"
                 {...page?.pageChrome}
               >
@@ -294,6 +337,9 @@ export function IssuePriorityLine({
         </form>
       ) : (
         <button
+          // Inside `NoTooltips` it is `aria-disabled` in place of `disabled` while the write is
+          // out (`addHoldsFocus`, above).
+          aria-disabled={(addHoldsFocus && write.isPending) || undefined}
           // One character and its name, as the remove control beside it is: an issue that
           // advances nothing still carries this control, and a word here puts the issue
           // header's metadata rail over its width on a desktop, which would leave every bare
@@ -304,11 +350,17 @@ export function IssuePriorityLine({
           // no CJK font is installed, which is this pod's Chromium and some readers' browsers.
           // In a row of Details, with no priority to stand beside, it says what it does in the
           // words its name begins with, because that panel raises no tooltip that could say it
-          // instead (dispatch://INFRA-1196 R19).
+          // instead.
           aria-label={addPriorityControlName(issue.key)}
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink`}`}
-          disabled={busy}
-          onClick={() => setAdding(true)}
+          // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
+          // are (`badgeSelectPageRailWrapper`'s `md:min-h-7`, the labels' and the components'
+          // triggers' `sm:min-h-7`); below 1280 px `styles.css` gives each of them a 44 px floor
+          // all the same. Outside it the class is `main`'s.
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
+          disabled={busy && !addHoldsFocus}
+          onClick={() => {
+            if (!write.isPending) setAdding(true);
+          }}
           ref={addControl}
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"

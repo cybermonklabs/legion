@@ -296,7 +296,7 @@ test("a hover that ends before the delay, a touch pointer, or a held button neve
  *  there): the references inside it open no card on hover. */
 const NO_HOVER_FRAME = { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" };
 
-// dispatch://INFRA-1196 R6: the issue page opens nothing on hover, a reference included, because
+// R6: the issue page opens nothing on hover, a reference included, because
 // its reader works it from the keyboard. Its frame carries the mark the host reads, so a
 // reference inside it opens no card for a resting pointer, the keyboard still opens that
 // reference's card, and a reference on any other page keeps its hover card.
@@ -360,7 +360,7 @@ function EditableBody(): ReactNode {
   return <div contentEditable ref={root} suppressContentEditableWarning />;
 }
 
-// dispatch://INFRA-1196 R6: a link inside the issue page's live editor takes no focus of its
+// R6: a link inside the issue page's live editor takes no focus of its
 // own, so the keyboard reaches it by putting the caret in it - which opens its card, as focus
 // opens a card on any other link - and the caret leaving the link closes it again.
 test("on the issue page, the caret in an editor's link opens its card, and leaving the link closes it", () => {

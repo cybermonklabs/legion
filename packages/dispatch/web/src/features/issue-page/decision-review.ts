@@ -6,7 +6,7 @@ import type { DocumentBlocks } from "./issue-tree";
 
 /**
  * Which of an issue's decisions wait for the reader's review, and which a reader asked to
- * change (dispatch://INFRA-1196 R7, R13, R35).
+ * change.
  *
  * This module is pure and imports no code of the tree, only the type of a document's blocks, so
  * the tree (`tree-drafts.ts`), the Decisions filter (`decisions-filter/decisions-parts.ts`) and
@@ -45,8 +45,8 @@ type ChangedDecision = Pick<
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
  * person's review - neither kept as it reads now nor replaced, which is the server's
- * `waiting_review` (dispatch://INFRA-1150 R2) - that a link ties to a statement of this issue,
- * and that the reader has not asked to change since it last changed (`changed`).
+ * `waiting_review` - that a link ties to a statement of this issue, and that the reader has not
+ * asked to change since it last changed (`changed`).
  * `isStatement` answers whether an address names a statement.
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
@@ -221,11 +221,11 @@ const REPLACED_HEADING = "Replaced";
  * that quote's places in the decisions document is the decision's own first block below its
  * heading. Two decisions can open with the same sentence, and the server refuses a quote that
  * matches more than one place unless the write names its zero-based occurrence (409, "matches 2
- * places; pass a zero-based occurrence"); so a Change names it (decision 92 of
- * dispatch://INFRA-1196). Undefined for a decision whose heading is all it holds.
+ * places; pass a zero-based occurrence"); so a Change names it. Undefined for a decision whose
+ * heading is all it holds.
  *
  * The server counts the quote's places over the whole decisions document (`docs.MarkQuote`,
- * `pmdoc.FindQuote`; decision 92 as amended), so this counts over it too. The text above the
+ * `pmdoc.FindQuote`), so this counts over it too. The text above the
  * first decision (the document's title, an intro), the `## Replaced` heading and a `#` section are
  * in no row of the decisions read, so a count over the rows missed a match there, and the Change
  * then landed outside every decision. The blocks read (`ArtifactBlock`) cannot serve either: it

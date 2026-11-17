@@ -57,8 +57,7 @@ export function PinButton({
   const resting = quiet
     ? textMutedHoverToSecondary
     : `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
-  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
-  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): pinned is filled with the
+  // Inside `NoTooltips` each colour is one of the new issue page's: pinned is filled with the
   // page's ink, as its one filled control is; unpinned is its header control's rule and muted
   // words, or quiet words that turn muted under the pointer for a quiet pin.
   const look = tooltips

@@ -15,13 +15,21 @@ import {
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
-import type { Ask, IssueCoverage, IssueDetails, Project, UserIssueState } from "../../api/types";
+import type {
+  ArtifactReview,
+  Ask,
+  IssueCoverage,
+  IssueDetails,
+  Project,
+  UserIssueState,
+} from "../../api/types";
 import { parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { HeaderSlot } from "./slots/header";
 
 /**
- * The header's cases of `features/issue/IssuePage.test.tsx` at INFRA-1196's checkpoint, each
+ * The header's cases of `features/issue/IssuePage.test.tsx` at the new page's checkpoint, each
  * mounting the header's slot alone (`slots/header.tsx`), as the new page's root mounts it: from
  * the issue's own read, with the address parsed.
  */
@@ -113,7 +121,7 @@ const openIssueAsk: Ask = {
 };
 
 /** An open approval request on the issue's spec whose turn is a person's: it waits on the
- *  reader, so the header's approval control carries Approve and Request changes (R31). */
+ *  reader, so the header's approval control carries Approve and Request changes. */
 function approvalAsk(): NonNullable<IssueDetails["open_asks"]>[number] {
   return {
     ...openIssueAsk,
@@ -192,12 +200,20 @@ function headerClient(): QueryClient {
   });
 }
 
+/** Pushes the `issue` scope, which the page's view row pushes (`useIssueKeymap.ts`) and the
+ *  header's slot does not: the header's keys register into it, and fire only while it is on. */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
 function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
+          <IssueScope />
           <Routes>
             <Route path="/issues/:key/*" element={<HeaderAlone />} />
           </Routes>
@@ -208,7 +224,7 @@ function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
 }
 
 /** Opens the header's one actions control, which is where the pin, close, reopen and the control
- *  that sets the parent live (R13: row one holds the actions, never a property). */
+ *  that sets the parent live (row one holds the actions, never a property). */
 async function openIssueActions(): Promise<void> {
   const user = userEvent.setup();
   const control = await screen.findByRole("button", { name: "Issue actions" });
@@ -230,7 +246,7 @@ test("the header updates whose turn when a human clarification is latest", async
 
   try {
     // The marker's words are the page's and the count beside them is the issue's, each marked
-    // as what it is (dispatch://INFRA-1196 R21), so the marker is read whole.
+    // as what it is, so the marker is read whole.
     expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
     queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
       ...waitingIssue,
@@ -271,7 +287,7 @@ test("the header hides whose turn when the server sent open asks without waiting
 });
 
 test("the header keeps state actions available while approval awaits", async () => {
-  // The request waits on the reader, so its chip carries Approve in the header (R31).
+  // The request waits on the reader, so its chip carries Approve in the header.
   const restore = stubHeader({
     ...issue,
     artifacts: [
@@ -286,7 +302,7 @@ test("the header keeps state actions available while approval awaits", async () 
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
-    // The pin is one of the overflow menu's actions (dispatch://INFRA-1196 R13).
+    // The pin is one of the overflow menu's actions.
     await openIssueActions();
     const pin = screen.getByRole("button", { name: "Pin issue" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
@@ -572,6 +588,81 @@ test("the header lets a human move a Todo issue to In progress", async () => {
   } finally {
     view.unmount();
     patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// `a` and Shift+R are the approval's only with the focus on the chip of a document whose request
+// waits on the reader, or on one of its two actions, and only while the action each presses takes
+// a press. A stale approval's Approve says its version; while the review is written Approve is
+// disabled and Request changes refuses a press, so neither key applies then.
+test("the approval chip's keys press its own actions, and only while those take a press", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 2, state: "stale", version: 1 } },
+    ],
+    open_asks: [approvalAsk()],
+  });
+  const answered = Promise.withResolvers<ArtifactReview>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+    () => answered.promise
+  );
+  const view = renderHeader();
+  // Whether each of the two keys applies now, as the key card reads it (`appKeymap.describe`).
+  const bothApply = () =>
+    ["approve", "request-changes"].map(
+      (id) => appKeymap.describe().find((key) => key.scope === "issue" && key.id === id)?.enabled
+    );
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const approve = await within(stateActions).findByRole("button", { name: "Approve v2" });
+    const requestChanges = within(stateActions).getByRole("button", { name: "Request changes" });
+    const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
+    if (chip === null) throw new Error("the header draws no approval chip");
+
+    // Off the chip neither key applies, and `a` sends no review.
+    act(() => heading.focus());
+    expect(bothApply()).toEqual([false, false]);
+    await user.keyboard("a");
+    expect(createArtifactReview).not.toHaveBeenCalled();
+
+    // On the chip and on each of its actions both apply, and Shift+R opens Request changes.
+    for (const focused of [chip, approve, requestChanges]) {
+      act(() => focused.focus());
+      expect(bothApply()).toEqual([true, true]);
+    }
+    act(() => chip.focus());
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(await screen.findByRole("dialog", { name: "Request changes" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument()
+    );
+    expect(document.activeElement).toBe(chip);
+
+    // `a` presses Approve, whose write is then out: neither key applies until it is answered.
+    await user.keyboard("a");
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactReview).toHaveBeenCalledWith(
+      "artifact-1",
+      { state: "approved" },
+      keyedAttempt
+    );
+    await waitFor(() => expect(approve).toBeDisabled());
+    expect(requestChanges).toHaveAttribute("aria-disabled", "true");
+    expect(bothApply()).toEqual([false, false]);
+    await user.keyboard("a");
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+  } finally {
+    answered.reject(new Error("the connection dropped"));
+    view.unmount();
+    createArtifactReview.mockRestore();
     restore();
   }
 });

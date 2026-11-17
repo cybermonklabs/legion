@@ -30,10 +30,9 @@ const pillTones: Record<PillTone, string> = {
 };
 
 /** Each tone in the new issue page's colours, for a pill drawn inside `NoTooltips`, where every
- *  colour a shared control draws is one of that page's (dispatch://INFRA-3935 R6, decision 56 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md): a label and a status as the page draws a
- *  label (the prototype's `.lchip`), and a selected label, the held claim's tone, in the ink on
- *  the page's mark grey, one step stronger as `main`'s selected label is. */
+ *  colour a shared control draws is one of that page's: a label and a status as the page draws
+ *  a label (the prototype's `.lchip`), and a selected label, the held claim's tone, in the ink
+ *  on the page's mark grey, one step stronger as `main`'s selected label is. */
 const pagePillTones: Record<PillTone, string> = {
   label: pageLabelChip,
   "selected-label": `${pageMarkBg} ${pageInkText}`,
@@ -49,15 +48,14 @@ export const pillShapeClassName =
 
 /** `pillShapeClassName` inside `NoTooltips` (the new issue page), where a pill can hold a value
  *  (a label, a claim's holder) and every value wraps: it keeps `max-w-full` and breaks anywhere,
- *  and the pill neither keeps its width nor holds its line (dispatch://INFRA-3935 R6, decision
- *  104 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+ *  and the pill neither keeps its width nor holds its line. */
 const pagePillShapeClassName =
   "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere]";
 
 /** The pill's full class string, for a host that must stay one interactive element (a parent
  *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
  *  outline a bigger shape than the fill. `onPage` is a host's inside `NoTooltips`, which draws
- *  the tone in the new issue page's colours (R6), in the shape that wraps. */
+ *  the tone in the new issue page's colours, in the shape that wraps. */
 export function pillClassName(tone: PillTone, onPage = false): string {
   return onPage
     ? `${pagePillShapeClassName} ${pagePillTones[tone]}`
@@ -94,7 +92,7 @@ export function StatusPill({ children }: { children: ReactNode }): ReactNode {
   return (
     <Pill className="gap-1.5 font-semibold tracking-wide uppercase" tone="status">
       {/* Inside `NoTooltips` the dot is the page's quiet grey, as neutral there as `main`'s
-          slate is here: it names no state, the word beside it does (R6). */}
+          slate is here: it names no state, the word beside it does. */}
       <span
         aria-hidden="true"
         className={`size-1.5 rounded-full ${page === null ? statusPillDot : "bg-page-quiet"}`}
@@ -117,8 +115,7 @@ function approvalTone(state: string): keyof typeof approvalPill {
   return isApprovalTone(state) ? state : "draft";
 }
 
-/** Each approval outline in the new issue page's colours, for a chip drawn inside `NoTooltips`
- *  (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md):
+/** Each approval outline in the new issue page's colours, for a chip drawn inside `NoTooltips`:
  *  the prototype's `.pill`, a rule in the colour of its words on the page's paper. Approved is
  *  the passed green and changes requested the failed red; a request that waits, or an approval
  *  the document has moved past, is the page's waiting chip, its one warning; a draft keeps its
@@ -147,10 +144,9 @@ const pageApprovalPill: Record<keyof typeof approvalPill, string> = {
  *
  * `compact` is the new issue page header's: the prototype's `.pill`, 12 px type on an 18 px
  * line inside its rule, and 24 px tall at every width, the height of every other control on
- * that line: the chip is a button, and a 24 px target holds at every width (WCAG 2.5.8;
- * dispatch://INFRA-1196 R13, decision 43 of its part-decisions-md). `default` is every other
- * host's. `onPage` is a host's inside `NoTooltips`, which draws the outline in that page's
- * colours (`pageApprovalPill`). */
+ * that line: the chip is a button, and a 24 px target holds at every width (WCAG 2.5.8).
+ * `default` is every other host's. `onPage` is a host's inside `NoTooltips`, which draws the
+ * outline in that page's colours (`pageApprovalPill`). */
 export function approvalPillClassName(
   state: ArtifactApproval["state"],
   size: "compact" | "default" = "default",

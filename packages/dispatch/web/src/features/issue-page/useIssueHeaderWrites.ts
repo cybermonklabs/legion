@@ -26,8 +26,8 @@ export function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
 }
 
 /** What the shell's indicator calls each field the identity block writes: the page's own name
- *  for the property, never the schema's (dispatch://INFRA-1196 R21), so a write reads "Parent
- *  of CORE-1 saved" and not "CORE-1: parent saved". */
+ *  for the property, never the schema's, so a write reads "Parent of CORE-1 saved" and not
+ *  "CORE-1: parent saved". */
 const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
   parent: PROPERTY_LABELS.parent,
   route: CONTROL_LABELS.route,
@@ -38,8 +38,8 @@ const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
 /**
  * What the shell's indicator names one header write of `key`: the page's own name for every
  * field the write carries, and the page's own word for a status it sets (`issueStatusWord`,
- * "Todo"), never the schema's token for either (dispatch://INFRA-1196 R21). A write of two
- * fields names both, because the first key of the input is no more the write than the second.
+ * "Todo"), never the schema's token for either. A write of two fields names both, because the
+ * first key of the input is no more the write than the second.
  *
  * The shell's indicator (`features/writes/PendingWritesIndicator.tsx`) only draws the line it
  * is handed; this hook, the issue page's own, composes it. A word is the page's that composes
@@ -141,7 +141,7 @@ export function useIssueHeaderWrites(
   // hook on the page reads its pending status by (`pendingStatuses`, below).
   const mutationKey = ["issue-update", issue.key];
   // What the two writes of the issue's fields share, written once so the pick can never part
-  // from `updateIssue`'s key, line, request or landing (dispatch://INFRA-3935 R8).
+  // from `updateIssue`'s key, line, request or landing.
   const fieldWrite: KeyedWriteOptions<Issue, IssueUpdateInput, unknown> = {
     mutationKey,
     label: (input) => issueUpdateLabel(issue.key, input),
@@ -168,7 +168,7 @@ export function useIssueHeaderWrites(
   const statusWrite = useKeyedWrite({ ...fieldWrite, inline: false });
   // The labels are a field of the issue too, so they land as every field write does: a landing
   // with no answer reads the issue again rather than leave the old labels showing
-  // (`landIssueWrite`, dispatch://INFRA-3935 R8).
+  // (`landIssueWrite`).
   const labels = useKeyedWrite({
     label: () => `Labels of ${issue.key}`,
     target: () => `issue:${issue.key}`,

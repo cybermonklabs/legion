@@ -104,15 +104,14 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
  * phone; the title is truncated and carried in full by the link's tooltip.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
- * `title`, so what the tooltip said is drawn instead (dispatch://INFRA-1196 R19): a GitHub
+ * `title`, so what the tooltip said is drawn instead: a GitHub
  * issue or pull request reads as `<owner>/<repo>#<n>` and its title, whole; while the title
  * loads, or when it could not be read, as its whole address; and when Dispatch holds no GitHub
  * token for the repository, as `<owner>/<repo>#<n>` and the sentence saying so. A link with no
  * GitHub reading is its whole address, and an unsafe link says so in words. Every text there
  * wraps with `[overflow-wrap:anywhere]`, not `break-all`, so a line breaks between words where
- * it can and cuts a word only where it cannot. There each colour is one of that page's
- * (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): a
- * link is its ink with the underline, an unsafe address its quiet words, and the state and the
+ * it can and cuts a word only where it cannot. There each colour is one of that page's: a link
+ * is its ink with the underline, an unsafe address its quiet words, and the state and the
  * checks its label chips.
  */
 export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
@@ -258,8 +257,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       )}
       {/* Inside `NoTooltips` the state and the checks' result are values too, so neither chip
           keeps its width: each keeps `max-w-full` and breaks anywhere, as the reference beside
-          them does (dispatch://INFRA-3935 R6, decision 104 of
-          dispatch://INFRA-1196/artifact/part-decisions-md). */}
+          them does. */}
       {state === undefined ? null : (
         <span
           className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}

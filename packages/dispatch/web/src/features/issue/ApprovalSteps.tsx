@@ -16,8 +16,7 @@ import { buildIssuePath } from "../refs/routes";
 import type { StepEntry } from "./gated-steps";
 
 /** A value drawn inside `NoTooltips` - a document's name, a version, a reviewer's reason - keeps
- *  `max-w-full` and breaks anywhere, so it never runs past its line (dispatch://INFRA-3935 R6,
- *  decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+ *  `max-w-full` and breaks anywhere, so it never runs past its line. */
 const VALUE_WRAPS = "max-w-full [overflow-wrap:anywhere]";
 
 /** What an entry needs to link its document at the version its approval speaks for: the
@@ -63,11 +62,10 @@ function approvalLinkVersion(document: Artifact, asks: readonly Ask[]): number |
 
 /**
  * The link to the version of `document` an approval speaks for, opened in place of the outline
- * at that version (`?v=`, dispatch://INFRA-1196 R16, R20), as the old panel's card of an
- * approval request linked it (R19): the document's name and the version, `spec.md, version 1`.
+ * at that version (`?v=`), as the old panel's card of an approval request linked it: the
+ * document's name and the version, `spec.md, version 1`.
  * It is drawn inside `NoTooltips` alone, so it is the new issue page's link, in the ink with
- * its underline, and never the application's blue (dispatch://INFRA-3935 R6, decision 56 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * its underline, and never the application's blue.
  */
 function ApprovalVersionLink({
   document,
@@ -126,16 +124,16 @@ function StepState({
     );
   }
   // The link to the version an approval speaks for is drawn inside `NoTooltips` alone, in the
-  // new issue page's words: Details' copy of the list, where R19 keeps the old card's link.
+  // new issue page's words: Details' copy of the list, which keeps the old card's link, so that
+  // everything the old page reached stays reachable.
   const version =
     page === null || versions === undefined
       ? undefined
       : approvalLinkVersion(document, versions.asks);
   // Where `actionsOn` names two or more documents the list holds more than one Approve and
-  // Request changes, so each says the document it reviews, in the new issue page's words
-  // (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside
-  // `NoTooltips` no caller passes `actionsOn` today, so there each keeps `main`'s name
-  // (dispatch://INFRA-3935 R1), as it does with one document or none given.
+  // Request changes, so inside `NoTooltips` each says the document it reviews, in the new issue
+  // page's words (WCAG 2.5.3). Outside `NoTooltips` (`page === null`) each keeps `main`'s name
+  // whatever `actionsOn` holds, as it does inside with one document or none given.
   const actionsDocument =
     page === null || actionsOn === undefined || actionsOn.length < 2
       ? undefined
@@ -147,7 +145,7 @@ function StepState({
     // names no step for that document reaches none of this: the header's own chip carries it.
     // Given `actionsOn`, it is instead whether this document's approval request waits on the
     // reader, so each such entry carries its own two actions, and a press on them reviews this
-    // entry's document, the one its chip is drawn for (dispatch://INFRA-3935 R10).
+    // entry's document, the one its chip is drawn for.
     <>
       <ApprovalChip
         actionsDocument={actionsDocument}
@@ -178,8 +176,8 @@ function StepState({
 /** Why a step's reviewer sent its document back, as one wrapping line: the chip says only
  *  `Changes requested`, and the reason is the whole of what the writer must act on. It is given
  *  no width, no clamp and no tooltip, so a phone reads all of it. Inside `NoTooltips` the line
- *  is the page's own words and the reason is the reviewer's, each with its mark
- *  (dispatch://INFRA-3935 R6); the reviewer's name carries its own (`AgentName`). */
+ *  is the page's own words and the reason is the reviewer's, each with its mark; the reviewer's
+ *  name carries its own (`AgentName`). */
 function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const page = usePageWords();
   const approval = entry.document?.approval;
@@ -190,7 +188,7 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const reason = approval.reason ?? null;
   return (
     <p
-      // Inside `NoTooltips` the line is the new issue page's secondary words (R6).
+      // Inside `NoTooltips` the line is the new issue page's secondary words.
       className={`min-w-0 text-xs [overflow-wrap:anywhere] ${page === null ? textSecondaryOnSurface : pageMutedText}`}
       data-approval-step-reason={entry.step}
       {...page?.pageChrome}
@@ -226,10 +224,9 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
  * is drawn beside this list when no step here reviews the primary document, so that document's
  * state and its two controls never leave the header, whatever the gate names.
  *
- * The new issue page draws the list twice (dispatch://INFRA-1196 R13, R31): its header at the
- * `compact` size with no reasons, and Details with the reasons and, inside `NoTooltips`, each
- * document's link at the version its approval speaks for (`versions`). Each option's default is
- * this header's shape.
+ * The new issue page draws the list twice: its header at the `compact` size with no reasons, and
+ * Details with the reasons and, inside `NoTooltips`, each document's link at the version its
+ * approval speaks for (`versions`). Each option's default is this header's shape.
  *
  * The caller decides which steps there are (`gatedStepEntries`); this draws them.
  */
@@ -250,19 +247,17 @@ export function ApprovalSteps({
   /** The ids of the documents whose approval request waits on the reader. Given, each of those
    *  documents' entries carries its own Approve and Request changes, which review that entry's
    *  document, and every other entry carries none; not given, the primary document's entry
-   *  alone carries them, as on `main`. Part P's header passes it, from the asks that wait on
-   *  the reader (dispatch://INFRA-3935 R10). Naming two or more, inside `NoTooltips` each
-   *  action's name says its document, "Approve the spec", "Request changes to the
-   *  verification" (`ApprovalChip`'s `actionsDocument`, decision 99 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). */
+   *  alone carries them, as on `main`. The new issue page's header passes it, from the asks that
+   *  wait on the reader. Naming two or more, inside `NoTooltips` each action's name says its
+   *  document, "Approve the spec", "Request changes to the verification" (`ApprovalChip`'s
+   *  `actionsDocument`). */
   actionsOn?: readonly string[];
   entries: StepEntry[];
   /** `block` draws the list and each entry as boxes of their own, each wrapping within itself,
    *  as on `main`. `contents` draws no box for the list or for an entry, so each entry's name,
    *  its chip, and its Approve and Request changes, kept together in one box that does not wrap
    *  (`ApprovalChip`'s `keepActionsTogether`), are items of the caller's line, which sets their
-   *  gaps; the reasons, when drawn, follow them there. Part P's header uses it
-   *  (dispatch://INFRA-3935 R10, decision 86 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+   *  gaps; the reasons, when drawn, follow them there. The new issue page's header uses it. */
   layout?: "block" | "contents";
   primaryArtifactId: string;
   /** Whether each step a reviewer sent back says why, under the list. */
@@ -284,7 +279,7 @@ export function ApprovalSteps({
     // The list takes the header row's full width and wraps within itself: three steps, their
     // chips and the two actions never fit a phone's line, and a row that cannot wrap scrolls
     // the page sideways. With no reasons under it, the list is its host's own flex item; at
-    // `layout="contents"` the host, the list and each entry draw no box at all (R10).
+    // `layout="contents"` the host, the list and each entry draw no box at all.
     <div className={reasons && !contents ? "flex w-full min-w-0 flex-col gap-2" : "contents"}>
       <ul
         aria-label="Approvals"
@@ -304,7 +299,7 @@ export function ApprovalSteps({
             key={entry.step}
           >
             {/* Inside `NoTooltips` the step's name is the new issue page's secondary words, and
-                each chip and pill its own colours (R6). */}
+                each chip and pill its own colours. */}
             <span
               className={`text-xs font-medium ${page === null ? textMutedOnSurface : pageMutedText}`}
             >

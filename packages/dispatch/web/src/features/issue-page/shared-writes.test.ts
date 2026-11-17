@@ -18,6 +18,7 @@ import type {
   IssueDetails,
   UserIssueState,
 } from "../../api/types";
+import { withoutEllipsis } from "../../components/tooltips";
 import {
   pageStatusDoneText,
   pageStatusIdleText,
@@ -45,7 +46,7 @@ import {
 } from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
-/** What the new issue page's header and Details share (dispatch://INFRA-3935 R8 and R10). */
+/** What the new issue page's header and Details share. */
 
 /** The issue both callers write: the margin fixture's issue, at a later event and admitted. */
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
@@ -188,9 +189,8 @@ test("a status pick is kept in the write store when the page that made it goes",
   }
 });
 
-// dispatch://INFRA-3935 R8 (dispatch://INFRA-1196 R21): the shell's indicator names a header
-// write by the page's own name for each field it carries, never the schema's, and a status by the
-// board's word for it.
+// The shell's indicator names a header write by the page's own name for each field it carries,
+// never the schema's, and a status by the board's word for it.
 test("issueUpdateLabel names each field by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
   expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
@@ -201,9 +201,8 @@ test("issueUpdateLabel names each field by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", {})).toBe("CORE-1 saved");
 });
 
-// dispatch://INFRA-3935 R8: the prototype's `.st-*` puts every status in one of three groups,
-// each with its glyph and its colour: done, the work that moves, and the rest, a status the board
-// does not know among them.
+// The prototype's `.st-*` puts every status in one of three groups, each with its glyph and its
+// colour: done, the work that moves, and the rest, a status the board does not know among them.
 test("statusGlyph and statusTone give the prototype's three groups", () => {
   expect([statusGlyph("done"), statusTone("done")]).toEqual(["✓", pageStatusDoneText]);
   const moving = ["in_progress", "testing", "needs_review"];
@@ -243,12 +242,12 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// dispatch://INFRA-3935 R8: the new issue page's add menu reaches four of `main`'s controls by
-// name, so each name is `main`'s, and each of `main`'s controls answers to it.
+// The new issue page's add menu reaches four of `main`'s controls by name, so each name is
+// `main`'s, and each of `main`'s controls answers to it.
 test("the four control names are main's", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
-  expect(componentsControlName("CORE-1")).toBe("Edit components of CORE-1");
+  expect(componentsControlName("CORE-1", null)).toBe("Edit components of CORE-1");
   expect(addPriorityControlName("CORE-1")).toBe("Add a priority to CORE-1");
 
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
@@ -294,25 +293,52 @@ test("the four control names are main's", async () => {
   }
 });
 
-// dispatch://INFRA-3935 R2 and R8: the new issue page's add menu, its `l` key and its rows find
-// the labels control by the name it carries inside `NoTooltips`, which `labelsControlName`
-// builds: the words it draws, then the issue's key, while it has no label; `main`'s name once it
-// has one; and while it saves, the words it draws then, their ellipsis dropped, then the key
-// (decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
+// The new issue page's add menu, its `l` key and its rows find the labels control by the name it
+// carries inside `NoTooltips`, which `labelsControlName` builds: the words it draws, then the
+// joining word of `page-words.ts` and the issue's key, while it has no label; `main`'s name once
+// it has one; and while it saves, the words it draws then, their ellipsis dropped, then the
+// joining word of `page-words.ts` and the key. Given `null`, outside `NoTooltips`, it is `main`'s
+// name in every state. Each expected name is built from the words of `page-words.ts`.
 test("labelsControlName names the labels control as it is drawn", () => {
-  expect(labelsControlName([], "CORE-1", CONTROL_LABELS)).toBe("Add a label to CORE-1");
-  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS)).toBe("Edit labels");
-  expect(labelsControlName([], "CORE-1", CONTROL_LABELS, ANSWER_LINES)).toBe(
-    "Saving labels of CORE-1"
+  const words = { ANSWER_LINES, CONTROL_LABELS };
+  const addName = `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`;
+  const saving = withoutEllipsis(ANSWER_LINES.saving_labels);
+  const savingName = `${saving} ${CONTROL_LABELS.control_name_of} CORE-1`;
+  expect(labelsControlName("CORE-1", null)).toBe("Edit labels");
+  expect(labelsControlName(undefined, null)).toBe("Edit labels");
+  expect(labelsControlName("CORE-1", { labels: [], saving: false, words })).toBe(addName);
+  expect(labelsControlName(undefined, { labels: [], saving: false, words })).toBe(
+    CONTROL_LABELS.add_label
   );
-  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS, ANSWER_LINES)).toBe(
-    "Saving labels of CORE-1"
+  expect(labelsControlName("CORE-1", { labels: ["api"], saving: false, words })).toBe(
+    "Edit labels"
   );
-  expect(labelsControlName(["api"], undefined, CONTROL_LABELS, ANSWER_LINES)).toBe("Saving labels");
-  // Three dots end the words as an ellipsis does.
+  expect(labelsControlName("CORE-1", { labels: [], saving: true, words })).toBe(savingName);
+  expect(labelsControlName("CORE-1", { labels: ["api"], saving: true, words })).toBe(savingName);
+  expect(labelsControlName(undefined, { labels: ["api"], saving: true, words })).toBe(saving);
+  // The words are passed whether or not a save is in flight, and `saving` alone says which:
+  // with no save in flight the name is never the saving one.
+  for (const labels of [[], ["api"]]) {
+    for (const issueKey of ["CORE-1", undefined]) {
+      const name = labelsControlName(issueKey, { labels, saving: false, words });
+      expect({ issueKey, labels, saving: [saving, savingName].includes(name) }).toEqual({
+        issueKey,
+        labels,
+        saving: false,
+      });
+    }
+  }
+  // The saving words are the ones passed, and three dots end them as an ellipsis does.
   expect(
-    labelsControlName([], "CORE-1", CONTROL_LABELS, { saving_labels: "Saving labels..." })
-  ).toBe("Saving labels of CORE-1");
+    labelsControlName("CORE-1", {
+      labels: [],
+      saving: true,
+      words: {
+        ANSWER_LINES: { ...ANSWER_LINES, saving_labels: "Writing labels..." },
+        CONTROL_LABELS,
+      },
+    })
+  ).toBe(`Writing labels ${CONTROL_LABELS.control_name_of} CORE-1`);
 
   const view = draw(
     createElement(IssueLabels, {
@@ -326,23 +352,21 @@ test("labelsControlName names the labels control as it is drawn", () => {
     "inside"
   );
   try {
-    const control = within(view.container).getByRole("button", {
-      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
-    });
+    const control = within(view.container).getByRole("button", { name: addName });
     expect(control.textContent).toBe(CONTROL_LABELS.add_label);
   } finally {
     undraw(view);
   }
 });
 
-// dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// the new issue page's add menu and its rows find the components picker by the name its trigger
+// The new issue page's add menu and its rows find the components picker by the name its trigger
 // carries inside `NoTooltips`, which `componentsControlName` builds: the words the trigger draws,
-// then the issue's key, and while it saves the page's "Saving components…" that `ComponentPicker`
-// draws in their place, its ellipsis dropped. On the issue's own set the trigger draws a bare
-// "+", a symbol no voice user says, and the name stays `main`'s word-first one. Called with the
-// key alone, as `main`'s callers call it, it is `main`'s name, which the trigger carries outside
-// `NoTooltips` in every state, beside `main`'s "Saving…" while it saves (R1).
+// then the joining word of `page-words.ts` and the issue's key, and while it saves the page's
+// `saving_components` that `ComponentPicker` draws in their place, its ellipsis dropped. On the
+// issue's own set the trigger draws a bare "+", a symbol no voice user says, and the name stays
+// `main`'s word-first one. Given `null`, as outside `NoTooltips`, it is `main`'s name, which the
+// trigger carries there in every state, beside `main`'s "Saving…" while it saves. Each expected
+// name inside is built from the words of `page-words.ts`.
 test("componentsControlName names the components picker as it is drawn", async () => {
   const notAttached: IssueComponents = {
     ids: [],
@@ -352,30 +376,37 @@ test("componentsControlName names the components picker as it is drawn", async (
     unknown: [],
   };
   const ownSet: IssueComponents = { ...notAttached, ids: ["dispatch-server"], mode: "explicit" };
+  const words = { ANSWER_LINES, CONTROL_LABELS };
   const drawnName = (components: IssueComponents, saving = false) =>
-    componentsControlName("CORE-1", {
-      components,
-      controlLabels: CONTROL_LABELS,
-      saving: saving ? ANSWER_LINES : undefined,
-    });
-  expect(componentsControlName("CORE-1")).toBe("Edit components of CORE-1");
-  expect(drawnName(notAttached)).toBe("Set components of CORE-1");
-  expect(drawnName({ ...notAttached, mode: "none", reason: "A process change" })).toBe(
-    "Set components of CORE-1"
-  );
-  expect(drawnName({ ...ownSet, inherited_from: "CORE-9" })).toBe("Set components of CORE-1");
+    componentsControlName("CORE-1", { components, saving, words });
+  const setName = `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-1`;
+  const savingName = `${withoutEllipsis(ANSWER_LINES.saving_components)} ${CONTROL_LABELS.control_name_of} CORE-1`;
+  expect(componentsControlName("CORE-1", null)).toBe("Edit components of CORE-1");
+  expect(drawnName(notAttached)).toBe(setName);
+  expect(drawnName({ ...notAttached, mode: "none", reason: "A process change" })).toBe(setName);
+  expect(drawnName({ ...ownSet, inherited_from: "CORE-9" })).toBe(setName);
   expect(drawnName(ownSet)).toBe("Edit components of CORE-1");
-  expect(ANSWER_LINES.saving_components).toBe("Saving components…");
-  expect(drawnName(notAttached, true)).toBe("Saving components of CORE-1");
-  expect(drawnName(ownSet, true)).toBe("Saving components of CORE-1");
+  expect(drawnName(notAttached, true)).toBe(savingName);
+  expect(drawnName(ownSet, true)).toBe(savingName);
+  // The words are passed whether or not a save is in flight, and `saving` alone says which:
+  // with no save in flight the name is never the saving one.
+  for (const components of [notAttached, ownSet]) {
+    expect({ mode: components.mode, saving: drawnName(components) === savingName }).toEqual({
+      mode: components.mode,
+      saving: false,
+    });
+  }
   // The saving words are the ones passed, and three dots end them as an ellipsis does.
   expect(
     componentsControlName("CORE-1", {
       components: notAttached,
-      controlLabels: CONTROL_LABELS,
-      saving: { saving_components: "Writing components..." },
+      saving: true,
+      words: {
+        ANSWER_LINES: { ...ANSWER_LINES, saving_components: "Writing components..." },
+        CONTROL_LABELS,
+      },
     })
-  ).toBe("Writing components of CORE-1");
+  ).toBe(`Writing components ${CONTROL_LABELS.control_name_of} CORE-1`);
 
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
     architectureSource,
@@ -412,23 +443,25 @@ test("componentsControlName names the components picker as it is drawn", async (
     );
     views.push(inside);
     const scope = within(inside.container);
-    const trigger = await scope.findByRole("button", { name: "Set components of CORE-1" });
+    const trigger = await scope.findByRole("button", { name: setName });
     expect(trigger.textContent).toBe(CONTROL_LABELS.components_set);
-    expect("Set components of CORE-1".startsWith(trigger.textContent ?? "")).toBe(true);
+    // Its name begins with the words it draws.
+    const drawnWords = withoutEllipsis((trigger.textContent ?? "").trim());
+    expect(trigger.getAttribute("aria-label")?.startsWith(drawnWords)).toBe(true);
     expect(scope.getByRole("button", { name: "Edit components of CORE-2" }).textContent).toBe("+");
 
-    // A save in flight: `ComponentPicker` draws the page's "Saving components…", and the name
+    // A save in flight: `ComponentPicker` draws the page's `saving_components`, and the name
     // begins with those words, their ellipsis dropped.
     await save(trigger);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    const saving = await scope.findByRole("button", { name: "Saving components of CORE-1" });
+    const saving = await scope.findByRole("button", { name: savingName });
     expect(saving.textContent).toBe(ANSWER_LINES.saving_components);
-    const said = (saving.textContent ?? "").replace(/…$/u, "");
-    expect("Saving components of CORE-1".startsWith(said)).toBe(true);
+    const savingWords = withoutEllipsis((saving.textContent ?? "").trim());
+    expect(saving.getAttribute("aria-label")?.startsWith(savingWords)).toBe(true);
     await act(async () => {
       answers[0]?.resolve({} as Issue);
     });
-    await scope.findByRole("button", { name: "Set components of CORE-1" });
+    await scope.findByRole("button", { name: setName });
 
     const outside = draw(line(notAttached, "CORE-1"), "outside");
     views.push(outside);
@@ -450,8 +483,8 @@ test("componentsControlName names the components picker as it is drawn", async (
   }
 });
 
-// dispatch://INFRA-3935 R8: the header and Details are two callers of the hook on one page, and
-// each reads the status the other is saving, from the first moment of its write to its answer.
+// The header and Details are two callers of the hook on one page, and each reads the status the
+// other is saving, from the first moment of its write to its answer.
 test("two callers of useIssueHeaderWrites read the status either one is saving", async () => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -490,9 +523,9 @@ test("two callers of useIssueHeaderWrites read the status either one is saving",
   }
 });
 
-// dispatch://INFRA-3935 R8: a write of the issue's fields lands one way whichever row made it:
-// its answer merged over the cached details, or the issue read again when Dispatch took the write
-// with no answer, and the issue lists refreshed either way.
+// A write of the issue's fields lands one way whichever row made it: its answer merged over the
+// cached details, or the issue read again when Dispatch took the write with no answer, and the
+// issue lists refreshed either way.
 test("landIssueWrite merges an answer and reads the issue again when none came", () => {
   const land = (next: Issue | null) => {
     const client = new QueryClient();
@@ -521,9 +554,8 @@ test("landIssueWrite merges an answer and reads the issue again when none came",
   expect(unanswered.listsReadAgain).toBe(true);
 });
 
-// dispatch://INFRA-3935 R8: only the Status pill's pick alone is a control's write, shown in the
-// shell's indicator and rolled back on a refusal; a write that carries any other field is the
-// header's.
+// Only the Status pill's pick alone is a control's write, shown in the shell's indicator and
+// rolled back on a refusal; a write that carries any other field is the header's.
 test("statusPickOnly is true for a status alone", () => {
   expect(statusPickOnly({ status: "done" })).toBe(true);
   expect(statusPickOnly({ status: "done", title: "New title" })).toBe(false);
@@ -556,10 +588,9 @@ function answerReviews(artifactId: string) {
   });
 }
 
-// dispatch://INFRA-3935 R10: given `actionsOn`, each entry whose document's approval request
-// waits on the reader carries its own Approve and Request changes, which review that entry's
-// document, and no other entry carries any; not given, the primary document's entry alone
-// carries them, as on `main`.
+// Given `actionsOn`, each entry whose document's approval request waits on the reader carries its
+// own Approve and Request changes, which review that entry's document, and no other entry carries
+// any; not given, the primary document's entry alone carries them, as on `main`.
 test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn and on no other", async () => {
   const entries: StepEntry[] = [
     {
@@ -634,8 +665,7 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
   }
 });
 
-// Decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R10):
-// where `actionsOn` names two or more documents the list holds two Approve and two Request
+// Where `actionsOn` names two or more documents the list holds two Approve and two Request
 // changes, so inside `NoTooltips` each is named by the words it draws and then the document it
 // reviews, in the page's words, and a voice user says what they read (WCAG 2.5.3). A stale
 // approval's Approve draws its version, and its name says the version of the document. Naming

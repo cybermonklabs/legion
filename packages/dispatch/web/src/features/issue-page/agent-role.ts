@@ -1,9 +1,9 @@
 /**
- * An agent's name as its role's word, which an issue page's row draws (dispatch://INFRA-1196
- * ruling 6 in `dispatch://INFRA-1196/artifact/build-rulings-md`, R9's "an agent by its role as
+ * An agent's name as its role's word, which an issue page's row draws (the architect's ruling 6,
+ * R9's "an agent by its role as
  * its session's title gives it"): the title `AgentText.author` names it by (`AgentName.tsx`),
  * without the deployment's own word before it and without what it names the role for after it -
- * `Legion architect · INFRA-1196` reads `architect`, `Planner (issue layout)` reads `Planner`.
+ * `Legion architect · ACME-1` reads `architect`, `Planner (issue layout)` reads `Planner`.
  * The Legion daemon keeps its whole title, which R9 names it by. A name with no such part is its
  * own role's word. The row's opened body draws the whole title (`NodeRow.tsx`).
  *

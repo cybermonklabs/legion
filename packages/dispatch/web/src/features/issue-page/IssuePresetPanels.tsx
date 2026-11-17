@@ -15,8 +15,8 @@ import { useToolbarSink } from "./useDocumentToolbars";
  * which never changes: the toolbars it fills are no part of the body, so each one an editor
  * publishes while a row is edited draws the body no more.
  *
- * It is exported because part K imports it, so a step of its Plan view is edited as a row of the
- * outline is (the architect's decision 94).
+ * It is exported for the Plan view's chart, which is to edit a step as a row of the outline is
+ * edited.
  */
 export function useOutlineEditing(issue: IssueDetails): {
   readonly onEditing: (artifactId: string | undefined) => void;
@@ -54,11 +54,10 @@ export function useOutlineEditing(issue: IssueDetails): {
 }
 
 /**
- * What the body draws under the outline (dispatch://INFRA-1196 R3, `slots/body.tsx`): the one
- * editor a row of the outline is being edited in, which the row takes onto its own stage. No
- * view or address draws a document here: a document is opened from the node menu, at its own
- * address, in place of the outline. The history is no list under the outline either: it is
- * Details' (R15).
+ * What the body draws under the outline (`slots/body.tsx`): the one editor a row of the outline
+ * is being edited in, which the row takes onto its own stage. No view or address draws a
+ * document here: a document is opened from the node menu, at its own address, in place of the
+ * outline. The history is no list under the outline either: it is Details'.
  */
 export function IssuePresetPanels({
   editedDocument,

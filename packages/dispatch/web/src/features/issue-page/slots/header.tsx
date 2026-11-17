@@ -11,9 +11,8 @@ import { useHeaderKeys } from "../useHeaderKeys";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
 /**
- * The header (dispatch://INFRA-1196 R13, `IssueHeader.tsx`): the key, the title and the one
- * properties line, inside `NoTooltips`, so each shared control in it draws the page's words and
- * no tooltip (R6).
+ * The header (`IssueHeader.tsx`): the key, the title and the one properties line, inside
+ * `NoTooltips`, so each shared control in it draws the page's words and no tooltip.
  *
  * The primary document and the reader's state of the issue are the reads today's page makes
  * (`useIssueDetail`, `stateForIssue`). The header makes its own set of the issue's writes;

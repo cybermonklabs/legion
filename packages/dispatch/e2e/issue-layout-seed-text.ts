@@ -5,15 +5,15 @@
 
 /**
  * The three sentences a seeded spec puts at its head: three spoken sentences, which is what the
- * head draws one bullet of each (dispatch://INFRA-1196 R5).
+ * head draws one bullet of each.
  *
  * With the block's own fence they are inside the 240 runes the server cuts a block's reference
  * excerpt to (`packages/envoy/internal/dispatch/refs/graph.go`), which is the text the tree
- * carries for a node and the one the head reads: the head parses no stored markdown of its own
- * (R20). They hold characters outside ASCII, so a cut made over bytes rather than runes would
- * show in what c-three-things reads back. A summary written longer than that excerpt loses its
- * last sentence to the cut, and the head draws the whole sentences it has rather than a
- * fragment, which is the rule `IssueThreeThings.test.tsx` reads.
+ * carries for a node and the one the head reads: the head parses no stored markdown of its own.
+ * They hold characters outside ASCII, so a cut made over bytes rather than runes would show in
+ * what c-three-things reads back. A summary written longer than that excerpt loses its last
+ * sentence to the cut, and the head draws the whole sentences it has rather than a fragment,
+ * which is the rule `IssueThreeThings.test.tsx` reads.
  */
 export const SUMMARY_SENTENCES = [
   "The issue page draws one ordered body in place of nine tabs.",
@@ -34,8 +34,8 @@ export const OPEN_QUESTION_BLOCK_ID = "q-open";
 /** How a seeded check's newest result stands, in the words `NODE_STATE_WORDS.check` draws
  *  (`web/src/features/issue-page/page-words.ts`), plus `no-control`: a pass of an after-merge
  *  check that records no negative control, which reads `passed` on the page and draws no gap -
- *  dispatch://INFRA-1253 R3 refuses such a result of a before-merge check, so the page names
- *  nothing it lacks - and is what `c-chain` reads that for. */
+ *  the server refuses such a result of a before-merge check, so the page names nothing it lacks
+ *  - and is what `c-chain` reads that for. */
 export const CHECK_STATE_ORDER = [
   "passed",
   "failed",
@@ -65,7 +65,7 @@ export function planTaskBlockId(index: number): string {
   return `t${index}`;
 }
 
-/** The block id of the requirement whose own words cite a document of the issue (R16). The
+/** The block id of the requirement whose own words cite a document of the issue. The
  *  citation sits inside a typed block, because a document a block cites is a node under that
  *  block and a paragraph of a document is the document's own text and no block of the tree at
  *  all. A requirement is the typed block that carries it: a requirement whose `from` is absent
@@ -220,10 +220,10 @@ export function specDocument(options: {
 /** The issue's Verification document: `checks` `check` blocks, each serving one requirement in
  *  turn and each seeded in the state `checkStateOf` names. The one in `no-control` carries no
  *  `negative_control` attribute at all, which is what "records no negative control" is. It runs
- *  `after_merge`, since a server that holds INFRA-1253's model refuses a passing `before_merge`
- *  result with no negative control (`NEGATIVE_CONTROL_REQUIRED`) and takes a pass of any other
- *  check; the one in `unmarked` runs `after_merge` too, so with the App gone it is the branch
- *  nothing can be read of (`recordSeededResults`). */
+ *  `after_merge`, since a server that asks a negative control of a before-merge pass refuses a
+ *  passing `before_merge` result with no negative control (`NEGATIVE_CONTROL_REQUIRED`) and
+ *  takes a pass of any other check; the one in `unmarked` runs `after_merge` too, so with the App
+ *  gone it is the branch nothing can be read of (`recordSeededResults`). */
 export function verificationDocument(options: {
   checks: number;
   issueKey: string;
@@ -248,8 +248,8 @@ export function verificationDocument(options: {
 }
 
 /** The issue's plan: `planTasks` `plan_task` blocks. Every task but the last serves one
- *  requirement, and tasks 2 to 7 need the task before them, which is the 14 pointers the Plan tab
- *  of `dispatch://INFRA-1196/artifact/request-baseline-md` counts one reference read for. */
+ *  requirement, and tasks 2 to 7 need the task before them, which is the 14 pointers the Plan
+ *  tab of the page's request baseline counts one reference read for. */
 export function planDocument(options: {
   issueKey: string;
   planTasks: number;

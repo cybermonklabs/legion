@@ -29,8 +29,7 @@ import {
 } from "./tree-drafts";
 
 /**
- * The issue's node tree, built from the page's reads and nothing else
- * (dispatch://INFRA-1196 R4, `dispatch://INFRA-1196/artifact/plan-md#b-t13`).
+ * The issue's node tree, built from the page's reads and nothing else.
  *
  * `buildIssueTree` is pure: it takes one value holding the page's reads and answers the issue's
  * root node. It sends no request, reads no document's text and holds no React, so the fold
@@ -55,7 +54,7 @@ import {
  * The tree is the issue's conversation (R1, R3): a document, an artifact and a handoff are nodes
  * of the issue and no node of this tree, and a typed block of a document sits under the issue
  * unless the model gives it a parent of its own (R4). The issue's children are one group of rows,
- * each child a node, under the issue (R12, the architect's ruling 5).
+ * each child a node, under the issue (R12).
  *
  * ## What today's reads hold, and what they do not
  *
@@ -64,11 +63,10 @@ import {
  *
  * - **No `from` on a requirement.** The `requirement` block carries no attributes at all
  *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05), so
- *   every requirement of the issue's spec sits under the issue, which is what c-home and c-spine
- *   read. A `requirement` block of any other document sits there too: the model holds no
- *   `from` for it and no coverage row either, so it is a block and nothing more, and no
- *   statement (`isStatement`); so is a `check` block of any document but the Verification
- *   document, which is no check (`isCheck`; dispatch://INFRA-1196 decision 152).
+ *   every requirement of the issue's spec sits under the issue. A `requirement` block of any
+ *   other document sits there too: the model holds no `from` for it and no coverage row either,
+ *   so it is a block and nothing more, and no statement (`isStatement`); so is a `check` block of
+ *   any document but the Verification document, which is no check (`isCheck`).
  * - **No `shaped` on a decision.** The decisions read answers `kind` and a boolean `unsure`
  *   (`packages/contracts/src/dispatch-api.ts:2519-2534`) and no `shaped` edge, so today a
  *   decision's links to spec blocks stand for it: they are its chips, and they are what the
@@ -97,10 +95,9 @@ import {
 export interface NodeChip {
   /** Whether the batched reference read could not tell which of several targets a short
    *  reference names: two or more carry the id it writes short, and the read answers it gone and
-   *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written
-   *  (dispatch://INFRA-1196 decision 62), and the page publishes the reference as ambiguous for
-   *  every link beside the tree to draw so too (`ambiguousTargets`). Absent for every other
-   *  reference. */
+   *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written, and the
+   *  page publishes the reference as ambiguous for every link beside the tree to draw so too
+   *  (`ambiguousTargets`). Absent for every other reference. */
   readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
@@ -136,9 +133,8 @@ export interface NodeCounts {
   readonly planTasks: number;
 }
 
-/** A person's answer to an ask, which is part of the ask and no node of its own
- *  (dispatch://INFRA-1150 R3): the ask's own row and body draw it, word for word as the store
- *  holds it and never restated (R9). */
+/** A person's answer to an ask, which is part of the ask and no node of its own: the ask's own
+ *  row and body draw it, word for word as the store holds it and never restated (R9). */
 export interface NodeAnswer {
   /** When it was given, which the outline's thread read mark compares with the replies'. */
   readonly at: string;
@@ -213,7 +209,7 @@ export interface TreeNode {
   readonly id: string;
   /** The child issue a `child_issue` node is, as the issue read carries it: its row draws its
    *  title as its words, how it stands, what blocks it and who holds it, and its key as the tag
-   *  (R12, the architect's ruling 5, `IssueChildren.tsx`). Absent for every other node. */
+   *  (R12, `IssueChildren.tsx`). Absent for every other node. */
   readonly child?: IssueChild;
   /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
    *  row draws after "Kept by" (R2); absent for every other node. */
@@ -290,12 +286,12 @@ export interface TreeNode {
 /**
  * Whether `node` is a statement: a `requirement` block of the issue's own spec, the document the
  * issue read names by `primary_artifact_id`, drawn before the coverage read answers as after it,
- * or a requirement that read holds (dispatch://INFRA-1196 decision 152). A `requirement` block
- * of the plan, Verification or decisions document keeps its type and is a block and nothing
- * more: no row of the Spec filter and none of its count, no context row of the Verification
- * filter and none of its statements, and nothing placed under it (`tree-drafts.ts`'s
- * `servePlacements`, which reads the same field on its drafts). The review list is no reader of
- * this rule: it reads a requirement the coverage read holds (`inReviewList`'s callers).
+ * or a requirement that read holds. A `requirement` block of the plan, Verification or
+ * decisions document keeps its type and is a block and nothing more: no row of the Spec filter
+ * and none of its count, no context row of the Verification filter and none of its statements,
+ * and nothing placed under it (`tree-drafts.ts`'s `servePlacements`, which reads the same field
+ * on its drafts). The review list is no reader of this rule: it reads a requirement the
+ * coverage read holds (`inReviewList`'s callers).
  */
 export function isStatement(node: Pick<TreeNode, "statement">): boolean {
   return node.statement === true;
@@ -306,8 +302,8 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
  * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
  * draws a state - `no-result` until the results read answers (`tree-drafts.ts`'s
  * `addDocumentBlocks`) - and a `check` block of any other document draws none and is a block and
- * nothing more (dispatch://INFRA-1196 decision 152): no row and no count of the Verification
- * filter, no check of a statement, and no open check of the fold's frontier (`tree-fold.ts`).
+ * nothing more: no row and no count of the Verification filter, no check of a statement, and no
+ * open check of the fold's frontier (`tree-fold.ts`).
  */
 export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;
@@ -350,11 +346,20 @@ export interface IssueTreeReads {
 export const FIRST_LINE_LIMIT = 100;
 
 /**
+ * A leading label: a first word of at most five characters that ends in `.` and holds a digit,
+ * as `R1.`, `12.` or `1.2.`. Its dot is read as part of the line and no sentence end, so a line
+ * that opens with one runs on to the first sentence end after it (`firstLineOf`). Every place
+ * that reads where a line's first sentence ends reads its label by this one rule. It carries no
+ * `g` or `y` flag, so `exec` keeps no state between the places that share it.
+ */
+export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
+
+/**
  * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
  * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
  * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
  * part of the line and no sentence end, so a statement's line runs on to the first sentence end
- * after its label (decision 51). A line held to the limit that holds no space past its label -
+ * after its label. A line held to the limit that holds no space past its label -
  * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
  * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
  * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
@@ -370,7 +375,7 @@ export function firstLineOf(text: string): {
   readonly sentence: boolean;
 } {
   const whole = text.replace(/\s+/gu, " ").trim();
-  const label = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u.exec(whole)?.[0] ?? "";
+  const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
   const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
   const first = rest === undefined ? undefined : `${label}${rest}`;
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
@@ -390,8 +395,8 @@ export function firstLineOf(text: string): {
 }
 
 /**
- * A first line as a place that draws one line for a node draws it (R1, the architect's ruling
- * 1): an ellipsis where the text carries on past a line the cut ended inside a sentence, and none
+ * A first line as a place that draws one line for a node draws it (R1): an ellipsis where the
+ * text carries on past a line the cut ended inside a sentence, and none
  * where the line is a whole sentence, whose own mark already ends it - "Thread 1 opens here.…"
  * reads as four dots. What follows a whole sentence is the node's next sentence, which its row
  * or its body holds. Whether the line ends at a sentence end is `firstLineOf`'s `sentence`, and
@@ -437,11 +442,11 @@ export function nodeWords(node: TreeNode): string {
  * A stored block is markdown, and its marks are no word of it, so it is read to plain words
  * (`plainWords`) as the server's reading holds them: a plan task stored as
  * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`, whose label
- * `firstLineOf` reads as no sentence end (decision 51), and whose sentence end is no longer
+ * `firstLineOf` reads as no sentence end, and whose sentence end is no longer
  * hidden behind the `**` that followed it.
  *
  * A bare `dispatch://` address in these words reads as its target's short form, as a link to it
- * draws it (`addressesAsShortForms`, decision 95): the server's reading keeps one as a plain
+ * draws it (`addressesAsShortForms`): the server's reading keeps one as a plain
  * text run, which is no link, a stored text holds it as written, and no one-line view draws a
  * raw address (R22). An address in code stays as its author wrote it, as a rendered body draws
  * it. The first block of a reading is written short here, text run by text run
@@ -459,9 +464,9 @@ export function lineWords(node: TreeNode): string {
 
 /** The words a node's one line is cut from, as `lineWords` walks them but with no address
  *  written short: the first block of a reading read by `firstBlockWordsRaw` and a stored block by
- *  `plainWordsRaw`, so a bare address stays as written (dispatch://INFRA-1196 decision 140). A
- *  caller that names each reference itself reads these, since a short form leaves it no address
- *  to name. A `TreeNode` passes as it is, and a decision as `{ text, tree: text_tree }`. */
+ *  `plainWordsRaw`, so a bare address stays as written. A caller that names each reference
+ *  itself reads these, since a short form leaves it no address to name. A `TreeNode` passes as
+ *  it is, and a decision as `{ text, tree: text_tree }`. */
 export function lineWordsRaw(node: { readonly text: string; readonly tree?: DisplayTree }): string {
   return lineWordsBy(node, firstBlockWordsRaw, plainWordsRaw);
 }
@@ -495,10 +500,9 @@ function firstBlockWords(reading: DisplayTree): string {
 }
 
 /** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
- *  reads them but with no address written short (`wordsOf`): a bare address stays as written
- *  (dispatch://INFRA-1196 decision 140). A caller that names each reference itself reads these,
- *  since a short form leaves it no address to name. `""` for a reading none of whose blocks
- *  holds a word. */
+ *  reads them but with no address written short (`wordsOf`): a bare address stays as written.
+ *  A caller that names each reference itself reads these, since a short form leaves it no
+ *  address to name. `""` for a reading none of whose blocks holds a word. */
 export function firstBlockWordsRaw(reading: DisplayTree): string {
   return firstBlockRead(reading, wordsOf);
 }
@@ -583,10 +587,10 @@ export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> 
  * ambiguous: each writes short an id two or more targets carry, so it names none of them, and a
  * chip naming it says so (`NodeChip.ambiguous`). The page publishes them beside its names
  * (`reference-names.tsx`), so a link tells an ambiguous reference from a gone one, which has no
- * name either: it draws the first as its author wrote it and links nothing
- * (dispatch://INFRA-1196 decision 62), where it reads the second's own. They are read by the
- * chip's rule (`namingContext`), as `targetNames` reads the names, so the two cannot disagree,
- * and no reference is in both: an ambiguous chip's name is `""`.
+ * name either: it draws the first as its author wrote it and links nothing, where it reads the
+ * second's own. They are read by the chip's rule (`namingContext`), as `targetNames` reads
+ * the names, so the two cannot disagree, and no reference is in both: an ambiguous chip's
+ * name is `""`.
  */
 export function ambiguousTargets(reads: IssueTreeReads): ReadonlySet<string> {
   const context = namingContext(reads);
@@ -700,8 +704,8 @@ function assemble(
     question: false,
     replaced: false,
     // How Dispatch names an issue everywhere: its key and then its title. The outline draws no
-    // row of it - the header is the issue (the architect's ruling 5) - and a line that names the
-    // issue, the breadcrumb's first crumb, names it by its key alone.
+    // row of it - the header is the issue - and a line that names the issue, the breadcrumb's
+    // first crumb, names it by its key alone.
     text: `${key} ${issue.title}`,
     transcluded: false,
     type: "issue",

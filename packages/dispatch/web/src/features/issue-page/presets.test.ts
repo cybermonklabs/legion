@@ -8,9 +8,9 @@ import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 
 /**
- * The page with no filter on and the four filters as views of the one tree (dispatch://INFRA-1196
- * R1, R2): with no filter on the whole tree, folded to the frontier; under a filter its own
- * kinds as rows and no other, each other parent a line on its child's row.
+ * The page with no filter on and the four filters as views of the one tree: with no filter on
+ * the whole tree, folded to the frontier; under a filter its own kinds as rows and no other, each
+ * other parent a line on its child's row.
  */
 
 function node(
@@ -268,7 +268,7 @@ test("a parent line carries the parent's own address", () => {
   ]);
 });
 
-// R1, R2 and the architect's ruling 1: a parent's line is drawn as a row's first line is
+// R1, R2: a parent's line is drawn as a row's first line is
 // (`drawnLine`), with an ellipsis where the cut ended inside a sentence and none where the line
 // is a whole sentence, whose own mark ends it.
 test("a parent's line draws its ellipsis only where the cut ended inside a sentence", () => {

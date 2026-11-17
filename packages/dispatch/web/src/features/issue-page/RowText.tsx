@@ -14,11 +14,7 @@ import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
-import {
-  buildReferencePath,
-  type DispatchReferenceRoute,
-  parseNodeReference,
-} from "../refs/routes";
+import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
@@ -33,7 +29,7 @@ import {
 } from "./row-references";
 
 /**
- * A node's own text, as its row in the outline draws it (dispatch://INFRA-1196 R16, R20, R34),
+ * A node's own text, as its row in the outline draws it (R16, R20, R34),
  * in the size and the colour of the words it is drawn among.
  *
  * A text whose read sent the server's reading of it (`tree`) is drawn from that reading, with
@@ -230,7 +226,7 @@ function StoredText({
               className={ROW_LINK}
               data-row-chip={one.route.kind === "issue" ? undefined : ""}
               data-row-reference={one.reference}
-              href={buildReferencePath(one.route)}
+              href={one.path}
               tabIndex={tabStops ? undefined : -1}
             >
               {key === undefined ? (

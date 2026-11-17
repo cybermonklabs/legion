@@ -24,8 +24,8 @@ import { type IssueHeaderWrites, statusPickOnly } from "./useIssueHeaderWrites";
 import { useIssuePalette } from "./useIssuePalette";
 
 /**
- * The header (dispatch://INFRA-1196 R13): what tells a reader to act, and nothing else, drawn
- * as the prototype's `#hdr-sticky` and `#hdr-props` draw it.
+ * The header: what tells a reader to act, and nothing else, drawn as the prototype's
+ * `#hdr-sticky` and `#hdr-props` draw it.
  *
  * 1. The breadcrumb, the key, the control that copies it and the one overflow menu, with
  *    Details at the right (`IssueIdentityRow.tsx`).
@@ -37,17 +37,16 @@ import { useIssuePalette } from "./useIssuePalette";
  * Every other property, and every control of one, is in Details (`IssueMargin.tsx`), which the
  * control at the right of row one opens. The header and Details each call `useIssueHeaderWrites`
  * and keep their own drafts; every write either makes goes in the issue's one line of the keyed
- * store (`issue:<key>`), so the two keep their order, and both read one pending status (part E's
- * `pickStatus`).
+ * store (`issue:<key>`), so the two keep their order, and both read one pending status
+ * (`pickStatus`).
  *
  * Rows one and two are the identity block, which stays at the top of the screen from 761 px up
  * while the properties line scrolls away under it, and which scrolls away with the rest of the
- * header at 760 px and below, where the filter row stays instead (ruling 5 of
- * dispatch://INFRA-1196/artifact/build-rulings-md, the prototype's `#hdr-sticky`): the
- * `<header>` itself draws no box (`display: contents`), so the block's `position: sticky` holds
- * against the page's whole column rather than against the header. The block publishes the
- * height of whatever stays (`identity-block.ts`), so the tree's focused row can clear it rather
- * than guess at it.
+ * header at 760 px and below, where the filter row stays instead (the prototype's
+ * `#hdr-sticky`): the `<header>` itself draws no box (`display: contents`), so the block's
+ * `position: sticky` holds against the page's whole column rather than against the header. The
+ * block publishes the height of whatever stays (`identity-block.ts`), so the tree's focused row
+ * can clear it rather than guess at it.
  *
  * `data-issue-header` is load-bearing for the keyboard: the `issue` scope's bindings find the
  * status, the priority, the title and the pin through it, and scoping to it is what keeps a
@@ -125,7 +124,7 @@ export function IssueHeader({
       data-issue-header=""
       data-testid="issue-header"
     >
-      {/* The band stays from 761 px up and scrolls away at 760 px and below (R5): `min-[761px]`
+      {/* The band stays from 761 px up and scrolls away at 760 px and below: `min-[761px]`
           and no `max-[760px]`, which Tailwind builds as `width < 760px` and so leaves 760 px
           itself sticky. */}
       <div

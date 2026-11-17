@@ -5,8 +5,10 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { CutWords } from "./CutWords";
+import { measureNearWords } from "./clamp-fixtures";
 import type { NodeFact } from "./issue-tree";
 import { NodeFacts } from "./NodeFacts";
 import { NoTooltips } from "./NoTooltips";
@@ -16,7 +18,7 @@ import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-na
 
 /**
  * Whether the controls inside a node's words and facts take a place in the tab order (part G's
- * R9 of dispatch://INFRA-1196). The outline is one tab stop and its keys reach a row's
+ * R9). The outline is one tab stop and its keys reach a row's
  * controls, so `CutWords`, `NodeFacts` and `RowText` keep every control out of the tab order by
  * default, the ones that arrive after the first paint included; a view that no tree's keys reach
  * passes `tabStops`, and every control keeps its place, a late one included.
@@ -93,7 +95,7 @@ test("CutWords keeps its words' controls out of the tab order, and in it with ta
 /** Lays the words out as a cut statement's are, until the answer is called: every element
  *  600 px tall from the top, save the one `below` names, which stands 400 px down, under the
  *  six lines the cut draws. No DOM of a unit test lays anything out, and the cut reads the
- *  words' own boxes (`NodeRow.tsx`'s `measureClamp`). */
+ *  words' own boxes (`clamp-measurer.ts`'s `measureClamp`). */
 function layOutCut(below: string): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
@@ -117,6 +119,7 @@ function layOutCut(below: string): () => void {
 // above the cut keeps its place, and once the words are whole the hidden one takes its own back.
 test("a cut statement with a hidden link gives that link no tab stop while cut, and a tab stop once whole", async () => {
   const restore = layOutCut("[data-hidden]");
+  const near = installIntersectionObserver();
   const words = Array.from({ length: 100 }, (_unused, at) => `word${at + 1}`).join(" ");
   const view = draw(
     <CutWords className="" tabStops whole={false}>
@@ -132,6 +135,8 @@ test("a cut statement with a hidden link gives that link no tab stop while cut, 
     </CutWords>
   );
   try {
+    // The page measures only the words of rows near the viewport.
+    await measureNearWords(near);
     const more = await waitFor(() => {
       const found = view.container.querySelector<HTMLButtonElement>("[data-node-more]");
       expect(found, "the statement is not cut").not.toBeNull();
@@ -156,6 +161,7 @@ test("a cut statement with a hidden link gives that link no tab stop while cut, 
     expect(shown?.hasAttribute("tabindex")).toBe(false);
   } finally {
     view.unmount();
+    near.restore();
     restore();
   }
 });

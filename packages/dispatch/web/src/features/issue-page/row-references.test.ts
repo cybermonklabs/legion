@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
+import * as textReferences from "../refs/text-references";
 import {
   citedReferences,
   knownIssueKeys,
@@ -8,8 +9,8 @@ import {
   rowReferenceWords,
 } from "./row-references";
 
-// dispatch://INFRA-1196 R19 and R21, the tester's F14 and F17: a row draws every reference in its
-// words as a link named from the page's one batched read, and asks the server nothing for it.
+// A row draws every reference in its words as a link named from the page's one batched read,
+// and asks the server nothing for it.
 
 const NAMES = new Map([
   ["dispatch://CORE-7", "The header draws the approval of each step"],
@@ -26,10 +27,9 @@ test("what a text cites is every whole address and every bare key, each once", (
   expect(citedReferences("")).toEqual([]);
 });
 
-// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an item id or a block id
-// written short in the owner its reference names, and answers under the reference as the request
-// wrote it. So an address written short is asked as written, beside one written whole, and a row
-// names its link from that answer.
+// The batched read resolves an item id or a block id written short in the owner its reference
+// names, and answers under the reference as the request wrote it. So an address written short is
+// asked as written, beside one written whole, and a row names its link from that answer.
 test("an address that writes its id short is asked for as written, and named from its answer", () => {
   const short = "dispatch://CORE-1/comment/c0b271c7";
   const shortBlock = "dispatch://CORE-1/spec#b-abcd1234";
@@ -113,10 +113,10 @@ test("the pass links what painted words cite, and names it again when the names 
   expect(links()).toHaveLength(1);
 });
 
-// dispatch://INFRA-1196 decision 62: a short reference two or more targets carry the id of is
-// answered ambiguous, and drawn as written with no link, as the tree's chip draws it. A row read
-// only the names, which hold no name for it, so it linked the reference and drew it as its short
-// form, which names no one target.
+// A short reference two or more targets carry the id of is answered ambiguous, and drawn as
+// written with no link, as the tree's chip draws it. A row read only the names, which hold no
+// name for it, so it linked the reference and drew it as its short form, which names no one
+// target.
 const AMBIGUOUS = "dispatch://CORE-1/comment/c0b271c7";
 
 test("a reference the read answered ambiguous is no reference a row links", () => {
@@ -155,4 +155,42 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
+});
+
+// Each row's words were read again on every draw. A text is read once for each list
+// of issue keys it is read against, however often a row draws it; another text, or another list
+// of keys, is read anew. A new set of ambiguous references is applied to the kept reading, so the
+// row drops the link it names with no second reading and draws no stale one.
+test("a text is read once however often a row draws it, and again for another text or other keys", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Kept reading: see dispatch://CORE-206/spec#b-r1 and CORE-207.";
+    const issues = ["CORE-207"];
+    const first = rowReferences(text, issues);
+    expect(rowReferences(text, issues), "a second draw read other references").toEqual(first);
+    expect(
+      rowReferences(text, [...issues]),
+      "the same keys in another list read other references"
+    ).toEqual(first);
+    expect(reads, "the same text and keys were read more than once").toHaveBeenCalledTimes(1);
+    expect(first.map((one) => [one.reference, one.path])).toEqual([
+      ["dispatch://CORE-206/spec#b-r1", "/issues/CORE-206/spec#b-r1"],
+      ["dispatch://CORE-207", "/issues/CORE-207"],
+    ]);
+
+    const ambiguous = new Set(["dispatch://CORE-206/spec#b-r1"]);
+    expect(
+      rowReferences(text, issues, ambiguous).map((one) => one.reference),
+      "a reference read ambiguous since is still linked"
+    ).toEqual(["dispatch://CORE-207"]);
+    expect(reads, "a new ambiguous set read the text again").toHaveBeenCalledTimes(1);
+
+    expect(rowReferences(text, []).map((one) => one.reference)).toEqual([
+      "dispatch://CORE-206/spec#b-r1",
+    ]);
+    rowReferences(`${text} More.`, issues);
+    expect(reads, "other keys or another text were not read").toHaveBeenCalledTimes(3);
+  } finally {
+    reads.mockRestore();
+  }
 });

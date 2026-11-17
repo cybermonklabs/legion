@@ -1107,8 +1107,7 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 
 // The page colour pairs of the `ON_PAGE` tables of `MultiSelect.tsx`, `ApprovalChip.tsx` and
 // `AskCard.tsx` that no registration above holds, so `palette.test.ts` measures each
-// (dispatch://INFRA-3935 R9, decision 99(c) of dispatch://INFRA-1196/artifact/part-decisions-md;
-// `shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
+// (`shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
 // option's detail, muted words on the mark grey of its active row and of the row under the
 // pointer; and a refused filled action's words, Approve's or Answer's, muted on the hairline
 // grey it turns.

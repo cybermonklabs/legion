@@ -16,22 +16,22 @@ export interface PressFocus<T> {
 }
 
 /**
- * The focus a press gives a row, taken once the press is over (dispatch://INFRA-1196 R7, the
- * architect's decision 141): the outline's press (`IssueTree.tsx`), and part Q's Decisions list,
- * which decision 141 hands the hook to.
+ * The focus a press gives a row, taken once the press is over: the outline's press
+ * (`IssueTree.tsx`), and the Decisions view's list, which is to take its rows' focus this way
+ * too.
  *
  * A press focuses what it lands on as it goes down, before it ends, so the row taking the focus
  * would open its body and draw its acts, and the row the focus left would close its own, while
  * the press is held: the rows would grow and shrink under the pointer. `NodeRow.tsx`'s
  * `useRowOnScreen` holds its own placing for a press, but Chromium's scroll anchoring holds
- * nothing, and moves the page as the rows change. Measured at 1440 by 900 on part G's
- * c-row-layout: a body closing with the page scrolled to its foot clamped the scroll 46 px up,
- * and the pressed row's body opening gave the page the room to go back, which the anchoring took
- * between the press's mousedown and its mouseup - the picture in the pressed comment rose 46 px,
- * the click went to the words around it, and no picture opened. So the focus a press gives a row
- * is taken once the press is over - after its mouseup and the click that follows it, in a task
- * of its own - and only while that row still holds the focus; a key's move takes it at once. A
- * tap on a phone sends the same mousedown, mouseup and click.
+ * nothing, and moves the page as the rows change. Measured at 1440 by 900 on c-row-layout
+ * (`issue-page-g.e2e.ts`): a body closing with the page scrolled to its foot clamped the scroll
+ * 46 px up, and the pressed row's body opening gave the page the room to go back, which the
+ * anchoring took between the press's mousedown and its mouseup - the picture in the pressed
+ * comment rose 46 px, the click went to the words around it, and no picture opened. So the focus
+ * a press gives a row is taken once the press is over - after its mouseup and the click that
+ * follows it, in a task of its own - and only while that row still holds the focus; a key's move
+ * takes it at once. A tap on a phone sends the same mousedown, mouseup and click.
  *
  * `take` takes the focus for one item - a placement of a node, an entry of a list - and `holds`
  * answers whether that item's row holds the focus. The latest of each is the one called, so a

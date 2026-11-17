@@ -13,9 +13,8 @@ import {
 } from "./tree-fold";
 
 /**
- * The fold, over a tree built by hand (dispatch://INFRA-1196 R1, R6,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t14`): the page opens folded to the frontier and not
- * to a fixed depth, and a question's path costs no other branch a row.
+ * The fold, over a tree built by hand: the page opens folded to the frontier and not to a fixed
+ * depth, and a question's path costs no other branch a row.
  */
 
 function node(

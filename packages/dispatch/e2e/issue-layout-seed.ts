@@ -59,9 +59,9 @@ import { ONE_PIXEL_PNG } from "./sends";
 
 /**
  * The whole issues the browser rows of the source's `e2e/issue-layout.e2e.ts` read, and in this
- * tree those of `e2e/issue-page-i.e2e.ts`, for the issue page dispatch://INFRA-1196
- * redesigns. A caller needs `resetDatabase()` and one of these calls in `beforeEach` and nothing
- * else: each seed makes its own project, component model, repository and sessions.
+ * tree those of `e2e/issue-page-i.e2e.ts`, for the redesigned issue page. A caller needs
+ * `resetDatabase()` and one of these calls in `beforeEach` and nothing else: each seed makes its
+ * own project, component model, repository and sessions.
  *
  * Every write goes through `e2e/api.ts`, as a person for a human's write and under the agent
  * bearer for a session's, with two exceptions that are not Dispatch's own state: the component
@@ -75,14 +75,14 @@ import { ONE_PIXEL_PNG } from "./sends";
  *
  * - **The summary node.** `blocks.json` is at version 3 and declares five types, `callout`,
  *   `ask`, `requirement`, `plan_task` and `check`, and no summary node, no author of the three
- *   sentences and no `last_read_back_at`, which are dispatch://INFRA-1278
+ *   sentences and no `last_read_back_at`, none of which the schema holds yet
  *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:1-118`, read 2026-11-05). The
  *   three sentences are seeded as a `callout` with the block id `summary`.
  * - **`from` on a requirement.** `requirement` carries no attributes at all
  *   (`blocks.json:70-75`), so there is no `from` edge to seed and *every* seeded requirement's
- *   `from` is absent; dispatch://INFRA-1098 item 21 adds it. For the disagreement `c-spine`
- *   names, `seedSpineCases` seeds a decision whose block links one requirement while the
- *   answered question a reader would read as that requirement's origin is another node.
+ *   `from` is absent until the schema adds it. For the disagreement `c-spine` names,
+ *   `seedSpineCases` seeds a decision whose block links one requirement while the answered
+ *   question a reader would read as that requirement's origin is another node.
  * - **`shaped` on a decision, and a decision's author, uncertainty level and reason.** The
  *   decisions read answers `kind: "agent" | "person"` and a boolean `unsure`
  *   (`packages/contracts/src/dispatch-api.ts:2473-2497`); `shaped`, `uncertainty`,
@@ -91,9 +91,9 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   person's when it mentions an ask (`packages/envoy/internal/dispatch/api/decisions.go:25-28`).
  * - **Depth below a document.** `document_blocks` holds no parent and no ordinal
  *   (`packages/envoy/internal/dispatch/store/migrations/0121_block_graph.up.sql:16-27`, read
- *   2026-11-05), and a document is no node of the tree (dispatch://INFRA-1196 R3), so a typed
- *   block sits directly under the issue unless its own `serves` places it, and the deepest path
- *   a seed reaches is a turn's replies or a requirement's check and that check's result.
+ *   2026-11-05), and a document is no node of the tree, so a typed block sits directly under the
+ *   issue unless its own `serves` places it, and the deepest path a seed reaches is a turn's
+ *   replies or a requirement's check and that check's result.
  * - **The five result states this seed can reach, on one issue.** A before-merge result stands
  *   at another commit when its commit is not a stored pull-request head and the check's issue
  *   resolves to a repository Dispatch can read, and is not known only when it cannot read one
@@ -166,7 +166,7 @@ export interface WholeIssueSeed {
   readonly verificationArtifactId: string;
 }
 
-/** The whole issue the Verification document of dispatch://INFRA-1196 describes, in one call. */
+/** The whole issue the page's verification document describes, in one call. */
 export async function seedWholeIssue(): Promise<WholeIssueSeed> {
   const seeded = await seedIssueWithDocuments({
     checks: 6,
@@ -280,13 +280,12 @@ export interface AdvancingIssueSeed extends WholeIssueSeed {
 }
 
 /**
- * `seedWholeIssue`, with the issue under two priorities (dispatch://INFRA-2947 R3 and R4): one
- * it advances itself, which its priority row draws as a link with a remove beside it, and one
- * its parent advances, which the row draws as a link marked inherited and with no remove. That
- * is the whole priority row an issue can draw short of its cap, so in the source it is what the
- * page inventory is recorded over (`record-page-inventory.e2e.ts`) and what c-nothing-lost reads
- * the new page against; both call this one seed there, so the two read the same row. No row of
- * this tree calls it yet.
+ * `seedWholeIssue`, with the issue under two priorities: one it advances itself, which its
+ * priority row draws as a link with a remove beside it, and one its parent advances, which the
+ * row draws as a link marked inherited and with no remove. That is the whole priority row an
+ * issue can draw short of its cap, so in the source it is what the page inventory is recorded
+ * over (`record-page-inventory.e2e.ts`) and what c-nothing-lost reads the new page against; both
+ * call this one seed there, so the two read the same row. No row of this tree calls it yet.
  *
  * It is a seed of its own rather than part of `seedWholeIssue`, because each relation makes the
  * page read the priorities on its first load, and every other row of the source's
@@ -403,7 +402,7 @@ export interface ReplyNestingSeed {
   readonly key: string;
   /** A question that waits on the reader, with two options, which its row answers. */
   readonly openAsk: string;
-  /** A question its asker resolved, which still takes a reply (dispatch://INFRA-3677). */
+  /** A question its asker resolved, which still takes a reply. */
   readonly resolvedAsk: string;
   /** The reply that answers `first`, and is drawn under it rather than under `head`. */
   readonly second: string;
@@ -482,7 +481,7 @@ export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
 export const UNBROKEN_PATH =
   "packages/dispatch/web/src/features/issue/useIssueHeaderWrites.ts/and/one/more/segment/to/pass/one/hundred.ts";
 
-/** An issue whose spec marks one requirement whose words hold that run (R17). */
+/** An issue whose spec marks one requirement whose words hold that run. */
 export async function seedUnbrokenWords(): Promise<PlainIssueSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   const issue = await createIssue({
@@ -516,7 +515,7 @@ export interface ChildTitleSeed {
   readonly key: string;
 }
 
-/** An issue one of whose children carries that same run in its own title (R17). It is a second
+/** An issue one of whose children carries that same run in its own title. It is a second
  *  surface for the one run `UNBROKEN_PATH` already states, and reads it without touching the
  *  seed the requirement row uses. */
 export async function seedUnbrokenChildTitle(): Promise<ChildTitleSeed> {
@@ -553,13 +552,13 @@ export interface BaselineSeed {
   readonly verificationArtifactId: string;
 }
 
-/** The content `dispatch://INFRA-1196/artifact/request-baseline-md` describes, at `multiplier`
- *  times its nodes: three labels, a repository with a pull request, two components, a parent, a
- *  claim, a message route, three subscribers, two references, seven children (one blocked, one
- *  done), twelve requirements, six checks with results in several states, nine plan tasks, two
- *  decision records, one open ask, six comment threads with eight replies, two handoffs. Its 37
- *  events are what those writes record, not a number seeded on its own, and the properties are
- *  not multiplied: the multiplier doubles the nodes, which the request count is read against. */
+/** The content the page's request baseline describes, at `multiplier` times its nodes: three
+ *  labels, a repository with a pull request, two components, a parent, a claim, a message route,
+ *  three subscribers, two references, seven children (one blocked, one done), twelve
+ *  requirements, six checks with results in several states, nine plan tasks, two decision
+ *  records, one open ask, six comment threads with eight replies, two handoffs. Its 37 events
+ *  are what those writes record, not a number seeded on its own, and the properties are not
+ *  multiplied: the multiplier doubles the nodes, which the request count is read against. */
 async function seedBaseline(multiplier: 1 | 2): Promise<BaselineSeed> {
   const requirements = 12 * multiplier;
   const planTasks = 9 * multiplier;
@@ -623,7 +622,7 @@ export async function seedTwiceTheNodes(): Promise<BaselineSeed> {
 }
 
 /** What `seedConversationState` adds to the whole issue: the things the history draws whole
- *  (dispatch://INFRA-1196 R15) that no row of the outline does. */
+ *  that no row of the outline does. */
 export interface ConversationStateSeed extends WholeIssueSeed {
   /** Two comments agents wrote to each other, a thread no person wrote in. */
   readonly agentComments: { readonly reply: string; readonly root: string };
@@ -700,9 +699,9 @@ export async function seedConversationState(): Promise<ConversationStateSeed> {
 export interface DecisionsFilterSeed extends WholeIssueSeed {
   /** A question alice declined, with a note. */
   readonly declinedAskId: string;
-  /** The agent decision alice kept: decision 5, which shapes the fourth requirement. */
+  /** The agent decision alice kept: the fifth, which shapes the fourth requirement. */
   readonly keptBlock: string;
-  /** The agent decision whose words changed last, so it heads the review list: decision 6. */
+  /** The agent decision whose words changed last, so it heads the review list: the sixth. */
   readonly newestBlock: string;
   /** A question with two options, which alice answered with one of them and words of her own. */
   readonly optionedAskId: string;
@@ -756,7 +755,7 @@ export async function seedDecisionsFilter(): Promise<DecisionsFilterSeed> {
   };
 }
 
-/** Four agent decisions, by what each one's link names (c-review-list, R35). */
+/** Four agent decisions, by what each one's link names (c-review-list). */
 export interface ReviewListSeed {
   readonly decisionsSlug: string;
   readonly key: string;
@@ -771,7 +770,7 @@ export interface ReviewListSeed {
 }
 
 /** An issue with two open questions that wait on alice and four agent decisions, of which two
- *  name a statement: only those two wait for her review (R35). */
+ *  name a statement: only those two wait for her review. */
 export async function seedReviewList(): Promise<ReviewListSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   const issue = await createIssue({

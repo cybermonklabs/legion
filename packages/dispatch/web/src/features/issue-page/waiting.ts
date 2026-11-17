@@ -4,10 +4,10 @@ import { type ChangeComment, decisionChanges, inReviewList } from "./decision-re
 import type { DocumentBlocks } from "./issue-tree";
 
 /**
- * What waits on the reader, as the header's count counts it (dispatch://INFRA-1196 R13): each
- * open ask of the issue whose turn is the reader's, each decision in the Decisions filter's review
- * list (R35, `decision-review.ts`), and each open approval request whose turn is the reader's -
- * three things and no other.
+ * What waits on the reader, as the header's count counts it: each open ask of the issue whose
+ * turn is the reader's, each decision in the Decisions filter's review list (R35,
+ * `decision-review.ts`), and each open approval request whose turn is the reader's - three
+ * things and no other.
  *
  * An ask's turn is the reader's by the one rule every count of the reader's work reads
  * (`waitingOnYou`, `features/inbox/BlockedOnYou.tsx`): it waits on a person (`waitingOnHuman`),

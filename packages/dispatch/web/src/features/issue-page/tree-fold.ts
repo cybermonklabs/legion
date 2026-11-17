@@ -1,8 +1,8 @@
 import { isCheck, type TreeNode } from "./issue-tree";
 
 /**
- * How much of the issue's tree is drawn (dispatch://INFRA-1196 R1, R6). Pure, over the model
- * `issue-tree.ts` builds, so the rows, the zoom and the unit tests fold the same way.
+ * How much of the issue's tree is drawn. Pure, over the model `issue-tree.ts` builds, so the
+ * rows, the zoom and the unit tests fold the same way.
  *
  * The first drawing is the frontier's own: the path to what is open and unanswered is
  * unfolded whatever its depth, and every other branch arrives folded to one row saying how

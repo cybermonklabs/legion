@@ -1559,7 +1559,7 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
 });
 
 // The new issue page names every node from one batched read (`referenceTargetsQuery`), keyed by
-// the set of addresses it asked for and by no issue (dispatch://INFRA-1196 part G, R12). A write
+// the set of addresses it asked for and by no issue (part G, R12). A write
 // that renames a node the page names marks it stale, so the page draws the new name without a
 // reload; a write that renames nothing leaves it alone, because the set can be a long request.
 test("an issue's new title marks the batched names stale, and a write that renames nothing does not", () => {
