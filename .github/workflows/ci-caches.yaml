@@ -303,7 +303,10 @@ jobs:
 
   # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and
   # packages/envoy - so it keys on packages/envoy/infra/go.mod's Go and builds in a job of its own,
-  # as ci.yaml's envoy-infra-go does.
+  # as ci.yaml's envoy-infra-go does. The key ends in `-and-darwin` because the entry holds the
+  # darwin objects of envoy-infra-go's darwin vet too: a lookup finds an entry under its exact key
+  # and builds nothing, so the entry saved before that vet existed, which had none, needed a key of
+  # its own to be filled again before the next Go release.
   envoy-infra:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -324,20 +327,19 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-and-darwin
           lookup-only: true
 
-      # What envoy-infra-go builds: the vet with both live-test tags, the test binary of every
-      # package, and the natslive binaries of the three packages its live step runs. Compiled, not
-      # run: the live tests need nats-server, Postgres and container images, and the unit tests
-      # nothing a build cache keeps.
-      # Its darwin vet is the one build left out: its darwin objects, about 3 GB of build cache on a
-      # devbox, would be most of the entry's restore, and the step builds them in about 3.5 minutes
-      # (run 43990864191), which the job's time limit allows for.
+      # What envoy-infra-go builds: the vet with both live-test tags, for linux and for darwin, the
+      # test binary of every package, and the natslive binaries of the three packages its live step
+      # runs. Compiled, not run: the live tests need nats-server, Postgres and container images, and
+      # the unit tests nothing a build cache keeps. The darwin vet is in the fill because, built
+      # cold, it is the step that brought envoy-infra-go near its time limit.
       - name: Build what envoy-infra-go builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
           go vet -tags pulumilive,natslive ./...
+          GOOS=darwin GOARCH=arm64 go vet -tags pulumilive,natslive ./...
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
@@ -348,7 +350,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-and-darwin
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
   # needs. No setup-go and no Go family: the key is the content of the lean-toolchain the model

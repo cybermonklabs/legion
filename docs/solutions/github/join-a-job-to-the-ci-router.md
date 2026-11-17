@@ -367,7 +367,8 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`), with the
   family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-', runner.os) }}`; the families are `go-daemon`,
-  `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In `ci.yaml` that
+  `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`; `go-envoy-infra`'s key
+  also ends in `-and-darwin`, for the reason its fill in ci-caches.yaml gives). In `ci.yaml` that
   fallback applies on every run, a dispatched one on main included, because no job there saves.
   A job that does save keeps the prefix off main alone
   (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-', runner.os) || '' }}`),
