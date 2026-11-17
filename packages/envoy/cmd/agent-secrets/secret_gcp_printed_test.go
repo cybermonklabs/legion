@@ -504,3 +504,54 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 		}
 	})
 }
+
+// TestGcloudsStandardErrorIsNotPrinted: a gcloud call that fails is named by the call and its exit
+// status, with the advice to run the same gcloud command to see its message, and never by what
+// gcloud wrote on its standard error: a refused refresh writes the token endpoint's
+// error_description there, which the server writes what it likes in. It holds for the login list
+// and for the token. A gcloud that answers still signs the form in (the control).
+func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw-gcloudstderr-7c40b2"
+	refused := `echo "ERROR: (gcloud.auth.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: echo of ` + secret + `', {'error': 'invalid_grant', 'error_description': 'echo of ` + secret + `'})" >&2; exit 1`
+	for _, row := range []struct {
+		name, authList, token string
+		code                  int
+		want                  string
+	}{
+		{"the token refresh", `printf '%s\n' '[{"account":"ada@example.com","status":"ACTIVE"}]'`, refused, 1,
+			"`gcloud auth print-access-token` failed for ada@example.com: exit status 1: run the same gcloud command yourself to see its message"},
+		{"the login list", strings.ReplaceAll(refused, "print-access-token", "list"), `printf '%s\n' 'unused'`, 1,
+			"`gcloud auth list` failed: exit status 1: run the same gcloud command yourself to see its message"},
+		{"control: a gcloud that answers", `printf '%s\n' '[{"account":"ada@example.com","status":"ACTIVE"}]'`, `printf '%s\n' ` + shellWord(stubTokenPrefix+"ada@example.com"), 0,
+			"using the active gcloud account (gcloud configuration default): ada@example.com"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			useNoADC(t)
+			script := strings.Join([]string{
+				"#!/bin/sh",
+				`case "$1 $2" in`,
+				`"auth list") ` + row.authList + ` ;;`,
+				`"config list") printf '%s\n' '{"auth":{}}' ;;`,
+				`"auth print-access-token") ` + row.token + ` ;;`,
+				`*) exit 2 ;;`,
+				"esac",
+				"",
+			}, "\n")
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+
+			_, stderr, code := runSecret("list")
+			if code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
+			}
+			requireSays(t, "stderr", stderr, []string{secret, "error_description"}, []string{row.want})
+		})
+	}
+}

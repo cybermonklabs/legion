@@ -405,7 +405,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
 				t.Setenv("STUB_GCLOUD_REFUSE_TOKEN", "1")
 			},
-			code: 1, says: []string{"the active gcloud account (gcloud configuration box)", "`gcloud auth print-access-token` failed for box@example.iam.gserviceaccount.com", "Reauthentication failed"},
+			code: 1, says: []string{"the active gcloud account (gcloud configuration box)", "`gcloud auth print-access-token` failed for box@example.iam.gserviceaccount.com: exit status 1: run the same gcloud command yourself to see its message"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

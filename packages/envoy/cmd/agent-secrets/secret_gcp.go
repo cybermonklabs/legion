@@ -423,7 +423,7 @@ func gcloudEnv() []string {
 }
 
 // gcloudWaitDelay is how long runGcloud waits for a killed gcloud's output to close before it gives
-// the call up: a second, the standard error kept and nothing else.
+// the call up: a second, its standard error discarded and nothing else.
 const gcloudWaitDelay = time.Second
 
 // runGcloud runs gcloud with args in gcloudEnv and answers what it wrote on its standard output.
@@ -432,11 +432,14 @@ const gcloudWaitDelay = time.Second
 // to print a token for is named on the command line (gcloudTokenArgs), so no flag of this
 // command's picks a configuration.
 // gcloud reads /dev/null, never this command's standard input, which can be a secret's value on
-// its way in; what it writes on its standard error is kept only to name a failure. Once ctx ends,
-// gcloud is killed with its whole process group where the platform has them (killGroupOnCancel),
-// not the gcloud process alone, since the gcloud on PATH can be a script whose child, gcloud's
-// Python, holds the output open and outlives a kill of the script; the output is then waited for
-// no more than gcloudWaitDelay, for a process that left the group.
+// its way in. What it writes on its standard error is discarded, never printed: a refresh the
+// token endpoint refuses writes that endpoint's error_description there, which the server writes
+// what it likes in, so a failure is its exit status and the advice to run the same gcloud command
+// to read gcloud's own message. Once ctx ends, gcloud is killed with its whole process group where
+// the platform has them (killGroupOnCancel), not the gcloud process alone, since the gcloud on PATH
+// can be a script whose child, gcloud's Python, holds the output open and outlives a kill of the
+// script; the output is then waited for no more than gcloudWaitDelay, for a process that left the
+// group.
 // The whole group is killed too where a signal ends this command while gcloud runs: gcloud, in a
 // group of its own, gets no signal sent to this command's group, such as a terminal's interrupt,
 // so runGcloud records each gcloud it runs (runRecorded) and an end by a signal kills each
@@ -446,13 +449,10 @@ func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byt
 	cmd.Env = gcloudEnv()
 	killGroupOnCancel(cmd)
 	cmd.WaitDelay = gcloudWaitDelay
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	var stdout bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, io.Discard
 	if err := runRecorded(cmd); err != nil {
-		if said := strings.TrimSpace(stderr.String()); said != "" {
-			return nil, fmt.Errorf("%w: %s", err, said)
-		}
-		return nil, err
+		return nil, fmt.Errorf("%w: run the same gcloud command yourself to see its message", err)
 	}
 	return stdout.Bytes(), nil
 }
