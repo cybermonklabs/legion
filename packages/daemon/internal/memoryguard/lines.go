@@ -25,9 +25,9 @@ import (
 // the one that grew the most over growthWindow, else the one that grew the most since the previous
 // kill of the rise, or the largest where none grew by either, with the size it read of it at the
 // reading it decided on: for a first kill of a rise that the band's held reads decided at the
-// reading at the mark where one of them grew (endHeld), the band's last reading, and for every
-// other kill, the held processes' smaps read again at the mark (rereadHeld) among them, the reading
-// it is sent at. The line's reading is always the one the kill is sent at.
+// reading at the mark (endHeld), the band's last reading, unless the reading at the mark read that
+// process's smaps again (rereadHeld), and for every other kill the reading it is sent at. The
+// line's reading is always the one the kill is sent at.
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"

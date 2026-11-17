@@ -1888,6 +1888,124 @@ func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughA
 	}
 }
 
+// Where no held process grew over the window at the mark, the guard reads again there the smaps of
+// the held processes that grew in the band or have a single band read, and of no other (INFRA-3531
+// T17): the shell command Oh My Pi ran has started a Python pool before the band, whose parent holds
+// a block of 1.5 GiB and whose three forked workers sleep through every band reading, each reporting
+// the block as its own. As the reading reaches the mark the rig rewrites the newest worker's smaps
+// 200 MiB larger, which a read there would rank first; the guard does not read the workers again,
+// and ends the grower at the size it reads there. The grower is a command that grew 64 MiB between
+// the band's first two readings and steps again only as the reading reaches the mark, its step
+// before that 400 ms old, so the window at the mark shows no growth; or one that started at the
+// band's last reading, with that one band read.
+func TestControllerPodMemoryGuardReadsAgainAtTheMarkTheGrowersTheBandSawAndNotTheSleepingWorkers(t *testing.T) {
+	const pool, block, grower = 1700, 1536 * guardMiB, 1710
+	for _, tc := range []struct {
+		name string
+		// band is the grower's size at each band reading, 0 before it starts, and mark its size
+		// at the reading at the mark, in MiB.
+		band []uint64
+		mark uint64
+	}{
+		{"a grower whose crossing step comes after the band's last reading", []uint64{736, 800, 800, 800, 800}, 864},
+		{"a grower with one band read", []uint64{0, 0, 0, 700}, 764},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+			worker := func(i int, anon uint64) guardProcess {
+				parent := ctlCommand
+				if i > 0 {
+					parent = pool
+				}
+				return guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: anon}
+			}
+			for i := range 4 {
+				pod.add(worker(i, block))
+			}
+			rig := useGuardPod(t, pod, nil)
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			command := guardProcess{pid: grower, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}}
+			for i, size := range tc.band {
+				if size > 0 {
+					command.anon = size * guardMiB
+					pod.add(command)
+				}
+				pod.setAnon((3300 + 20*uint64(i)) * guardMiB)
+				rig.tick()
+			}
+			if kills := rig.signal.kills(); len(kills) != 0 {
+				t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+			}
+
+			command.anon = tc.mark * guardMiB
+			pod.add(command, worker(3, block+200*guardMiB))
+			pod.setAnon(guardHigh)
+			rig.tick()
+			if kills := rig.signal.kills(); !slices.Equal(kills, []int{grower}) {
+				t.Fatalf("at the mark the guard killed %v, want the grower %d and not the worker %d it does not read again; its log:\n%s",
+					kills, grower, pool+3, rig.log())
+			}
+			ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, tc.mark*guardMiB, guardHigh)
+			if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+				t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+			}
+		})
+	}
+}
+
+// With the band's readings 200 ms apart, as a throttled pod's come, the window at the reading at
+// the mark, 200 ms after the band's last, holds one read of each process and shows no growth, and
+// the guard orders the held processes over the band's own last window (INFRA-3531 T17): the grower
+// a command started grew 64 MiB between the band's two readings, beside a Python pool's three
+// sleeping workers, each reporting a block of 1.5 GiB as its own. As the reading reaches the mark
+// the rig rewrites the grower's smaps 24 MiB smaller and the newest worker's 200 MiB larger, so
+// that a read there would name the worker. The guard ends the grower on its held reads, at the 764
+// MiB the band's last reading read.
+func TestControllerPodMemoryGuardOrdersByTheBandsLastWindowWhereItsReadingsCome200MillisecondsApart(t *testing.T) {
+	const pool, block, grower = 1700, 1536 * guardMiB, 1710
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+	worker := func(i int, anon uint64) guardProcess {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		return guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: anon}
+	}
+	for i := range 4 {
+		pod.add(worker(i, block))
+	}
+	command := guardProcess{pid: grower, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 700 * guardMiB}
+	pod.add(command)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	pod.setAnon(3300 * guardMiB)
+	rig.tick()
+	command.anon = 764 * guardMiB
+	pod.add(command)
+	pod.setAnon(3400 * guardMiB)
+	interval := memoryguard.ControllerDefaults().Interval
+	rig.tickAfter(200*time.Millisecond - interval)
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	command.anon = 740 * guardMiB
+	pod.add(command, worker(3, block+200*guardMiB))
+	pod.setAnon(guardHigh)
+	rig.tickAfter(200*time.Millisecond - interval)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{grower}) {
+		t.Fatalf("at the mark the guard killed %v, want the grower %d the band's last window names; its log:\n%s", kills, grower, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, 764*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
 // After a kill in the controller's tree, the next in the order is the one that grew the most since
 // that kill where nothing grew over the window (INFRA-3531 R1 of spec version 26): readings more
 // than the window apart, as a throttled pod's come, leave one read of each process in the window.
