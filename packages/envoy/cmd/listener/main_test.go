@@ -5011,7 +5011,10 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 
 // setupTestNATS starts a NATS server dedicated to this test, which ends with it, and connects a bus
 // client to it on a fixture's connection (bustest.Fixture): a store opened through it creates the
-// bucket it finds missing.
+// bucket it finds missing. The client closes when the test ends, before the server stops (cleanups
+// run last-registered first): a client left open reconnects forever (MaxReconnect -1) to the
+// stopped server, and each KV watcher a store opened on it logs `nats: consumer not active` every
+// 10 s until the test binary exits.
 func setupTestNATS(t *testing.T) *bus.Client {
 	t.Helper()
 	_, uri := testnats.Start(t)
@@ -5019,6 +5022,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
+	t.Cleanup(client.Close)
 	bustest.Fixture(client.Conn)
 	return client
 }
