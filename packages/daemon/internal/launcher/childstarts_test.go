@@ -160,8 +160,8 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 			{"a method promoted from an embedded *exec.Cmd, called through an interface", launcherPackage + ".plantedPromoted"},
 			{"a writer handed to fmt.Fprint as an io.Writer", "(" + launcherPackage + ".plantedWriter).Write"},
 			{"a method value stored in a package variable", launcherPackage + ".plantedStoredBound"},
-			{"a function stored into a package variable's field in an init", launcherPackage + ".init#1$1"},
-			{"a function stored into a package variable's element in an init", launcherPackage + ".init#1$2"},
+			{"a function stored into a package variable's field in an init", launcherPackage + ".plantedFieldStart"},
+			{"a function stored into a package variable's element in an init", launcherPackage + ".plantedElementStart"},
 		} {
 			// Every start the walk answers is a process start, a promoted method's wrapper
 			// included, whose own name is its receiver's, so a row is matched by its caller.
@@ -258,19 +258,30 @@ var plantedBound = exec.Command("/bin/true").Run
 
 func plantedStoredBound() { _ = sync.OnceValue(plantedBound)() }
 
-var plantedTable struct{ onStart func() }
+// plantedMarker is the result type of the two functions an init stores below: a func() would be
+// among the callees variable type analysis gives some dependency's own dynamic call of a func()
+// (gRPC's, which the launcher reaches), and the walk would reach it that way with the store rule
+// removed.
+type plantedMarker struct{}
 
-var plantedArray [1]func()
+var plantedTable struct{ onStart func() plantedMarker }
+
+var plantedArray [1]func() plantedMarker
+
+// Named rather than literal, so their names do not depend on how many init functions the package
+// has; each is stored by the init alone and reached only through the store.
+func plantedFieldStart() plantedMarker { _ = exec.Command("/bin/true").Run(); return plantedMarker{} }
+
+func plantedElementStart() plantedMarker { _ = exec.Command("/bin/false").Run(); return plantedMarker{} }
 
 func init() {
-	plantedTable.onStart = func() { _ = exec.Command("/bin/true").Run() }
-	plantedArray[0] = func() { _ = exec.Command("/bin/false").Run() }
+	plantedTable.onStart = plantedFieldStart
+	plantedArray[0] = plantedElementStart
 }
 
 func plantedFieldStored() {
-	var once, again sync.Once
-	once.Do(plantedTable.onStart)
-	again.Do(plantedArray[0])
+	_ = sync.OnceValue(plantedTable.onStart)()
+	_ = sync.OnceValue(plantedArray[0])()
 }
 `
 
@@ -454,7 +465,7 @@ func (w *walk) visit(fn, from *ssa.Function) {
 // ($thunk), which whoever is handed it may call where the walk does not follow, the standard
 // library among them.
 func (w *walk) value(v, fn *ssa.Function, pos token.Pos) {
-	if !standardLibrary(fn) && isProcessStart(v) {
+	if isProcessStart(v) {
 		w.handed = append(w.handed, processStart{
 			caller: fn.String(), callee: v.String(), site: "handed out at " + siteOf(w.prog.Fset, pos), path: w.pathTo(fn),
 		})
@@ -478,16 +489,14 @@ func isProcessStart(fn *ssa.Function) bool {
 // handedOut walks what fn hands out: every function it uses as a value, every closure it makes,
 // the methods of every type it puts into an interface, and every function stored into a package
 // variable it reads (storedFunctions). A function or closure handed out that is a process start is
-// recorded as one of fn's (walk.value); an interface's methods are only walked, since putting a
-// *exec.Cmd into an interface (fmt.Sprint(cmd), an error's %s) starts nothing, and a start called
-// through the interface is a call edge the walk reads (isProcessStart resolves a promoted wrapper).
+// recorded as one of fn's (walk.value), a closure's function being among its instruction's
+// operands; an interface's methods are only walked, since putting a *exec.Cmd into an interface
+// (fmt.Sprint(cmd), an error's %s) starts nothing, and a start called through the interface is a
+// call edge the walk reads (isProcessStart resolves a promoted wrapper).
 func (w *walk) handedOut(fn *ssa.Function) {
 	for _, block := range fn.Blocks {
 		for _, instruction := range block.Instrs {
-			switch value := instruction.(type) {
-			case *ssa.MakeClosure:
-				w.value(value.Fn.(*ssa.Function), fn, value.Pos())
-			case *ssa.MakeInterface:
+			if value, ok := instruction.(*ssa.MakeInterface); ok {
 				methods := w.prog.MethodSets.MethodSet(value.X.Type())
 				for i := range methods.Len() {
 					w.visit(w.prog.MethodValue(methods.At(i)), fn)

@@ -98,6 +98,9 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			ppid, _, ok := statParentAndGroup("/proc", member)
 			return err == nil && ok && ppid == 1
 		})
+		if _, err := os.Stat(finished); err == nil {
+			t.Fatal("the group member finished before the drain began, so the drain had nothing of the group to spare")
+		}
 		m.cleanExitedGeneration()
 		err = held.Wait()
 		guard.done(pid)
