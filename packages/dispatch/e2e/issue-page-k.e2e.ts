@@ -250,8 +250,9 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
  *  which says in the page's words that it could not load the plan, with a Retry that holds the
  *  focus, and draws no bar and no switch. `t p` pressed from a control that holds the focus, the
  *  Spec control of the view row, puts the focus on that Retry too: the chord focuses the view's
- *  tree, which hands it on. With the read let through, Enter on that Retry asks it again, and the
- *  view draws the chart with the focus on its first row. */
+ *  tree, and the stage the view is drawn in hands the focus on to the Retry
+ *  (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter on that Retry
+ *  asks it again, and the view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let refusing = true;
   const refuse = async (route: Route) => {
@@ -307,8 +308,8 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
       "t p from the Spec control with the plan's blocks refused does not put the focus on the plan's Retry"
     ).toBeFocused();
     // The chord shows the tree it focused from its own top (`useIssueKeymap.ts`'s `showPart`),
-    // and the Retry stands over the tree, so the Retry the tree handed the focus to is brought on
-    // screen in the frame after (`PlanFilterBody.tsx`'s `focusOn`).
+    // and the Retry stands over the tree, so the stage, which focuses the Retry, brings it on
+    // screen in the frame after (`slots/stage.tsx`'s `focusOn`).
     await expect
       .poll(() => onScreen(retry), {
         message: "t p from the Spec control leaves the plan's focused Retry off the screen",

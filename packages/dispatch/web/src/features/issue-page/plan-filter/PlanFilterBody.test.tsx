@@ -541,6 +541,46 @@ test("an address naming a step puts the focus on its bar's row", async () => {
   }
 });
 
+// An address opened before the view's reads answer - a fresh load, or a link - and one under a
+// refused read that a Retry asks again: once the reads answer, the focus lands on the step the
+// address names and not on the first bar, which the stage gives a focus nobody holds to where the
+// address's row is not the tree's tab stop (`slots/stage.tsx`).
+test("an address opened before the reads answer lands on its step once they answer", async () => {
+  setViewport(1440);
+  const named = task("t2", { needs: ["t1"] });
+  const root = issue([task("t1"), named]);
+  const opened = renderBody(root, { reads: { state: "waiting" }, reveal: [root, named] });
+  try {
+    opened.redraw(root, ANSWERED);
+    await settled();
+    await aFrame();
+    expect(
+      focusedRow(),
+      "an address opened before the reads answer lands on the first bar once they answer"
+    ).toBe(D("t2"));
+  } finally {
+    opened.unmount();
+  }
+  const asked: PlanRead[] = [];
+  const refused = renderBody(root, { reads: failed(asked, "plan"), reveal: [root, named] });
+  try {
+    await settled();
+    expect(document.activeElement).toBe(retryOf(refused, "plan"));
+    await userEvent.keyboard("{Enter}");
+    expect(asked).toEqual(["plan"]);
+    refused.redraw(root, failedAs([], [{ failure: 1, read: "plan", retrying: true }]));
+    refused.redraw(root, ANSWERED);
+    await settled();
+    await aFrame();
+    expect(
+      focusedRow(),
+      "an address under a refused read lands on the first bar once a Retry has it answer"
+    ).toBe(D("t2"));
+  } finally {
+    refused.unmount();
+  }
+});
+
 test("the control switches to the ordered steps, which are the outline's own rows", async () => {
   setViewport(1440);
   // The address names the first task's step.
@@ -768,6 +808,15 @@ function failedAs(
 async function settled(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
+  });
+}
+
+/** Lets one frame pass, in which the address's landing focuses its row (`landOnRow`). */
+async function aFrame(): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<number>();
+    requestAnimationFrame(resolve);
+    await promise;
   });
 }
 

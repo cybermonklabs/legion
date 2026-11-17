@@ -480,12 +480,14 @@ interface DrawnPlace {
  * Were it to take no focus, an address naming a task of a cycle would focus nothing and a plan
  * whose every task is in a cycle would have no Tab stop.
  *
- * The one Tab stop is the row the reader last stood on, else the row the address names while the
- * view is to land on it, else the first bar's, else the first cycle's. The address's row is the
- * stop so that the stage, which gives a focus nobody holds to the tree's tab-stop row
- * (`slots/stage.tsx`), gives it to that row, and the landing keeps it (`landOnRow`): given to the
- * first bar, it would end the landing, which leaves the focus where it is moved before its
- * frame. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
+ * The one Tab stop is the row the reader last stood on, else the row the address names, else the
+ * first bar's, else the first cycle's. The address's row is the stop so that the stage, which
+ * gives a focus nobody holds to the tree's tab-stop row (`slots/stage.tsx`), gives it to that row,
+ * and the landing keeps it (`landOnRow`): given to the first bar, it would end the landing, which
+ * leaves the focus where it is moved before its frame. It is the address's row for as long as the
+ * address names it, and not only until the landing: the view says it has landed before the stage
+ * takes the focus where the rows are drawn once the reads answer, on a fresh load, a link, or a
+ * Retry. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
  * keys move the focus without the browser's own scroll, which knows nothing of the band that
  * stays at the top of the page.
  */
@@ -539,7 +541,7 @@ function PlanChart({
   const tabStop = rows.some((place) => place.key === stop)
     ? stop
     : (
-        rows.find((place) => place.task.id === land) ??
+        rows.find((place) => place.task.id === reveal) ??
         rows.find((place) => place.row.kind === "bar") ??
         rows[0]
       )?.key;
