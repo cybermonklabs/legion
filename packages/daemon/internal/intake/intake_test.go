@@ -915,6 +915,10 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				}
 				golden.Payload["head_ref"] = issueBranch
 				decoded = decode()
+			case "sub_issue":
+				if decoded.Fact != nil {
+					t.Fatalf("%s's sub-issue event decoded %#v, want no fact: the workflow reads no sub-issue", repository, decoded.Fact)
+				}
 			}
 			if (kind == "pr" || kind == "review" || kind == "push") && decoded.Fact == nil {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)

@@ -924,7 +924,16 @@ func githubPayload(event string, body map[string]any) string {
 		}
 		addCappedBody(data, issueBody)
 	case "sub_issues":
-		// The event is published on the parent issue's topic, so number is the parent's.
+		// The event is published on the parent issue's topic, so number is the parent's. The two
+		// issues can be in two repositories: GitHub names the other in parent_issue_repo or
+		// sub_issue_repo, and each falls back to the webhook's own repository.
+		parentRepo, subIssueRepo := nestedString(body, "parent_issue_repo", "full_name"), nestedString(body, "sub_issue_repo", "full_name")
+		if parentRepo == "" {
+			parentRepo = repo
+		}
+		if subIssueRepo == "" {
+			subIssueRepo = repo
+		}
 		data = map[string]string{
 			"kind":             "sub_issue",
 			"action":           action,
@@ -932,9 +941,11 @@ func githubPayload(event string, body map[string]any) string {
 			"number":           number,
 			"title":            nestedString(body, "parent_issue", "title"),
 			"url":              nestedString(body, "parent_issue", "html_url"),
+			"parent_repo":      parentRepo,
 			"sub_issue_number": GithubPRNumber(nested(body, "sub_issue", "number")),
 			"sub_issue_title":  nestedString(body, "sub_issue", "title"),
 			"sub_issue_url":    nestedString(body, "sub_issue", "html_url"),
+			"sub_issue_repo":   subIssueRepo,
 			"sender":           nestedString(body, "sender", "login"),
 		}
 	case "push":

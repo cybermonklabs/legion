@@ -5806,7 +5806,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 - The listener publishes a GitHub webhook event only when it normalizes it: an event `githubEventKinds` names, carrying the JSON object `githubPayload` writes (`GithubEnvelopes` publishes no envelope whose payload is empty).
   Every other event a webhook delivers (a commit status, a branch or tag created or deleted, a label, a review thread resolved, a webhook's ping, and the rest of GitHub's list) is answered `200` and published nowhere.
   Such an event was once published on the repository's own `comment` topic with no `payload`, which every Legion daemon that hears the repository terminates as poison (`Envoy envelope payload is not JSON`), one ERROR line per delivery.
-  A sub-issue added to or removed from an issue is published on its parent's `issue.<n>.sub_issue`, its payload of kind `sub_issue` naming the parent (`number`, `title`, `url`), the sub-issue (`sub_issue_number`, `sub_issue_title`, `sub_issue_url`) and the `sender`.
+  A sub-issue added to or removed from an issue is published on its parent's `issue.<n>.sub_issue`, its payload of kind `sub_issue` naming the parent (`number`, `title`, `url`, `parent_repo`), the sub-issue (`sub_issue_number`, `sub_issue_title`, `sub_issue_url`, `sub_issue_repo`) and the `sender`; each repository is the one GitHub names for that issue, else the webhook's own.
   `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload` publishes every event the table names from a body of its own, and fails for one added without a normalizer.
 
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):

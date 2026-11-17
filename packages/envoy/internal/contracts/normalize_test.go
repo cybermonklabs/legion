@@ -385,6 +385,52 @@ func TestGithubEnvelopesIssueCommentNumber(t *testing.T) {
 	}
 }
 
+// A sub-issue and its parent can be in two repositories. GitHub names the other one in
+// parent_issue_repo (on the child's repository's parent_issue_* delivery) or sub_issue_repo (on the
+// parent's repository's sub_issue_* delivery), and the payload says which repository each issue's
+// number is in: the webhook's own repository when GitHub names no other.
+func TestASubIssuesPayloadNamesTheRepositoryOfEachIssue(t *testing.T) {
+	repository := map[string]any{"name": "example-repo", "full_name": "example-org/example-repo", "owner": map[string]any{"login": "example-org"}}
+	other := map[string]any{"name": "other-repo", "full_name": "example-org/other-repo", "owner": map[string]any{"login": "example-org"}}
+	for _, tc := range []struct {
+		name                  string
+		body                  map[string]any
+		wantParent, wantChild string
+	}{
+		{
+			name: "a sub-issue in another repository added to this repository's issue",
+			body: map[string]any{
+				"action": "sub_issue_added", "repository": repository, "sub_issue_repo": other,
+				"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)},
+			},
+			wantParent: "example-org/example-repo", wantChild: "example-org/other-repo",
+		},
+		{
+			name: "this repository's issue given a parent in another repository",
+			body: map[string]any{
+				"action": "parent_issue_added", "repository": repository, "parent_issue_repo": other,
+				"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)},
+			},
+			wantParent: "example-org/other-repo", wantChild: "example-org/example-repo",
+		},
+		{
+			name: "both in this repository",
+			body: map[string]any{
+				"action": "sub_issue_added", "repository": repository,
+				"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)},
+			},
+			wantParent: "example-org/example-repo", wantChild: "example-org/example-repo",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := decodePayload(t, GithubEnvelope(GithubEnvelopeInput{Event: "sub_issues", Delivery: "d", EventID: "e", TraceID: "t", Body: tc.body}).Payload)
+			if payload["parent_repo"] != tc.wantParent || payload["sub_issue_repo"] != tc.wantChild {
+				t.Fatalf("parent_repo = %q, sub_issue_repo = %q; want %q and %q", payload["parent_repo"], payload["sub_issue_repo"], tc.wantParent, tc.wantChild)
+			}
+		})
+	}
+}
+
 func TestGithubEnvelopesSubIssuesTopic(t *testing.T) {
 	tests := []struct {
 		name       string

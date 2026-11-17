@@ -1,12 +1,12 @@
 ---
-title: "An unknown GitHub event publishes an empty envelope to the repository's `comment` topic: prove it with a publish count, not a status code, and skip it by name after signature verification"
+title: "An unknown GitHub event published an empty envelope to the repository's `comment` topic: prove it with a publish count, not a status code, and publish only the events the listener normalizes"
 category: envoy
 tags:
   - webhook
   - github
   - merge_group
   - normalize
-  - githubSkip
+  - commit-status
   - tdd
   - listener-rollout
 date: 2026-09-14
@@ -17,19 +17,21 @@ related_issues:
   - "sjawhar/legion#1089"
   - "LEGION-114"
 symptoms:
-  - "a session subscribed to notifications.github.<owner>.<repo>.> receives a delivery whose summary is `<event> <action>` (e.g. `merge_group checks_requested`) with an empty payload"
-  - "the daemon's durable consumer logs a consumed GitHub event whose payload fails JSON.parse and reduces to nothing"
+  - "a session subscribed to notifications.github.<owner>.<repo>.> receives a delivery whose summary is `<event> <action>` (e.g. `merge_group checks_requested`, `status `) with an empty payload"
+  - "a Legion daemon logs `poison JetStream message` with `Envoy envelope payload is not JSON` on notifications.github.<owner>.<repo>.comment"
   - "a spec says the webhook must 'answer 200 and publish nothing' for an event and the handler already answers 200"
 ---
 
-# An unknown GitHub event publishes an empty envelope to the repository's `comment` topic
+# An unknown GitHub event published an empty envelope to the repository's `comment` topic
 
 Envoy's GitHub webhook (`packages/envoy/internal/webhook/github.go`) does not refuse an event type
-it has never heard of; it normalizes it through defaults that each look harmless and together
-publish one contentless envelope. LEGION-99 met this with GitHub's `merge_group` event and fixed it
-for that event by name; the default itself is LEGION-114.
+it has never heard of. Until cybermonklabs/legion#4315 it normalized one through defaults that each
+looked harmless and together published one contentless envelope. LEGION-99 met this with GitHub's
+`merge_group` event and skipped that event by name; #4315 fixed the default, which was LEGION-114,
+after a local CI's commit statuses made every Legion daemon of five repositories log hundreds of
+poison lines a day.
 
-## Where the empty envelope comes from
+## Where the empty envelope came from
 
 In `packages/envoy/internal/contracts/normalize.go`, for an event with no case of its own:
 
@@ -42,12 +44,22 @@ In `packages/envoy/internal/contracts/normalize.go`, for an event with no case o
   envelope schema, so `Validate()` passes;
 - `GithubEnvelopes` returns that one envelope, and the handler publishes it and answers 200.
 
-Every consumer of the repository-wide topic then sees a delivery with summary `merge_group
-checks_requested` and nothing else. The Legion daemon's durable consumer (`notifications.github.
-<owner>.<repo>.>`) receives it, `payloadFrom`/`recordPayload` swallow the `JSON.parse("")` error,
-and the reducer returns no effects — one no-op durable message per event, two per queued pull
-request (`checks_requested`, `destroyed`). Harmless to the daemon; noise to any session subscribed
-repo-wide; and wrong for a spec that says "publishes nothing".
+Every consumer of the repository-wide topic then saw a delivery with summary `merge_group
+checks_requested` or `status ` and nothing else. `Payload` is `omitempty`, so the stored message
+carried no `payload` key at all. The Go Legion daemon's durable consumer (`notifications.github.
+<owner>.<repo>.>`) refuses an envelope whose payload is not JSON and terminates it as poison, one
+ERROR line per delivery (`valid` in `packages/daemon/internal/intake/decode.go`).
+
+## The fix: publish only what the listener normalizes
+
+`githubKind` no longer falls through to `"comment"`: an event `githubEventKinds` does not name has
+no topic, and `GithubEnvelopes` publishes no envelope whose topic or payload is empty. An unknown
+event is answered 200 and published nowhere, after the signature check, because the handler
+reaches `GithubEnvelopes` only after it. `githubSkip` went with the default it worked around.
+`TestGithubEnvelopesPublishNoEventTheListenerDoesNotNormalize` holds a sample of GitHub's events
+to that, and `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload` publishes every event the
+table names from a body of its own, so an event added to the table without a payload case fails
+there and not in a daemon's log (`sub_issues` was one, and now has its payload).
 
 ## Prove "publishes nothing" with a publish count, never with the status code
 
@@ -65,44 +77,32 @@ run red before the handler changed — `published = 1, want 0; first topic
 into the implement handoff and the PR body as the proof the change was needed. The tester then
 reproduced it independently by reverting `githubSkip` to `return false` uncommitted, watching the
 same failure reappear verbatim, and `jj restore`-ing. Hold future test phases to that: break the
-fix and see the reported symptom, not just re-run the green suite.
+fix and see the reported symptom, not just re-run the green suite. #4315 did the same for its
+tests: each failed on main's normalizer with the symptom production showed.
 
 No recorded `merge_group` delivery existed when the test was written (the queue was not on yet),
 so the fixture (`testdata/merge_group_checks_requested.json`) is production-shaped from GitHub's
 documented payload and the test comment says so — the same convention as `sub_issues_added.json`.
 Replace it with a captured delivery once one exists, but do not wait for one to write the test.
 
-## The skip runs after signature verification, and one subtest pins that
+## The drop runs after signature verification, and one subtest pins that
 
 The handler's order is method → body (25 MiB cap, GitHub's payload maximum: a larger declared length is 413 unread; each body's buffer is charged to a 64 MiB budget shared by every request as the body arrives, waiting when it is spent) → `X-GitHub-Delivery`/`X-GitHub-Event` →
-`verify.Github(secret, body, signature)` (401) → JSON decode → sender log → `githubSkip(event)`
-(200 `ok`, return) → head recording → CI observations → envelopes → publish. `githubSkip` was the
-designed hook for "acknowledge and drop" and already sat after verification; the change is one
-comparison:
+`verify.Github(secret, body, signature)` (401) → JSON decode → sender log → CI observations →
+envelopes → publish. An event `GithubEnvelopes` publishes nothing for is answered 200 `ok` at the
+end of that order.
 
-```go
-func githubSkip(event string) bool {
-	return event == "merge_group"
-}
-```
+A drop that ran *before* verification would let anyone POST an unsigned `merge_group` and get 200.
+Nothing in the code enforces the order, so `TestGitHubHandlerMergeGroup`'s third subtest is the
+guard: the same fixture with `X-Hub-Signature-256: sha256=invalid` must answer 401 with nothing
+published. Any new early return added to a webhook handler that verifies signatures gets the same
+unsigned subtest.
 
-A skip that ran *before* verification would let anyone POST an unsigned `merge_group` and get 200.
-Nothing in the code enforces the order — `githubSkip`'s comment describes its call site, and a
-comment about the caller goes stale silently if `GitHubHandler` is reordered — so the test's third
-subtest is the guard: the same fixture with `X-Hub-Signature-256: sha256=invalid` must answer 401
-with nothing published. Any new early return added to a webhook handler that verifies signatures
-gets the same unsigned subtest.
+## A new event is a deliberate act
 
-## Skip by name is the scoped fix; the default is the defect
-
-LEGION-99 skipped exactly `merge_group` because its spec scoped the Envoy change to that event. The
-next unknown event GitHub adds will publish the same empty envelope until LEGION-114 makes the
-default safe (an unknown event type should be acknowledged and dropped, or refused into a
-dead-letter, never routed to `comment`). A worker asked to add a second name to `githubSkip` should
-fix the default instead and turn the names into the test table; a worker touching
-`normalize.go`'s defaults should keep `TestGitHubHandlerMergeGroup`'s three subtests green as the
-regression lock. The reviewer's fast-follow for #1089 (fold the merge-group test into
-`TestGitHubHandler`'s table; drop the call-site sentence from the comment) rides LEGION-114.
+To publish another GitHub event, give it a kind in `githubEventKinds`, a case in `githubPayload`
+and `githubSummary`, and a body in `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload`.
+Never bring back a default kind: it is how a commit status was filed as a comment.
 
 ## The fixed listener is not autodeployed
 

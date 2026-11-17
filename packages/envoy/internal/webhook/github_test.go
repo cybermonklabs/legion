@@ -813,9 +813,9 @@ func TestGitHubHandlerSubIssuesFixture(t *testing.T) {
 }
 
 // TestGitHubHandlerMergeGroup asserts GitHub's merge-queue event is acknowledged with 200 and
-// neither published nor recorded: a merge group names no pull request head and nothing in
-// Legion routes on it (LEGION-99). The fixture is production-shaped from GitHub's documented
-// merge_group payload; the signature check still runs before the skip.
+// neither published nor recorded: a merge group names no pull request head, and it is no event
+// the listener normalizes, so it is published nowhere. The fixture is production-shaped from
+// GitHub's documented merge_group payload; the signature check still refuses it unsigned.
 func TestGitHubHandlerMergeGroup(t *testing.T) {
 	checksRequested, err := os.ReadFile(filepath.Join("testdata", "merge_group_checks_requested.json"))
 	if err != nil {
