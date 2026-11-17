@@ -38,32 +38,6 @@ func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin str
 	return out.String(), errOut.String(), err
 }
 
-// recordedModelChanges returns the models in the session file's model-change records.
-func recordedModelChanges(t *testing.T, path string) []string {
-	t.Helper()
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var models []string
-	for _, line := range bytes.Split(contents, []byte("\n")) {
-		if len(line) == 0 {
-			continue
-		}
-		var record struct {
-			Type  string `json:"type"`
-			Model string `json:"model"`
-		}
-		if err := json.Unmarshal(line, &record); err != nil {
-			t.Fatalf("parse session record %q: %v", line, err)
-		}
-		if record.Type == "model_change" {
-			models = append(models, record.Model)
-		}
-	}
-	return models
-}
-
 // withPromptFile is argv, an agentArgv, with the generation's prompt file it names replaced by a
 // file of the test's own holding text, as the launcher writes that file in a pod before the agent
 // starts (launcherCommand's Files): Oh My Pi would read a path it cannot open as the prompt's text
@@ -258,7 +232,7 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	if got := testbin.StateModel(t, plain); got != "operator/saved" {
 		t.Errorf("without the flag the resumed agent runs %s, want the session's own operator/saved", got)
 	}
-	if got, want := recordedModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
 		t.Errorf("after the plain control, recorded model changes = %q, want %q", got, want)
 	}
 
@@ -271,7 +245,7 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
 		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
 	}
-	if got, want := recordedModelChanges(t, saved[0]), []string{"operator/saved", "operator/configured"}; !slices.Equal(got, want) {
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved", "operator/configured"}; !slices.Equal(got, want) {
 		t.Errorf("after the role-alias resume, recorded model changes = %q, want %q", got, want)
 	}
 

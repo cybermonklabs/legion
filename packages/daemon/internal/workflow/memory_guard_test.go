@@ -88,16 +88,6 @@ func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *te
 	}
 }
 
-// allOutboxRows is how many outbox rows of any kind and any issue the outbox holds.
-func allOutboxRows(t *testing.T, pool *pgxpool.Pool) int {
-	t.Helper()
-	var rows int
-	if err := pool.QueryRow(t.Context(), "select count(*) from outbox").Scan(&rows); err != nil {
-		t.Fatalf("count the outbox rows: %v", err)
-	}
-	return rows
-}
-
 // applyControllerKill applies one kill of the controller pod's process, credited to token, under
 // the id the daemon applies such a report under.
 func applyControllerKill(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token, report shimwire.LauncherMemoryKill) {
@@ -135,7 +125,7 @@ func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *te
 	if got := noticeRows(t, pool); !reflect.DeepEqual(got, []record.OutboxPayload{told}) {
 		t.Fatalf("notice rows = %+v, want the one controller notice %+v", got, told)
 	}
-	if rows, all := outboxRowsOf(t, pool, "LEGION"), allOutboxRows(t, pool); rows != 1 || all != 1 {
+	if rows, all := outboxRowsOf(t, pool, "LEGION"), outboxRows(t, pool); rows != 1 || all != 1 {
 		t.Fatalf("the outbox holds %d rows under the project key LEGION and %d in all, want the one notice under it and nothing else", rows, all)
 	}
 
@@ -169,7 +159,7 @@ func TestMemoryGuardAControllerKillOfATokenThatIsNotTheControllersIsLoggedAndDro
 		applyControllerKill(t, pool, engine, token, report)
 	}
 
-	if rows := allOutboxRows(t, pool); rows != 0 {
+	if rows := outboxRows(t, pool); rows != 0 {
 		t.Fatalf("the outbox holds %d rows, want none for a token that is not the controller's", rows)
 	}
 	text := logs.String()

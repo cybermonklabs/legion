@@ -93,8 +93,10 @@ const (
 	controllerLiveLineBytes = 64 << 10
 	// controllerLiveStamp is RFC 3339 with milliseconds, the time every line carries.
 	controllerLiveStamp = "2006-01-02T15:04:05.000Z07:00"
-	// controllerLiveOffPrefix starts each line of the guard that says it has turned off.
-	controllerLiveOffPrefix = "launcher: memory guard: off"
+	// controllerLiveOffPrefix starts each line of the guard that says it has turned off, and
+	// controllerLiveStartedPrefix the line that says it started.
+	controllerLiveOffPrefix     = "launcher: memory guard: off"
+	controllerLiveStartedPrefix = "launcher: memory guard: started "
 
 	controllerLiveDeadlineReason = "the test binary's deadline came first: run it with a longer -test.timeout"
 )
@@ -146,8 +148,8 @@ print("mapped: done", flush=True)
 // SIGKILL (the agent's wait reads the status), the shim and the agent live, and exactly one
 // launcher_memory_kill reaches the daemon, naming the grower. `mapped` is a python3 that writes,
 // maps and reads a file on the pod's disk (TMPDIR) of 1.5 times the act share of the limit and
-// keeps it mapped for 60 seconds. It passes where nothing ends: no report, and the reader exits 0
-// on its own.
+// keeps it mapped for 60 seconds. It passes where the guard said it started and nothing ends: no
+// report, and the reader exits 0 on its own.
 //
 // Every line goes straight to stdout, one write each, starts `live: ` and ends with its time
 // (`at=`), so a pod the kernel ends keeps every line written before the end: the launcher's own
@@ -203,8 +205,10 @@ type controllerLiveRun struct {
 	sampler *controllerLiveSampler
 
 	mu sync.Mutex
-	// guardOff is the guard's first line that says it turned off, "" while it has not.
-	guardOff string
+	// guardOff is the guard's first line that says it turned off, "" while it has not, and
+	// guardStarted whether the guard has said it started.
+	guardOff     string
+	guardStarted bool
 
 	shim, agent, command int
 }
@@ -369,14 +373,19 @@ func (r *controllerLiveRun) startGeneration() string {
 	return ""
 }
 
-// noteLine keeps the guard's first line that says it turned off, which ends every wait of the run.
+// noteLine keeps the guard's first line that says it turned off, which ends every wait of the run,
+// and whether the guard said it started.
 func (r *controllerLiveRun) noteLine(line string) {
-	if !strings.HasPrefix(line, controllerLiveOffPrefix) {
+	started, off := strings.HasPrefix(line, controllerLiveStartedPrefix), strings.HasPrefix(line, controllerLiveOffPrefix)
+	if !started && !off {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.guardOff == "" {
+	if started {
+		r.guardStarted = true
+	}
+	if off && r.guardOff == "" {
 		r.guardOff = line
 	}
 }
@@ -490,9 +499,10 @@ func (r *controllerLiveRun) awaitGrow() (pass, fail string) {
 		k.PID, k.Executable, k.ReadingBytes, controllerLivePercent(k.ReadingBytes, k.LimitBytes), r.shim, r.agent), ""
 }
 
-// awaitMapped waits for the mapped file's reader to exit, and passes where it exited 0 on its
-// own, no report reached the daemon, and the shim and the agent live. A report fails the run at
-// once: what it ended held the file's pages, which are no anonymous memory.
+// awaitMapped waits for the mapped file's reader to exit, and passes where the guard said it
+// started, the reader exited 0 on its own, no report reached the daemon, and the shim and the agent
+// live. A report fails the run at once: what it ended held the file's pages, which are no
+// anonymous memory.
 func (r *controllerLiveRun) awaitMapped() (pass, fail string) {
 	if reason := r.await(controllerLiveMappedBound, "the reader's exit", func() bool {
 		_, exited := r.commandStatus()
@@ -507,7 +517,12 @@ func (r *controllerLiveRun) awaitMapped() (pass, fail string) {
 	}
 	kills := r.frames.kills()
 	status, _ := r.commandStatus()
+	r.mu.Lock()
+	started := r.guardStarted
+	r.mu.Unlock()
 	switch {
+	case !started:
+		return "", "the guard never started"
 	case len(kills) > 0:
 		return "", fmt.Sprintf("the guard ended %s while the reader held a mapped file, whose pages are no anonymous memory", controllerLiveKills(kills))
 	case !status.Exited() || status.ExitStatus() != 0:

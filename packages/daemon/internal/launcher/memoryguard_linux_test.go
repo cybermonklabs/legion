@@ -669,11 +669,7 @@ func controllerGuardAgent() error {
 		pids += fmt.Sprintf("%s %d\n", c.name, c.cmd.Process.Pid)
 		go func() { _ = c.cmd.Wait() }()
 	}
-	path := filepath.Join(dir, "pids")
-	if err := os.WriteFile(path+".tmp", []byte(pids), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(path+".tmp", path); err != nil {
+	if err := controllerLiveWrite(filepath.Join(dir, "pids"), pids); err != nil {
 		return err
 	}
 	untilStdinEnds()

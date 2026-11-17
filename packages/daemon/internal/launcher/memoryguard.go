@@ -322,7 +322,7 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 
 	protected := map[int]bool{c.launcher: true}
 	protectTrees(t, held, protected)
-	if shim, ok := t.Get(shimPID); ok && c.exe != "" && shim.Exe == c.exe && argument(shim, 1) == shimArgument {
+	if shim, ok := t.Get(shimPID); ok && isShim(c.exe, shim) {
 		protected[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
 			protectAgent(t, agent, protected)
@@ -385,15 +385,18 @@ func (c *podClassifier) isTestPG(t *memoryguard.Table, pid int) bool {
 // `worker-shim`. Any younger one is an orphan of the role's that the role-init adopted, as the
 // init of the role's PID namespace, and whatever it calls itself it is the role's work.
 func (c *podClassifier) shim(t *memoryguard.Table, init *memoryguard.Process) *memoryguard.Process {
-	if c.exe == "" {
-		return nil
-	}
 	for _, p := range t.Children(init.PID) {
-		if p.Exe == c.exe && argument(p, 1) == shimArgument {
+		if isShim(c.exe, p) {
 			return p
 		}
 	}
 	return nil
+}
+
+// isShim is whether p is a role's shim: exe, the launcher's own executable where it could be read,
+// run as `worker-shim`.
+func isShim(exe string, p *memoryguard.Process) bool {
+	return exe != "" && p.Exe == exe && argument(p, 1) == shimArgument
 }
 
 // ompHelper is whether p, a child of agent (a direct child of the shim) or of one of agent's

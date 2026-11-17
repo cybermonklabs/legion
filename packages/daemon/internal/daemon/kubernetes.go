@@ -623,20 +623,7 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
 // role is told of one kill once however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
-	if m.pool == nil || len(m.handlers) == 0 {
-		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
-		// through. That is a boot that skipped plan.memoryGuardKills.bind, never a daemon that runs
-		// no workflow: only a runtime: kubernetes daemon has a holder, and configuration load refuses
-		// one whose file names no dispatch_url (errMemoryGuardKillsUnbound). Every report of every
-		// pod meets it, so it is returned rather than swallowed: the launcher session logs it with
-		// the report it dropped (sandbox's memoryKilled), which is what makes the drop findable.
-		return errMemoryGuardKillsUnbound
-	}
-	fact := intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}
-	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
-		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, issue, podUID, err)
-	}
-	return nil
+	return m.apply(ctx, report, intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}, issue, podUID)
 }
 
 // controllerKilled applies one kill of the controller's pod as one intake fact
@@ -650,12 +637,25 @@ func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim
 // it, and a report the controller's launcher sent again on its next connection is applied once, so
 // the controller is told of one kill once.
 func (m *memoryGuardKills) controllerKilled(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	return m.apply(ctx, report, intake.ControllerMemoryGuardKill{Token: token, PodUID: podUID, Report: report}, "the controller", podUID)
+}
+
+// apply applies fact, the intake fact of report, under the kill's own event id
+// (memoryGuardKillEventID) and a hold mark of its own (store.ForConcurrentWorker), which is what
+// killed and controllerKilled share. An apply that fails names the kill's pod in its error: owner
+// is whose pod podUID is, an issue's key or `the controller`.
+func (m *memoryGuardKills) apply(ctx context.Context, report shimwire.LauncherMemoryKill, fact intake.Fact, owner, podUID string) error {
 	if m.pool == nil || len(m.handlers) == 0 {
+		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
+		// through. That is a boot that skipped plan.memoryGuardKills.bind, never a daemon that runs
+		// no workflow: only a runtime: kubernetes daemon has a holder, and configuration load refuses
+		// one whose file names no dispatch_url (errMemoryGuardKillsUnbound). Every report of every
+		// pod meets it, so it is returned rather than swallowed: the launcher session logs it with
+		// the report it dropped (sandbox's memoryKilled), which is what makes the drop findable.
 		return errMemoryGuardKillsUnbound
 	}
-	fact := intake.ControllerMemoryGuardKill{Token: token, PodUID: podUID, Report: report}
 	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
-		return fmt.Errorf("apply the memory guard's kill of pid %d in the controller's pod %s: %w", report.PID, podUID, err)
+		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, owner, podUID, err)
 	}
 	return nil
 }
