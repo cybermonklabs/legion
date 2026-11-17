@@ -104,3 +104,20 @@ func TestASecondDefinitionIsRefusedInEachPlaceOfEachDocumentOfARequest(t *testin
 		}
 	}
 }
+
+// A heading whose text a person reads as Terms is the heading Terms, also when emphasis marks it,
+// as the plan reads the list under "a heading whose text is Terms": so with lease in the list, a
+// term line of lease under "## **Terms**" is a second definition. The control: "## **Terms:**"
+// reads as "Terms:", which is a terms-heading finding, and the line under it is a term line that
+// is no definition. Each row goes through the approval request route.
+func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTermsOnTheRoute(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+	requireFormRows(t, tree, []formRow{
+		{name: "a heading Terms in bold", spec: "## **Terms**\n\n- " + termLine("lease", otherLease) + "\n",
+			want: []string{"definition lease term-second-definition"}},
+		{name: "the control: a heading Terms: in bold", spec: "## **Terms:**\n\n- " + termLine("lease", otherLease) + "\n",
+			want: []string{`heading "Terms:" terms-heading`, "term_line lease term-second-definition"}},
+	})
+}
