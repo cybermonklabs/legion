@@ -19,6 +19,11 @@ import (
 // once, so a kill that fails is never retried unseen at every reading. A stop that repeats has its
 // stoppedLine at most once in each stoppedEvery, and the line written counts in left_out the
 // stopped lines left out since the one before it (stopRise).
+//
+// The sizes the guard reads at each reading in the band below the mark and after a kill write no
+// line: they decide the order of the next kill (rank), whose endedLine names the process it ended,
+// the one that grew the most over growthWindow, or the largest where none grew, with the size it
+// read of it at that reading.
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"
@@ -34,7 +39,13 @@ const (
 	killFailedLine = linePrefix + "kill failed pid=%d reason=%v"
 )
 
-// The two reasons a rise is given up on.
+// The two reasons a rise is given up on. A rise is given up with reasonNothingToEnd where, at the
+// reading the guard would end a process at, the processes it may end hold less than the floor
+// between them, or there are none. It is given up with reasonNotFallen where the wait after a
+// kill has passed with the reading not below the reading at the kill, and either no process the
+// guard may end grew over growthWindow or they hold less than the floor: the guard goes on after
+// a kill that lowered nothing only while one of them still grows, so a rise that is a protected
+// process's own, which no kill of the guard's lowers, ends at most one process before this reason.
 const (
 	reasonNotFallen    = "not fallen"
 	reasonNothingToEnd = "nothing to end"

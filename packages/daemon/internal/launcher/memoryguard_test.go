@@ -741,10 +741,17 @@ func memoryGuardAck(act, floor, wait, interval int) shimwire.LauncherHelloAck {
 	}}
 }
 
-// defaultsAck is an acknowledgement that carries the settings the guard starts with.
+// defaultsAck is an acknowledgement that carries the settings an issue pod's guard starts with.
 func defaultsAck() shimwire.LauncherHelloAck {
 	return memoryGuardAck(shimwire.MemoryGuardActDefault, shimwire.MemoryGuardFloorDefault,
 		shimwire.MemoryGuardWaitDefault, shimwire.MemoryGuardIntervalDefault)
+}
+
+// controllerDefaultsAck is an acknowledgement that carries the settings the controller pod's guard
+// starts with, which the daemon sends the controller's pod by default: a wait of 1 second.
+func controllerDefaultsAck() shimwire.LauncherHelloAck {
+	return memoryGuardAck(shimwire.MemoryGuardActDefault, shimwire.MemoryGuardFloorDefault,
+		shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault)
 }
 
 // guardLines are the guard's lines in a container's log that start with what: the launcher's own,
@@ -1478,9 +1485,10 @@ func TestControllerPodMemoryGuardReadsAnonPagesAndNotAMappedFile(t *testing.T) {
 }
 
 // Below the mark the guard ends nothing; at the mark, where what it may end holds at least the
-// floor between them, it ends the largest; after a fall that stays at the mark it ends the next
-// largest; a reading that has not fallen when the wait has passed stops it for the rise; and it
-// acts on no new rise, however high, until the reading has been below the mark.
+// floor between them and none of it grows, it ends the largest; after a fall that stays at the
+// mark it ends the next largest; a reading that has not fallen when the controller's wait of 1
+// second has passed, with nothing it may end growing, stops it for the rise; and it acts on no new
+// rise, however high, until the reading has been below the mark.
 func TestControllerPodMemoryGuardEndsTheLargestAtTheMarkAndTheNextAfterAFall(t *testing.T) {
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 700 * guardMiB, ctlCommand: 500 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
@@ -1499,7 +1507,7 @@ func TestControllerPodMemoryGuardEndsTheLargestAtTheMarkAndTheNextAfterAFall(t *
 	step("at the mark", guardHigh, 0, ctlEval)
 	step("after a fall that stays at the mark", 3550*guardMiB, 0, ctlEval, ctlKernel)
 	step("while the wait lasts with no fall", 3550*guardMiB, 0, ctlEval, ctlKernel)
-	step("once the wait has passed with no fall", 3550*guardMiB, memoryguard.Defaults().Wait, ctlEval, ctlKernel)
+	step("once the wait has passed with no fall", 3550*guardMiB, memoryguard.ControllerDefaults().Wait, ctlEval, ctlKernel)
 	if stopped := guardLines(log, "stopped for this rise reason=not fallen "); len(stopped) != 1 {
 		t.Fatalf("the stopped lines for a reading that has not fallen are %q, want one; its log:\n%s", stopped, rig.log())
 	}
@@ -1523,7 +1531,7 @@ func TestControllerPodMemoryGuardStopsWhereNothingFallsOrNothingMayBeEnded(t *te
 	pod.setAnon(guardHigh)
 	rig.tick()
 	rig.tick()
-	rig.tickAfter(memoryguard.Defaults().Wait)
+	rig.tickAfter(memoryguard.ControllerDefaults().Wait)
 	pod.setAnon(guardLow)
 	rig.tick()
 
@@ -1570,7 +1578,7 @@ func TestControllerPodMemoryGuardStopsWhereNothingFallsOrNothingMayBeEnded(t *te
 func TestControllerPodMemoryGuardEndsTenProgramsUnderTheFloorOneAtATime(t *testing.T) {
 	const firstProgram, programs = 1600, 10
 	const program = 395 * guardMiB
-	if floor := guardLimit / 100 * uint64(memoryguard.Defaults().FloorPercent); program >= floor {
+	if floor := guardLimit / 100 * uint64(memoryguard.ControllerDefaults().FloorPercent); program >= floor {
 		t.Fatalf("a program of %d bytes is not under the floor of %d", program, floor)
 	}
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 300 * guardMiB, ctlCommand: 20 * guardMiB})
@@ -1633,6 +1641,92 @@ func TestControllerPodMemoryGuardEndsNothingForARiseThatIsOhMyPisOwn(t *testing.
 	value, _, _ := strings.Cut(rest, " ")
 	if protected, err := strconv.ParseUint(value, 10, 64); err != nil || protected < grown.anon {
 		t.Fatalf("the stopped line %q counts %q protected, want at least Oh My Pi's %d", stopped[0], value, grown.anon)
+	}
+}
+
+// The shared-page probe in the controller's tree: the shell command Oh My Pi ran has started a
+// Python pool, whose parent holds a block of 800 MiB and whose three forked workers only sleep,
+// each reporting the block as its own, as a forked process does under gVisor; beside them the
+// Python kernel grows, and stays smaller than the block. By size the newest worker would end
+// first, and its end would free nothing; the guard ends the kernel, the one process that grew, at
+// the first reading at the mark after its reads in the band.
+func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsSharedBlock(t *testing.T) {
+	const pool, block = 1700, 800 * guardMiB
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	for i := range 4 {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+	}
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	kernel := guardProcess{pid: ctlKernel, ppid: ctlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}}
+	// Oh My Pi, the block once and the kernel: 3148 MiB in the band, then 3248 and 3348, and
+	// 3488 MiB at the mark.
+	for _, size := range []uint64{300, 400, 500, 640} {
+		kernel.anon = size * guardMiB
+		pod.add(kernel)
+		pod.setAnon(2*guardGiB + block + kernel.anon)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("the guard killed %v, want the growing Python kernel %d before the pool's workers; its log:\n%s", kills, ctlKernel, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d ", ctlKernel, 640*guardMiB)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
+// Oh My Pi growing past the mark beside an idle Python kernel and an idle JavaScript kernel, which
+// hold more than the floor between them and each on its own, costs one kernel: at the mark nothing
+// the guard may end has grown, so it ends the larger, the JavaScript kernel. That kill lowers
+// nothing Oh My Pi's growth does not make up, and once the controller's wait of 1 second passes
+// with no fall and no kernel growing, the guard writes its stopped line with reason not fallen
+// and never ends the Python kernel, however far Oh My Pi grows.
+func TestControllerPodMemoryGuardEndsOneKernelForARiseThatIsOhMyPisOwn(t *testing.T) {
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2000 * guardMiB, ctlEval: 600 * guardMiB, ctlKernel: 500 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	omp := guardProcess{pid: ctlOmp, ppid: ctlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}, anon: 2000 * guardMiB}
+	grow := func(reading uint64) {
+		omp.anon += 100 * guardMiB
+		pod.add(omp)
+		pod.setAnon(reading * guardMiB)
+	}
+	for _, reading := range []uint64{3200, 3300, 3400, 3500} {
+		grow(reading)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+		t.Fatalf("at the mark the guard killed %v, want the larger idle kernel %d; its log:\n%s", kills, ctlEval, rig.log())
+	}
+	// The reading 100 ms before the wait passes, and the one at which it has passed.
+	settings := memoryguard.ControllerDefaults()
+	grow(3600)
+	rig.tickAfter(settings.Wait - 2*settings.Interval)
+	grow(3700)
+	rig.tick()
+	for _, reading := range []uint64{3800, 3900, 4000} {
+		grow(reading)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+		t.Fatalf("the guard killed %v, want the JavaScript kernel %d alone and not the Python kernel %d; its log:\n%s",
+			kills, ctlEval, ctlKernel, rig.log())
+	}
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d ", 3700*guardMiB, 500*guardMiB)
+	if stopped := guardLines(log, "stopped "); len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+		t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+	}
+	if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlEval {
+		t.Fatalf("the controller's manager holds the reports %+v, want the JavaScript kernel's alone", reports)
 	}
 }
 
@@ -1715,11 +1809,13 @@ func TestControllerPodMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.
 	}
 }
 
-// Before any acknowledgement the controller pod's guard runs at the defaults. An acknowledgement
-// at 70%, through the wire's own encoder and decoder, is taken in place: one settings line and no
-// second start line, and the report of the kill made before it goes on its connection. After the
-// connection drops, the next acknowledgement's other numbers are taken in place too, with no
-// second start line, and the hour's window keeps the start it took at the guard's first reading.
+// Before any acknowledgement the controller pod's guard runs at its own defaults, those of an issue
+// pod's but a wait of 1 second after a kill (memoryguard.ControllerDefaults), which its start line
+// says. An acknowledgement at 70% with the controller pod's other defaults, through the wire's own
+// encoder and decoder, is taken in place: one settings line and no second start line, and the
+// report of the kill made before it goes on its connection. After the connection drops, the next
+// acknowledgement's other numbers are taken in place too, with no second start line, and the
+// hour's window keeps the start it took at the guard's first reading.
 func TestControllerPodMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.T) {
 	const first, second, third = 1650, 1651, 1652
 	pod := newGuardPod(t)
@@ -1731,11 +1827,14 @@ func TestControllerPodMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSetting
 	rig := useGuardPod(t, pod, nil)
 	g := runControllerLauncher(t)
 	rig.started()
-	defaults := memoryguard.Defaults()
-	started := fmt.Sprintf("launcher: memory guard: started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d",
-		defaults.ActPercent, defaults.FloorPercent, defaults.Wait, defaults.Interval, guardLimit, guardLow)
+	started := fmt.Sprintf("launcher: memory guard: started act_percent=85 floor_percent=10 wait=1s interval=100ms limit=%d reading=%d", guardLimit, guardLow)
 	if got := guardLines(g.stderr, "started "); !slices.Equal(got, []string{started}) {
 		t.Fatalf("the guard's start lines are %q, want %q", got, started)
+	}
+	controller := memoryguard.Defaults()
+	controller.Wait = time.Second
+	if got := memoryguard.ControllerDefaults(); got != controller {
+		t.Fatalf("the controller pod's defaults are %+v, want an issue pod's with a wait of 1s, %+v", got, controller)
 	}
 	kill := func(what string, reading uint64, want ...int) {
 		t.Helper()
@@ -1755,8 +1854,8 @@ func TestControllerPodMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSetting
 	}
 	kill("before any acknowledgement, at the default act share of 85%,", guardLimit/100*86, first)
 
-	conn := g.acceptController(memoryGuardAck(70, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardWaitDefault, shimwire.MemoryGuardIntervalDefault))
-	at70 := "launcher: memory guard: settings act_percent=70 floor_percent=10 wait=5s interval=100ms"
+	conn := g.acceptController(memoryGuardAck(70, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault))
+	at70 := "launcher: memory guard: settings act_percent=70 floor_percent=10 wait=1s interval=100ms"
 	if got := guardLines(g.stderr, "settings "); !slices.Equal(got, []string{at70}) {
 		t.Fatalf("after the acknowledgement the guard's settings lines are %q, want %q", got, at70)
 	}

@@ -195,10 +195,10 @@ type LauncherHelloAck struct {
 }
 
 // LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
-// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends the
-// largest process it may end, where those processes hold at least FloorPercent of the limit
-// between them; after a kill it waits up to WaitSeconds for the reading to fall before it ends
-// another.
+// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends a process
+// it may end, the one that grew the most or the largest where none grew, where those processes
+// hold at least FloorPercent of the limit between them; after a kill it waits up to WaitSeconds
+// for the reading to fall before it ends another.
 //
 // It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
 // which is the same absence a daemon that does not know the guard sends, so one rule in the
@@ -221,6 +221,13 @@ type LauncherMemoryGuard struct {
 // acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
 // both. The act share's default is the one a measurement may move. Every minimum is above zero
 // because a guard cannot be armed with a zero interval or wait.
+//
+// MemoryGuardControllerWaitDefault is the controller pod's wait after a kill in place of
+// MemoryGuardWaitDefault, an issue pod's (INFRA-3531, R4): its guard's start
+// (memoryguard.ControllerDefaults) and the daemon's default for
+// `runtime.kubernetes.memory_guard.controller_pod`. It is below the 3.4 seconds this issue's tester
+// measured from a kill that freed nothing to the host's kill of a 4 GiB pod, so the controller's
+// guard decides on the next process before that kill comes.
 const (
 	MemoryGuardActMin      = 50
 	MemoryGuardActMax      = 95
@@ -235,6 +242,8 @@ const (
 	MemoryGuardFloorDefault    = 10
 	MemoryGuardWaitDefault     = 5
 	MemoryGuardIntervalDefault = 100
+
+	MemoryGuardControllerWaitDefault = 1
 )
 
 // LauncherMemoryKill is one process the launcher's memory guard ended with SIGKILL. The launcher

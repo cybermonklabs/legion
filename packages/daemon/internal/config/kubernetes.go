@@ -202,13 +202,13 @@ type MemoryGuardConfig struct {
 // MemoryGuardPodConfig is one kind of pod's memory guard: whether it runs at all, and the four
 // numbers it runs by (shimwire.LauncherMemoryGuard, which a launcher is handed on the answer to
 // its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
-// ActPercent of the container's memory limit it ends the largest process it may end, where those
-// processes hold at least FloorPercent of the limit between them, and after a kill it waits up to
-// WaitSeconds for the reading to fall before it ends another. With Enabled false the daemon hands
-// the launchers no settings: each guard runs at the defaults from its launcher's start, as it does
-// while no daemon has answered, and turns off at its launcher's first acknowledgement, after which
-// it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
-// alone.
+// ActPercent of the container's memory limit it ends a process it may end, the one that grew the
+// most or the largest where none grew, where those processes hold at least FloorPercent of the
+// limit between them, and after a kill it waits up to WaitSeconds for the reading to fall before
+// it ends another. With Enabled false the daemon hands the launchers no settings: each guard runs
+// at its defaults from its launcher's start, as it does while no daemon has answered, and turns
+// off at its launcher's first acknowledgement, after which it ends nothing and the pod's memory is
+// bounded by the kernel's kill of the whole container alone.
 type MemoryGuardPodConfig struct {
 	Enabled              bool
 	ActPercent           int
@@ -219,19 +219,23 @@ type MemoryGuardPodConfig struct {
 
 // DefaultMemoryGuard is the memory guard's settled configuration when the file sets none: on for
 // issue pods and for the controller's pod alike, each at the wire's own defaults
-// (shimwire.MemoryGuardActDefault and its three siblings) rather than copies of them. Those are
-// also what a launcher's guard runs by before any acknowledgement reaches it, so the one change a
+// (shimwire.MemoryGuardActDefault and its three siblings) rather than copies of them, but for the
+// controller pod's own wait after a kill, shimwire.MemoryGuardControllerWaitDefault (R4 of
+// INFRA-3531). Those are also what each kind's launcher's guard runs by before any acknowledgement
+// reaches it (memoryguard.Defaults, memoryguard.ControllerDefaults), so the one change a
 // measurement may make to a default moves both the launcher's start and every deployment's
 // setting.
 func DefaultMemoryGuard() MemoryGuardConfig {
-	defaults := MemoryGuardPodConfig{
+	issue := MemoryGuardPodConfig{
 		Enabled:              true,
 		ActPercent:           shimwire.MemoryGuardActDefault,
 		FloorPercent:         shimwire.MemoryGuardFloorDefault,
 		WaitSeconds:          shimwire.MemoryGuardWaitDefault,
 		IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
 	}
-	return MemoryGuardConfig{IssuePods: defaults, ControllerPod: defaults}
+	controller := issue
+	controller.WaitSeconds = shimwire.MemoryGuardControllerWaitDefault
+	return MemoryGuardConfig{IssuePods: issue, ControllerPod: controller}
 }
 
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a

@@ -38,16 +38,22 @@ func loadMemoryGuard(t *testing.T, block string) MemoryGuardConfig {
 // A Kubernetes deployment that says nothing about the memory guard gets it anyway, on for issue
 // pods and for the controller's pod alike, each at the wire's own defaults: the defaults are the
 // shimwire constants themselves, which a launcher's guard runs by before any acknowledgement
-// reaches it, so the two never differ.
+// reaches it, so the two never differ. The controller's pod waits 1 second after a kill, its own
+// default (shimwire.MemoryGuardControllerWaitDefault), and issue pods the wire's 5.
 func TestMemoryGuardIsOnAtTheDefaultsWhenTheFileSetsNoBlock(t *testing.T) {
-	defaults := MemoryGuardPodConfig{
+	issue := MemoryGuardPodConfig{
 		Enabled: true, ActPercent: shimwire.MemoryGuardActDefault, FloorPercent: shimwire.MemoryGuardFloorDefault,
 		WaitSeconds: shimwire.MemoryGuardWaitDefault, IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
 	}
-	if defaults != (MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}) {
-		t.Fatalf("the wire's defaults are %+v, want on at 85/10/5/100", defaults)
+	controller := issue
+	controller.WaitSeconds = shimwire.MemoryGuardControllerWaitDefault
+	if issue != (MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}) {
+		t.Fatalf("the wire's issue pod defaults are %+v, want on at 85/10/5/100", issue)
 	}
-	want := MemoryGuardConfig{IssuePods: defaults, ControllerPod: defaults}
+	if controller != (MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 100}) {
+		t.Fatalf("the wire's controller pod defaults are %+v, want on at 85/10/1/100", controller)
+	}
+	want := MemoryGuardConfig{IssuePods: issue, ControllerPod: controller}
 	if got := loadMemoryGuard(t, ""); got != want {
 		t.Fatalf("memory_guard = %+v, want both kinds on at the wire's defaults %+v", got, want)
 	}
@@ -126,11 +132,11 @@ func TestMemoryGuardIssuePodsIsUnchangedByAnyControllerPodValue(t *testing.T) {
 		name, members string
 		want          MemoryGuardPodConfig
 	}{
-		{"off", "enabled: false", MemoryGuardPodConfig{Enabled: false, ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}},
-		{"act_percent", "act_percent: 95", MemoryGuardPodConfig{Enabled: true, ActPercent: 95, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}},
-		{"floor_percent", "floor_percent: 50", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 50, WaitSeconds: 5, IntervalMilliseconds: 100}},
+		{"off", "enabled: false", MemoryGuardPodConfig{Enabled: false, ActPercent: 85, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 100}},
+		{"act_percent", "act_percent: 95", MemoryGuardPodConfig{Enabled: true, ActPercent: 95, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 100}},
+		{"floor_percent", "floor_percent: 50", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 50, WaitSeconds: 1, IntervalMilliseconds: 100}},
 		{"wait_seconds", "wait_seconds: 60", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 60, IntervalMilliseconds: 100}},
-		{"interval_milliseconds", "interval_milliseconds: 5000", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 5000}},
+		{"interval_milliseconds", "interval_milliseconds: 5000", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 5000}},
 		{
 			"every key", "enabled: false, act_percent: 50, floor_percent: 1, wait_seconds: 1, interval_milliseconds: 50",
 			MemoryGuardPodConfig{Enabled: false, ActPercent: 50, FloorPercent: 1, WaitSeconds: 1, IntervalMilliseconds: 50},

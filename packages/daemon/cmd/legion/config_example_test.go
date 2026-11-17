@@ -235,7 +235,8 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 // memoryGuardExampleLines are the example's commented memory_guard block, line by line, as an
 // operator turning it on uncomments it: `issue_pods` first and `controller_pod` after it, in the
 // file's order, since uncommentExample takes the first commented line that starts with each, and
-// the two blocks carry the same members at the same defaults.
+// the two blocks carry the same members at the same defaults but the wait after a kill, 5 seconds
+// for issue pods and 1 for the controller's pod.
 var memoryGuardExampleLines = []string{
 	"    # memory_guard:",
 	"    #   issue_pods:",
@@ -248,14 +249,14 @@ var memoryGuardExampleLines = []string{
 	"    #     enabled: true",
 	"    #     act_percent: 85",
 	"    #     floor_percent: 10",
-	"    #     wait_seconds: 5",
+	"    #     wait_seconds: 1",
 	"    #     interval_milliseconds: 100",
 }
 
 // The example's commented memory_guard block, uncommented, passes the same check and settles on
 // the guard on for both pod kinds at the defaults the block states, which are the wire's own
 // (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
-// example teach a number no daemon runs.
+// example teach a number no daemon runs. The controller pod's wait_seconds is 1.
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example, memoryGuardExampleLines...)
@@ -266,6 +267,9 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	}
 	if got, want := cfg.Runtime.Kubernetes.MemoryGuard, configpkg.DefaultMemoryGuard(); got != want {
 		t.Errorf("the example's memory_guard block uncommented settles on %+v, want the defaults %+v", got, want)
+	}
+	if got := cfg.Runtime.Kubernetes.MemoryGuard.ControllerPod.WaitSeconds; got != 1 {
+		t.Errorf("the example's controller_pod waits %d seconds after a kill, want 1", got)
 	}
 }
 

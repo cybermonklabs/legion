@@ -73,8 +73,9 @@ const (
 	// the settings allow, so a fall slower than the guard's own wait is still measured.
 	controllerLiveFallBound = shimwire.MemoryGuardWaitMax * time.Second
 	// controllerLiveSettle is how long after its kill the daemon end keeps reading before it counts
-	// the reports: twice the guard's wait after a kill, in which the guard ends nothing more.
-	controllerLiveSettle = 2 * shimwire.MemoryGuardWaitDefault * time.Second
+	// the reports: twice the controller pod's guard's wait after a kill, in which it ends nothing
+	// more where nothing it may end grows.
+	controllerLiveSettle = 2 * shimwire.MemoryGuardControllerWaitDefault * time.Second
 	// controllerLiveReportGrace is how long the test waits for a report once its command has
 	// exited: the guard reads the cgroup's counter between its kill and its report.
 	controllerLiveReportGrace = 5 * time.Second
@@ -293,7 +294,7 @@ func (r *controllerLiveRun) prepare() string {
 		r.commandArgv = []string{python, "-c", controllerLiveMappedScript, filepath.Join(r.dir, "mapped.bin"), strconv.Itoa(r.mappedBytes)}
 	}
 	r.out.printf("start scenario=%s settings=defaults act_percent=%d floor_percent=%d wait_seconds=%d interval_ms=%d limit=%d mark=%d counter=%d anon_pages=%d agent_holds=%d mapped_bytes=%d pid=%d version=%q command=%q",
-		r.scenario, shimwire.MemoryGuardActDefault, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardWaitDefault,
+		r.scenario, shimwire.MemoryGuardActDefault, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardControllerWaitDefault,
 		shimwire.MemoryGuardIntervalDefault, limit, r.mark, counter, anon, r.hold, r.mappedBytes, os.Getpid(),
 		strings.TrimSpace(string(version)), r.commandArgv)
 	return ""
@@ -351,7 +352,7 @@ func (r *controllerLiveRun) startGeneration() string {
 	if conn.hello.Role != "controller" || conn.hello.Token != "launcher-token" {
 		return fmt.Sprintf("the launcher's hello is %#v, want the controller's", conn.hello)
 	}
-	conn.acknowledgeWith(defaultsAck())
+	conn.acknowledgeWith(controllerDefaultsAck())
 	run, err := json.Marshal(r.commandArgv)
 	if err != nil {
 		return err.Error()

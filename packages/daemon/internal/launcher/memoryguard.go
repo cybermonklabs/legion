@@ -51,12 +51,14 @@ const maxWaitingMemoryKills = 32
 // other launcher logs one line, through its form's writer, and runs none: no manager then holds a
 // guard, so serve hands no settings on and no report is ever queued.
 //
-// The guard runs at memoryguard's defaults from the start, before any role connects, so the pod is
-// guarded while the daemon is away, and each role's acknowledgement then hands it the daemon's
-// settings (serve). A kill of a process in a role is reported to that role's manager, which sends
-// it on that role's connection (queueMemoryKill). In an issue pod a kill of a process in no role
-// has the guard's own line and nothing else; in the controller's pod every process is the
-// controller's, so every kill is reported to its one manager.
+// The guard runs at its form's defaults from the start, before any role connects, so the pod is
+// guarded while the daemon is away: an issue pod's at memoryguard.Defaults, the controller pod's at
+// memoryguard.ControllerDefaults, its wait of 1 second after a kill (INFRA-3531, R4), each what the
+// daemon's configuration sends that kind of pod by default. Each role's acknowledgement then hands
+// it the daemon's settings (serve). A kill of a process in a role is reported to that role's
+// manager, which sends it on that role's connection (queueMemoryKill). In an issue pod a kill of a
+// process in no role has the guard's own line and nothing else; in the controller's pod every
+// process is the controller's, so every kill is reported to its one manager.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	controller := cfg.RolesDir == ""
@@ -72,9 +74,11 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	}
 	var classify memoryguard.Classifier
 	var sink func(memoryguard.Kill)
+	start := memoryguard.Defaults()
 	if controller {
 		classify = newControllerClassifier(managers[0], pids).classify
 		sink = func(k memoryguard.Kill) { managers[0].queueMemoryKill(k.LauncherMemoryKill) }
+		start = memoryguard.ControllerDefaults()
 	} else {
 		byRole := make(map[string]*manager, len(managers))
 		for _, m := range managers {
@@ -87,7 +91,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 			}
 		}
 	}
-	guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: logf})
+	guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: logf, Start: start})
 	var running sync.WaitGroup
 	for _, m := range managers {
 		m.memoryGuard = guard

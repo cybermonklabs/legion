@@ -348,7 +348,7 @@ func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 	// 1% of the limit, the rise that starts a scan for the largest process, and in whole kB, as
 	// meminfo writes a reading.
 	const limit = 32 << 20
-	mark := uint64(limit) * uint64(memoryguard.Defaults().ActPercent) / 100
+	mark := uint64(limit) * uint64(memoryguard.ControllerDefaults().ActPercent) / 100
 	step := uint64(640 << 10)
 	low, atKill := uint64(8<<20), uint64(30<<20)
 	counterLow, counterHigh := uint64(10<<20), uint64(31<<20)
@@ -359,7 +359,7 @@ func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 	rig := useGuardPodKilling(t, pod, nil, nil)
 	g := runControllerLauncher(t)
 	rig.started()
-	conn := g.acceptController(defaultsAck())
+	conn := g.acceptController(controllerDefaultsAck())
 	result := conn.start(shimwire.LauncherStart{
 		ID: "start-1", Generation: 1, Argv: []string{self, shimArgument, controllerGuardSecret},
 		Env: []string{
