@@ -1836,8 +1836,8 @@ SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:778 runs it for `version`, and the version cases read its refusals"),
-        (".github/workflows/release.yaml", "release-push.test.sh:1005 reads it for the checkout-before-push case"),
-        ("packages/pi-legion/.changie.yaml", "release-push.test.sh:1928 copies the shipped configuration into its fold-notes fixture"),
+        (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
+        ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
         (f"{SCRIPTS}/release-bump.sh", "the script under test"),
