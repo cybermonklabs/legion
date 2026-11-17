@@ -378,6 +378,78 @@ func TestAUserGrantedOnlyTheCommandsInboxRunsIt(t *testing.T) {
 	}
 }
 
+// grantConfig is a server configuration with JetStream whose one user, the nkey user public, may
+// publish only to publish and subscribe only to subscribe.
+func grantConfig(public string, publish, subscribe []string) string {
+	quote := func(subjects []string) string {
+		quoted := make([]string, len(subjects))
+		for i, subject := range subjects {
+			quoted[i] = fmt.Sprintf("%q", subject)
+		}
+		return strings.Join(quoted, ", ")
+	}
+	return fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } } ]\n}\n",
+		public, quote(publish), quote(subscribe))
+}
+
+// A NATS user granted exactly Grant() - the deployment's buckets user - runs every step the command
+// has, against a real server, with no refusal: create --first-deployment, check, recreate and
+// create. The control removes one subject at a time from the grant and runs the step that needs
+// it, which is refused, and the test names the subject. At 7b262c2e0a no such grant existed, and
+// the command's default _INBOX prefix was refused by any user granted its own inbox alone.
+func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
+	publish, subscribe := Grant()
+	run := func(t *testing.T, publish []string, args ...string) (int, string) {
+		t.Helper()
+		seed, public := testnats.User(t)
+		_, uri := testnats.StartConfig(t, grantConfig(public, publish, subscribe), []string{"-js"}, false)
+		t.Setenv("NATS_NKEY_SEED", seed)
+		answers := []string{}
+		for range 8 {
+			answers = append(answers, clean(150))
+		}
+		w := &world{hostAnswers: map[string][]string{"box-1": answers}}
+		code, stdout, stderr := runCommand(t, w, nil, append(append([]string{}, args...), "--nats", uri, "--host", "box-1")...)
+		return code, stdout + stderr
+	}
+	t.Run("every step with the whole grant", func(t *testing.T) {
+		seed, public := testnats.User(t)
+		_, uri := testnats.StartConfig(t, grantConfig(public, publish, subscribe), []string{"-js"}, false)
+		t.Setenv("NATS_NKEY_SEED", seed)
+		for _, args := range [][]string{
+			{"create", "--first-deployment"},
+			{"check"},
+			{"recreate", "--bucket", bus.SessionBucket},
+			{"create"},
+		} {
+			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
+			code, stdout, stderr := runCommand(t, w, nil, append(append([]string{}, args...), "--nats", uri, "--host", "box-1")...)
+			if code != 0 {
+				t.Fatalf("%v as a user granted exactly Grant() = %d:\n%s%s", args, code, stdout, stderr)
+			}
+		}
+	})
+	for _, c := range []struct {
+		subject string
+		args    []string
+	}{
+		{"$JS.API.STREAM.CREATE.KV_" + bus.SessionBucket, []string{"create", "--bucket", bus.SessionBucket}},
+		{"$JS.API.STREAM.INFO.KV_" + bus.SessionBucket, []string{"create", "--bucket", bus.SessionBucket}},
+		{"$JS.API.STREAM.DELETE.KV_" + bus.SessionBucket, []string{"recreate", "--bucket", bus.SessionBucket}},
+		{"$JS.API.STREAM.INFO." + bus.Stream, []string{"create", "--first-deployment", "--bucket", bus.SessionBucket}},
+	} {
+		t.Run("control without "+c.subject, func(t *testing.T) {
+			without := slices.DeleteFunc(slices.Clone(publish), func(subject string) bool { return subject == c.subject })
+			if len(without) != len(publish)-1 {
+				t.Fatalf("%s is not in Grant()", c.subject)
+			}
+			if code, output := run(t, without, c.args...); code == 0 {
+				t.Fatalf("%v as a user granted Grant() without %s = 0, want refused:\n%s", c.args, c.subject, output)
+			}
+		})
+	}
+}
+
 // The host query, run on this machine, sees a real process under every name this repository runs a
 // writer as - the listener as envoy-listener, as listener (`go run`, dev-stack.sh, e2e-refill.sh)
 // and as the held-port wrapper, Dispatch as envoy-dispatch, dispatch and a two-build dispatch-<x> -

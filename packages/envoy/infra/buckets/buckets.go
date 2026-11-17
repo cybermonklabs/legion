@@ -89,6 +89,22 @@ func operatorEnvironment(name string) (string, bool) {
 // would receive every other client's replies, a session's push deliveries among them.
 const InboxPrefix = "_INBOX_envoy_buckets"
 
+// Grant is the NATS grant the command's user needs, and nothing more: the subjects it publishes to
+// - the account's JetStream info, then, for each bucket a listener copies, its stream's info,
+// create, update (raising its copies) and delete, and the notification stream's info, which
+// --first-deployment reads - and the one it subscribes to, its own reply inboxes (InboxPrefix).
+// The deployment's buckets user is granted exactly this until dispatch://INFRA-840's auth callout
+// replaces the static user at the cutover.
+func Grant() (publish, subscribe []string) {
+	publish = []string{"$JS.API.INFO", "$JS.API.STREAM.INFO." + bus.Stream}
+	for _, bucket := range bus.CopiedBuckets() {
+		for _, verb := range []string{"INFO", "CREATE", "UPDATE", "DELETE"} {
+			publish = append(publish, "$JS.API.STREAM."+verb+".KV_"+bucket)
+		}
+	}
+	return publish, []string{InboxPrefix + ".>"}
+}
+
 // bestEffortWarning is printed on every run, to standard error, before anything else: the check
 // is observation, not exclusion, until dispatch://INFRA-4015's hold (t-10) excludes every writer
 // at the server - the auth callout refusing every connection but the operator's and every other
