@@ -78,3 +78,51 @@ func TestReadAnswersADamagedRecordWithNoLayout(t *testing.T) {
 		}
 	}
 }
+
+// A read that holds a manifest whose chunks a rewrite deleted since reads the key again and answers
+// the record that replaced it, whole, rather than a damaged record: the read of the old manifest's
+// chunks meets a missing chunk, finds the key at a new revision, and reads that. The control is the
+// same old manifest after the key is deleted, which is answered as no record at all.
+func TestReadOfAManifestARewriteReplacedAnswersTheNewRecord(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_reread", Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	write := func(record []byte, replaced kvchunk.Layout) kvchunk.Written {
+		t.Helper()
+		written, err := kvchunk.Write(t.Context(), kv, "rewritten", record, replaced, func(head []byte) (uint64, error) {
+			return kv.Put("rewritten", head)
+		}, time.Now, slog.Default(), "record")
+		if err != nil || !written.Stored || !written.Layout.Chunked() {
+			t.Fatalf("write the record: %+v (%v), want a chunked record stored", written, err)
+		}
+		return written
+	}
+	first := []byte(`{"topics":["` + strings.Repeat("a", 3*kvchunktest.MaxPayload) + `"]}`)
+	second := []byte(`{"topics":["` + strings.Repeat("b", 3*kvchunktest.MaxPayload) + `"]}`)
+	old := write(first, kvchunk.Layout{})
+	stale, err := kv.Get("rewritten")
+	if err != nil {
+		t.Fatalf("read the first manifest: %v", err)
+	}
+	replacing := write(second, old.Layout)
+	if _, err := kv.Get(old.Layout.Keys()[0]); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("the rewrite left the first record's chunk (%v), so the read meets no missing chunk", err)
+	}
+	value, layout, revision, err := kvchunk.Read(context.Background(), kv, "rewritten", stale)
+	if err != nil || !slices.Equal(value, second) || layout != replacing.Layout || revision != replacing.Revision {
+		t.Fatalf("a read of the replaced manifest answered %d bytes at revision %d with layout %+v (%v), want the second record at %d",
+			len(value), revision, layout, err, replacing.Revision)
+	}
+	if err := kv.Delete("rewritten"); err != nil {
+		t.Fatalf("delete the key: %v", err)
+	}
+	if _, _, _, err := kvchunk.Read(context.Background(), kv, "rewritten", stale); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("a read of the replaced manifest after the key's delete answered %v, want nats.ErrKeyNotFound", err)
+	}
+}
