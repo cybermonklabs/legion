@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The legion-controller skill's references (`parked-decisions.md`, `wakes.md`) name
+  `legion issue status <issue> <status>`, the command that replaced `legion status <issue> <status>`.
