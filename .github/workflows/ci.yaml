@@ -117,14 +117,16 @@ name: CI
 # twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
 # `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
 # ubuntu-24.04, each a reason of its own machine and not of the job's code:
-#   * a tool whose .github/ci-tools.yaml row is an x86_64 build alone: changie (test), crane
-#     (ci-images), mise and jj (pi-shared), elan (airlock-lean);
+#   * a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin and
+#     uv, which only x86_64 jobs install (envoy-smoke, daemon-go, tool-fallback). A tool that has
+#     one is installed from its `-aarch64` row there, as changie (test), crane (ci-images), mise
+#     and jj (pi-shared) and elan (airlock-lean) are;
 #   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
 #     daemon-go, plugin-pack, pi-envoy and pi-legion;
 #   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
 #     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
 #   * an image of this repository built for linux/amd64: worker-image, browser-image, and
-#     envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+#     envoy-smoke;
 #   * envoy-go-checks, whose pack step builds the release's listener archives with no
 #     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
 #     for a native build and off for a cross build, so only an x86_64 runner builds the release's
@@ -4563,7 +4565,8 @@ jobs:
   # event that can bring a new row in, and a failed copy is re-run with `gh run rerun`.
   # The copy of every tool asset is filled here too, in the step after the image half
   # (.github/scripts/mirror-ci-tools.sh): it is the same package, under the same login, and the
-  # tool-fallback job below reads what this step filled, so that copy must land before it.
+  # tool-fallback and tool-fallback-arm jobs below read what this step filled, so that copy must
+  # land before them.
   ci-images:
     needs: changes
     if: needs.changes.outputs.ci_images == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4705,11 +4708,15 @@ jobs:
   # action over the same manifest through the same helper, so one filter decides both and
   # neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
   # .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
-  # It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job
-  # fills, so it has no reason to wait for that job as tool-fallback does.
+  # After the Bun halves it proves the other arm64 rows the same way: crane-aarch64,
+  # changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
+  # release asset and once under the fault, where each must read its ghcr copy and each install's
+  # own 504 is read after a probe of its own (the called file's comments say how). Those faulted
+  # installs read the copies the ci-images job fills, so this job needs that job for order and
+  # carries `!cancelled()`, as tool-fallback does and for the reason that job's comment gives.
   tool-fallback-arm:
-    needs: changes
-    if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other
     # scope.
