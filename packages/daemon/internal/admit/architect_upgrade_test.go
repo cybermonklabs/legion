@@ -484,19 +484,42 @@ func headerWayBack(t *testing.T, version int) string {
 // (20261113181500_architect_stalled_notices.up.sql), claimHandshakeVersion the version of the
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
-// (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// leftStandingVersion is the highest migration neither way back deletes, which is the version the
-// store reports once both ways back have run: 20261114082752_design_news (dispatch://INFRA-175),
-// which comes after this change's four. A rollback past this change first rolls that later
-// release back, and its own rollback restores no schema (docs/kubernetes.md, "Rolling back the
-// release that tells a holder of an approved new version"), so its row stands under both blocks.
+// (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's. The phase
+// entry's way back deletes its own version row, and this migration's deletes its own and the other
+// three (wayBackDeletes).
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114082752
 )
+
+// wayBackDeletes is every version whose row the two ways back delete: the phase entry's own, and
+// this migration's and the three its block reverses beside it.
+var wayBackDeletes = []int{phaseEntryVersion, stalledNoticesVersion, architectUpgradeVersion, claimHandshakeVersion, entryVerbatimVersion}
+
+// leftStandingVersion is the highest migration neither way back deletes (wayBackDeletes), which is
+// the version the store reports once both ways back have run. It is read from the migrations the
+// binary ships (migrations.All) rather than named, because every migration a later change adds is
+// such a version: a rollback past this change first rolls each later release back, and a release
+// whose rollback restores no schema leaves its row standing under both blocks, as
+// 20261114082752_design_news does (docs/kubernetes.md, "Rolling back the release that tells a
+// holder of an approved new version"). A version named here would hold only until the next
+// migration landed.
+func leftStandingVersion(t *testing.T) int {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	highest := 0
+	for _, migration := range all {
+		if !slices.Contains(wayBackDeletes, migration.Version) {
+			highest = max(highest, migration.Version)
+		}
+	}
+	return highest
+}
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
@@ -605,10 +628,10 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if version != leftStandingVersion || marksTable || handshakeColumn || markColumn {
+				if left := leftStandingVersion(t); version != left || marksTable || handshakeColumn || markColumn {
 					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
 						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, leftStandingVersion)
+						version, marksTable, handshakeColumn, markColumn, left)
 				}
 			}
 

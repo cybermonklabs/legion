@@ -9,13 +9,16 @@ import {
   scriptFunctions,
 } from "./script-functions";
 
-// approved-version-news.sh's two controls, taken from the script by name and run over driver
-// output written as each driver prints it. Part one's negative control (control_verdict) bites only
-// when A2's one-approval check fails in its own words after the step's five setup checks: never on
-// the line the driver prints when its harness fails, never on a killed run. Part two's count of
-// each arm (part_two_step) counts only runs that reached the step's assertion: a run that stopped
-// at its setup is named and not counted, so it never makes the control bite, and a head run that
-// stopped there is no pass.
+// approved-version-news.sh's two controls and its last line, taken from the script by name and
+// run over driver output written as each driver prints it. Part one's negative control
+// (control_verdict) bites only when A2's one-approval check fails in its own words after the
+// step's five setup checks: never on the line the driver prints when its harness fails, never on a
+// killed run. Part two's count of each arm (part_two_step) counts only runs that reached the
+// step's assertion: a run that stopped at its setup is named and not counted, so it never makes
+// the control bite, and a head run that stopped there is no pass. The last line (finish, the
+// script's EXIT trap) reads PASS or the control's verdict only for a run that reached one of the
+// script's ends: a signal ends a shell with its EXIT trap reading status 0, so a killed run must
+// read FAIL.
 
 const script = join(import.meta.dir, "..", "approved-version-news.sh");
 const assignment = scriptAssignments(script);
@@ -236,5 +239,62 @@ describe("part two's count of each arm", () => {
     const step = partTwoStep([runLine("head", 1, passed), runLine("head", 2, setupFailed)]);
     expect(step.said).toBe("a4 head 1/1 with 1 not counted, base 0/0 (base did not run)");
     expect(step.missed).toBe(`; a4: 2 of 3 head runs ran; ${runLine("head", 2, setupFailed)}`);
+  });
+});
+
+/** Runs BODY in a bash whose EXIT trap is the script's finish, over the state finish reads as a
+ * run of part one alone leaves it standing in its `driver` check with 3 of its 52 checks counted,
+ * and the end mark as the script first assigns it; VERDICT is the control's, "" for none. */
+function finishRun(body: string, verdict = "") {
+  const result = Bun.spawnSync([
+    "bash",
+    "-c",
+    `set -euo pipefail
+${helperGuard}
+${fn("finish")}
+${assignment("version_news_ended")}
+parts=one base_tree='' prompts_tree='' counted=3 expected=52 part_two_said=''
+verdict=${JSON.stringify(verdict)} version_news_evidence=/evidence version_news_started=$SECONDS check=driver
+trap finish EXIT
+${body}`,
+  ]);
+  const out = result.stdout.toString();
+  const err = result.stderr.toString();
+  expectNoMissingHelpers(out, err);
+  return { code: result.exitCode, signal: result.signalCode, out, err };
+}
+
+// The line finish prints for a run that ended before either of the script's ends with status 0.
+const interrupted =
+  /^approved version news e2e: FAIL at driver after \d+s: the run ended before its last check, by a signal or an exit of its own \(assertions: 3\/52; part one alone, part two did not run, evidence: \/evidence\)\n$/;
+
+describe("the last line", () => {
+  test("reads FAIL at the check a SIGTERM ended the run in, though bash gives the trap status 0", () => {
+    const run = finishRun("kill -TERM $$\nsleep 5\nversion_news_ended=1");
+    expect(run.out).toBe("");
+    expect(run.err).toMatch(interrupted);
+    expect(run.code === 143 || run.signal === "SIGTERM").toBe(true);
+  });
+
+  test("prints no control verdict for a control run a SIGTERM ended before its exit", () => {
+    const run = finishRun("kill -TERM $$\nsleep 5", "control bites at a2 against a97cd593");
+    expect(run.out).toBe("");
+    expect(run.err).toMatch(interrupted);
+  });
+
+  test("reads FAIL for an exit 0 the script makes before either of its ends", () => {
+    const run = finishRun("exit 0");
+    expect(run.code).toBe(0);
+    expect(run.out).toBe("");
+    expect(run.err).toMatch(interrupted);
+  });
+
+  test("reads PASS for a run that reached its end and exits 0", () => {
+    const run = finishRun("version_news_ended=1\nexit 0");
+    expect(run.code).toBe(0);
+    expect(run.err).toBe("");
+    expect(run.out).toMatch(
+      /^approved version news e2e: PASS in \d+s \(assertions: 3\/52; part one alone, part two did not run\)\n$/
+    );
   });
 });

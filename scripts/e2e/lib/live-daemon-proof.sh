@@ -38,9 +38,12 @@
 # on any exit, and the evidence directory legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the
 # directory the caller named, is empty. The evidence directory is kept and printed; it holds the
 # transcript (lib/transcript.sh), the nats-server's log, the daemon's own, which the driver writes
-# through LEGION_E2E_DAEMON_LOG, and the driver's output. On any exit the nats-server is stopped and
-# the run prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after
-# <n>s (evidence: <dir>)` on stderr.
+# through LEGION_E2E_DAEMON_LOG, and the driver's output. On any exit the nats-server is stopped.
+# The run prints `LABEL e2e: PASS in <n>s (evidence: <dir>)` only when live_daemon_proof reached
+# its own last statement and the shell exits 0. Every other exit prints `LABEL e2e: FAIL at <check>
+# after <n>s (evidence: <dir>)` on stderr. A run that ended before its last check with status 0
+# says so after the check: bash runs the EXIT trap with status 0 when a signal (TERM, INT or HUP)
+# ends the shell, so the status alone would read such a run as a pass.
 
 # shellcheck source-path=SCRIPTDIR source=transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
@@ -64,6 +67,9 @@ port_nats=''
 check=setup
 started=''
 check_started=''
+# run_ended is set by live_daemon_proof's last statement, and nothing else sets it: cleanup reads
+# it to tell a run that reached its end from one a signal or an early exit ended with status 0.
+run_ended=''
 
 begin() { check=$1; check_started=$SECONDS; echo "== $check"; }
 note() { echo "   $*"; }
@@ -80,8 +86,10 @@ cleanup() {
     wait "$nats_pid" 2>/dev/null || true
   fi
   rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
+  if [ "$status" -eq 0 ] && [ -n "$run_ended" ]; then
     echo "$proof_label e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
+  elif [ "$status" -eq 0 ]; then
+    echo "$proof_label e2e: FAIL at $check after $((SECONDS - started))s: the run ended before its last check, by a signal or an exit of its own (evidence: $evidence)" >&2
   else
     echo "$proof_label e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
   fi
@@ -171,4 +179,5 @@ live_daemon_proof() {
   grep -q "^--- PASS: $test_name" "$evidence/proof.log" ||
     fail "the proof's driver ran no step: it skipped, or -test.run matched no test; see $evidence/proof.log"
   pass
+  run_ended=1
 }

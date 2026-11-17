@@ -10,9 +10,12 @@
 # which this script builds with `-tags e2e`): it builds and starts the real Dispatch server from
 # the checkout, with its events on the run's own nats-server and the person `smoke` approving
 # through Dispatch's own review route, boots the whole daemon with dispatch_url at it, and speaks
-# each role's worker stream and HTTP routes as `legion worker-shim` and the plugin do. Its steps
-# run in this order, A2's first, because a daemon from before the change refuses A1's criteria
-# registration and the negative control must fail at a delivery rather than there. Each prints
+# each role's worker stream and HTTP routes as `legion worker-shim` and the plugin do. Every claim
+# it tells is started by the daemon's own start path, at the entry production gives it, and the
+# boot fails the run as `FAIL setup: …` where a claim stands anywhere else, or where a told record
+# row the driver writes by hand differs from the row that path writes. Its steps run in this
+# order, A2's first, because a daemon from before the change refuses A1's criteria registration
+# and the negative control must fail at a delivery rather than there. Each prints
 # `== <step>`, what it drove and read, one `   assert <step>: …` line for each check that held,
 # and `ok <step>`; the first check that does not hold prints `FAIL <step>: …` and ends the run:
 #   - a2-the-reviewer-is-told-the-changed-sections: a tree registering its spec alone; the task of
@@ -37,7 +40,8 @@
 #     task that holds the start's own text, a blank line, and then the news, which opens with the
 #     gate's opening and names what changed;
 #   - r6-only-the-root-is-told-of-its-checks: a root's checks-only approval reaches the root's
-#     phase holder, and its children's workers are sent no task;
+#     phase holder and the root's architect, each at the entry the daemon's start path gave it,
+#     and its children's workers are sent no task;
 #   - off-the-daemon-sends-nothing: a second daemon under gates.design off, on Dispatch again; an
 #     approved version sends no holder anything, in the window another tree's reviewer is started.
 # Part one passes only when every step printed its `ok` and the script counts, for each step, as
@@ -121,7 +125,9 @@
 # Exit 0 is a pass, or a control that bites; exit 2 is an input of the caller's the run refuses,
 # here or in the lib's prerequisites; exit 1 is every other failure. The run around each driver is
 # lib/live-daemon-proof.sh's, made in a subshell, so this script reads its outcome and the driver's
-# output and prints the last line.
+# output and prints the last line. That line reads PASS, or the control's verdict, only for a run
+# that reached one of the script's two ends (version_news_ended): a signal that ends the script
+# leaves bash's EXIT trap a status of 0, and its line reads FAIL at the check it stopped in.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -139,7 +145,7 @@ part_one_checks=(
   a5-the-tester-passes-and-the-reviewer-is-told:8
   a6-a-merged-root-is-told-nothing:5
   a7-the-merger-waits-then-reads-the-opening:7
-  r6-only-the-root-is-told-of-its-checks:3
+  r6-only-the-root-is-told-of-its-checks:4
   off-the-daemon-sends-nothing:5
 )
 # The step the negative control must fail at, and how many of its checks come before its first
@@ -178,10 +184,16 @@ expected=0
 verdict=''
 part_two_said=''
 version_news_started=$SECONDS
+# version_news_ended is set at each of the script's two ends, the exit of a run of part one alone
+# and the last statement, and nowhere else: finish reads it to tell a run that reached an end from
+# one a signal or an early exit ended with status 0.
+version_news_ended=''
 
 # finish removes the scratch trees the run made, by their exact paths, and prints the run's last
 # line: what part one counted beside what it expects, what part two counted in each arm, or that
-# it did not run, and, for the control, whether it bit.
+# it did not run, and, for the control, whether it bit. A verdict or PASS needs status 0 and a run
+# that reached one of its ends; a run that ended before that with status 0, as a signal leaves the
+# EXIT trap, reads FAIL at the check it stopped in, and says so.
 finish() {
   local status=$? said
   for tree in "$base_tree" "$prompts_tree"; do
@@ -193,10 +205,12 @@ finish() {
   elif [ -n "$part_two_said" ]; then
     said="$said; part two: $part_two_said"
   fi
-  if [ "$status" -eq 0 ] && [ -n "$verdict" ]; then
+  if [ "$status" -eq 0 ] && [ -n "$version_news_ended" ] && [ -n "$verdict" ]; then
     echo "approved version news e2e: $verdict in $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)"
-  elif [ "$status" -eq 0 ]; then
+  elif [ "$status" -eq 0 ] && [ -n "$version_news_ended" ]; then
     echo "approved version news e2e: PASS in $((SECONDS - version_news_started))s ($said)"
+  elif [ "$status" -eq 0 ]; then
+    echo "approved version news e2e: FAIL at $check after $((SECONDS - version_news_started))s: the run ended before its last check, by a signal or an exit of its own ($said, evidence: $version_news_evidence)" >&2
   else
     echo "approved version news e2e: FAIL at $check after $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)" >&2
   fi
@@ -447,6 +461,7 @@ if [ "$parts" = one ]; then
   begin part-two
   note "part two did not run: --part one, --control and --base-commit run part one alone"
   pass
+  version_news_ended=1
   exit 0
 fi
 
@@ -491,3 +506,4 @@ calls=$(grep -m1 -E '^model calls: ' "$proof" 2>/dev/null || true)
 [ -z "$head_short" ] || fail "the head arm did not reach its assertion and pass in every run: ${head_short#; }"
 [ "$part_two_status" -eq 0 ] || fail "part two failed (status $part_two_status); $proof keeps each run's evidence"
 pass
+version_news_ended=1
