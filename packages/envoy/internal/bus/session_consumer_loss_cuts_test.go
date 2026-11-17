@@ -163,6 +163,7 @@ func runLossCut(t *testing.T, cut lossCut) {
 		}
 	}
 
+	waitForStoredState(t, owner, cut.session)
 	restarted, err := consumers.RestartAtFloor(ctx, cut.session, filters)
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)

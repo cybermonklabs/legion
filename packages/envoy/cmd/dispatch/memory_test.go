@@ -38,10 +38,11 @@ const (
 	// (TestColdReadCacheEvictionPlateaus reads it back). The cache's test hook supplies each
 	// entry's real accounting weight, so this process can build two complete cache fills.
 	documentReadBudgetForTest = 256 << 20
-	// marginEditAllowance is the most a margin filled to its bounds may add to what a cold edit of
-	// its document holds: two cold edits of one heaviest document, with a full margin and without,
-	// differed by -10 to +88 MiB over four runs (the four-column table the most), where a margin of
-	// ninety-six 900 KB suggestions adds over 300 MiB.
+	// marginEditAllowance is the most a margin filled to its bounds may add to the live heap a cold
+	// edit of its document holds (coldEditLiveHeap). Read that way on a 288-CPU host, two cold edits
+	// of one heaviest document, with a full margin and without, differed by -5 to +5 MiB over 42
+	// pairs; an injected defect holding 1,361,082 bytes of margin records 100 times (129.8 MiB) read
+	// +126 to +132 MiB, and 160 times (207.7 MiB) +206 to +213 MiB.
 	marginEditAllowance = 128 << 20
 )
 
@@ -845,9 +846,11 @@ func TestTheMarginStaysWithinTheMemoryBound(t *testing.T) {
 // together - are each still read and loaded within the bound on a server that has not loaded them,
 // and a full margin adds at most marginEditAllowance to what a cold one-word edit of the document
 // held before it. The edit replaces a word with one as long, so it is weighed whole - its
-// rendering's elements and its trial load - and taken. What the edit holds without a margin is the
-// element limit's own (logged, and over the bound for the densest shapes: tables and inline HTML),
-// which the margin's bounds do not move.
+// rendering's elements and its trial load - and taken. Each edit is read by the most heap its
+// server's collections found live while it ran, above idle (coldEditLiveHeap): its resident memory
+// above idle moves by more than a margin adds (memory_live_heap_test.go).
+// What the edit holds without a margin is the element limit's own (logged), which the margin's
+// bounds do not move.
 func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.T) {
 	memory := newMemoryHarness(t)
 	replacement := strings.Repeat("a", 255_000)
@@ -861,7 +864,7 @@ func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.
 			}
 			memory.waitForSettlement(t, upload)
 			writer.stop(t)
-			alone := memory.coldEdit(t, shape.name+" with no margin", upload.artifactID, edit)
+			alone := memory.coldEditLiveHeap(t, shape.name+" with no margin", upload.artifactID, edit)
 			writer = memory.start(t)
 			taken := 0
 			for {
@@ -887,8 +890,8 @@ func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.
 			t.Logf("%s: %d suggestions of %d bytes taken before the margin's bound", shape.name, taken, len(replacement))
 			name := shape.name + " with a full margin"
 			memory.coldReads(t, name, upload.artifactID)
-			if full := memory.coldEdit(t, name, upload.artifactID, edit); full-alone > marginEditAllowance {
-				t.Errorf("%s: a cold one-word edit held %d MiB above idle, %d MiB more than with no margin, want at most %d MiB more", name, full>>20, (full-alone)>>20, marginEditAllowance>>20)
+			if full := memory.coldEditLiveHeap(t, name, upload.artifactID, edit); full-alone > marginEditAllowance {
+				t.Errorf("%s: a cold one-word edit held %d MiB of live heap above idle, %d MiB more than with no margin, want at most %d MiB more", name, full>>20, (full-alone)>>20, marginEditAllowance>>20)
 			}
 		})
 	}

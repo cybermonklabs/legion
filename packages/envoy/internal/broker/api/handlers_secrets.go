@@ -45,6 +45,13 @@ type settingsResponse struct {
 	// person. An administrator's key is named here when the rules give it seconds, and its
 	// person decides it all the same; `secret show` reads its tag.
 	JudgeKeys map[string]judgeKey `json:"judge_keys,omitempty"`
+	// The audience a machine's Google identity token must carry at the token exchange
+	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which
+	// is a broker that lists no VM service (cmd/broker's googleExchangeAudience). A machine's
+	// `agent-secrets` mints its identity token for this audience with no setting. No Kubernetes
+	// exchange audience is named beside it: a pod's trade mints no launcher credential, so no
+	// machine could register a session under it.
+	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 }
 
 // judgeKey is one key in settingsResponse.JudgeKeys.
@@ -59,7 +66,8 @@ type judgeKey struct {
 // where the secrets live, and which names the judge decides and on what guidance — and no secret's
 // value.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
-	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix}
+	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey
