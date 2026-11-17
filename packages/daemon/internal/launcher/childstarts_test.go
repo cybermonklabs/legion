@@ -165,6 +165,13 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 				t.Errorf("the check did not name %s, so it could pass over a real one; it named: %v", want.what, starts)
 			}
 		}
+		// Formatting a command puts it into an interface and starts nothing, so it must not be
+		// named, or the gate would go red on a log line.
+		for _, start := range starts {
+			if start.caller == launcherPackage+".plantedFormatted" {
+				t.Errorf("the check named %v, a command only formatted, which starts nothing", start)
+			}
+		}
 	})
 }
 
@@ -174,6 +181,7 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 const plantedStartsSource = `package launcher
 
 import (
+	"fmt"
 	"os/exec"
 	"sync"
 
@@ -188,7 +196,10 @@ func plantedStarts() {
 	plantedOnceValue()
 	plantedMethodExpression()
 	plantedPromoted()
+	plantedFormatted()
 }
+
+func plantedFormatted() { _ = fmt.Sprint(exec.Command("/bin/true")) }
 
 func plantedClosure() {
 	var once sync.Once
@@ -399,9 +410,9 @@ func (w *walk) visit(fn, from *ssa.Function) {
 }
 
 // value walks v, a function fn hands out as a value at pos, and records it as a start of fn's
-// when it is one: a bound method value (cmd.Run, whose call is $bound's), a method expression
-// ($thunk) or a promoted method's wrapper, which whoever is handed it may call where the walk
-// does not follow, the standard library among them.
+// when it is one: a bound method value (cmd.Run, whose call is $bound's) or a method expression
+// ($thunk), which whoever is handed it may call where the walk does not follow, the standard
+// library among them.
 func (w *walk) value(v, fn *ssa.Function, pos token.Pos) {
 	if !standardLibrary(fn) && isProcessStart(v) {
 		w.handed = append(w.handed, processStart{
@@ -426,7 +437,10 @@ func isProcessStart(fn *ssa.Function) bool {
 
 // handedOut walks what fn hands out: every function it uses as a value, every closure it makes,
 // the methods of every type it puts into an interface, and every function stored into a package
-// variable it reads (storedFunctions).
+// variable it reads (storedFunctions). A function or closure handed out that is a process start is
+// recorded as one of fn's (walk.value); an interface's methods are only walked, since putting a
+// *exec.Cmd into an interface (fmt.Sprint(cmd), an error's %s) starts nothing, and a start called
+// through the interface is a call edge the walk reads (isProcessStart resolves a promoted wrapper).
 func (w *walk) handedOut(fn *ssa.Function) {
 	for _, block := range fn.Blocks {
 		for _, instruction := range block.Instrs {
@@ -436,7 +450,7 @@ func (w *walk) handedOut(fn *ssa.Function) {
 			case *ssa.MakeInterface:
 				methods := w.prog.MethodSets.MethodSet(value.X.Type())
 				for i := range methods.Len() {
-					w.value(w.prog.MethodValue(methods.At(i)), fn, value.Pos())
+					w.visit(w.prog.MethodValue(methods.At(i)), fn)
 				}
 			}
 			// A function in the callee place of a static call is that call, not a value handed

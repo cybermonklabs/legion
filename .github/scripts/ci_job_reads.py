@@ -1653,13 +1653,15 @@ def race_lane_packages(root) -> list:
     return found
 
 
-def race_impossible_tests(root) -> dict:
-    """Per package of the lane under `root`, in the lane's own order, the tests only a plain run
-    covers (race_impossible_tests_of). A package that has none is left out. A file TEXT_CHECK_TESTS
-    names under `root` that this walk never reads is refused: the row would otherwise go on
-    exempting a file that has moved out of the lane, or been deleted, and say nothing."""
+def race_impossible_tests(root, packages=None) -> dict:
+    """Per package under `root`, in the order `packages` lists them, the tests only a plain run
+    covers (race_impossible_tests_of). `packages` is each (path under `root`, directory) to read,
+    and the envoy lane's (race_lane_packages) when it is not given. A package that has none is left
+    out. A file TEXT_CHECK_TESTS names under `root` that this walk never reads is refused: the row
+    would otherwise go on exempting a file that has moved out of the lane, or been deleted, and say
+    nothing."""
     found, read = {}, set()
-    for under, directory in race_lane_packages(root):
+    for under, directory in race_lane_packages(root) if packages is None else packages:
         names = set()
         for path in sorted(directory.glob("*_test.go")):
             read.add(path.as_posix())
@@ -1675,7 +1677,7 @@ def race_impossible_tests(root) -> dict:
 
 
 def race_impossible_script(packages) -> str:
-    """envoy-go's plain run of the tests the detector makes impossible: one `go test` per package
+    """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
     sorted, in its -run."""
     lines = []
@@ -1691,32 +1693,27 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-def daemon_race_impossible_tests() -> dict:
-    """Per package of DAEMON_RACE_PACKAGES, in that list's order, the tests only a plain run covers
-    (race_impossible_tests_of): the race step runs those packages and the plain step leaves them
-    out, so without this step such a test runs in no step of daemon-go. A package that has none is
-    left out."""
-    found = {}
+def daemon_race_packages() -> list:
+    """daemon-go's race step's packages (DAEMON_RACE_PACKAGES), in its order, as
+    race_impossible_tests() reads them: each (path under DAEMON, directory)."""
+    found = []
     for under in DAEMON_RACE_PACKAGES:
         directory = Path(DAEMON) / under
         if not directory.is_dir():
             raise ValueError(f"the daemon-go race step names {under}, which is no directory under {DAEMON}")
-        names = set()
-        for path in sorted(directory.glob("*_test.go")):
-            names |= race_impossible_tests_of(path)
-        if names:
-            found[under] = names
+        found.append((under, directory))
     return found
 
 
 # daemon-go's plain run of what its race step's packages hold that the race build cannot run: the
-# first is internal/launcher's call-graph walk, under `//go:build !race`, which loads the
-# launcher's whole program from source and builds its call graph twice. Built from the race
-# step's own package list and the source, as the envoy step above is, so a test added under
-# `//go:build !race` or behind raceEnabled in one of those packages changes this text and
-# ci-job-daemon-go.yaml stops matching it.
+# race step runs those packages and the plain step leaves them out, so without this step such a
+# test runs in no step of daemon-go. The first is internal/launcher's call-graph walk, under
+# `//go:build !race`, which loads the launcher's whole program from source and builds its call
+# graph twice. Built from the race step's own package list and the source, as the envoy step above
+# is, so a test added under `//go:build !race` or behind raceEnabled in one of those packages
+# changes this text and ci-job-daemon-go.yaml stops matching it.
 DAEMON_RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run"
-DAEMON_RACE_IMPOSSIBLE_PACKAGES = daemon_race_impossible_tests()
+DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_packages())
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 

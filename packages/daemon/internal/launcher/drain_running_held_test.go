@@ -80,16 +80,23 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
 		marks := t.TempDir()
 		started, finished := filepath.Join(marks, "started"), filepath.Join(marks, "finished")
+		// The member writes its own pid, and the drain begins only once PID 1 has adopted it, so
+		// it is no descendant of the held child and only the group clause can spare it.
 		held := exec.CommandContext(context.Background(), "/bin/sh", "-c",
-			`( (: >"$1"; sleep 1; : >"$2") & ); sleep 2 && [ -e "$2" ] && exit 5; exit 9`, "sh", started, finished)
+			`( sh -c 'echo $$ >"$1"; sleep 1; : >"$2"' sh "$1" "$2" & ); sleep 2 && [ -e "$2" ] && exit 5; exit 9`, "sh", started, finished)
 		procgroup.Configure(held)
 		pid, err := guard.start(held)
 		if err != nil {
 			t.Fatal(err)
 		}
-		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child's orphan to start", func() bool {
-			_, err := os.Stat(started)
-			return err == nil
+		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "PID 1 to adopt the held child's group member", func() bool {
+			body, err := os.ReadFile(started)
+			if err != nil {
+				return false
+			}
+			member, err := strconv.Atoi(strings.TrimSpace(string(body)))
+			ppid, _, ok := statParentAndGroup("/proc", member)
+			return err == nil && ok && ppid == 1
 		})
 		m.cleanExitedGeneration()
 		err = held.Wait()
@@ -212,7 +219,9 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 			return false
 		}
 		orphan, err = strconv.Atoi(strings.TrimSpace(string(body)))
-		return err == nil && zombie(orphan)
+		// A zombie its subshell has not left yet is the subshell's to reap, not PID 1's.
+		ppid, _, ok := statParentAndGroup("/proc", orphan)
+		return err == nil && ok && ppid == 1 && zombie(orphan)
 	})
 	if _, err := guard.reap(); err != nil {
 		t.Fatal(err)
