@@ -1886,7 +1886,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 			// The administrator's removal: it frees every role claim the session holds,
 			// whoever holds it (store.RoleReleaseAuthority.Force), and it is the only
 			// caller that forces one. An operator clearing a session's interests states no
-			// process, and a release naming none frees no claim that names one, so without
+			// process, and a release naming none frees no claim at all, so without
 			// the force this route could no longer free the roles of a client that has
 			// gone away, which is what it is for.
 			//

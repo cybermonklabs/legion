@@ -4792,7 +4792,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A client reads an absent field as "no other process holds this role" and an empty one as "another process does", so a 200 that wrote `""` would send such a claim's own holder a soft claim it does not need and a 409 naming itself, until its next registration adopted the claim for its process.
   It answers `handed_back` beside the holder on the 200 and on a lapsed holder's 404 alike, `true` where the claim carries the hand-back mark (`store.RoleClaim.HandedBack`) and the key left out where it carries none, as `client_instance_id` is left out where the claim names no process:
   the holder gave this role back through a release that could not free the claim, so no registration renews it any more and the role claim reaper frees the role at its first pass past the live window.
-  Both clients read a marked claim as a role they do not hold (`roleHeldBy` in `@legion/envoy-client/transport`), so a holder an older client's hand-back marked wrongly claims the role again at its next heartbeat and has it back, the fresh record that grant writes carrying no mark.
+  Both clients read a marked claim as a role they do not hold (`roleHeldBy` in `@legion/envoy-client/transport`), so a holder whose claim names its process and an older client's hand-back marked wrongly claims the role again at its next heartbeat and has it back, the fresh record that grant writes carrying no mark (a marked claim that names no process comes back later: see the hand-back below).
   A 404 has `reason: "unclaimed"` when no role claim exists;
   for a holder whose own record does not read live it has `reason: "holder_lapsed"` with that holder's id, that holder's `client_instance_id` and `handed_back` on the same terms as the 200's, its `holder_state` (`unresponsive` or `gone`), `claim_released: false`, since the lookup takes nothing from a holder in either state, and the last registration the listener still keeps (`session.LastSeenMemory`, 2 hours).
   The holder is resolved as a role send's first resolution through the publish route resolves it (`roles.ResolveHolder`, live only), within 3.5 s (`sendRequestBudget`) of the request's own context, and writes nothing to the role bucket.
@@ -4987,7 +4987,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   It marks a claim that names no process as it marks one that names a process.
   No registration renews or adopts a marked claim, so the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval — and `GET /v1/roles/<role>` answers `handed_back` meanwhile.
   The empty-topics deregistration names no one role's lane and so hands no one role back, a release that names a process frees the claims of that process and marks none, and the administrator's force frees them all.
-  A current client reads a marked claim as a role it does not hold (`roleHeldBy`) and claims it again at its next heartbeat, which writes a fresh record and so clears the mark, so a live holder an older client's hand-back marked keeps its role.
+  A current client reads a marked claim as a role it does not hold (`roleHeldBy`) and claims it again at its next heartbeat, which writes a fresh record and so clears the mark, so a live holder whose claim names its process and an older client's hand-back marked keeps its role.
+  A marked claim that names no process is not granted back at once: its holder's claim is weighed by the claim's renewal, so it comes back once that renewal is older than the live window, or after the reaper frees it.
 
 - `/v1/sessions` (GET)
 

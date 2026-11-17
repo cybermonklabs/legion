@@ -174,13 +174,15 @@ type RoleClaimSweep struct {
 // (renewRoleClaim), so the lapse is final rather than a holder briefly out of touch. The mark
 // is what makes freeing it safe where a session id would not be: it is the holder's own word
 // that it gave the role up, written by a release only that holder's session could make
-// (Registry.releaseReadRoleClaim, over a claim naming a process that release did not name), and
-// a second process that resumed the session id cannot write it, because such a release states
-// an instance and a release that states one frees the claims of that process and marks nothing.
+// (Registry.markRoleClaimHandedBack, over a claim of that session the release could not free,
+// whether it names a process or none), and a second process that resumed the session id cannot
+// write it, because such a release states an instance and a release that states one frees the
+// claims of that process and marks nothing.
 //
 // A marked claim is freed one live window after its last renewal and not at once, and that
-// window is load-bearing: a holder an older client's hand-back marked wrongly claims the role
-// again at its next heartbeat and has it back, the record that grant writes carrying no mark
+// window is load-bearing: a holder whose claim names its process and an older client's
+// hand-back marked wrongly claims the role again at its next heartbeat and has it back, the
+// record that grant writes carrying no mark
 // (SetRoleWithPrevious). The window must stay longer than a heartbeat. Nothing else holds a
 // marked claim: the restart grace is for a holder to register again and no registration renews
 // a marked claim, so the release gives it none (releaseReadExpiredRoleClaim).
