@@ -146,7 +146,11 @@ itself, whose tests import its sources by relative path.
   interpreter that stands behind it on PATH (`packages/claude-envoy/tests/open-asks-hook.test.ts`,
   `packages/envoy-client/test/dispatch-stack.ts`, `scripts/e2e/lib/held-port.test.ts`). A module
   that runs under Playwright's Node asks `bun` for its own `process.execPath` once
-  (`packages/dispatch/e2e/dispatch-cli.ts`).
+  (`packages/dispatch/e2e/dispatch-cli.ts`). Where the suite starts a script that runs `bun` by
+  name itself, a shell script or a `bin/` launcher, the script's PATH has this Bun's own directory,
+  `dirname(process.execPath)`, first, so its `bun` is this one
+  (`scripts/e2e/lib/app-logins.test.ts`, `scripts/e2e/lib/operator-dispatch.test.ts`, and the
+  `bin/dispatch` row of `packages/claude-envoy/tests/dist-fresh.test.ts`).
 
 - A suite that starts any other program under a HOME of its own, on the caller's PATH, passes it the
   caller's mise configuration: `callerMiseEnvironment(stateDir)`

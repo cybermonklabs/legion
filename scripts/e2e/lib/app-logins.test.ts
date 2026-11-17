@@ -26,6 +26,18 @@ import {
   tokenOf,
 } from "./stand-in-github-fixtures";
 
+// Each row and hook waits on its own processes' exits and on the stand-in GitHub's answers, and on
+// no clock of its own. At Bun's 5 s default, with the run confined to one CPU beside 32 busy loops,
+// the file failed in a hook ("a beforeEach/afterEach hook timed out", at 6.68 s); unconfined, at a
+// load average near 900 on this box, six of its rows exited 143. The limit below is a hang guard,
+// not a budget: with no limit, under the 32 loops, the module and its hooks took 7.47 s and
+// 5.72 s before the first row in two runs, and the slowest row without a limit of its own took
+// 3.41 s. This is three times the slowest of those, rounded up. It fires only if a child never
+// exits or the stand-in never answers. It is set before `standInGitHub` registers its hooks below:
+// in Bun 1.4.4 a hook takes the default timeout of the moment it is registered, so a hook
+// registered first keeps 5 s.
+setDefaultTimeout(30_000);
+
 // lib/app-logins.ts run as the stage proofs run it, against the stand-in GitHub of
 // stand-in-github-fixtures.ts, which answers GraphQL's viewer and GET /apps/<slug> under an
 // installation token of one of its Apps, and the two App-JWT routes a key-configured App is
@@ -39,16 +51,6 @@ const home = join(dir, "home");
 // shell runs `bun` by name under `home`, where a `bun` that is a mise shim has no version ("bun is
 // not a valid shim").
 const childPath = `${dirname(process.execPath)}:${process.env.PATH ?? ""}`;
-
-// Each row and hook waits on its own processes' exits and on the stand-in GitHub's answers, and on
-// no clock of its own. At Bun's 5 s default, with the run confined to one CPU beside 32 busy loops,
-// the file failed in a hook ("a beforeEach/afterEach hook timed out", at 6.68 s); unconfined, at a
-// load average near 900 on this box, six of its rows exited 143. The limit below is a hang guard,
-// not a budget: with no limit, under the 32 loops, the module and its hooks took 7.47 s and
-// 5.72 s before the first row in two runs, and the slowest row without a limit of its own took
-// 3.41 s. This is three times the slowest of those, rounded up. It fires only if a child never
-// exits or the stand-in never answers.
-setDefaultTimeout(30_000);
 
 // A GitHub that never answers: a port the row that calls this holds bound and never listens on
 // (`refusingOrigin`), so every request to it is refused, and no other process can bind it to
