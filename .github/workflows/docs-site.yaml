@@ -241,10 +241,12 @@ jobs:
         with:
           name: docs-site-dist
           path: docs/site/dist
+      # By the checkout's own path, the form every job that holds the list runs the check by.
       - name: Check the built site has no private name, internal host, tailnet host, or term of the deployment's own list
         env:
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
-        run: .github/scripts/check-private-names.sh docs/site/dist
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" docs/site/dist
       # ci.yaml's call only, as the build job's report above.
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
