@@ -165,19 +165,32 @@ func newMarkerRig(t *testing.T, deny ...string) markerRig {
 	if err := known.WaitForCacheReady(context.Background()); err != nil {
 		t.Fatalf("the known-session cache did not become ready: %v", err)
 	}
+	replaced := 0
 	for _, label := range []string{"first", "second"} {
 		if err := known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_marked", Topics: kvchunktest.Topics(label, 400)}); err != nil {
 			t.Fatalf("record the %s record: %v", label, err)
 		}
+		if label == "first" {
+			row, _ := known.cached("ses_known_marked")
+			replaced = row.layout.Chunks
+		}
 	}
-	rig := markerRig{srv: srv, conn: conn, known: known, clock: clock, logs: logs}
-	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the watcher to deliver the markers of the replaced chunks", func() bool {
+	if replaced == 0 {
+		t.Fatal("the first record was stored with no chunk, so its rewrite replaced none")
+	}
+	rig := markerRig{srv: srv, conn: conn, known: known, clock: clock, logs: logs, before: replaced}
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the watcher to deliver the markers of every replaced chunk", func() bool {
 		known.mu.RLock()
 		defer known.mu.RUnlock()
-		rig.before = len(known.markers.Due(clock.Now()))
-		return rig.before > 0
+		return len(known.markers.Due(clock.Now())) == replaced
 	})
-	clock.set(clock.Now().Add(kvchunk.MarkerGrace + time.Second))
+	// Inside the grace, a pass purges nothing: another listener's watcher may not have dropped the
+	// chunk yet.
+	clock.set(clock.Now().Add(kvchunk.MarkerGrace - time.Second))
+	if purged, err := known.purgeChunkMarkers(t.Context()); err != nil || purged != 0 {
+		t.Fatalf("a pass inside the grace purged %d markers (%v), want none", purged, err)
+	}
+	clock.set(clock.Now().Add(2 * time.Second))
 	return rig
 }
 
