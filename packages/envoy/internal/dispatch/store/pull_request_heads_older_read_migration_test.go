@@ -118,3 +118,66 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 		t.Errorf("#5 owed again: reason %q, revision %d then %d, want failure at a new revision", got, first, second)
 	}
 }
+
+// TestAWriteOfTheIssueAloneOwesNoReadAndKeepsTheMark: from pullRequestTextsVersion on, a row's
+// issue is an answer of Dispatch's statement over its stored facts, and the pass writes it to
+// the row with no read of GitHub. So an update of a read row that changes issue_key and
+// attribution_source alone owes no read and keeps github_read_at and checked_at, while an
+// update that changes a fact (the state) still takes the mark away and owes a read. Control in
+// the same test: at pullRequestHeadsOlderReadVersion the same write of the issue owes a read and
+// takes the mark away, so the test reads the change of the trigger.
+func TestAWriteOfTheIssueAloneOwesNoReadAndKeepsTheMark(t *testing.T) {
+	ctx := context.Background()
+	type marks struct {
+		owed              string
+		readAt, checkedAt *time.Time
+	}
+	writeTheIssue := func(t *testing.T, version int, set string) (before, after marks) {
+		t.Helper()
+		store := openEmptyTestStore(t)
+		if err := store.migrate(ctx, migrationsThrough(t, version)); err != nil {
+			t.Fatalf("migrate to %d: %v", version, err)
+		}
+		if _, err := store.Pool.Exec(ctx, `
+			insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice@example.com');
+			insert into issues (key, project_key, number, title, status, created_by, rank) values
+				('ACME-1', 'ACME', 1, 'ACME-1', 'todo', '{"kind":"system","id":"test"}'::jsonb, 'ACME-1'),
+				('ACME-2', 'ACME', 2, 'ACME-2', 'todo', '{"kind":"system","id":"test"}'::jsonb, 'ACME-2');
+			insert into pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, event_at, checked_at, github_read_at)
+			values ('acme/widgets', 1, 'aaaa', 'merged', 'ACME-1', 'branch', clock_timestamp(), clock_timestamp(), clock_timestamp());
+		`); err != nil {
+			t.Fatalf("store a read row of ACME-1: %v", err)
+		}
+		read := func() marks {
+			t.Helper()
+			var m marks
+			if err := store.Pool.QueryRow(ctx, `
+				select coalesce((select reason from pull_request_reads_owed where repo = 'acme/widgets' and number = 1), ''),
+					github_read_at, checked_at
+				from pull_request_heads where repo = 'acme/widgets' and number = 1
+			`).Scan(&m.owed, &m.readAt, &m.checkedAt); err != nil {
+				t.Fatalf("read #1's marks: %v", err)
+			}
+			return m
+		}
+		before = read()
+		if _, err := store.Pool.Exec(ctx, `update pull_request_heads set `+set+` where repo = 'acme/widgets' and number = 1`); err != nil {
+			t.Fatalf("update #1 (%s): %v", set, err)
+		}
+		return before, read()
+	}
+	const theIssue = `issue_key = 'ACME-2', attribution_source = 'external_link'`
+
+	before, after := writeTheIssue(t, pullRequestTextsVersion, theIssue)
+	if after.owed != "" || after.readAt == nil || !after.readAt.Equal(*before.readAt) || after.checkedAt == nil || !after.checkedAt.Equal(*before.checkedAt) {
+		t.Errorf("a write of the issue alone: owed %q, github_read_at %v then %v, checked_at %v then %v; want nothing owed and both kept",
+			after.owed, before.readAt, after.readAt, before.checkedAt, after.checkedAt)
+	}
+	if _, after := writeTheIssue(t, pullRequestTextsVersion, `state = 'closed'`); after.owed != "failure" || after.readAt != nil {
+		t.Errorf("a write of the state alone: owed %q, github_read_at %v; want failure and the mark taken away", after.owed, after.readAt)
+	}
+	if _, after := writeTheIssue(t, pullRequestHeadsOlderReadVersion, theIssue); after.owed != "failure" || after.readAt != nil {
+		t.Errorf("at %d, a write of the issue alone: owed %q, github_read_at %v; want failure and the mark taken away (the control)",
+			pullRequestHeadsOlderReadVersion, after.owed, after.readAt)
+	}
+}
