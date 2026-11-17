@@ -126,8 +126,27 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	}
 
 	// The test's cleanup has not run yet, so a socket gone now shows Start closed the test's copy
-	// and the child released its own on exit, and that nothing else they started holds one.
-	checkSocket(t, "after the child exited", inode, map[int]int{self: 0, cmd.Process.Pid: 0}, 0)
+	// and the child released its own on exit.
+	checkReleased(t, held, inode, map[int]int{self: 0, cmd.Process.Pid: 0})
+}
+
+// checkReleased fails the test unless the held socket is gone once every process holding it has
+// closed it or exited. On Linux it reads the socket's holders and TCP rows (checkSocket), and also
+// that nothing else they started holds a copy. Elsewhere there is no /proc, so it binds held.Addr
+// again and fails if the port is not free, as the test did before it read /proc: a bind can fail
+// because another program on the machine took the freed port, which is why Linux reads the socket
+// instead, and no CI runner is off Linux.
+func checkReleased(t *testing.T, held *HeldPort, inode uint64, copies map[int]int) {
+	t.Helper()
+	if runtime.GOOS == "linux" {
+		checkSocket(t, "after the child exited", inode, copies, 0)
+		return
+	}
+	rebound, err := net.Listen("tcp", held.Addr)
+	if err != nil {
+		t.Fatalf("bind %s after the child exited: %v; want it free", held.Addr, err)
+	}
+	_ = rebound.Close()
 }
 
 // socketInode is the inode of the socket file holds: /proc/<pid>/fd names the socket
@@ -149,7 +168,7 @@ func socketInode(t *testing.T, file *os.File) uint64 {
 // that many descriptors (sockettest.Descriptors), and the TCP tables list it in rows rows
 // (sockettest.TCPRows): one while any process holds it listening, none once every holder has closed
 // it. A process that has exited and been reaped holds none. It reads /proc, so off Linux it checks
-// nothing and says so.
+// nothing and says so; checkReleased binds the port again there instead.
 func checkSocket(t *testing.T, when string, inode uint64, copies map[int]int, rows int) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
