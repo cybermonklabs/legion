@@ -17,77 +17,132 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown: the broker makes the enrollment
-// at once, and its answer would reach the helper 5 s later, past the op's 2 s bound. `enroll
-// --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying the outcome is unknown, and writes
-// no enrollment file, while the broker holds the row. The answer is the one the bound's end of the
-// request gives (requestReach.settle): its cause says the request may have reached the broker, and
-// it comes before the bound plus 1 s, where the helper's timer would answer with a cause of its
-// own. The same command again, answered at once, exits 0 with that row's id, and the broker still
-// holds that one live row.
+// lateAnswer hands on the broker's answer to the next lates POST /v1/enrollments only after more
+// past the moment the broker gave it: a broker that a loaded machine makes slow, whose answer
+// comes after any bound shorter than after. As any transport does, it watches the request's
+// context while it waits, and returns the context's error rather than an answer that came after
+// the context's deadline.
+type lateAnswer struct {
+	base  http.RoundTripper
+	after time.Duration
+	lates atomic.Int64
+}
+
+func (l *lateAnswer) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := l.base.RoundTrip(req)
+	if err != nil || req.Method != http.MethodPost || req.URL.Path != "/v1/enrollments" || l.lates.Add(-1) < 0 {
+		return resp, err
+	}
+	timer := time.NewTimer(l.after)
+	defer timer.Stop()
+	select {
+	case <-req.Context().Done():
+	case <-timer.C:
+		if deadline, ok := req.Context().Deadline(); !ok || time.Now().Before(deadline) {
+			return resp, nil
+		}
+		<-req.Context().Done()
+	}
+	resp.Body.Close()
+	return nil, req.Context().Err()
+}
+
+// TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown: the broker makes the enrollment,
+// and its answer would reach the helper 5 s after the transport has the request in hand, past the
+// op's 2 s bound. The broker answers at once, or, as a loaded machine can make it, only after the
+// bound and the helper's timer. `enroll --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying
+// the outcome is unknown, and writes no enrollment file, while the broker holds the row. The
+// answer is the one the bound's end of the request gives (requestReach.settle): its cause says the
+// request may have reached the broker, and it comes before the bound plus 1 s, where the helper's
+// timer would answer with a cause of its own. The bound ends the helper's request and not the
+// broker's (slowEnrollments), so the broker's rows are read once the broker has answered, however
+// late. The same command again, answered at once, exits 0 with that row's id, and the broker
+// still holds that one live row.
 func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T) {
-	rig := brokertest.NewRig(t)
-	binary := buildAgentSecrets(t)
-	slow := &slowEnrollments{base: http.DefaultTransport, hold: 5 * time.Second}
-	srv, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow})
-	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
-		t.Fatalf("approved machine login (code %s): exit %d, stderr %q; want 0", code, exit, stderr)
-	}
-	// The helper reads the bound at each op. The enroll comes from another process, so this
-	// process's own call on the socket is what orders the write before the helper reads it.
 	const bound = 2 * time.Second
-	srv.BrokerCallBound = bound
-	if status, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second); err != nil || status.LoginState != "issued" {
-		t.Fatalf("login-status after the approved login: %+v %v; want issued", status, err)
-	}
-	runtimeID := "past-bound-box-" + t.Name()
-	keyDir := filepath.Join(t.TempDir(), "keys")
-	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}
-	args := []string{"enroll", "--helper", "--runtime-id", runtimeID, "--thumbprint", freshThumbprint(t)}
+	for _, tc := range []struct {
+		name string
+		// late is how long after it made the enrollment the broker answers, through lateAnswer:
+		// none, or past the bound and the helper's timer.
+		late time.Duration
+	}{
+		{name: "the broker answers at once"},
+		{name: "the broker answers after the bound", late: bound + time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			late := &lateAnswer{base: http.DefaultTransport, after: tc.late}
+			rig := brokertest.NewRig(t)
+			binary := buildAgentSecrets(t)
+			slow := &slowEnrollments{base: late, hold: 5 * time.Second}
+			srv, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow})
+			if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
+				t.Fatalf("approved machine login (code %s): exit %d, stderr %q; want 0", code, exit, stderr)
+			}
+			// The helper reads the bound at each op. The enroll comes from another process, so this
+			// process's own call on the socket is what orders the write before the helper reads it.
+			srv.BrokerCallBound = bound
+			if status, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second); err != nil || status.LoginState != "issued" {
+				t.Fatalf("login-status after the approved login: %+v %v; want issued", status, err)
+			}
+			runtimeID := "past-bound-box-" + t.Name()
+			keyDir := filepath.Join(t.TempDir(), "keys")
+			env := []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}
+			args := []string{"enroll", "--helper", "--runtime-id", runtimeID, "--thumbprint", freshThumbprint(t)}
 
-	slow.holds.Store(1)
-	start := time.Now()
-	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	elapsed := time.Since(start)
-	rows := enrollmentsOf(t, rig, runtimeID)
-	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
-	if n := slow.held.Load(); n != 1 {
-		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1: %s", n, outcome)
-	}
-	if exit != 1 || stdout != "" || !strings.Contains(stderr, helper.CodeEnrollUnknown) || !strings.Contains(stderr, "the outcome is unknown") {
-		t.Fatalf("enroll --helper past the helper's bound: %s; want exit 1 naming %s and saying the outcome is unknown", outcome, helper.CodeEnrollUnknown)
-	}
-	// settle's cause, which the helper's mayHaveReachedCause gives; the timer's says "did not end in".
-	const settleCause = "the request may have reached the broker, but the helper did not get its result ("
-	if !strings.Contains(stderr, settleCause) || strings.Contains(stderr, "did not end in") {
-		t.Errorf("enroll --helper past the helper's bound: %s; want settle's cause %q, not the timer's \"did not end in\"", outcome, settleCause)
-	}
-	if elapsed >= bound+time.Second {
-		t.Errorf("enroll --helper past the helper's bound took %s; want settle's answer, before the %s bound plus 1 s, where the helper's timer answers", elapsed, bound)
-	}
-	if _, err := os.Stat(filepath.Join(keyDir, "enrollment")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("enroll --helper past the helper's bound wrote an enrollment file (%v): %s", err, outcome)
-	}
-	live := liveIDs(rows)
-	if len(live) != 1 {
-		t.Fatalf("enroll --helper past the helper's bound: %s; want the one live row the broker made", outcome)
-	}
+			late.lates.Store(1)
+			slow.holds.Store(1)
+			start := time.Now()
+			stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
+			elapsed := time.Since(start)
+			outcome := func() string {
+				return fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's answer: %s; the broker's rows for %s: %+v",
+					exit, stdout, stderr, slow.lastAnswer(), runtimeID, enrollmentsOf(t, rig, runtimeID))
+			}
+			if n := slow.held.Load(); n != 1 {
+				t.Fatalf("the transport held %d requests of POST /v1/enrollments, want 1: %s", n, outcome())
+			}
+			if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return slow.answered.Load() == 1 }) {
+				t.Fatalf("the broker never answered the held POST /v1/enrollments: %s", outcome())
+			}
+			rows := enrollmentsOf(t, rig, runtimeID)
+			if exit != 1 || stdout != "" || !strings.Contains(stderr, helper.CodeEnrollUnknown) || !strings.Contains(stderr, "the outcome is unknown") {
+				t.Fatalf("enroll --helper past the helper's bound: %s; want exit 1 naming %s and saying the outcome is unknown", outcome(), helper.CodeEnrollUnknown)
+			}
+			// settle's cause, which the helper's mayHaveReachedCause gives; the timer's says "did not end in".
+			const settleCause = "the request may have reached the broker, but the helper did not get its result ("
+			if !strings.Contains(stderr, settleCause) || strings.Contains(stderr, "did not end in") {
+				t.Errorf("enroll --helper past the helper's bound: %s; want settle's cause %q, not the timer's \"did not end in\"", outcome(), settleCause)
+			}
+			if elapsed >= bound+time.Second {
+				t.Errorf("enroll --helper past the helper's bound took %s; want settle's answer, before the %s bound plus 1 s, where the helper's timer answers", elapsed, bound)
+			}
+			if _, err := os.Stat(filepath.Join(keyDir, "enrollment")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("enroll --helper past the helper's bound wrote an enrollment file (%v): %s", err, outcome())
+			}
+			live := liveIDs(rows)
+			if len(live) != 1 {
+				t.Fatalf("enroll --helper past the helper's bound: %s; want the one live row the broker made", outcome())
+			}
 
-	stdout, stderr, exit = runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	rows = enrollmentsOf(t, rig, runtimeID)
-	outcome = fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
-	if exit != 0 || stdout != live[0]+"\n" {
-		t.Fatalf("the same enroll --helper again: %s; want exit 0 with %s, the row the first made", outcome, live[0])
-	}
-	if now := liveIDs(rows); len(now) != 1 || now[0] != live[0] {
-		t.Fatalf("the same enroll --helper again: %s; want exactly one live row, %s", outcome, live[0])
+			stdout, stderr, exit = runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
+			rows = enrollmentsOf(t, rig, runtimeID)
+			again := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
+			if exit != 0 || stdout != live[0]+"\n" {
+				t.Fatalf("the same enroll --helper again: %s; want exit 0 with %s, the row the first made", again, live[0])
+			}
+			if now := liveIDs(rows); len(now) != 1 || now[0] != live[0] {
+				t.Fatalf("the same enroll --helper again: %s; want exactly one live row, %s", again, live[0])
+			}
+		})
 	}
 }
 

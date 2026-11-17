@@ -16,8 +16,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,33 +74,92 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 	return srv, sock
 }
 
-// slowEnrollments sends each request through base and holds the broker's answer to the next holds
-// POST /v1/enrollments for hold before it hands it on: a broker that made the enrollment at once
-// and is slow to say so. It watches the request's context while it holds, as a transport waiting
-// on a slow answer does, so whatever ends the helper's call ends the hold: the answer's body is
-// closed and the context's error returned. held counts the answers it began to hold.
+// slowEnrollments holds the next holds POST /v1/enrollments from the moment it has the request in
+// hand, for hold: a broker that makes the enrollment at once and is slow to say so. A request
+// whose context has already ended goes to base as it came, as a transport sends nothing on an
+// ended context. A held request goes to base whole, under a context the helper's does not end
+// (context.WithoutCancel, which keeps the helper's trace), so the broker makes the enrollment
+// however slow a loaded machine makes it, even when its answer comes after the helper's bound.
+// The broker's answer is handed on once it is in hand and hold has passed. When the request's
+// context ends first, as a transport waiting on a slow answer does, the answer's body is closed
+// and the context's error returned, but only once the request is written, so the helper's trace
+// has seen it leave. held counts the requests it began to hold; answered counts the broker's
+// answers to them, a failure among them, and answer is the last of those, for a test that must
+// wait for the broker before it reads the broker's rows.
 type slowEnrollments struct {
-	base  http.RoundTripper
-	hold  time.Duration
-	holds atomic.Int64
-	held  atomic.Int64
+	base     http.RoundTripper
+	hold     time.Duration
+	holds    atomic.Int64
+	held     atomic.Int64
+	answered atomic.Int64
+	answer   atomic.Pointer[string]
 }
 
 func (s *slowEnrollments) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := s.base.RoundTrip(req)
-	if err != nil || req.Method != http.MethodPost || req.URL.Path != "/v1/enrollments" || s.holds.Add(-1) < 0 {
-		return resp, err
+	if req.Method != http.MethodPost || req.URL.Path != "/v1/enrollments" || req.Context().Err() != nil || s.holds.Add(-1) < 0 {
+		return s.base.RoundTrip(req)
 	}
 	s.held.Add(1)
-	timer := time.NewTimer(s.hold)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return resp, nil
-	case <-req.Context().Done():
-		resp.Body.Close()
-		return nil, req.Context().Err()
+	hold := time.NewTimer(s.hold)
+	defer hold.Stop()
+	wrote := make(chan struct{})
+	var once sync.Once
+	sent := httptrace.WithClientTrace(context.WithoutCancel(req.Context()), &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) { once.Do(func() { close(wrote) }) },
+	})
+	type result struct {
+		resp *http.Response
+		err  error
 	}
+	got := make(chan result, 1)
+	go func() {
+		resp, err := s.base.RoundTrip(req.WithContext(sent))
+		answer := fmt.Sprint(err)
+		if err == nil {
+			answer = resp.Status
+		}
+		s.answer.Store(&answer)
+		s.answered.Add(1)
+		got <- result{resp, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil {
+			return nil, r.err
+		}
+		select {
+		case <-hold.C:
+		case <-req.Context().Done():
+		}
+		if req.Context().Err() == nil {
+			return r.resp, nil
+		}
+		r.resp.Body.Close()
+		return nil, req.Context().Err()
+	case <-req.Context().Done():
+	}
+	select {
+	case <-wrote:
+		go func() {
+			if r := <-got; r.err == nil {
+				r.resp.Body.Close()
+			}
+		}()
+	case r := <-got:
+		if r.err == nil {
+			r.resp.Body.Close()
+		}
+	}
+	return nil, req.Context().Err()
+}
+
+// lastAnswer is the last of the broker's answers to a held request, its status or its failure,
+// or "none yet".
+func (s *slowEnrollments) lastAnswer() string {
+	if answer := s.answer.Load(); answer != nil {
+		return *answer
+	}
+	return "none yet"
 }
 
 // freshThumbprint is the thumbprint of a new session key.
@@ -170,7 +231,7 @@ func TestEnrollThroughTheHelperAnswersTheBrokersOutcomeWhenTheBrokerIsSlow(t *te
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 
 	if n := slow.held.Load(); n != 1 {
-		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1: %s", n, outcome)
+		t.Fatalf("the transport held %d requests of POST /v1/enrollments, want 1: %s", n, outcome)
 	}
 	if exit != 0 {
 		t.Fatalf("enroll --helper against a broker 8 s slow to answer: %s; want exit 0", outcome)
