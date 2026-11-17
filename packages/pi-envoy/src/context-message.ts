@@ -24,7 +24,10 @@ export function leadingText(message: unknown, role: string): string | undefined 
   return undefined;
 }
 
-/** A user message of one text block, as `withDispatchFirst` and `withSessionAnswers` add it. */
-export function userTextMessage(text: string): unknown {
-  return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
+/** A user message of one text block for each of `blocks`, in order, stamped 0, as
+ *  `withDispatchFirst` adds its skill (one block) and `withSessionAnswers` adds or rebuilds an
+ *  answers message: a list and the sentence saying it replaces every earlier one, or the failure
+ *  line alone. */
+export function userTextMessage(...blocks: readonly string[]): unknown {
+  return { role: "user", content: blocks.map((text) => ({ type: "text", text })), timestamp: 0 };
 }

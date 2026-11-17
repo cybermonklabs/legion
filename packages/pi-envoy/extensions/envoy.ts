@@ -208,6 +208,7 @@ import {
 } from "../src/registration-state";
 import { ServerClock } from "../src/server-clock";
 import {
+  ANSWERS_SENT_ENTRY,
   type CarriedAnswers,
   carriedAnswers,
   withSessionAnswers,
@@ -4286,11 +4287,12 @@ export default function envoyExtension(pi: PiApi): void {
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs
-      // only the list: the request says the list could not be read, after its last message where
-      // a list sat (`withSessionAnswers`), and the log says why. A failure line already placed
-      // keeps its own reason.
-      logger.warn(`envoy: people's answers could not be read: ${messageFor(error)}`);
-      return { text: sessionAnswersFailureLine(messageFor(error)) };
+      // only the list: it gives the failure line, with the error as its reason, which
+      // `withSessionAnswers` appends after the last message unless the newest answers message
+      // sent is a failure line already. The log says why through its failure episode
+      // (`readFailed`), once per episode as for every failed read, so nothing is logged here.
+      const reason = messageFor(error);
+      return { text: sessionAnswersFailureLine(reason), reason };
     }
   };
 
@@ -4299,12 +4301,14 @@ export default function envoyExtension(pi: PiApi): void {
     // (`../src/card-age`), so a reader whose inbox ran behind does not take a late card's stamp
     // for the present time. Every session that reaches Dispatch, Legion panes and `task` subagents
     // included, also carries the dispatch-first skill on every request at the head, where its
-    // bytes never change, and on every request of its main loop what people wrote to it: after the
-    // last message when it shows something new, then where it went (`withSessionAnswers`). The host runs this handler on
-    // its side turns, its handoff prompt and a remote compaction's conversions too;
-    // `withSessionAnswers` leaves the list off those. Oh My Pi hands this handler no abort signal:
-    // it races the handler against the run's own and drops what an aborted handler returns, and
-    // the read it shares goes on to fill the cache.
+    // bytes never change, and on every request of its main loop what people wrote to it: every
+    // answers message an earlier request sent, which the session records and each request
+    // rebuilds at its old place with its old bytes, and a new one after the last message when the
+    // read shows a change (`withSessionAnswers`). The host runs this handler on its side turns,
+    // its handoff prompt and a remote compaction's conversions too; `withSessionAnswers` leaves
+    // the answers off those and records nothing for them. Oh My Pi hands this handler no abort
+    // signal: it races the handler against the run's own and drops what an aborted handler
+    // returns, and the read it shares goes on to fill the cache.
     pi.on("context", async (event, context) => {
       // The host's own live id, as `message_end` reads it: this one process serves one session at
       // a time and moves between them, and a session that followed the same topic reads the same
@@ -4316,10 +4320,13 @@ export default function envoyExtension(pi: PiApi): void {
       );
       if (!atStart.dispatch.enabled) return aged === undefined ? undefined : { messages: aged };
       const withSkill = withDispatchFirst(aged ?? event.messages, DISPATCH_FIRST_CONTEXT);
+      // The session the request is built from, as it began: the host can move to another session
+      // while the read waits, and an answers message this request sent belongs to this one alone.
+      const id = context.sessionManager.getSessionId();
       const messages = await withSessionAnswers(withSkill ?? aged ?? event.messages, {
         branch: () => context.sessionManager.getBranch?.() ?? [],
         session: context.sessionManager,
-        id: context.sessionManager.getSessionId(),
+        id,
         // Read off the live `AgentSession` (18.12.2), whose getters the declared host surface
         // leaves out: `get isCompacting() { return this.#C.isCompacting; }` and
         // `get compactionSpeculation() { return this.#C.speculationState; }`, the compaction
@@ -4335,16 +4342,39 @@ export default function envoyExtension(pi: PiApi): void {
           );
         },
         read: () => sessionAnswersText(context),
-        // A failed read that gave the cached list, or a list an older copy of this extension
-        // rendered from its cache, where the placed bytes stay: the model is not told of that
-        // failure (the kept bytes may name an earlier one), unless the kept bytes are that read's
-        // own text, which say it. So the log says it, on the first such request and not again
-        // until a read has answered, so a lasting failure logs once. The reason is this copy's
-        // read's own, as its failure line would carry it, or the sentence an older copy's read
-        // line names, as that copy's renderer wrote it, ending with a full stop, `?` or `!`.
-        unshownFailure: (reason) =>
+        // The answers message this request appends goes into the session file as it is sent, so
+        // every later request, and the first of a process that resumes the session, rebuilds it
+        // where it went. The write is guarded as `recordNotice` is: when the host moved to another
+        // session while the read waited, the entry would land in that session's file, so nothing
+        // is written and the log says so; the request still carries the message.
+        record: (entry) => {
+          if (context.sessionManager.getSessionId() !== id) {
+            logger.warn(
+              "envoy: the list of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read"
+            );
+            return;
+          }
+          try {
+            pi.appendEntry(ANSWERS_SENT_ENTRY, entry);
+          } catch (error) {
+            logger.warn(
+              "envoy: the list of people's answers this request sent could not be recorded in the session file",
+              { error: messageFor(error) }
+            );
+          }
+        },
+        // The first failed read of a failure episode, which runs until a read Dispatch answers,
+        // whether the request shows the model a message for it (the failure line, or the cached
+        // list when it shows something new, after the last message) or keeps the answers messages
+        // sent, which do not name this read's failure. Logged once per episode, so a lasting
+        // failure logs one line. The reason is this copy's read's own, as its failure line would
+        // carry it, or the sentence an older copy's read line names, as that copy's renderer wrote
+        // it, ending with a full stop, `?` or `!`.
+        readFailed: (reason, shown) =>
           logger.warn(
-            `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`
+            shown
+              ? `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`
+              : `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`
           ),
       });
       const result = messages ?? withSkill ?? aged;
