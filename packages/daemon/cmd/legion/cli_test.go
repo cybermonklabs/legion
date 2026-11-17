@@ -175,7 +175,8 @@ func TestLegionConformance(t *testing.T) {
 // cobra's own two commands refuse a word they do not know as every other group does, exit 2:
 // left as cobra makes them, `legion completion xyz` prints completion's help and exits 0 (the
 // command is not runnable), and `legion help nope` prints the root's help and exits 0 (a root
-// with an Args of its own resolves any word to itself). The forms they serve still exit 0.
+// with an Args of its own resolves any word to itself). A word after a shell is a usage error
+// too, where cobra's NoArgs would exit 1. The forms they serve still exit 0.
 func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
 	for _, tc := range []struct {
 		args   []string
@@ -184,6 +185,10 @@ func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
 	}{
 		{[]string{"completion", "xyz"}, 2, `legion completion: unknown command "xyz" for "legion completion"`},
 		{[]string{"completion"}, 2, "Usage:\n  legion completion"},
+		{[]string{"completion", "bash", "extra"}, 2, `legion completion bash: unexpected argument "extra"`},
+		{[]string{"completion", "zsh", "extra"}, 2, `legion completion zsh: unexpected argument "extra"`},
+		{[]string{"completion", "fish", "extra"}, 2, `legion completion fish: unexpected argument "extra"`},
+		{[]string{"completion", "powershell", "extra"}, 2, `legion completion powershell: unexpected argument "extra"`},
 		{[]string{"help", "nope"}, 2, `legion help: unknown help topic "nope"`},
 		{[]string{"help", "claims", "frob"}, 2, `legion help: unknown help topic "claims frob"`},
 		{[]string{"help"}, 0, ""},

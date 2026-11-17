@@ -58,10 +58,15 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 	root.SetErr(stderr)
 	// cobra's completion command runs nothing of its own, so a word naming none of its shells
 	// would print its help and exit 0: it is a group like every other. Execute adds no second one.
+	// Each shell's own NoArgs returns a plain error, which exits 1: a word after a shell is a
+	// usage error, as after any command that takes none.
 	root.InitDefaultCompletionCmd()
 	for _, command := range root.Commands() {
 		if command.Name() == "completion" {
 			group(command)
+			for _, shell := range command.Commands() {
+				shell.Args = noArguments
+			}
 		}
 	}
 	root.SetHelpCommand(newHelpCommand())
@@ -192,27 +197,33 @@ func runs(do action) func(*cobra.Command, []string) error {
 }
 
 // group is cmd as a command that holds children: a word naming none of them is a usage error with
-// cobra's suggestions (commandNamed), and the group with no word prints its usage on stderr and
+// cobra's suggestions (wordFirst), and the group with no word prints its usage on stderr and
 // exits 2. cobra would answer both with the group's help and exit 0, and its suggestions read
-// SuggestionsMinimumDistance only where cobra itself looks a word up. A word naming no command
-// is that error even when a flag after it is no flag of the group's: cobra reads the group's flags
-// before its words, and `legion workspace-init init --issue X` would be refused for --issue. Every
-// other flag error of the group, and of each command under it, is a usage error.
+// SuggestionsMinimumDistance only where cobra itself looks a word up.
 func group(cmd *cobra.Command, children ...*cobra.Command) *cobra.Command {
-	cmd.Args = commandNamed
+	wordFirst(cmd)
 	cmd.SuggestionsMinimumDistance = 2
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		fmt.Fprint(cmd.ErrOrStderr(), cmd.UsageString())
 		return exitCode(2)
 	}
+	cmd.AddCommand(children...)
+	return cmd
+}
+
+// wordFirst makes cmd, whose words are its commands' names alone, refuse a word that names none of
+// them (commandNamed), even when a flag that is not cmd's follows the word: cobra reads cmd's flags
+// before its words, and `legion workspace-init init --issue X` or `legion launcher role-inix
+// --generation 1` would otherwise be refused for the flag. Every other flag error of cmd, and of
+// each command under it that sets none of its own, is a usage error.
+func wordFirst(cmd *cobra.Command) {
+	cmd.Args = commandNamed
 	cmd.SetFlagErrorFunc(func(failed *cobra.Command, err error) error {
 		if words := failed.Flags().Args(); failed == cmd && len(words) > 0 {
 			return commandNamed(failed, words)
 		}
 		return usageError{err}
 	})
-	cmd.AddCommand(children...)
-	return cmd
 }
 
 // commandNamed refuses a word that names none of cmd's commands, suggesting the ones it may have

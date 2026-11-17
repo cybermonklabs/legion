@@ -74,6 +74,12 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 		{"--warm-codegraph without LEGION_WORKSPACE", append([]string{"--connect", connect, "--boot-token-file", token, "--warm-codegraph"}, omp...), 1, []string{"--warm-codegraph", "LEGION_WORKSPACE"}},
 		{"a --stop-grace that is not positive", append([]string{"--connect", connect, "--boot-token-file", token, "--stop-grace", "0s"}, omp...), 1, []string{"--stop-grace 0s is not a positive duration"}},
 		{"--socket mode, which is not ported", append([]string{"--socket", socket}, omp...), 2, []string{"-socket"}},
+		// A word before -- is no flag of the shim's and no part of the agent's command: Go's flag
+		// package passed it on as the command's first word, and here it is a usage error.
+		{"a word before --", append([]string{"--connect", connect, "--boot-token-file", token, "stray"}, omp...), 2,
+			[]string{`legion worker-shim: unexpected argument "stray" before --`, "Run 'legion worker-shim --help' for usage."}},
+		{"a word and no --", []string{"--connect", connect, "--boot-token-file", token, "stray"}, 2,
+			[]string{`legion worker-shim: unexpected argument "stray": the command to run follows --`, "Run 'legion worker-shim --help' for usage."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer

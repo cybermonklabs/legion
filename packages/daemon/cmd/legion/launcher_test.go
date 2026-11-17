@@ -133,6 +133,25 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 	}
 }
 
+// A word under `legion launcher` names a command of its or is a usage error naming the word, even
+// when a flag the launcher does not have follows it: `launcher role-inix --generation 1` is a
+// mistyped role-init, and naming --generation would send the reader to the wrong word.
+func TestTheLauncherCommandRefusesAWordItDoesNotKnowByTheWord(t *testing.T) {
+	for _, args := range [][]string{
+		{"role-inix"},
+		{"role-inix", "--generation", "1"},
+		{"--connect", "tcp://127.0.0.1:1", "role-inix", "--status-fd", "3"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var stdout, stderr bytes.Buffer
+		code := run(ctx, append([]string{"legion", "launcher"}, args...), &stdout, &stderr)
+		cancel()
+		if want := `legion launcher: unknown command "role-inix" for "legion launcher"`; code != 2 || !strings.Contains(stderr.String(), want) || strings.Contains(stderr.String(), "unknown flag") {
+			t.Errorf("legion launcher %q = %d, stderr %q; want 2 naming the word: %q", args, code, stderr.String(), want)
+		}
+	}
+}
+
 // A service account to impersonate names a session database, so the launcher told one without the
 // instance, the database and the login refuses before it dials anything. A launcher that did not
 // know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the

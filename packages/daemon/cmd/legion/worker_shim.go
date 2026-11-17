@@ -97,8 +97,7 @@ func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlag
 
 	argv, err := afterDash(cmd, args)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion worker-shim: %v\n", err)
-		return 1
+		return refuse(cmd, "%v", err)
 	}
 	cfg, err := workerShimConfig(set, given, argv)
 	if err == nil && podSafety {
