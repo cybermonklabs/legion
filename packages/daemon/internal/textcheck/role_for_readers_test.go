@@ -64,6 +64,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}:            {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                 {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                    {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
+	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:         {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:          {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:         {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:         {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},

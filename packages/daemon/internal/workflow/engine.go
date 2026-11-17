@@ -1445,6 +1445,11 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return refused("BACKWARD_REFUSED", fmt.Sprintf("the %s's move of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
 			fact.Requester, issue.Key, fact.To)), nil
 	}
+	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
+	// here, before anything moves (backwardReasonRefusal).
+	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Reason); code != "" {
+		return refused(code, why), nil
+	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
@@ -1546,7 +1551,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr)); err != nil {
+	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
 		return err
 	}
 	from := issue.Phase

@@ -703,11 +703,13 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 // --- GET /v1/settings, POST /v1/secrets/{name}/reread (public: no proof) ---
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
-// lives under and, per store, the key they are encrypted with and where they are; and, on either
-// store, the Google exchange audience a machine's own identity token must carry, from which the
-// use command finds that identity with no setting (machineSource). A broker from before the store
-// field answers none, and holds them in AWS Secrets Manager; one from before the audience, or one
-// that accepts no machine identity, names none.
+// lives under and, per store, the key they are encrypted with and where they are; on either store,
+// the Google exchange audience a machine's own identity token must carry, from which the use
+// command finds that identity with no setting (machineSource); and whether the broker reads a
+// secret's type from the type tag (SecretTypeTag), without which the secret forms write no typed
+// secret (requireTypeTag). A broker from before the store field answers none, and holds them in
+// AWS Secrets Manager; one from before the audience, or one that accepts no machine identity,
+// names none; and one from before the type tag answers no secret_type_tag.
 type Settings struct {
 	Store                  string `json:"store,omitempty"`
 	SecretsPrefix          string `json:"secrets_prefix"`
@@ -717,6 +719,7 @@ type Settings struct {
 	KMSKeyName             string `json:"kms_key_name,omitempty"`
 	GCPProject             string `json:"gcp_project,omitempty"`
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
+	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
@@ -732,13 +735,13 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 }
 
 // Reread is POST /v1/secrets/{name}/reread's exact response shape: whether the broker serves the
-// secret now, as which kind ("" for a stored secret, and from a broker older than the field), and,
+// secret now, as which type ("" for a stored secret, and from a broker older than the field), and,
 // when it does not serve it, why.
 type Reread struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
 	Reason string `json:"reason"`
-	Kind   string `json:"kind"`
+	Type   string `json:"type"`
 }
 
 // RereadSecret asks the broker to read the secret name from Secrets Manager now, as whoever just

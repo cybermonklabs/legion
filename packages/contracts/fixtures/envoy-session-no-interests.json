@@ -1,0 +1,36 @@
+{
+  "description": "One row of GET /v1/sessions, and the whole body of GET /v1/registry/<session_id>, for a live Envoy session with no interest record, no role claim and no capability, as a real listener writes it; updated_at and last_seen come from the clock and are written here as 0. after_this_change is the row a listener built from the change writes, before_this_change the row one built from captured_at_commit writes. packages/envoy/cmd/listener/api_test.go builds the session entry from after_this_change and compares both routes' raw rows with it; packages/envoy-client/src/__tests__/transport.test.ts serves both rows to listSessions.",
+  "captured_at_commit": "c823eba47d24dd9b5aa98d4b1fa3d44af1fbcfad",
+  "after_this_change": {
+    "session_id": "ses_infra742_no_interests",
+    "state": "live",
+    "machine_id": "envoy-fixture",
+    "host": "envoy-fixture",
+    "dir": "/work/infra-742-fixture",
+    "port": 0,
+    "title": "INFRA-742 fixture session",
+    "capabilities": [],
+    "self_subscribed": true,
+    "topics": [],
+    "roles": [],
+    "updated_at": 0,
+    "last_seen": 0,
+    "delivery": "consumer"
+  },
+  "before_this_change": {
+    "session_id": "ses_infra742_no_interests",
+    "state": "live",
+    "machine_id": "envoy-fixture",
+    "host": "envoy-fixture",
+    "dir": "/work/infra-742-fixture",
+    "port": 0,
+    "title": "INFRA-742 fixture session",
+    "capabilities": [],
+    "self_subscribed": true,
+    "topics": null,
+    "roles": [],
+    "updated_at": 0,
+    "last_seen": 0,
+    "delivery": "consumer"
+  }
+}
