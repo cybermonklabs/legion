@@ -6,18 +6,19 @@
 # every issue under it, in a catch-up on its own topic alone, which the daemon logs as it publishes
 # it; it files and releases its own children, whose child-status and child-closed notices then
 # reach it rather than the root's architect; it parks only issues under its own and is answered 403
-# ISSUE_NOT_OWNED for its sibling and for the root; when its claim fails, the root's architect is
-# told and hears the child's next notice too, and the child's next phase start retries the claim
-# in the same session with fresh budgets; and a parked child's architect is suspended and resumed
-# in its session by the child's rerun. The whole daemon is booted by the function `legion start`
-# calls, over a real PostgreSQL and a real nats-server, and driven only through the Dispatch
-# envelopes of the ENVOY_NOTIFICATIONS stream, its own HTTP routes, its worker stream and the fake
-# runtime's report of a process; every step of its seven is read back from GET /legion/v1/state,
-# the operator's claim listing, the notices the listener stand-in took on each architect's topic,
-# what the daemon wrote to the Dispatch stand-in, the launches the fake runtime was asked for
-# and the daemon's own log (packages/daemon/internal/daemon/sub_architect_live_test.go, which
-# this script builds with `-tags e2e`). Each check prints `== <name>`, what it observed and
-# `ok <name>`; the first that fails ends the run non-zero, naming it.
+# ISSUE_NOT_OWNED for its sibling and for the root; when its claim fails because its launches ran
+# out, the root's architect is told and hears the child's next notice too, and the child's next
+# phase start retries the claim in the same session with fresh budgets; and a parked child's
+# architect is suspended and resumed in its session by the child's rerun. The whole daemon is
+# booted by the function `legion start` calls, over a real PostgreSQL and a real nats-server, and
+# driven only through the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream, its own HTTP
+# routes, its worker stream and the fake runtime's report of a process; every step of its seven is
+# read back from GET /legion/v1/state, the operator's claim listing, the notices the listener
+# stand-in took on each architect's topic, what the daemon wrote to the Dispatch stand-in, the
+# launches the fake runtime was asked for and the daemon's own log
+# (packages/daemon/internal/daemon/sub_architect_live_test.go, which this script builds with
+# `-tags e2e`). Each check prints `== <name>`, what it observed and `ok <name>`; the first that
+# fails ends the run non-zero, naming it.
 #
 # Run it from a checkout on a Linux host with go, awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \

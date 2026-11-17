@@ -152,9 +152,10 @@ type phaseOwners struct {
 // tree. On a child it is the architect that owns it: its own while that claim holds its role,
 // else the one above. At admitted that is the one above, since the child's own has not started
 // yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
-// or was held: that re-entry goes through no leave, so its own architect still holds its role
-// (ReenterChild). An owner is answered only while its claim at the issue's generation stands
-// suspended, whatever the source: which sources a start may act on is each caller's to judge.
+// or was held: that re-entry starts and stops nothing, so a child's own architect that held its
+// role still holds it (ReenterChild). An owner is answered only while its claim at the issue's
+// generation stands suspended, whatever the source: which sources a start may act on is each
+// caller's to judge.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {

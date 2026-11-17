@@ -637,11 +637,12 @@ the architect above it is told with a `worker-died` and takes the child's notice
 next phase start starts it again. What brings a root's architect back depends on where its tree
 stands:
 
-- **Its tree runs and does not linger:** `legion state`'s `claims nothing will
-  wake` line names the architect under `failed, retry`. Retry it, as
-  [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
-  relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
-  generation and phase it stands at.
+- **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
+  names the architect under `failed, retry`. Retry it, as [A tree does not move after a
+  restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
+  it kept, with fresh budgets, or on a new session when the provider refused that one out of its
+  launch budget or no session store holds it any more, and the tree carries on at the generation
+  and phase it stands at.
 - **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation; a retry by hand would run it outside the admission cap, and it would be sent no
@@ -653,13 +654,15 @@ stands:
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
-budgets, and retries a failed phase worker whose issue is held for that worker's own role by
-applying the held phase's retry, as its architect's `retry_or_escalate` would. It reaches a claim an
-operator stopped as well as a failed one, since `legion claims stop` retires the claim it stops: a
-stopped phase worker is started again on the task of the phase its issue stands in now. Every other
-state is refused and named: a queued claim is spawned rather than retried, a suspended claim is
-resumed, and the daemon's own controller is its keeper's to retry, which the refusal says. A retry
-that leaves the issue held, as a lingering tree's does, is refused naming the issue.
+budgets, or on a new session when the provider refused that one out of its launch budget or no
+session store holds it any more, and retries a failed phase worker whose issue is held for that
+worker's own role by applying the held phase's retry, as its architect's `retry_or_escalate`
+would. It reaches a claim an operator stopped as well as a failed one, since `legion claims stop`
+retires the claim it stops: a stopped phase worker is started again on the task of the phase its
+issue stands in now. Every other state is refused and named: a queued claim is spawned rather than
+retried, a suspended claim is resumed, and the daemon's own controller is its keeper's to retry,
+which the refusal says. A retry that leaves the issue held, as a lingering tree's does, is refused
+naming the issue.
 `legion claims retry --failed` asks the same of every failed claim the daemon holds, in turn,
 prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
@@ -920,12 +923,13 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept,
-  with fresh budgets, and sends it a catch-up of its tree once it is ready, so the tree carries on
-  at the generation and phase it stands at. The daemon drops every notice it could not deliver to
-  the failed architect, the reviewer's approval that moved an issue into `accepting` among them,
-  so the catch-up's reason names each issue of the tree waiting in `accepting` for the architect's
-  acceptance; no worker runs there, and nothing else would wake the architect for it:
+- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, with
+  fresh budgets, or on a new session when the provider refused that one out of its launch budget or
+  no session store holds it any more, and sends it a catch-up of its tree once it is ready, so the
+  tree carries on at the generation and phase it stands at. The daemon drops every notice it could
+  not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
+  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
+  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -934,17 +938,18 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   When a tree's architect and its workers failed together, retry the architect first: the held
   workers are its to retry once it runs.
 
-- **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
-  tree runs, whatever its role): a failed worker's issue is held
-  ([An issue is held](#an-issue-is-held)), and the architect that owns the issue retries the
-  phase or escalates it to the controller; `legion claims retry` applies the same retry when the
-  architect cannot, and a `todo` on a held root releases the hold without either of them. A
-  failed claim ignores `legion claims resume` and `legion claims deliver`.
-  A retired claim ignores those two as well. `legion claims retry --claim <token>` reaches it as
-  it reaches a failed one, and `legion claims retry --failed` passes over it.
-  A workflow start also relaunches it on the session it kept: a start of the phase it owns — its
-  architect's `retry_or_escalate` of a held phase, a transition into that phase, or a tree close
-  and re-admission — and, for a retired tree architect, its tree's admission.
+- **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired
+  while its tree runs, whatever its role): a failed worker's issue is held ([An issue is
+  held](#an-issue-is-held)), and the architect that owns the issue retries the phase or escalates
+  it to the controller; `legion claims retry` applies the same retry when the architect cannot, and
+  a `todo` on a held root releases the hold without either of them. A failed claim ignores `legion
+  claims resume` and `legion claims deliver`. A retired claim ignores those two as well. `legion
+  claims retry --claim <token>` reaches it as it reaches a failed one, and `legion claims retry
+  --failed` passes over it. A workflow start also relaunches it: a start of the phase it owns
+  — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or a
+  tree close and re-admission — and, for a retired tree architect, its tree's admission. Each
+  relaunches the session it kept, unless the provider refused that session out of its launch budget
+  or no session store holds it any more.
 
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that

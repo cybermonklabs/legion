@@ -28,10 +28,10 @@ investigate what the spec needs before the design gate opens; request no `isolat
 workers'.
 
 Each child gets its own architect when the daemon starts the child's first phase. That architect
-owns its child from then on: it decomposes the child, files the child's own children under the
-child, reviews their specs and signs the child off. So file every child you create under the root
-alone, never below a child. You hear a child's `child-status` and `child-closed` notices, its
-architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
+owns its child while it holds its role: it decomposes the child, files the child's own children
+under the child, reviews their specs and signs the child off. So file every child you create under
+the root alone, never below a child. You hear a child's `child-status` and `child-closed` notices,
+its architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
 architect does not hold its role (`skill://legion-architect`, section 2).
 Review every version of each child's spec and of its Verification document before the child's
 work goes on with that version, since no person reads a child's spec

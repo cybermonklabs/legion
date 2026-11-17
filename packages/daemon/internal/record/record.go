@@ -1682,11 +1682,11 @@ type Store interface {
 	// it, and reports whether this call is the telling. That architect is the root's own for a
 	// root. For a child it is the architect above it, since the child's own starts only with that
 	// first phase, unless a person set the child back to todo while it ran or was held: that
-	// re-entry goes through no leave (workflow's ReenterChild), so the child's own architect still
-	// holds its role and is the one told. The wait itself is never stored, so that a stale mirror
-	// row costs one pass; the telling is, so that the pass every fact, tick, hold release and boot
-	// runs does not tell it again. A re-admission opens a new generation of the tree and so tells
-	// it anew, and so does a hand-over, which gives the issue a tree of its own.
+	// re-entry starts and stops nothing (workflow's ReenterChild), so a child's own architect that
+	// held its role still holds it and is the one told. The wait itself is never stored, so that a
+	// stale mirror row costs one pass; the telling is, so that the pass every fact, tick, hold
+	// release and boot runs does not tell it again. A re-admission opens a new generation of the
+	// tree and so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
 	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
 	// for the run its generation names of its tree, and answers, at each index of stalls,

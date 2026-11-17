@@ -9,10 +9,10 @@
 // each notice it publishes. The child's architect files its own children under its issue and
 // releases them with its own grant, and a grandchild's notices reach it rather than the root's
 // architect. It may park, rerun and release only issues under its own issue, and is answered 403
-// ISSUE_NOT_OWNED for any other. When its claim fails, the architect above it is told, the
-// child's notices go there too, and the child's next phase start retries the claim in the same
-// session with fresh budgets. A parked child's architect is suspended with the child, and the
-// child's rerun resumes that session.
+// ISSUE_NOT_OWNED for any other. When its claim fails because its launches ran out, the architect
+// above it is told, the child's notices go there too, and the child's next phase start retries the
+// claim in the same session with fresh budgets. A parked child's architect is suspended with the
+// child, and the child's rerun resumes that session.
 // scripts/e2e/sub-architect.sh builds this driver with `-tags e2e` and owns the nats-server and
 // the PostgreSQL it runs against, through the run lib/live-daemon-proof.sh makes around every
 // whole-daemon live proof.
@@ -89,8 +89,9 @@ const (
 	// holds its role, so the architect told hears only what goes above that architect.
 	subArchitectOwnership = "Its own architect starts with it and owns it while that architect holds its role: its " +
 		"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-		"worker-stalled of its architect, and its other notices while its architect does not hold its role: it failed, an " +
-		"operator stopped or suspended it, its own exit retired it, or the child left the workflow"
+		"worker-stalled of its architect, and its other notices while its architect does not hold its role: before its first " +
+		"start has launched it, while a stop of it is in flight, and after it failed, was retired or was suspended other " +
+		"than by the idle release"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the

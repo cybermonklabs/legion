@@ -1449,7 +1449,9 @@ func StrandedMoves() []StrandedMove {
 //     suspended before 0038, the operator's resume when an operator suspended it and it kept its
 //     task or its phase start waits, otherwise the operator's delivery of its phase's resume task.
 //   - StrandedRetry, a failed architect: the operator's retry (`legion claims retry`), which
-//     relaunches its session with fresh budgets, and a catch-up follows.
+//     relaunches its session with fresh budgets, or a new session where the provider refused
+//     that one out of the claim's launch budget or no session store holds it any more, and a
+//     catch-up follows.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.

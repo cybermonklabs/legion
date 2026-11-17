@@ -1212,9 +1212,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// merges its own head is meant to carry. The architect that owns it is told once per issue
 		// and run of its tree when the wait begins (admit's tellChildrenFirst): the root's own
 		// architect for a root, and for a child the architect above it, since the child's own
-		// starts only with that first phase, unless a person set the child back to todo while it
-		// ran or was held, which leaves the child's own architect holding its role (workflow's
-		// ReenterChild). The state names it under admission.blocked meanwhile.
+		// starts only with that first phase. A person's todo on a child that ran or was held starts
+		// and stops nothing (workflow's ReenterChild), so its own architect, if it held its role,
+		// still holds it and is told. The state names it under admission.blocked meanwhile.
 		if _, waits := facts.ChildWaits[issue.Key]; waits {
 			hold(issue)
 			continue

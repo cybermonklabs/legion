@@ -1167,42 +1167,46 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
-   that left the workflow and is set back to `todo` gets its own architect and its planner back, on
-   their kept sessions, at its next first phase start, and each other role at the start of its
-   phase. The daemon suspends or ends claims only when an issue leaves the workflow, when a claim
-   moves to another tree, or for a production check after the issue is done. A phase start gives
-   its task to that live claim. At boot the daemon resumes by rule a suspended worker that still
-   owns its issue's phase, but never a claim an operator suspended; a start for an
-   operator-suspended claim waits instead. A notice for a root's operator-suspended architect waits
-   until the operator resumes it. A notice for a child whose own architect an operator suspended
-   goes to the architect above that child. A drain therefore ends with the operator resuming every
-   claim they suspended, one `legion claims resume` each; `legion claims list --json` names each
-   one's `suspendedBy` (`operator`, `daemon`, `exit`, or `unknown` for one suspended before this
-   release). A daemon suspension of a claim whose issue left the workflow waits for its current
-   turn to finish, with no stop timeout: a child parked in Dispatch (`backlog` or `icebox`)
-   stops its worker only once the worker's current turn ends, and a lingering tree's claims stay
-   suspended until the tree is re-admitted.
+   that left the workflow and is set back to `todo` gets its own architect and its planner back,
+   on their kept sessions, at its next first phase start, and each other role at the start of its
+   phase. A claim the provider refused out of its launch budget, or whose session no session store
+   holds any more, comes back in a new session instead. The daemon suspends or ends claims only
+   when an issue leaves the workflow, when a claim moves to another tree, or for a production check
+   after the issue is done. A phase start gives its task to that live claim. At boot the daemon
+   resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
+   operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
+   operator-suspended architect waits until the operator resumes it. A notice for a child whose
+   own architect an operator suspended goes to the architect above that child. A drain therefore
+   ends with the operator resuming every claim they suspended, one `legion claims resume` each;
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
+   `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
+   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
+   in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
+   and a lingering tree's claims stay suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
-   suspended reads `unknown`. The next phase start, re-admission and the controller keeper resume
-   those as before. The boot's own sweep does not, but a start already queued before the upgrade
-   still resumes one at the first boot, as the earlier release would have. To keep a claim you
-   drained before the upgrade held against every trigger, run `legion claims suspend` on it once
-   the new daemon is up: that records the suspension as yours. Act only on the claims the state
-   names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
+   suspended reads `unknown`. The next phase start, re-admission and the controller keeper
+   resume those as before. The boot's own sweep does not, but a start already queued before the
+   upgrade still resumes one at the first boot, as the earlier release would have. To keep a
+   claim you drained before the upgrade held against every trigger, run `legion claims suspend`
+   on it once the new daemon is up: that records the suspension as yours. Act only on the claims
+   the state names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
    `strandedClaims` in `--json`), and skip those you drained on purpose: resume a suspended
    architect, retry a failed one (`legion claims retry --claim <token>`, which relaunches its
-   session with fresh budgets; `legion claims retry --failed` retries every failed claim, and a
-   failed phase worker whose issue is held for its own role retries that phase), and bring a suspended phase worker back as
-   [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
-   shows for its `suspendedBy`. A claim the state names `retired` takes no resume.
-   `legion claims retry --claim <token>` starts it again, because the retry reaches a retired
-   claim as well as a failed one: an architect is relaunched on its kept session, and a phase
-   worker whose issue stands in its phase has that phase started again (`--failed` passes over a
-   retired claim). Otherwise it comes back on a workflow start: a start of the phase it owns, or,
-   for a root's architect, its tree's admission, as that page's `needsWorkflowStart` shows. Never
-   resume or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
-   re-admission or the issue's return to `todo` starts it.
+   session with fresh budgets, or starts a new session when the provider refused that one out
+   of its launch budget or no session store holds it any more; `legion claims retry --failed`
+   retries every failed claim, and a failed phase worker whose issue is held for its own role
+   retries that phase), and bring a suspended phase worker back as [A tree does not move after a
+   restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart) shows for its
+   `suspendedBy`. A claim the state names `retired` takes no resume. `legion claims retry --claim
+   <token>` starts it again, because the retry reaches a retired claim as well as a failed one:
+   an architect is relaunched on its kept session, unless the provider refused that session out of
+   its launch budget or no session store holds it any more, and a phase worker whose issue stands
+   in its phase has that phase started again (`--failed` passes over a retired claim). Otherwise
+   it comes back on a workflow start: a start of the phase it owns, or, for a root's architect,
+   its tree's admission, as that page's `needsWorkflowStart` shows. Never resume or retry by hand a
+   claim of a lingering tree or of an issue parked out of the workflow: re-admission or the issue's
+   return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and

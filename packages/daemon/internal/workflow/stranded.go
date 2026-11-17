@@ -89,7 +89,9 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // of them out. The state is not the end of the claim: the outbox's start executor provisions the
 // workspace for a retired claim and sends supervise.RequestRetry (the StateRetired branch in
 // internal/daemon/outbox.go), and RequestRetry's own row accepts StateRetired beside StateFailed
-// (internal/supervise/table.go), so the kept session relaunches with fresh budgets. What nothing
+// (internal/supervise/table.go), so the kept session relaunches with fresh budgets, unless the
+// start asks for a new one, the provider refused it out of the claim's launch budget, or no
+// session store holds it any more (supervise's freshSession and startFresh). What nothing
 // does by itself is queue that start: no rule the daemon runs starts a retired claim, the boot's
 // repair reads only a suspension, and the operator's retry, which reaches a retired claim as well
 // as a failed one, is a person's move, not a rule's (supervise.RequestOperatorRetry). So the rule
@@ -117,8 +119,14 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // comes, and a tree that is not running runs nothing yet. A child's own architect is started again
 // by its child's next phase start when it failed (Engine.reviveArchitect: the architect above it
 // heard of the failure in a worker-died), by the child's next first phase start when the workflow
-// suspended it as the child left (StartFirstPhase), and by the operator's retry or resume when an
-// operator stopped or suspended it, the architect above it taking the child's notices meanwhile.
+// suspended or retired it as the child left (StartFirstPhase), by the operator's resume when an
+// operator suspended it, and, when an operator stopped it, by the child's next first phase start,
+// a re-admission's start or the operator's retry. One that its own exit retired gets no
+// worker-died, and the reviveArchitect each phase start runs passes over it, since that acts on a
+// failed claim alone: it comes back only at the child's next first phase start, at a
+// re-admission's start while the child stands past admitted (admit's startMidPhaseMembers), or by
+// the operator's retry, and nothing reports it, this report included. In every case the architect
+// above it takes the child's notices meanwhile.
 // A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
 // moved out by a person, always lingers first (leave) — whose members its re-admission starts
 // again, and a root that never ran, whose architect receives its first task only when the line
@@ -198,7 +206,9 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
 		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
 		// does not need. One an operator stopped or suspended is that operator's own move, which
-		// its retry or resume undoes.
+		// its retry or resume undoes. One the child's leave suspended or retired comes back at the
+		// child's next first phase start. One that its own exit retired is reported nowhere, as
+		// Stranded's comment says.
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):

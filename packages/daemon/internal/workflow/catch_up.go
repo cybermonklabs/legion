@@ -22,22 +22,25 @@ import (
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. So at each launch's ready the daemon sends it
-// a catch-up notice of the issues it owns (QueueCatchUp) — a root architect its whole tree, a
-// child's architect the child and every issue under it — and so does a start that finds the claim
-// still running (the outbox's start), as the TypeScript daemon sends the overseer catch-up at
-// every ready of an active root (onTreeReady). A relaunch in the same generation is told again: it
-// may be an architect that died during the turn a catch-up started, resumed idle, or a fresh agent
-// whose workspace was lost, and nothing else wakes either. The ready is one fact per launch
-// (workflowRuntime.applyTerminal keys it by the claim's launch generation), so the boot's replay
-// of a ready already applied tells nothing more, and one never applied tells it once. The catch-up
-// a root architect's ready writes names every decision nobody else claims, so a decision a release
-// left unclaimed reaches this architect here; one still claimed by a queued start or catch-up is
-// that row's to settle. A child's names none: what a person decided while nobody could hear it is
-// kept for the tree, and stays its root architect's. A tree that lingers or has left the workflow
-// is told nothing, and so is the architect of an issue the daemon has not recorded, or of a child
-// that has left the workflow or is done. A phase worker's ready is answered differently: it is
-// given its phase's task again when it holds that phase with nothing pending (readyWorkerTask).
+// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
+// budget has failed, and the start that retries it starts a new session (supervise's
+// freshSession), as does any launch whose session no store holds any more (startFresh). So at each
+// launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
+// root architect its whole tree, a child's architect the child and every issue under it — and so
+// does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
+// sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
+// same generation is told again: it may be an architect that died during the turn a catch-up
+// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
+// generation), so the boot's replay of a ready already applied tells nothing more, and one never
+// applied tells it once. The catch-up a root architect's ready writes names every decision nobody
+// else claims, so a decision a release left unclaimed reaches this architect here; one still
+// claimed by a queued start or catch-up is that row's to settle. A child's names none: what a
+// person decided while nobody could hear it is kept for the tree, and stays its root architect's.
+// A tree that lingers or has left the workflow is told nothing, and so is the architect of an
+// issue the daemon has not recorded, or of a child that has left the workflow or is done. A phase
+// worker's ready is answered differently: it is given its phase's task again when it holds that
+// phase with nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute

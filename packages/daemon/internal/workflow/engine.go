@@ -687,9 +687,13 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	next := child.Generation + 1
 	// The worker of the phase the child was taken out of may still finish its old turn, but its
 	// completion serves the generation it took and the API refuses it once this generation begins.
-	// Roles that finished earlier phases of the run stay as they stood: live for a child moved to
-	// todo from a running status, suspended or retired for one that had left the workflow. The new
-	// run's starts hand each its task, and bring one that had stopped back on its kept session.
+	// Roles that finished earlier phases of the run stay as they stood: for a child moved to todo
+	// from a running or held status each keeps its state (live, failed, retired or suspended); for
+	// one that had left the workflow, suspended or retired. The new run's starts hand each its
+	// task, and bring one that had stopped back on its kept session, or on a new one where the
+	// provider refused that session out of the claim's launch budget (supervise's freshSession) or
+	// no session store holds it any more (supervise's startFresh). These starts ask for no new
+	// session themselves.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
@@ -1617,9 +1621,10 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 }
 
 // StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to.
-// For a child it also starts the child's own architect, which owns the child from then on, and
-// tells the architect above the child that it started (ChildStartedNotice). It is the half of the
-// old gate-opening behaviour that needs a slot, and it is deliberately the only half here.
+// For a child it also starts the child's own architect, which owns the child while it holds its
+// role, and tells the architect above the child that it started (ChildStartedNotice). It is the
+// half of the old gate-opening behaviour that needs a slot, and it is deliberately the only half
+// here.
 //
 // It is the one place a child's first phase starts the child's architect (a later phase start
 // starts a failed one again, reviveArchitect), because every door into a child's run — an
@@ -1629,8 +1634,10 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // for it. The start is the plain one (gateOpened's), with no task: the architect's catch-up at
 // its launch's ready tells it the child and every issue under it (claimReady). Starting a claim
 // that already exists resumes its session, so a child that comes back — a rerun, a person's move
-// back to todo — gets the architect that worked it before. A root's architect is admission's,
-// started when its tree was admitted, so a root's first phase starts no architect.
+// back to todo — gets the architect that worked it before (in a new session where the provider
+// refused that one out of the claim's launch budget or no session store holds it any more:
+// supervise's freshSession and startFresh). A root's architect is admission's, started when its
+// tree was admitted, so a root's first phase starts no architect.
 //
 // It replaces the two doors that used to start a first phase themselves, the gate's opening
 // (advanceAdmittedTree) and a child's release (enterChild), which are gone. Neither could stay:

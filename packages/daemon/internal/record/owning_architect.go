@@ -20,9 +20,10 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, kind No
 // on issue: the nearest issue at or above it, through its parents, whose architect claim holds its
 // role (runs), else the tree root (issue.Tree), whose architect is the tree's own claim. The daemon
 // starts a child's architect with the child's first phase, and starts a failed one again at the
-// child's next phase start. While a child's architect does not hold its role — it failed or
-// retired, or the workflow suspended it when the child left, or an operator suspended it — the
-// child's notices go on up to the architect above it.
+// child's next phase start. While a child's architect does not hold its role — before its first
+// start has launched it, while a stop of it is in flight, and after it failed, was retired or was
+// suspended other than by the idle release — the child's notices go on up to the architect above
+// it.
 //
 // Two notices start the walk at the issue's parent instead. A child's close or status change: it
 // tells of the child's own run starting, leaving, coming back or closing, which is not the child's

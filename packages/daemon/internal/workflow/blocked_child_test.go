@@ -126,7 +126,7 @@ func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
 // architect's start behind that row, the in_progress its entry into planning writes to Dispatch,
 // its planner's start behind the branch row, and one child-status notice to the architect above it
 // (here the tree's) naming the issues it waited on and saying that the child's own architect owns
-// it from now on.
+// it while that architect holds its role.
 func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -552,8 +552,9 @@ func assertPlannerStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // role, so the architect it tells hears only what goes above that architect (ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
 	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-	"worker-stalled of its architect, and its other notices while its architect does not hold its role: it failed, an " +
-	"operator stopped or suspended it, its own exit retired it, or the child left the workflow"
+	"worker-stalled of its architect, and its other notices while its architect does not hold its role: before its first " +
+	"start has launched it, while a stop of it is in flight, and after it failed, was retired or was suspended other " +
+	"than by the idle release"
 
 func childStatusNotices(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()

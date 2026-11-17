@@ -46,13 +46,13 @@ type DeliverRequest struct {
 }
 
 // RetryRequest is the operator's retry, whose body is optional: a retry that sends none, as every
-// caller before this contract did, resumes the claim's recorded session. FreshSession is
-// `legion claims retry --fresh-session`, which starts the claim in a new session instead — what a
-// claim its provider refused needs, since the session those turns were refused in would be
-// refused again. It is the one effect the controller's fresh_session runs as well
-// (freshSession), and it reaches every claim of the project that is not in a turn and whose
-// launch is not in flight, where the plain retry reaches only a claim that failed and one an
-// operator stopped.
+// caller before this contract did, resumes the claim's recorded session, unless the provider
+// refused that session out of the claim's launch budget (supervise's freshSession) or no session
+// store holds it any more (supervise's startFresh). FreshSession is `legion claims retry
+// --fresh-session`, which starts the claim in a new session instead. It is the one effect the
+// controller's fresh_session runs as well (freshSession), and it reaches every claim of the
+// project that is not in a turn and whose launch is not in flight, where the plain retry reaches
+// only a claim that failed and one an operator stopped.
 type RetryRequest struct {
 	FreshSession bool `json:"freshSession,omitempty"`
 }
@@ -636,10 +636,11 @@ func forgettable(state supervise.ClaimState) bool {
 // when the body asks for a new session (RetryRequest), the fresh session the controller's
 // fresh_session runs too (freshSession). The two differ in what they reach and in what they
 // leave behind, and nothing else answers either: a plain retry acts on a claim that failed and
-// on one an operator stopped, resuming the session it recorded, while a fresh session reaches
-// every claim of the project that is not in a turn and whose launch is not in flight, and drops
-// that session first. Only the fresh session answers the claim with a phase restart that was
-// refused named on it (OperatorClaim.PhaseNotRestarted).
+// on one an operator stopped, resuming the session it recorded unless the provider refused that
+// session out of the claim's launch budget or no session store holds it any more, while a fresh
+// session reaches every claim of the project that is not in a turn and whose launch is not in
+// flight, and drops that session first. Only the fresh session answers the claim with a phase
+// restart that was refused named on it (OperatorClaim.PhaseNotRestarted).
 func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)

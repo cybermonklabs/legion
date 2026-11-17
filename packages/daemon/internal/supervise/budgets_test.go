@@ -834,7 +834,9 @@ func TestAMachineRefusesLimitsOrTimeoutsThatCannotWork(t *testing.T) {
 // phase decides it for a worker, and the operator's retry for an architect, which a later start
 // the daemon writes for it also relaunches (a child's next phase start, a re-admission of its
 // tree), and for a phase worker whose own retries do not reach it. Each relaunches the same
-// session with fresh budgets.
+// session with fresh budgets, unless the retry asks for a new one, the provider refused that
+// session out of the launch budget (freshSession), or no session store holds it any more
+// (startFresh).
 func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -906,9 +908,9 @@ func TestTheOperatorsRetryOfTheControllerIsRefused(t *testing.T) {
 	}
 }
 
-// A retry relaunches the same session, so it hands the runtime the process the claim last ran to
-// wait out — the one its own exit released, or the one it failed on — rather than open a second
-// agent on the session while the first may still be going.
+// A retry that keeps the recorded session relaunches it, so it hands the runtime the process the
+// claim last ran to wait out — the one its own exit released, or the one it failed on — rather
+// than open a second agent on the session while the first may still be going.
 func TestRetryWaitsOutTheProcessTheClaimLastRan(t *testing.T) {
 	wantRetryWaitsOut := func(t *testing.T, h *harness, last runtime.Locator) {
 		t.Helper()

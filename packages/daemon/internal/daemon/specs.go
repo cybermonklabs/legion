@@ -239,9 +239,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 // for a claim on its tree's root, whatever its role, the tree's architect, which is the root's
 // own; for a claim on any other issue, the end of the owner walk over the claims the store
 // records now (owner), so a planner launched while its child's own architect holds its role is
-// told that architect, and one launched while it has failed is told the architect above it. A
-// specs with no owner reader addresses every claim to its tree's architect. A read that fails
-// fails the launch, as a repository read does.
+// told that architect, and one launched while that architect does not hold its role (it failed,
+// for example) is told the architect above it. A specs with no owner reader addresses every claim
+// to its tree's architect. A read that fails fails the launch, as a repository read does.
 func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, error) {
 	if s.owner == nil || claim.IsTreeRoot(c.Issue, c.Tree) {
 		return claim.NewToken(s.project, c.Tree, claim.RoleArchitect)
