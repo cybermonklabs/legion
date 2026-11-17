@@ -344,6 +344,12 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if a := opts.AgentSecrets; a != nil {
+		// The Workload Identity pool is the audience of the token a microVM pod's launcher
+		// exchanges for a Google one (workloadIdentityVolumes); empty, no pod carries that token.
+		var pool string
+		if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM != nil && opts.Sandbox.MicroVM.Metadata != nil {
+			pool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
+		}
 		switch {
 		case a.URL == "":
 			return refuse("agent secrets: no broker URL")
@@ -353,6 +359,10 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
 		case a.ExchangeAudience == a.Audience:
 			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
+		case pool != "" && a.Audience == pool:
+			return refuse("agent secrets: the enrollment's audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", pool)
+		case pool != "" && a.ExchangeAudience == pool:
+			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", pool)
 		}
 	}
 	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,

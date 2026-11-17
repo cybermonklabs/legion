@@ -1811,8 +1811,9 @@ func TestATreeRolesShimIsToldToWarmTheWorkspacesCodegraphIndex(t *testing.T) {
 
 // New refuses an agent-secrets configuration no pod could run: no broker URL, no token audience,
 // an expiry outside the API server's floor (10m) and the cluster's admission cap (1h), an exchange
-// audience that is the enrollment's own (the cluster projects one volume per audience), or the
-// image's agent-secrets binary missing.
+// audience that is the enrollment's own (the cluster projects one volume per audience), an
+// enrollment's or exchange audience that is the Workload Identity pool a microVM pod's metadata
+// endpoint holds a token for (the same rule), or the image's agent-secrets binary missing.
 func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 	for name, tc := range map[string]struct {
 		edit func(*Options)
@@ -1826,6 +1827,14 @@ func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 		"the exchange audience is the enrollment's": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour, ExchangeAudience: "a"}
 		}, `agent secrets: the exchange audience is the enrollment's own, "a"`},
+		"the enrollment's audience is the Workload Identity pool's": {func(o *Options) {
+			o.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}
+			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: testWorkloadPool, TokenExpiry: time.Hour}
+		}, `agent secrets: the enrollment's audience is the Workload Identity pool's, "` + testWorkloadPool + `"`},
+		"the exchange audience is the Workload Identity pool's": {func(o *Options) {
+			o.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}
+			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour, ExchangeAudience: testWorkloadPool}
+		}, `agent secrets: the exchange audience is the Workload Identity pool's, "` + testWorkloadPool + `"`},
 		"no binary": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour}
 			o.Tools.AgentSecrets = ""

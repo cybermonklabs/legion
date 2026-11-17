@@ -1006,11 +1006,14 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 }
 
 // checkSandboxSchedulingAndPod refuses, while an issue pod runs in a microVM, what the operator's
-// scheduling and pod would set that the microVM pod's own placement and endpoint own: a node
-// selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass adds both at
-// admission; and, while the metadata endpoint is on, a pod.env variable the pod's launcher sets
-// to that endpoint. Each refusal names the operator's key. With no issue pod in a microVM it
-// refuses nothing, so a microvm block kept for a revert changes nothing.
+// scheduling, pod and broker blocks would set that the microVM pod's own placement and endpoint
+// own: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass
+// adds both at admission; and, while the metadata endpoint is on, a pod.env variable the pod's
+// launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
+// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume per
+// audience and the pool's token is the launcher's alone. Each refusal names the operator's key.
+// With no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
+// nothing.
 func checkSandboxSchedulingAndPod(block *Kubernetes) error {
 	sandbox := block.Sandbox
 	if !sandbox.AnyMicroVM() {
@@ -1032,6 +1035,17 @@ func checkSandboxSchedulingAndPod(block *Kubernetes) error {
 		if _, set := block.Pod.Env[name]; set {
 			return fmt.Errorf("%s.env must not set %s while %s is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves",
 				podKey, name, metadataKey)
+		}
+	}
+	pool := sandbox.MicroVM.Metadata.WorkloadPool
+	if secrets := block.AgentSecrets; secrets != nil {
+		for _, member := range []struct{ name, audience string }{
+			{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
+		} {
+			if member.audience == pool {
+				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone",
+					agentSecretsKey, member.name, metadataKey, pool)
+			}
 		}
 	}
 	return nil

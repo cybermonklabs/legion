@@ -3339,6 +3339,8 @@ The loader refuses each of these, naming the key, and `legion start --check-conf
 
 - a `pod.env` entry `GCE_METADATA_HOST` or `GCE_METADATA_IP` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.pod.env must not set GCE_METADATA_HOST while runtime.kubernetes.sandbox.microvm.metadata is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves`.
 
+- an `agent_secrets.audience` or `agent_secrets.exchange_audience` equal to `workload_pool` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.agent_secrets.audience must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both <pool>) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
+
 **Where a microVM pod runs.**
 The daemon renders a microVM issue pod's placement from the block (`placement`, `manifest.go`):
 
@@ -4224,8 +4226,9 @@ Dispatch takes any other bearer as a service token or a personal token (`optiona
 `dispatch whoami` in a role tells the two apart:
 for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
 
-The one Kubernetes service-account token this runtime projects for a role is the broker's, `agent-secrets-token` under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`), and it reaches the secrets broker and nothing else.
-A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` carries a second projected token, `workload-identity-token`, for the Workload Identity pool's audience.
+The Kubernetes service-account tokens this runtime projects for a role are the broker's, under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`): `agent-secrets-token` for its `audience`, and `agent-secrets-exchange` for its `exchange_audience` where that key is set (`exchangeTokenProjection`).
+Each reaches the secrets broker and nothing else.
+A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` carries another projected token, `workload-identity-token`, for the Workload Identity pool's audience.
 No role's namespace shows it, and the pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
 The operator's own pod volumes are outside this statement: the operator controls them.
@@ -4711,7 +4714,7 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
 - **The shell can read every role's credentials.**
   `kubectl exec -c roles` runs as user 1000, the launcher's own user, outside every role's namespaces, so it can read everything under `/var/run/legion/roles/`.
   The pod's `fsGroup` opens the mode-0440 mounts to it:
-  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, and the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint.
+  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, the broker's exchange token at `/var/run/legion/agent-secrets-exchange/token` where `agent_secrets.exchange_audience` is set, and the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint.
   It reads the rest as their owner: each running generation's `<role>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each role's `<role>/agent-secrets/` key directory and each role's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
   It reads each agent's environment through `/proc/<pid>/environ` too, and whatever the operator's `runtime.kubernetes.pod.volume_mounts` mount.
   Where the pods' ServiceAccount is federated to a cloud identity, it can act as that identity, as every role can.

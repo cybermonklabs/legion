@@ -25,6 +25,12 @@ func metadataLines(pool, provider string) string {
 	return lines
 }
 
+// poolAudienceLines is a `runtime.kubernetes.agent_secrets` block whose member (audience or
+// exchange_audience) is the Workload Identity pool the metadata tests name.
+func poolAudienceLines(member string) string {
+	return "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile + "      " + member + ": " + testWorkloadPool + "\n"
+}
+
 // computeClassRequired is the refusal of a sandbox that runs an issue pod in a microVM and names no
 // ComputeClass for it.
 const computeClassRequired = "runtime.kubernetes.sandbox.microvm.compute_class is required while runtime.kubernetes.sandbox.type is microvm" +
@@ -33,7 +39,8 @@ const computeClassRequired = "runtime.kubernetes.sandbox.microvm.compute_class i
 // Each shape of `runtime.kubernetes.sandbox` the loader refuses, read the way `legion start
 // --check-config` reads a whole file (LoadForValidation, cmd/legion's checkStartConfig), so each
 // refusal is what the operator reads there. Every message names the whole dotted key at fault.
-// The rules that read scheduling and pod too fire only while an issue pod runs in a microVM.
+// The rules that read scheduling, pod and the broker's block too fire only while an issue pod runs
+// in a microVM.
 func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 	const microVM = "    sandbox:\n      type: microvm\n      microvm:\n        compute_class: example-microvm\n"
 	const canary = "    sandbox:\n      canary_issues: [LEGSMOKE-7]\n      microvm:\n        compute_class: example-microvm\n"
@@ -46,6 +53,11 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 	providerRefusal := func(provider string) string {
 		return `runtime.kubernetes.sandbox.microvm.metadata.identity_provider "` + provider + `" must be the cluster's identity provider,` +
 			" https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>"
+	}
+	// audienceRefusal is the refusal of a broker audience that is the Workload Identity pool.
+	audienceRefusal := func(member string) string {
+		return "runtime.kubernetes.agent_secrets." + member + " must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both " + testWorkloadPool + ")" +
+			" while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone"
 	}
 	for _, tc := range []struct {
 		name, block, key, want string
@@ -185,6 +197,16 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 			want: "runtime.kubernetes.pod.env must not set GCE_METADATA_IP while runtime.kubernetes.sandbox.microvm.metadata is set and an issue pod runs in a microVM:" +
 				" that pod's launcher sets it to the metadata endpoint it serves",
 		},
+		{
+			name:  "the broker's audience the Workload Identity pool with the endpoint on a microVM project",
+			block: poolAudienceLines("audience") + microVM + metadataLines(testWorkloadPool, testIdentityProvider),
+			key:   "runtime.kubernetes.agent_secrets.audience", want: audienceRefusal("audience"),
+		},
+		{
+			name:  "the broker's exchange audience the Workload Identity pool with the endpoint on for a canary",
+			block: poolAudienceLines("exchange_audience") + canary + metadataLines(testWorkloadPool, testIdentityProvider),
+			key:   "runtime.kubernetes.agent_secrets.exchange_audience", want: audienceRefusal("exchange_audience"),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
@@ -205,7 +227,8 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 // that names no block runs every issue pod in gVisor. A microvm block's storage class is
 // runtime.kubernetes.storage_class (gp2 here) when the block names none. A microvm block while no
 // issue pod runs in a microVM is accepted and does nothing: the operator's own sandbox.gke.io/runtime
-// selector and GCE_METADATA_HOST variable stand beside it, as a revert of a canary leaves them.
+// selector and GCE_METADATA_HOST variable stand beside it, as a revert of a canary leaves them, and
+// so does a broker audience that is the block's Workload Identity pool.
 func TestTheSandboxBlockSettlesEachAcceptedShape(t *testing.T) {
 	metadata := &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}
 	for _, tc := range []struct {
@@ -254,6 +277,11 @@ func TestTheSandboxBlockSettlesEachAcceptedShape(t *testing.T) {
 			block: "    scheduling: {node_selector: {sandbox.gke.io/runtime: gvisor}}\n    pod: {env: {GCE_METADATA_HOST: metadata.internal.example}}\n" +
 				"    sandbox:\n      microvm:\n" + metadataLines(testWorkloadPool, testIdentityProvider),
 			want: SandboxConfig{Type: SandboxGVisor, MicroVM: &MicroVMConfig{StorageClass: "gp2", Metadata: metadata}},
+		},
+		{
+			name:  "an inert microvm block with metadata beside a broker audience that is its pool",
+			block: poolAudienceLines("audience") + "    sandbox:\n      microvm:\n" + metadataLines(testWorkloadPool, testIdentityProvider),
+			want:  SandboxConfig{Type: SandboxGVisor, MicroVM: &MicroVMConfig{StorageClass: "gp2", Metadata: metadata}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

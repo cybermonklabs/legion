@@ -21,8 +21,10 @@ body: |-
   told; a note of its own says when the process was one that runs the role's session. A kill no
   process shows has a `killed unnamed` line with the pod's memory, and no role is told. A pod that sets
   `workload-identity-token` as a `runtime.kubernetes.pod.volumes` name is now refused: that name is
-  Legion's own, as the other names it puts in every pod are. It also
-  logs the guest's memory once an hour (`launcher: guest memory: hour ...`).
+  Legion's own, as the other names it puts in every pod are. A `runtime.kubernetes.agent_secrets`
+  `audience` or `exchange_audience` equal to `microvm.metadata.workload_pool` is refused too while an
+  issue pod runs in a microVM with `metadata` set: the cluster projects one volume per audience. The
+  launcher also logs the guest's memory once an hour (`launcher: guest memory: hour ...`).
   With `microvm.metadata` set, the launcher serves the metadata server's paths for the pod's own
   account at `127.0.0.1:8169`, from the pod's projected token exchanged at Google's Security Token
   Service, and sets `GCE_METADATA_HOST` and `GCE_METADATA_IP` on every role. Daemon API
