@@ -1437,6 +1437,19 @@ export function MentionComposer({
     setConfirmingDiscard(false);
     onClose();
   };
+  /** An anchored composer's Close, which asks as Escape does: over a draft the reader has not
+   *  sent - typed, or handed back by a refusal - it raises `Discard draft?` rather than dropping
+   *  what they wrote with nothing said, and it closes at once over an empty field. */
+  const closeOrAsk = () => {
+    if (!hasUnsavedInput(body, replacement, askOptions) || confirmingDiscard) {
+      onClose();
+      return;
+    }
+    const active = document.activeElement;
+    lastFocusedField.current =
+      active instanceof HTMLElement && formRef.current?.contains(active) ? active : null;
+    setConfirmingDiscard(true);
+  };
   const bodyLabel =
     edit !== undefined
       ? "Edit comment"
@@ -1497,7 +1510,7 @@ export function MentionComposer({
       {compact || anchor === undefined ? null : (
         <div className="flex items-center justify-between gap-3">
           <p className={`text-sm font-semibold ${textPrimaryOnSurface}`}>{title}</p>
-          <button className={`text-sm ${dismissButtonText}`} onClick={onClose} type="button">
+          <button className={`text-sm ${dismissButtonText}`} onClick={closeOrAsk} type="button">
             Close
           </button>
         </div>

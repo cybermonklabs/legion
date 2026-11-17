@@ -125,7 +125,9 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   the Conversation's Expand thread); the card's Reply, or that control, brings it back with its
   refusal, and nothing is sent until the reader presses. An inline reply's refusal offers Discard
   draft beside Retry, since its Cancel reply no longer drops it. An Inbox thread box is the
-  thread's standing reply, so its Cancel reply and Escape leave its draft in the field.
+  thread's standing reply, which nothing ends, so it draws no Cancel reply, and Escape in its field
+  leaves its draft there. An anchored composer's Close asks as its Escape does: over a draft not
+  sent it raises `Discard draft?`, and only Discard drops what the reader wrote.
   A surface keyed by its subject gets that from its key (the Inbox's thread boxes, below); one
   instance whose address a prop changes holds what it made there.
   `HeldSends.send` refuses a request whose owner, anchor, reply or edited comment is not where the
