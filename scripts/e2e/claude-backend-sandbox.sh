@@ -1367,10 +1367,11 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 # No listener creates a bucket it copies, so the run provisions its own server with
 # them before the listener starts. fixturebuckets provisions only a loopback server, and bind_host is
 # the devbox's private address under aws-private-ip, so it runs in the NATS container's own network,
-# where the server is 127.0.0.1:4222, from NATS's own image: it is built static for that.
+# where the server is 127.0.0.1:4222, from the NATS container's own image ($nats_image, the pinned
+# hub image): fixturebuckets is built static for that, and the run pulls no other image.
 docker run --rm --network "container:$nats_container" \
   --mount "type=bind,source=$work/fixturebuckets,target=/fixturebuckets,readonly" \
-  --entrypoint /fixturebuckets nats:2.10 -url nats://127.0.0.1:4222 >/dev/null ||
+  --entrypoint /fixturebuckets "$nats_image" -url nats://127.0.0.1:4222 >/dev/null ||
   fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"
 # The run's session database (lib/session-db.sh's session_db_start): every pod keeps its sessions in
 # it (session_store postgres, which the daemon requires, since an issue pod's disk dies with the
