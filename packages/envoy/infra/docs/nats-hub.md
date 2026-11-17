@@ -1042,8 +1042,8 @@ Without `routeAuthorization`, the servers' routes carry no credential: any proce
 hub pod's port 6222 can join the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the
 hub pods alone, and that is then the routes' only guard. A NetworkPolicy cannot fence a pod's own
 node, so [Route authorization](#route-authorization) adds a credential, which fences a process that
-can connect to 6222 and not one with access to a node's network namespace or its traffic (see that
-section).
+can connect to 6222 and not one with access to a node's network namespace or its traffic, nor one
+that joined as a route before `authorization` applied (see that section).
 
 Beside a callout, the routes keep their own ping. The top-level `ping_interval` of 20 s the callout
 adds to `auth.conf` would also govern the routes, since a route reads `cluster.ping_interval` and
@@ -1097,11 +1097,15 @@ finished:
 
 The component renders no TLS for the cluster, so NATS sends each route URL's password unencrypted,
 on every route a server opens. The route URLs name the pods by their headless Service,
-`<n>-<i>.<n>-headless:6222`, which resolves to the pods' internal IPs, and `noAdvertise` keeps a
-server from offering any other address, so a route never leaves the cluster's VPC. Between nodes,
-the route traffic has only Google's default VPC encryption, with Google-held keys, and neither NATS
-nor GKE adds any: VM-to-VM connections inside Google's production network are
-integrity-protected and encrypted
+`<n>-<i>.<n>-headless:6222`, which resolves to the pods' internal IPs, and the address a server
+gossips to its peers for another server is the one it saw on that server's connection, its pod IP
+(nats-server 2.15.1 `server/route.go:859-871`), so the hub's own servers never send the password
+outside the cluster's VPC. `noAdvertise` is no part of that: it only keeps the cluster's addresses
+from clients (`opts.go:6338`, `route.go:737`, `:2794`). The one exception is a process that joined
+as a route before `authorization` applied, below: it can name any address, and a server dials it
+with the password. Between nodes, the route traffic has only Google's default VPC encryption, with
+Google-held keys, and neither NATS nor GKE adds any: VM-to-VM connections inside Google's
+production network are integrity-protected and encrypted
 ([Encryption in transit](https://cloud.google.com/docs/security/encryption-in-transit), "Google
 Cloud virtual network authentication and encryption"). On each node the password is in clear, so
 the residual is node-level: a process with access to a node's network namespace or its traffic,
@@ -1123,9 +1127,24 @@ written every 20 ms throughout, the `routes` reloads and then the `authorization
 server at a time 20 s apart, split no mesh and lost no acknowledged write.
 
 A reload closes only the routes the server accepted that now fail the credential check, never one
-it opened itself, so a server that joined before `authorization` can keep a route to a peer until
-that peer restarts. `authorization` fences a server that tries to join after it; only a restart of
-every server fences one that joined before.
+it opened itself (`server/reload.go:2367-2376`, `route.go:2484-2530`). So a process that joined as
+a route during `env` or `routes` keeps the routes the hub's servers opened to it, and once
+`authorization` applies it can read the password: it sends one INFO naming another server with
+`auth_required: true`, and the server that reads it dials that address as an implicit route with
+the user `route` and the route password (`route.go:702-713`, `:1092-1094`). Measured on local
+servers of nats-server 2.15.1 in this change's review: after the `authorization` reload, the hub's
+server dialed the address such a process named with the user and the password; without the reload
+it sent no credential. So `authorization` fences a process that tries to join after it, and not one
+that joined before.
+
+So once `authorization` has reached every pod, read each pod's `/routez` (`kubectl port-forward`
+to 8222) and require every `remote_name` to be one of the hub's own servers, `<n>-0`, `<n>-1` and
+`<n>-2`. Any other name means a process joined during `env` or `routes`: treat the password as
+read, cut that process's reach, and change the password, below. A change of the password goes
+back to `env`, which drops `authorization` from `nats.conf`, so the routes are open again during
+its `env` and `routes` applies, and the same `/routez` check follows its own `authorization`
+apply. The component cannot make that check, since it runs at an apply and reads no pod; the
+rollout that applies the stages runs it.
 
 Lowering `stage` below `routes`, or removing `routeAuthorization` from a hub at `routes` or
 `authorization`, makes each server log every route URL it removes with the route password in it

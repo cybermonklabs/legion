@@ -86,6 +86,19 @@ func TestClusteredNatsHubRouteAuthorizationKeepsTheCalloutsRoutePing(t *testing.
 	}, cluster["merge"])
 }
 
+// The route URLs name the pods of the StatefulSet, <name>-<i>.<name>-headless, the chart's
+// fullnameOverride, and not the client Service, serviceName. The fixture gives both the same
+// value, so this row gives the hub a client Service of another name: a URL built from serviceName
+// names pods that do not exist, and every route would fail to resolve.
+func TestClusteredNatsHubRouteURLsNameTheStatefulSetsPods(t *testing.T) {
+	args := clusteredArgs()
+	args.ServiceName = "envoy-hub-client"
+	args.RouteAuthorization = routeAuthorization("env")
+	env := chartValues(t, runClusteredHub(t, args))["container"].(map[string]any)["env"].(map[string]any)
+	require.Equal(t, wantRouteEnv()["NATS_ROUTE_URLS"], env["NATS_ROUTE_URLS"])
+	require.NotContains(t, env["NATS_ROUTE_URLS"], "envoy-hub-client", "the URLs name no pod of the client Service's name")
+}
+
 // Kubernetes expands $(NATS_ROUTE_PASSWORD) in NATS_ROUTE_URLS only when the password's variable
 // comes first in the container's env, and the chart writes container.env in its keys' order
 // (templates/_helpers.tpl, nats.env, ranges over the map, which a Go template does in key order).

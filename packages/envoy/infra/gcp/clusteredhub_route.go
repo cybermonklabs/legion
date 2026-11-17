@@ -27,7 +27,8 @@ const (
 	routeStageAuthorization
 )
 
-// clusteredHubRouteStages are the stage names routeAuthorization.stage takes, in their order.
+// clusteredHubRouteStageNames are the names routeAuthorization.stage takes, each bound to its
+// stage, in the stages' order.
 //
 // The order holds because nats-server reads a variable of nats.conf from its own environment at
 // each load: a nats.conf that names $NATS_ROUTE_URLS before the container holds it fails every
@@ -40,11 +41,31 @@ const (
 // A reload accepts a change to the cluster block but its host or port (reload.go:1710-1737), and
 // it closes only the routes the server accepted that now fail the credential check (reload.go:
 // 2367-2376), and an accepted route that duplicates one the server's own routes name is marked as
-// one it opened itself, which the check skips (route.go:2484-2530). So a server that joined before
-// authorization can keep a route to a peer until that peer restarts: authorization fences a
-// server that tries to join after it, and only a restart of every server fences one that joined
-// before.
-var clusteredHubRouteStages = []string{"env", "routes", "authorization"}
+// one it opened itself, which the check skips (route.go:2484-2530). So a process that joined as a
+// route during env or routes keeps the routes the hub's servers opened to it, and once
+// authorization applies it can read the password: one INFO naming another server with
+// auth_required makes a server dial that address as an implicit route with the route user and
+// password (route.go:702-713, :1092-1094). Authorization fences a process that tries to join after
+// it and not one that joined before, so the rollout reads each pod's /routez once authorization
+// is on every pod (docs/nats-hub.md, Route authorization).
+var clusteredHubRouteStageNames = [...]string{
+	routeStageEnv:           "env",
+	routeStageRoutes:        "routes",
+	routeStageAuthorization: "authorization",
+}
+
+// String is the stage's name, as routeAuthorization.stage takes it.
+func (s clusteredHubRouteStage) String() string { return clusteredHubRouteStageNames[s] }
+
+// parseClusteredHubRouteStage is the stage named name, and false for any other name.
+func parseClusteredHubRouteStage(name string) (clusteredHubRouteStage, bool) {
+	for stage, stageName := range clusteredHubRouteStageNames {
+		if stageName == name {
+			return clusteredHubRouteStage(stage), true
+		}
+	}
+	return 0, false
+}
 
 // The route credential's names: the user every route presents, and the nats container's two
 // variables. Kubernetes expands $(NATS_ROUTE_PASSWORD) in NATS_ROUTE_URLS only when the password's
@@ -69,13 +90,12 @@ func newClusteredHubRoute(args *ClusteredHubRouteAuthorizationArgs, namespace st
 	if !secretKeyRule.MatchString(args.SecretKey) {
 		return nil, core.InputErrorf("routeAuthorization.secretKey", "routeAuthorization.secretKey %q must match %s", args.SecretKey, secretKeyRule)
 	}
-	for i, name := range clusteredHubRouteStages {
-		if args.Stage == name {
-			return &clusteredHubRoute{secretName: args.SecretName, secretKey: args.SecretKey, stage: clusteredHubRouteStage(i)}, nil
-		}
+	stage, ok := parseClusteredHubRouteStage(args.Stage)
+	if !ok {
+		return nil, core.InputErrorf("routeAuthorization.stage", "routeAuthorization.stage %q must be one of %s, in that order, one apply each: "+
+			"env gives the pods the credential, routes presents it, and authorization requires it", args.Stage, strings.Join(clusteredHubRouteStageNames[:], ", "))
 	}
-	return nil, core.InputErrorf("routeAuthorization.stage", "routeAuthorization.stage %q must be one of %s, in that order, one apply each: "+
-		"env gives the pods the credential, routes presents it, and authorization requires it", args.Stage, strings.Join(clusteredHubRouteStages, ", "))
+	return &clusteredHubRoute{secretName: args.SecretName, secretKey: args.SecretKey, stage: stage}, nil
 }
 
 // env is the nats container's route variables, as chart container.env entries: the password from

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,11 +132,11 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 		}
 		within(t, 30*time.Second, "the three servers' mesh", func() error {
 			for _, s := range servers {
-				remotes, err := s.remotes()
+				remotes, err := routeRemotesAt(s.monitor)
 				if err != nil {
 					return err
 				}
-				if want := otherNames(servers, s); !equalSets(remotes, want) {
+				if want := otherNames(servers, s); !maps.Equal(remotes, want) {
 					return fmt.Errorf("%s routes to %v, want %v", s.name, remotes, want)
 				}
 			}
@@ -165,7 +166,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 					return nil
 				})
 				for _, s := range servers {
-					remotes, err := s.remotes()
+					remotes, err := routeRemotesAt(s.monitor)
 					require.NoError(t, err)
 					require.NotContains(t, remotes, "rogue", "%s routes to the rogue", s.name)
 				}
@@ -177,11 +178,11 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 			open := startRouteServer(t, renders["env"], natsServer, renders["env"].release+"-0", reservePorts(t, 3), nil)
 			p := startRogue(t, natsServer, "rogue", reservePorts(t, 3), []string{fmt.Sprintf("nats://127.0.0.1:%d", open.route)})
 			within(t, 15*time.Second, "the rogue in the open server's routes", func() error {
-				remotes, err := open.remotes()
+				remotes, err := routeRemotesAt(open.monitor)
 				if err != nil {
 					return err
 				}
-				if !slices.Contains(remotes, "rogue") {
+				if !remotes["rogue"] {
 					return fmt.Errorf("%s routes to %v", open.name, remotes)
 				}
 				return nil
@@ -282,37 +283,13 @@ func listeningForRoutes(port int) func(*cmdtest.Process) error {
 	}
 }
 
-// remotes is the server names its /routez lists at the other end of its routes.
-func (s *routeServer) remotes() ([]string, error) {
-	var routez struct {
-		Routes []struct {
-			RemoteName string `json:"remote_name"`
-		} `json:"routes"`
-	}
-	if err := getJSON(fmt.Sprintf("http://127.0.0.1:%d/routez", s.monitor), &routez); err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, route := range routez.Routes {
-		if !slices.Contains(names, route.RemoteName) {
-			names = append(names, route.RemoteName)
-		}
-	}
-	slices.Sort(names)
-	return names, nil
-}
-
-// otherNames is the names of servers but s, sorted.
-func otherNames(servers []*routeServer, s *routeServer) []string {
-	var names []string
+// otherNames is the set of the names of servers but s.
+func otherNames(servers []*routeServer, s *routeServer) map[string]bool {
+	names := map[string]bool{}
 	for _, other := range servers {
 		if other != s {
-			names = append(names, other.name)
+			names[other.name] = true
 		}
 	}
-	slices.Sort(names)
 	return names
 }
-
-// equalSets says whether a and b, each sorted, hold the same names.
-func equalSets(a, b []string) bool { return slices.Equal(a, b) }

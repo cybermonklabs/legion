@@ -490,13 +490,17 @@ func (s *hubServer) commandArgs() []string {
 }
 
 // routeRemotes is the set of servers the server's /routez names at the other end of its routes.
-func (s *hubServer) routeRemotes() (map[string]bool, error) {
+func (s *hubServer) routeRemotes() (map[string]bool, error) { return routeRemotesAt(s.monitor) }
+
+// routeRemotesAt is the set of servers the /routez of the server whose monitoring port is monitor
+// names at the other end of its routes. Every live test reads a server's routes through it.
+func routeRemotesAt(monitor int) (map[string]bool, error) {
 	var routez struct {
 		Routes []struct {
 			RemoteName string `json:"remote_name"`
 		} `json:"routes"`
 	}
-	if err := s.monitorJSON("/routez", &routez); err != nil {
+	if err := getJSON(fmt.Sprintf("http://127.0.0.1:%d/routez", monitor), &routez); err != nil {
 		return nil, err
 	}
 	remotes := map[string]bool{}

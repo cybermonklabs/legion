@@ -234,14 +234,16 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 // Kubernetes Secret in the hub's namespace, and the key in it, holding the route password, which
 // the component names by reference (a secretKeyRef) and never reads, and the stage of its rollout,
 // env, routes or authorization, each one apply after the one before has finished
-// (clusteredHubRouteStages says what each renders and why the order holds). The password is
+// (clusteredHubRouteStageNames says what each renders and why the order holds). The password is
 // written into the route URLs whole, and nats-server types a variable's value as it types a
 // literal of nats.conf, so a password of digits alone is an integer it refuses and one such as 1k
 // is a size: the password holds letters and digits only, a letter first. The component never sees
 // it, so its minter holds it to that. Lowering stage below routes, or removing routeAuthorization
 // from routes or authorization, makes each server log every route URL it removes, password
 // included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"), so the password must be
-// changed after such a rollback (docs/nats-hub.md, Route authorization).
+// changed after such a rollback, and authorization fences no process that joined as a route
+// before it applied, which can then read the password, so the rollout reads each pod's /routez
+// after it (docs/nats-hub.md, Route authorization).
 type ClusteredHubRouteAuthorizationArgs struct {
 	SecretName string `pulumi:"secretName"`
 	SecretKey  string `pulumi:"secretKey"`

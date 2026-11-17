@@ -90,13 +90,13 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 		}
 	}
 	if r := s.route; r != nil {
-		settings.RouteSecretName, settings.RouteSecretKey, settings.RouteStage = r.secretName, r.secretKey, clusteredHubRouteStages[r.stage]
+		settings.RouteSecretName, settings.RouteSecretKey, settings.RouteStage = r.secretName, r.secretKey, r.stage.String()
 	}
 	return settings, nil
 }
 
 // ClusteredHubRouteStages are routeAuthorization.stage's names, in their order.
-var ClusteredHubRouteStages = clusteredHubRouteStages
+var ClusteredHubRouteStages = clusteredHubRouteStageNames[:]
 
 // RefuseClusteredHubSecret is gcp:ClusteredNatsHub's check of a secret Input once it resolves.
 var RefuseClusteredHubSecret = refuseClusteredHubSecret
