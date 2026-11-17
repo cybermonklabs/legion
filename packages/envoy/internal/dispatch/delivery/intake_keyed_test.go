@@ -716,7 +716,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
 	hooked := make(chan struct{}, 8)
-	natsClient.AddReconnectHook(func(*natsgo.Conn) error {
+	natsClient.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -790,7 +790,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
 	hooked := make(chan struct{}, 8)
-	natsClient.AddReconnectHook(func(*natsgo.Conn) error {
+	natsClient.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})

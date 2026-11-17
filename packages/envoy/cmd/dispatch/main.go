@@ -1820,6 +1820,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
 // the maintenance pass sweeps.
 //
+// It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
+// the broker mints from a read entry. Dispatch is the one service that asks for it, because its
+// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+//
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
@@ -1836,6 +1841,9 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
+		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
+		// token reaches the routes that list names and no other.
+		ServesReadOnly: true,
 	})
 }
 

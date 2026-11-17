@@ -1,0 +1,15 @@
+kind: Changed
+custom:
+  Issue: pr4134
+body: |-
+  The daemon reads an issue event named in either form, its key alone
+  (`notifications.dispatch.issue.<KEY>.<type>`) or its project first
+  (`notifications.dispatch.issue.<PROJECT>.<KEY>.<type>`), and a failed role-lane forward reported
+  on either form of the lane's name. A name of the issue family that carries a key in neither form
+  is no longer acknowledged as another project's event: it is logged at ERROR with its subject, its
+  stream sequence and a running count, and terminated as poison. Old-form names are counted, and
+  logged at INFO at most once a minute with the count. **The daemon now needs nats-server
+  v2.11.12, v2.12.4, or v2.14.0 and later**, and refuses to open its consumers on any other,
+  naming its version and those releases, by the rule the Envoy listener refuses one by; a
+  connection that is reconnecting at that moment is waited for, never read as a server of no
+  version.

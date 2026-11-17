@@ -1923,4 +1923,146 @@ package api
 // line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 144
+//
+// 146: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
+// for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
+// `admitted`, the phase a root's own architect works, and each root's view carries the entry its
+// architect's work stands at and the entry its claim was queued, as a child's carries its
+// implementer's. Beside them each issue of `GET /legion/v1/state` carries the two times of a
+// claim's handshake of the last entry it was queued a task of: `entryQueuedAt`, when a task of
+// that entry was first queued to the claim, and `entryConfirmedAt`, when a turn of that claim's
+// worker first confirmed one. The claim keeps both in a record of its own
+// (`supervise.Claim.Handshake`, the four `claims.handshake_*` columns store migration
+// 20261114020537 adds), so they outlast the task, which the end of the confirming turn retires.
+// A tree's own root carries its architect's handshake whatever phase it stands in, through
+// `awaiting_person` and the phases a phase role works, where the two numbers are that role's and
+// the two times are still the architect's; any other issue carries the handshake of the role of
+// its current phase. Both are absent where no entry was queued to that claim in the issue's
+// current generation — a role the daemon holds no claim row of, a re-admitted root whose new
+// architect entry is not queued yet, and a root of the release before this one, whose migration
+// gives the claim the two numbers and no handshake, which is how a reader tells such a root from
+// one this release served — and `entryConfirmedAt` alone is absent while no turn has confirmed a
+// task of the entry, which is the root whose architect took nothing.
+// A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
+// reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
+// `took-nothing` (the task of the entry its `phases` row names was first queued to its claim more
+// than ten minutes ago and no turn confirmed it, counted from that first queueing however many
+// times the daemon sent that entry's task again; a task whose turn ended with the claim's process,
+// at a death or at a replacement the daemon made, counts only while the claim is ready, working or
+// idle, and from the relaunched agent's ready where that is later; and a task the root's own
+// record has superseded, one that carries an entry, of a run before its generation or of an entry
+// the row has moved past, raises the arm not at all, nor does a task of no entry, such as a
+// wake's), `claim-unreachable` (the claim is failed or
+// retired and no start of the root's run is the daemon's next move for it: a start the outbox is
+// running is, and so is a start queued in the last ten minutes unless it has already run against
+// the claim and left it failed or retired, after which the outbox only runs it again on its
+// backoff; or no architect claim stands, no start of one was queued in the last ten minutes, and
+// the work of its entry has waited the same ten minutes; a root waiting on a person raises it as
+// any root does, since the daemon queues the next start of its architect only when that wait is
+// answered) and
+// `slow-before-gate` (it stands at `admitted` with no design-gate step registered 90 minutes
+// after the later of its admission and its architect's last raised entry) — in that order. The
+// daemon serves the arms the admission pass reads before it wakes the controller, by the same
+// predicates over the same reads (admit.Admission.ArchitectStallArms, in the state's own
+// snapshot), whether or not the controller was told of an arm, and the key is absent for a root
+// no arm holds for and for every issue that is not a tree's root.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 146 is served the issues without both times and without `architectStalls`
+// (api's stateFor, withoutEntryTimes) — as a caller below 141 is served the issues without
+// `assignments` (144, the entry right above, moves no strictly parsed shape of the state and
+// narrows nothing: `settings.runtime.kubernetes.memory_guard`, which came with it, is a key of the
+// settings block the plugin parses loosely and no part of that number), one below 133 the issues
+// without `mergeWait` (137 moves no shape of the state and narrows nothing), one below 132 every
+// member of the waiting line whose `kind` is `waiting_on_issue` without its `kind`, one below 111
+// the issues without `treeMovedAt` and `quietHours` (123 moves no shape of the state and narrows
+// nothing), one below 98
+// the admission block without `admission.held`, one below 94 the issues without `phaseEntry` and
+// `givenEntry`, one below 87 every claim view without `leakCheckCause`, one below 85 every issue
+// without `why` and every member of the admission line with its `place` and its `length` alone,
+// one below 75 without the nine keys the decided record added and the body without its
+// `contract` mark, one below 73 a body with no `claimsToRefresh`, one below 62 without the
+// workers' `backwardMoves`, one below 58 with no place in the admission line, one below 57 with
+// no `step` on a claim view, one below 56 the stranded report without its retired entries, one
+// below 55 without the gated steps, one below 53 a body with no wakes waiting, one below 51
+// without the admission's trees and each issue's tree, one below 49 without the memory draw and
+// one below 46 without the claim views' update rounds; the bands compose, and every reader
+// from 146 on takes both times and `architectStalls` as optional. The two entry numbers move no
+// further: a plugin at 94 parses them already, and a root carrying them is the same shape the
+// issue beside it carries.
+// `legion state`'s plain line changes with them: it names a tree's own root where the state
+// names an arm for it (`architectStalls`), with that arm's words, and states no arm of its own,
+// and it names a root for nothing else: not for the mere difference of its two numbers, which
+// every root reads as between a transition and its delivery, whatever role works the phase it
+// stands in. The rest of the change moves no shape a caller reads: the architect's row of the
+// `phases` record, the derivation that fills its entry and the sweep that sends that entry's task
+// are the daemon's own lanes and no route.
+// (This entry took 94 on cybermonklabs/legion#3677's head 643be0c4ae84, whose own entry stood
+// at 93 then. #3677 merged at 94. The entry took 111 at the forward merge of 2026-11-13 that
+// brought main in at 7810d00ef1c3, which declared 104, cybermonklabs/legion#3830's entry: a
+// reading of `const DaemonAPIVersion` in this file at refs/pull/<n>/head at 2026-11-13T18:12Z,
+// for every one of the 41 heads among the 136 open pull requests of this repository whose file
+// list named this file or was cut short, gave above that base's 104: 105 (#3659), 106 (#2731 and
+// #3730), 107 (#3712), 108 (#3519), 109 (#3793) and 110 (#3715 and #3937). It took 117 at the
+// forward merge of 2026-11-13 that brought main in at 809208573a01, which landed
+// cybermonklabs/legion#3573's INFRA-2560 at 111, then the entry right above: 111 was the number
+// this change declared until then, and it was the number the base then carried. A first reading
+// of `const DaemonAPIVersion` in this file at refs/pull/<n>/head between 2026-11-13T22:44Z and
+// 22:48Z, for every one of the 139 open pull requests of this repository other than this
+// change's own #3711, gave above the base's 111: 112 (#2731), 113 (#3575), 114 (#3730) and 115
+// (#3519), so this change took 116. Other heads moved while the merge was resolved, and a second
+// reading between 23:16Z and 23:22Z, for every one of the 138 open pull requests other than
+// #3711, gave above 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3659 and #3937)
+// and 116 (#3715). 111 itself was declared by #3178, #3793 and #3982, and every other head read
+// declared 110 or below. So this change took 117, the lowest number above the base's that no
+// open head declared. The reading is of this file at each head and not of a file list: GitHub
+// cuts a pull request's file list short, so every open head is read. It took 127 at the forward
+// merge of 2026-11-14 that brought main in at 25f3e38a3e29, which landed
+// cybermonklabs/legion#3793's INFRA-3146 at 123, then the entry right above and the number the
+// base then carried, so 117 was no longer above it. A reading of the number every open pull
+// request of this repository declared, made between 2026-11-14T12:30:25Z and 12:34:35Z, gave
+// above the base's 123: 124 (#4021), 125 (#4030) and 126 (#2230 and #4017), and no head declared
+// a number above 126, so this change took 127, the lowest number above the base's that no open
+// head declared. It took 133 at the forward merge of 2026-11-15 that brought main in at
+// 8b0f29b971df, which landed cybermonklabs/legion#3715's INFRA-3036 at 132, then the entry right
+// above and the number the base then carried, so 127 was no longer above it. A reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this repository,
+// made between 2026-11-15T00:05:55Z and 00:10:18Z, found no head declaring 133 or above, so this
+// change took 133, the lowest free number above main's 132 at that reading. It took 139 at the
+// forward merge of 2026-11-15 that brought main in at 2e546572f2b8, which landed
+// cybermonklabs/legion#3937's INFRA-3027 at 133, then the entry right above and the number the base
+// then carried, so 133 was no longer this change's. A reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request of this repository, made between
+// 2026-11-15T03:58:42Z and 04:03:11Z, gave above the base's 133: 134 (#4017 and #4021), 135
+// (#3659), 136 (#3575 and #3730), 137 (#4046) and 138 (#3712), and no head declared a number
+// above 138, so this change took 139, the lowest free number above main's 133 at that reading.
+// It took 144 at the forward merge of 2026-11-15 that brought main in at 66ee7eb9100d, which
+// still declared 133. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
+// pull request of this repository, made between 2026-11-15T10:07:01Z and 10:17:18Z, gave above
+// the base's 133: 134 (#4021), 135 (#3659), 136 (#4065), 137 (#4046), 138 (#4017), 139 (#2731
+// and #3993), 140 (#3519), 141 (#3575), 142 (#3712) and 143 (#3730), and no head declared a
+// number above 143, so 139 was no longer free and this change took 144, the lowest free number
+// above main's 133 at that reading. It took 146 at the forward merge of 2026-11-15 that brought
+// main in at fecceeb60ec0, which landed cybermonklabs/legion#4046's INFRA-3621 at 137, then the
+// entry right above and the number the base then carried. A reading of `const DaemonAPIVersion`
+// at refs/pull/<n>/head for every open pull request of this repository, made between
+// 2026-11-15T14:06:47Z and 14:11:13Z, gave above the base's 137: 138 (#4017), 139 (#2731 and
+// #3993), 140 (#3519), 141 (#3575), 142 (#3712), 143 (#3730), 144 (#4021) and 145 (#3659), so
+// 144 was no longer free and this change took 146, the lowest free number above main's 137 at
+// that reading. It kept 146 at the forward merge of 2026-11-15 that brought main in at
+// 3aef4ebbd041, which landed cybermonklabs/legion#3575's INFRA-2566 at 141, then the entry right
+// above and the number the base then carried. A reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request of this repository, made between
+// 2026-11-15T18:12:54Z and 18:16:58Z, gave above the base's 141: 142 (#3712), 143 (#3730), 144
+// (#4021), 145 (#3659) and 147 (#4017), so 146 was still the lowest free number above main's 141
+// at that reading. It keeps 146 at the forward merge of 2026-11-15 that brings main in at
+// 52b3cf5c002a, which carries cybermonklabs/legion#4021's INFRA-3557 at 144, the entry right
+// above and the number the base now carries. A reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request of this repository, made between
+// 2026-11-15T23:05:22Z and 23:08:22Z, gave above the base's 144: 145 (#3659), 147 (#4017), 148
+// (#3519), 149 (#2731), 150 (#3730 and #4049) and 151 (#4106), so 146 was still the lowest free
+// number above main's 144 at that reading. Each of those numbers is the number that head declared
+// at that reading and no head's for good. Read the base's own number and every open pull request
+// again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 146

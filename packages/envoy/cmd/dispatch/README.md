@@ -187,20 +187,32 @@ The server asks the broker what the token is (RFC 7662 introspection on `/v1/oau
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
-A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service the machine holding it belongs to, and `actor` in the body does not decide that session:
+A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
+A read-only token names no project either.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, or it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
+It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
+`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
+That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -237,10 +249,12 @@ The sign-in check refuses every write by a credential that names a service and n
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
+A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 The project and session checks are a no-op for a credential that carries no project and proves no session
 — a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
+A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -678,7 +692,8 @@ Either way the server logs the address it serves on once it serves, as `dispatch
 
 Set `DISPATCH_PPROF_PORT` to a port to serve the Go profiler (`net/http/pprof`) on `127.0.0.1:<port>`, on a mux of its own, apart from the server's routes.
 It binds the loopback address only, so nothing outside the pod reaches it; unset or empty, nothing listens.
-A value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
+`0` serves it on a port the kernel chooses, which the server logs as `dispatch: pprof listening addr=127.0.0.1:<port>`: a test harness asks for that, since a port it picked and let go of is any program's to take before the server binds it.
+Any other value that is not a port 1-65535, or a port already taken, refuses startup naming the variable.
 The profiler binds before anything connects, so a slow boot can be profiled too.
 The listener closes at once when the process is told to stop, cutting off a profile in flight, so it never delays the shutdown (and the shutdown's own drain cannot be profiled).
 A `gcp:Dispatch` deployment turns it on with the component's `pprofPort` input (`packages/envoy/infra/README.md`), which sets the variable on the `envoy-dispatch` container;
@@ -3238,7 +3253,8 @@ A text whose picked terms number fewer than `duplicateMinTerms` (3), or that hol
 a share of one or two terms is 1.0 against any issue that holds them.
 Such a text is judged by equality instead (`duplicateEqualLexemesQuery`):
 the gate refuses an open issue of the project, outside the new issue's ancestors, whose title lexemes and whose primary document's lexemes are exactly the new title's and the new spec's as Dispatch would store it, and it names nothing else.
-A candidate at or above `duplicateRefuseScore` refuses the create;
+A candidate at or above `duplicateRefuseScore` refuses the create once the refusal's row in `near_copy_checks` is known to be written;
+when that row cannot be written, the create goes in unchecked and its `201` names the candidate in `advice.suggestions.near_copy_check` (below);
 the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
@@ -3247,6 +3263,13 @@ one bound, because two would have a read of 700 ms refuse an unforced create whi
 A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
 the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
+
+Each answer the gate gives a create is one row of `near_copy_checks` (`api/near_copy_checks.go`), read through `GET /api/v1/near-copy-checks` and `GET /api/v1/near-copy-checks/{id}`:
+`refused`, `forced`, `nudged`, `passed` or `not_made`, with the reason a check was not made (`bound`, `failed` or `unrecorded`), the candidates it read with their scores, and, for a refused create alone, the spec it refused.
+A refusal is answered only once its row is known to be written, so every `409 POSSIBLE_DUPLICATE` has its row;
+otherwise the refusal refuses nothing, and the create goes in as `not_made`, reason `unrecorded`, its row written in its own transaction under the id the refusal used, so it replaces a refused row whose insert landed unseen.
+Every other create's row is written after the commit, bounded to one second (`nearCopyRecordTimeout`), and tried once more in the background for up to 30 s (`retryRecord`) when a timeout or a lock stopped it, as a `related_checks` row is;
+a row that still cannot be written is logged, and the create stands.
 
 `POST /api/v1/issues`, `POST /api/v1/issues/{key}/asks` and `POST /api/v1/artifacts/{id}/asks` run the related-item check once the write has committed, and so does each decision block a document edit (`POST /api/v1/artifacts/{id}/edits`) adds, on the block's question (the check replaced LEGION-550's 300 ms keyword suggestions).
 The check never refuses the write, but the response waits for it, at most 5 s (`relatedCheckAllowance`);
@@ -3290,7 +3313,7 @@ It holds at most two answered question asks of projects other than the one asked
 An ask is offered only when it is a question, somebody answered it, the answer carries text, and it scores at or above the meaning floor the meaning search already uses.
 An issue create and the `GET` form answer none, so a client that predates the field reads what it read before, and the dashboard's new-issue dialog is unchanged.
 The leg runs beside the asking project's own meaning query, on a connection of its own, and reuses the one embedding the check already made.
-The stage waits for it at most 300 ms after its own query answered, and never past its own allowance;
+The check waits for it at most 300 ms after that query answered, and never past the meaning search's own allowance, holding the asking project's answer while it waits, so the wait never costs the check its meaning result;
 a leg that is slower than that, that fails, or that finds nothing leaves the asking project's result whole, with no cross-project item and no reason recorded.
 An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`;
 an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.
@@ -4053,6 +4076,18 @@ Each item below names a path with its method and identity, then its purpose.
   another is `400 INVALID_QUERY`) when given:
   `{project, source_kind, from, to}` echo the filters (null when absent), then `total`, `by_source_kind`, `by_outcome`, `by_search` (a check not made counted under `not_made`), `by_reason`, `completed` (found or none), `skipped_for_time` (reason `timeout`), `other_project_offers` (the ask creates of the window that offered at least one answered question of another project, read from `write_suggestions`), and `keyword_ms` and `total_ms`, each `{count, p50, p95, max, over_300ms}` over the checks holding that time (`model.RelatedChecksReport`).
 
+- `/api/v1/near-copy-checks?project=&from=&to=&after=&limit=` (GET; cookie, trusted header, or bearer)
+
+  List one project's near-copy gate answers (`near_copy_checks`, [Search](#search)) within `[from, to)` (RFC3339, each optional; `from` not before `to` is `400 INVALID_QUERY`), oldest first, at most `limit` (1 to 1,000, default 1,000) after the row `after` names:
+  `{project, from, to, checks, next_after}` (`model.NearCopyChecksPage`), each row with no spec.
+  `project` is required (`400 INVALID_PROJECT` when it is not a key), and an `after` that is no row of the project is `400 INVALID_QUERY`.
+  A window should end some time before now: a row written in its create's transaction holds that transaction's start as `created_at` and is seen only once it commits, so a reader that pages up to now and resumes with `after` can miss it.
+
+- `/api/v1/near-copy-checks/{id}` (GET; cookie, trusted header, or bearer)
+
+  One near-copy gate answer (`model.NearCopyCheck`), with `spec` on a refused row alone;
+  `404 NEAR_COPY_CHECK_NOT_FOUND` when there is none, `400 NEAR_COPY_CHECK_ID_INPUT` for an id that is not a uuid.
+
 - `/api/v1/issues/{key}/references?versions=` (GET; cookie, trusted header, or bearer)
 
   Read the issue's eight-hop artifact reference closure; a reference to a block reaches the block's document while a current version holds the block.
@@ -4116,7 +4151,9 @@ Each item below names a path with its method and identity, then its purpose.
   `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
   `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
+  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
+  a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
+  External references skip the check.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;

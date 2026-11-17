@@ -129,7 +129,7 @@ func startStandIn(t *testing.T, uri, sessionID string) <-chan contracts.Envelope
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	frames := make(chan contracts.Envelope, 16)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(message *natsgo.Msg) {
 		var frame contracts.Envelope
 		if err := json.Unmarshal(message.Data, &frame); err != nil {
 			t.Errorf("stand-in %s decode frame: %v", sessionID, err)
@@ -260,7 +260,7 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 	if answer.Holder != "ses_offline" || answer.DedupeKey != "publish.offline-1" {
 		t.Fatalf("answer %s, want holder ses_offline and dedupe key publish.offline-1", recorder.Body.String())
 	}
-	subject := contracts.AgentSubject("ses_offline")
+	subject := contracts.LegacyAgentSubject("ses_offline")
 	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
 	if err != nil {
 		t.Fatalf("read the stream's forward on %s: %v", subject, err)
@@ -305,7 +305,7 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 			t.Fatalf("forward %d: dedupe key %s, want %s", i+1, frame.DedupeKey, roleForwardDedupePrefix+"publish.stored-once-1")
 		}
 	}
-	subject := contracts.AgentSubject("ses_one_copy")
+	subject := contracts.LegacyAgentSubject("ses_one_copy")
 	if count := storedForwards(t, harness.client, subject); count != 1 {
 		t.Fatalf("the stream holds %d messages on %s after two forwards of publish.stored-once-1, want the one copy their Nats-Msg-Id keeps", count, subject)
 	}
@@ -443,7 +443,7 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
-	publishTo(t, harness.client, contracts.AgentSubject("ses_self_subscribed"), forwardCopy)
+	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)

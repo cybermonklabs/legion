@@ -54,7 +54,14 @@ const (
 	// pattern it finds one by. The two rules are one rule in two files: a change to either alone
 	// leaves this half computing windows the api scan then reads differently, and the comparison
 	// below is what reports it - loudly, since every section would move at once.
-	waitingLineNamed  = `(?:contract|below) (\d+)`
+	//
+	// The word and its number stand apart by spaces, or by the one line break a wrap puts between
+	// them, with the indent and the one `//`, `*` or `#` comment marker the next line opens with:
+	// onOneLine's rule for a wrapped line, below. The repository's semantic line breaks let a
+	// sentence break there, in Markdown and YAML as in a Go or TypeScript comment, and a pattern
+	// that read only a space passed every wrapped mention over without a word (INFRA-4004). A
+	// blank line between the two is a paragraph break, and no mention.
+	waitingLineNamed  = `(?:contract|below)(?:[ \t]+|[ \t]*\n[ \t]*(?:(?://|\*|#)[ \t]*)?)(\d+)`
 	waitingLineWindow = 220
 	// api.WaitingLineField, written out because this file reaches no product package. What the
 	// literal cannot catch: a rename of that constant, which would leave this file comparing the
@@ -154,25 +161,18 @@ func TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts(t *testing.
 }
 
 // waitingLineContractWindows is every window the seven texts yield under the rule internal/api's
-// test reads a text by: a `contract <N>` or a bare `below <N>` whose 220 bytes on either side
-// name the field and name neither the retired stranded state nor the stranded report, which is
-// the other contract these same texts discuss. The parse is that test's own, written again here
-// rather than shared, because a copy held to its texts by the reader that reads the copy can
-// drift with it and still agree - and because the two live in packages this file may not import.
+// test reads a text by: a `contract <N>` or a bare `below <N>`, on one line or wrapped onto the
+// next, whose 220 bytes on either side name the field and name neither the retired stranded
+// state nor the stranded report, which is the other contract these same texts discuss. The parse
+// is that test's own, written again here rather than shared, because a copy held to its texts by
+// the reader that reads the copy can drift with it and still agree - and because the two live in
+// packages this file may not import.
 func waitingLineContractWindows(t *testing.T) []quotedText {
 	t.Helper()
 	named := regexp.MustCompile(waitingLineNamed)
 	var windows []quotedText
 	for _, name := range waitingLineContractTexts {
-		text := shippedText(t, name)
-		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
-			near := text[max(0, at[0]-waitingLineWindow):min(len(text), at[1]+waitingLineWindow)]
-			if !strings.Contains(near, waitingLineField) ||
-				strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
-				continue
-			}
-			windows = append(windows, quotedText{name, strings.TrimRight(near, "\n")})
-		}
+		windows = append(windows, waitingLineContractWindowsIn(named, name, shippedText(t, name))...)
 	}
 	return windows
 }
@@ -423,4 +423,52 @@ func renderQuotedTexts(sections []quotedText) string {
 		out.WriteString("# " + section.path + "\n" + section.body + "\n\n")
 	}
 	return out.String()
+}
+
+// waitingLineContractWindowsIn is the windows one text yields under the rule
+// waitingLineContractWindows reads the seven texts by, named being waitingLineNamed compiled: the
+// text is handed in rather than read, so that a case can hold the rule to a shape of text the
+// shipped files do not carry today.
+func waitingLineContractWindowsIn(named *regexp.Regexp, name, text string) []quotedText {
+	var windows []quotedText
+	for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
+		near := text[max(0, at[0]-waitingLineWindow):min(len(text), at[1]+waitingLineWindow)]
+		if !strings.Contains(near, waitingLineField) ||
+			strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
+			continue
+		}
+		windows = append(windows, quotedText{name, strings.TrimRight(near, "\n")})
+	}
+	return windows
+}
+
+// A number wrapped onto the line after its word yields its window as one on the same line does.
+// cybermonklabs/legion#3659 wrapped packages/pi-legion/AGENTS.md's "after contract 85's" across
+// two lines, and the scan, which read only a space between the two, found no window there; that
+// run failed only because the copy had been taken from the text before the wrap, and a window
+// first written wrapped would never have reached the copy at all (INFRA-4004). Each case is a
+// shape the seven texts are written in, and each wrapped mention in it must yield its window; a
+// blank line between the word and a number is a paragraph break, and yields none.
+//
+// What it proves: that the rule finds a wrapped number in Markdown, in a Go or TypeScript
+// comment and in a YAML scalar. What it does not: that internal/api's scan reads the copy by the
+// same rule, which its own case of a wrapped number holds.
+func TestAContractNumberWrappedOntoTheNextLineYieldsItsWindow(t *testing.T) {
+	named := regexp.MustCompile(waitingLineNamed)
+	for _, wrapped := range []struct {
+		shape, text string
+		windows     int
+	}{
+		{"a Markdown sentence", "`handoff_complete` takes no `ready`), after contract\n85's `why` and the\n`waitingLine` fields beside it\n", 1},
+		{"a Go line comment", "// A caller below\n// 58 is served no waitingLine.\n", 1},
+		{"a TypeScript block comment", "  /** Where the issue stands in `admission.waiting` (contract\n   * 58): a daemon before contract\n   * 58 writes none. */\n  waitingLine: legionWaitingLineView.optional(),\n", 2},
+		{"a YAML scalar", "body: 'Declares daemon API contract\n  58, which adds `waitingLine` to each issue the line names.'\n", 1},
+		{"a paragraph break", "The `waitingLine` passage ends on the word contract\n\n58 opens the next paragraph.\n", 0},
+	} {
+		got := waitingLineContractWindowsIn(named, wrapped.shape, wrapped.text)
+		if len(got) != wrapped.windows {
+			t.Errorf("%s yields %d windows under %s, want %d: %q", wrapped.shape, len(got), waitingLineNamed,
+				wrapped.windows, wrapped.text)
+		}
+	}
 }

@@ -54,11 +54,11 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	rig := newSessionConsumerRigOn(t, client, url)
 	ctx := context.Background()
 	const sessionID = "ses_went_back_registered"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// Another session's messages, so the session's own are above the stream's first sequence.
 	for range 5 {
-		rig.store(t, contracts.AgentSubject("ses_went_back_registered_bystander"))
+		rig.store(t, contracts.LegacyAgentSubject("ses_went_back_registered_bystander"))
 	}
 	streamID := rig.streamID(t)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
@@ -87,6 +87,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	resume := taken[len(taken)-1]
 	awaitAcked(t, rig.consumers, sessionID, resume)
 
+	awaitSessionConsumerStored(t, client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	// The deregistration deletes the consumer off its own goroutine (deleteAfterAnswer), which

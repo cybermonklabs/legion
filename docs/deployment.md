@@ -141,7 +141,15 @@ gh acts on another's, or a workspace whose remotes name two), one naming an owne
 holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
-and send nothing. The real gh runs with `GH_PATH`
+and send nothing.
+Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
+the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
+the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
+the exact `gh api rate_limit`;
+and `gh auth git-credential`, which answers from the bundle.
+The guard's reads use the caller's token because a push made with the token writes the repository they read,
+and the bundle may hold no directory for that repository's owner.
+The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
@@ -511,6 +519,9 @@ provider_keys:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
+  issue role where the block names none; a pane of a role the list leaves out loads none of this
+  experiment's overlays or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole

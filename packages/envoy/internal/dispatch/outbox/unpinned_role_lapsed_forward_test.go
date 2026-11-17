@@ -72,7 +72,9 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 	time.Sleep(time.Second)
 
 	if got := recv.received(); len(got) != 0 {
@@ -86,17 +88,17 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	if !slices.Contains(reached, issueTopic) {
 		t.Fatalf("the comment reached %v, want %s among them: the forward's wait is the one copy it holds, and costs the comment's own response nothing",
 			reached, issueTopic)
 	}
-	if slices.Contains(reached, contracts.AgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
 		t.Fatalf("the comment reached %v, want neither the route %s nor %s among them: the forward waits for the comment's unpinned mentions",
-			reached, route, contracts.AgentSubject(holder))
+			reached, route, contracts.LegacyAgentSubject(holder))
 	}
 
 	// Both resends are made, resolve to no session and fail, as a sweep's pass makes them:

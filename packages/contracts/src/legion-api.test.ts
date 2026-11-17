@@ -2019,12 +2019,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
   expect(LegionStateResponse.safeParse(blank.document).success).toBeFalse();
 });
 
-// The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
-// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
-// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
-// 56) — three keys each, neither the released nor the retired one wider than the failed one —
-// and a state with none carries an empty list rather than none.
+// The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
+// each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
+// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
+// relaunch (contract 56) — three keys each, neither the suspended nor the retired one wider than
+// the failed one — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([

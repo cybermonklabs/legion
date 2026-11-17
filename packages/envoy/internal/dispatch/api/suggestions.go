@@ -38,17 +38,18 @@ const (
 	// recorded; write_suggestions rows that cannot be written in a second are only logged, and a
 	// related_checks row is retried once (relatedRecordRetryTimeout).
 	relatedRecordTimeout = time.Second
-	// relatedRecordRetryTimeout bounds the one retry of a related_checks row the first attempt
-	// could not write in relatedRecordTimeout. The insert locks every table its foreign keys name
-	// (asks, artifacts, issues), so a migration's ACCESS EXCLUSIVE lock on one of them holds it
-	// up - just when the check, held up by the same lock, ran out of time and is the one the
+	// relatedRecordRetryTimeout bounds the one retry of a record the first attempt could not
+	// write in its second (retryRecord): a related_checks row, or a near_copy_checks row written
+	// after its create's commit. Each insert locks every table its foreign keys name (asks,
+	// artifacts, issues; projects), so a migration's ACCESS EXCLUSIVE lock on one of them holds
+	// it up - just when the check, held up by the same lock, ran out of time and is the one the
 	// records exist to count. Thirty seconds is well past the five a migration waits for a lock
 	// (pgmigrate.LockTimeout), and the retry runs in the background, so no write waits on it.
 	relatedRecordRetryTimeout = 30 * time.Second
-	// relatedRecordRetryLimit is the most related_checks retries that run at once. Each holds, or
-	// waits for, a connection of the shared pool for up to relatedRecordRetryTimeout, and a lock
-	// that holds up the first attempts holds up every check's: without a bound, those retries
-	// alone could take every connection the requests need.
+	// relatedRecordRetryLimit is the most record retries that run at once, of both kinds. Each
+	// holds, or waits for, a connection of the shared pool for up to relatedRecordRetryTimeout,
+	// and a lock that holds up the first attempts holds up every check's: without a bound, those
+	// retries alone could take every connection the requests need.
 	relatedRecordRetryLimit = 4
 	// suggestionRelatedCount is "the three items most like what was just filed" (LEGION-550's spec).
 	suggestionRelatedCount = 3
@@ -56,16 +57,11 @@ const (
 	// whose write is a question offers (Suggestions.OtherProjects). Two: they stand beside the
 	// project's own items, which keep their three places.
 	suggestionOtherProjectCount = 2
-	// crossProjectGrace is how long the meaning stage waits for the cross-project query after
-	// the one-project query has answered. The check's own bound is five seconds
-	// (relatedCheckAllowance) and its recorded median is 1,615 ms, so a grace of this size
-	// cannot push a median check into its allowance.
+	// crossProjectGrace is how long the check waits for the cross-project query once the
+	// meaning stage has answered (awaitCrossProject); the meaning deadline cuts it shorter. The
+	// check's own bound is five seconds (relatedCheckAllowance) and its recorded median is
+	// 1,615 ms, so a grace of this size cannot push a median check into its allowance.
 	crossProjectGrace = 300 * time.Millisecond
-	// crossProjectGraceMargin ends the grace that much before the meaning deadline. It keeps the
-	// stage's own answer ahead of the backstop in runRelatedCheck, which watches the same
-	// deadline. A timer wakes a goroutine in microseconds, so 25 ms is far more than the margin
-	// needs, and it shortens the grace only in the last 25 ms of a three-second allowance.
-	crossProjectGraceMargin = 25 * time.Millisecond
 	// suggestionSearchDepth widens the search past suggestionRelatedCount so that three distinct
 	// owners remain once an issue and its document collapse into one item.
 	suggestionSearchDepth = 10
@@ -316,10 +312,14 @@ type relatedStage struct {
 	response model.SearchResponse
 	err      error
 	reason   string // stage 2's reason for keywords only when it did not answer
-	// otherProjects is what stage 2's cross-project leg found: the answered questions of the
-	// other projects (relatedOtherProjects), empty for every check whose write is not a
-	// question and for a leg that failed, overran its grace or found nothing. It never decides
-	// whether the stage answered: response stands whatever this holds.
+	// cross is where stage 2's cross-project leg hands over what it found, nil where no leg
+	// runs. The stage answers without waiting for it; the check waits for it, through its grace
+	// (awaitCrossProject).
+	cross <-chan []model.SearchResult
+	// otherProjects is what that wait got: the answered questions of the other projects
+	// (relatedOtherProjects), empty for every check whose write is not a question and for a leg
+	// that failed, overran its grace or found nothing. It never decides whether the stage
+	// answered: response stands whatever this holds.
 	otherProjects []model.SearchResult
 	took          time.Duration
 }
@@ -456,11 +456,13 @@ func (s *server) runRelatedCheck(
 	}()
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
-	// start, so the embedding and the meaning query both stop there and leave the rest of the
-	// allowance to stage 1.
-	meaningAllowance := min(relatedMeaningAllowance, allowance)
+	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
+	// there and leave the rest of the allowance to stage 1. A question's cross-project leg runs
+	// on that context too, so the wait for it below never outlives it either.
+	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
 	var meaning chan relatedStage
-	var meaningDone <-chan struct{}
+	var meaningCtx context.Context
+	endMeaning := context.CancelFunc(func() {})
 	reason := ""
 	switch {
 	case input.keywordsOnly:
@@ -468,8 +470,8 @@ func (s *server) runRelatedCheck(
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
 	default:
-		meaningCtx, cancelMeaning := context.WithDeadline(bounded, started.Add(meaningAllowance))
-		defer cancelMeaning()
+		meaningCtx, endMeaning = context.WithDeadline(bounded, started.Add(meaningAllowance))
+		defer endMeaning()
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
 			reason = relatedReasonMeaningFailed
@@ -503,7 +505,8 @@ func (s *server) runRelatedCheck(
 			// refusal leaves crossRead nil and relatedMeaningStage does not run the leg.
 			crossRead = read
 		}
-		meaningDone = meaningCtx.Done()
+		// relatedMeaningStage hands the leg's answer over on the stage it answers
+		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
@@ -536,13 +539,13 @@ func (s *server) runRelatedCheck(
 		select {
 		case stage = <-meaning:
 			got = true
-		case <-meaningDone:
+		case <-meaningCtx.Done():
 			// Both channels can be ready at once, and Go then picks between them at random,
 			// which would have one check answer meaning_and_keywords and the next fall back to
 			// keywords. So read the stage's channel once without blocking first and use an
-			// answer that is already there. The stage keeps its own answer ahead of this
-			// deadline (crossProjectGraceMargin), which makes this a safety net rather than the
-			// rule.
+			// answer that is already there. The stage answers as soon as its own query has,
+			// and the wait for the cross-project leg is the check's own (below), so the leg
+			// never holds the stage's answer back from this deadline.
 			select {
 			case stage = <-meaning:
 				got = true
@@ -560,6 +563,17 @@ func (s *server) runRelatedCheck(
 			}
 		}
 	}
+	// The check holds the stage's answer while it waits for the leg, so a grace that runs to
+	// the meaning deadline costs it nothing (INFRA-2337 D1, R3). meaning_ms holds the whole
+	// meaning stage, that wait with it (D7).
+	if answered && answer.cross != nil {
+		answer.otherProjects = s.awaitCrossProject(meaningCtx, answer.cross)
+		record.meaningMS = milliseconds(time.Since(stagesStarted))
+	}
+	// The check needs nothing more of the meaning context: what still runs on it is a
+	// cross-project leg the grace left behind, or the leg of a stage that did not answer, which
+	// gives its pool connection back now rather than at the meaning deadline (D6).
+	endMeaning()
 	// A meaning stage cut short by the request going away did not time out, and nobody waits on
 	// the keyword stage's answer.
 	if callerGone() {
@@ -613,9 +627,11 @@ func (s *server) runRelatedCheck(
 // and starting it there gives it the most time. It reuses this stage's own embedding, so the
 // check calls the embedding service no more often than it does without it.
 //
-// The one-project response is the stage's answer whenever it has one. A cross-project leg that
-// failed, that overran its grace or that found nothing leaves that response whole, with no
-// reason recorded and no cross-project item.
+// The one-project response is the stage's answer whenever it has one, and the stage answers as
+// soon as it has it: it hands the leg's answer over unread (relatedStage.cross), and the check
+// waits for it (awaitCrossProject). A cross-project leg that failed, that overran its grace or
+// that found nothing leaves that response whole, with no reason recorded and no cross-project
+// item.
 //
 // A meaning search this stage's own context ended, and one the server ended itself at
 // searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
@@ -628,7 +644,7 @@ func (s *server) runRelatedCheck(
 //
 // trees says the check's caller asked for the display trees (relatedInput.trees). The leg makes
 // a reader of its own from it rather than registering with the caller's: it runs on a goroutine
-// this stage may abandon at the grace, and a reader the caller resolves while an abandoned leg
+// the check may abandon at the grace, and a reader the caller resolves while an abandoned leg
 // still registers with it is a data race. Its own reader is written by that one goroutine
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
@@ -650,15 +666,13 @@ func (s *server) relatedMeaningStage(
 	}
 	var cross chan []model.SearchResult
 	if crossRead != nil {
-		// The leg runs on a context of its own, cancelled when this function returns, which is
-		// where the grace below ends: an overrunning query then gives its pool connection back
-		// at the grace rather than at the meaning deadline.
-		crossCtx, cancelCross := context.WithCancel(crossRead)
-		defer cancelCross()
+		// The leg runs on crossRead, a mark of the meaning context, which the check ends once
+		// its wait for the leg is over: an overrunning query then gives its pool connection
+		// back at the grace rather than at the meaning deadline.
 		cross = make(chan []model.SearchResult, 1)
 		go func() {
-			reader := s.readDisplayTrees(crossCtx, trees)
-			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity(), reader)
+			reader := s.readDisplayTrees(crossRead, trees)
+			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
@@ -681,30 +695,33 @@ func (s *server) relatedMeaningStage(
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
-	stage := relatedStage{response: response}
-	if cross == nil {
-		return stage
-	}
-	// The grace ends at the earlier of crossProjectGrace from now and crossProjectGraceMargin
-	// before the meaning deadline. Where that second moment has passed, there is no grace at
-	// all and the stage answers at once with no cross-project item.
-	grace := time.Now().Add(crossProjectGrace)
-	if deadline, ok := ctx.Deadline(); ok {
-		if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
-			grace = margin
-		}
-	}
-	left := time.Until(grace)
-	if left <= 0 {
-		return stage
-	}
-	timer := time.NewTimer(left)
-	defer timer.Stop()
+	return relatedStage{response: response, cross: cross}
+}
+
+// awaitCrossProject is the check's wait for its cross-project leg once the meaning stage has
+// answered: what the leg found when it answers within the grace, nothing otherwise. The grace
+// ends at the earlier of crossProjectGrace from now and the meaning deadline (meaningCtx's), so
+// it never holds the check past the meaning allowance (INFRA-2337 D1). The leg runs on the
+// meaning context too, so it ends by that deadline itself, but the wait does not depend on the
+// leg seeing that.
+//
+// The leg's answer and the end of the grace can be ready together, and Go then picks between
+// them at random; an answer that is already there when the grace ends is taken, as
+// runRelatedCheck takes the stage's own.
+func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []model.SearchResult) []model.SearchResult {
+	grace, endGrace := context.WithTimeout(meaningCtx, cmp.Or(s.crossProjectWait, crossProjectGrace))
+	defer endGrace()
 	select {
-	case stage.otherProjects = <-cross:
-	case <-timer.C:
+	case results := <-cross:
+		return results
+	case <-grace.Done():
 	}
-	return stage
+	select {
+	case results := <-cross:
+		return results
+	default:
+		return nil
+	}
 }
 
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own
@@ -1031,15 +1048,9 @@ const relatedCheckInsert = `
 // write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
 // so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
 //
-// related_checks rows the first attempt could not write for a reason a retry can cure
-// (relatedRecordRetryable) are tried once more in the background, on the server's lifetime
-// bounded by relatedRecordRetryTimeout, and waitBackground waits them out. At most
-// relatedRecordRetryLimit retries run at once, each holding or waiting on a connection of the
-// shared pool; past them the rows are dropped and logged, so a lock that holds up every check's
-// records cannot take the pool from the requests. Each row's id is chosen here and the insert does
-// nothing where it exists, since the first attempt's statement may still land after its context
-// gave up on it: pgx cancels a statement whose context ends only by a cancel request it sends
-// afterwards, and a lock released before that request arrives lets the statement run.
+// related_checks rows the first attempt could not write are tried once more in the background
+// (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
+// the first attempt's statement may still land after its context gave up on it.
 func (s *server) recordRelatedChecks(ctx context.Context, rows ...relatedCheckRecord) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relatedRecordTimeout)
 	defer cancel()
@@ -1070,22 +1081,40 @@ func (s *server) recordRelatedChecks(ctx context.Context, rows ...relatedCheckRe
 	if err == nil {
 		return
 	}
+	s.retryRecord(err, func(ctx context.Context) error { return s.insertRelatedChecks(ctx, inserts) },
+		"dispatch: related-item check not recorded", "rows", len(inserts))
+}
+
+// retryRecord tries a record's write once more in the background, when its first attempt failed
+// with err for a reason a retry can cure (relatedRecordRetryable): a related_checks row
+// (recordRelatedChecks) or a near_copy_checks row written after its create's commit
+// (recordNearCopyCheck). The retry runs on the server's lifetime bounded by
+// relatedRecordRetryTimeout, and waitBackground waits it out. At most relatedRecordRetryLimit
+// retries of either record run at once, each holding or waiting on a connection of the shared
+// pool; past them the record is dropped and logged under message with attrs, as it is when err is
+// one a retry cannot cure or the retry fails too, so a lock that holds up every record cannot take
+// the pool from the requests.
+//
+// write must be one that can run twice: pgx cancels a statement whose context ends only by a
+// cancel request it sends afterwards, and a lock released before that request arrives lets the
+// first attempt's statement land after all.
+func (s *server) retryRecord(err error, write func(context.Context) error, message string, attrs ...any) {
+	logged := func(err error) []any { return append(slices.Clip(attrs), "error", err) }
 	if !relatedRecordRetryable(err) {
-		slog.Warn("dispatch: related-item check not recorded", "rows", len(inserts), "error", err)
+		slog.Warn(message, logged(err)...)
 		return
 	}
 	if s.relatedRecordRetrying.Add(1) > relatedRecordRetryLimit {
 		s.relatedRecordRetrying.Add(-1)
-		slog.Warn("dispatch: related-item check not recorded: too many records are already being retried",
-			"rows", len(inserts), "error", err)
+		slog.Warn(message+": too many records are already being retried", logged(err)...)
 		return
 	}
 	s.detached.goDetached(func() {
 		defer s.relatedRecordRetrying.Add(-1)
 		ctx, cancel := context.WithTimeout(s.lifetime, relatedRecordRetryTimeout)
 		defer cancel()
-		if err := s.insertRelatedChecks(ctx, inserts); err != nil {
-			slog.Warn("dispatch: related-item check not recorded", "rows", len(inserts), "error", err)
+		if err := write(ctx); err != nil {
+			slog.Warn(message, logged(err)...)
 		}
 	})
 }

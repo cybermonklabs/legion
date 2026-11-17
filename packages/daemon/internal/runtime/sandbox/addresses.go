@@ -315,6 +315,55 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 		held.ExpirationSeconds != nil && *held.ExpirationSeconds == *want.ExpirationSeconds
 }
 
+// movedExchangeIdentity compares the exchange token a pod created now carries
+// (exchangeTokenProjection, for AgentSecrets.ExchangeAudience) with what pod carries; ok is whether
+// pod lacks it. A role started now in a pod that lacks it is told no identity (tradesIn), and so
+// trades nothing for as long as it runs there; a pod's volumes are fixed when it is created, so
+// turning the exchange on, or moving its audience, leaves every enrolled pod lacking it until the
+// pod is replaced, which is its update round's to do once its workers have pushed, as the
+// enrollment's is (movedEnrollment). It compares the three fields the token file depends on, as
+// movedEnrollment does. A runtime that names no exchange audience, or enrolls no pod, lacks
+// nothing: a pod that still carries a token is no pod to replace for a generation told of none.
+func (r *Runtime) movedExchangeIdentity(pod *corev1.Pod) (movedAddress, bool) {
+	broker := r.agentSecrets
+	if broker == nil || broker.ExchangeAudience == "" {
+		return movedAddress{}, false
+	}
+	want := exchangeTokenProjection(broker)
+	held := heldExchangeToken(pod.Spec, want)
+	if sameTokenProjection(held, want) {
+		return movedAddress{}, false
+	}
+	return movedAddress{agentSecretsExchangeVolume, enrollmentName(held), enrollmentName(want)}, true
+}
+
+// heldExchangeToken is the token pod's exchange volume projects, the one matching want where it
+// projects several, nil where it carries no such volume.
+func heldExchangeToken(pod corev1.PodSpec, want *corev1.ServiceAccountTokenProjection) *corev1.ServiceAccountTokenProjection {
+	var held *corev1.ServiceAccountTokenProjection
+	for _, volume := range pod.Volumes {
+		if volume.Name != agentSecretsExchangeVolume || volume.Projected == nil {
+			continue
+		}
+		for _, source := range volume.Projected.Sources {
+			if token := source.ServiceAccountToken; token != nil && (held == nil || sameTokenProjection(token, want)) {
+				held = token
+			}
+		}
+	}
+	return held
+}
+
+// carriesExchangeIdentity is whether the pod spec carries the exchange token a role is told of for
+// broker: the exchange volume projecting a token for broker's exchange audience at
+// AgentSecretsExchangeFile, the file AGENT_SECRETS_MACHINE_TOKEN_FILE names. Its lifetime does not
+// decide it: a token of another lifetime still trades. It is the pod's half of the exchange
+// decision and is read through that decision alone (Runtime.tradesIn).
+func carriesExchangeIdentity(pod corev1.PodSpec, broker *AgentSecrets) bool {
+	held := heldExchangeToken(pod, exchangeTokenProjection(broker))
+	return held != nil && held.Audience == broker.ExchangeAudience && held.Path == AgentSecretsExchangeFile
+}
+
 // movedInPod is what pod holds, for role, that a pod created now is not handed and that no worker
 // of the pod can be asked about first: the layout before one container (movedLayout), whose pod's
 // workers predate the update round's contract and have no op to signal with, and the stream its
@@ -328,14 +377,14 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 // carry is drift, not a moved address (driftedInPod, podShapeDrift): its worker can be asked to
 // push its work first, and an update round asks it before the pod is replaced.
 //
-// A pod no round covers holds every facet here, those four included. No round is ever opened
-// over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved address
-// nor a round's would leave its role in the pod it was created in for ever, with nothing saying
-// so: today that is the project controller's pod, which has nobody in it to task and no issue disk
-// to protect, and so keeps the replacement it has always had, at the next launch into it. The rest
-// of such a pod's drift, the shape its template was built from, is its launch's too (relaunch,
-// shapeDrift), so a round covers every drift of a pod or a launch covers every drift of it, and no
-// drifted pod is left to neither.
+// A pod no round covers holds every facet here, driftedInPod's five included. No round is ever
+// opened over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved
+// address nor a round's would leave its role in the pod it was created in for ever, with nothing
+// saying so: today that is the project controller's pod, which has nobody in it to task and no
+// issue disk to protect, and so keeps the replacement it has always had, at the next launch into
+// it. The rest of such a pod's drift, the shape its template was built from, is its launch's too
+// (relaunch, shapeDrift), so a round covers every drift of a pod or a launch covers every drift of
+// it, and no drifted pod is left to neither.
 func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	var moved []movedAddress
 	if layout, ok := movedLayout(pod); ok {
@@ -355,14 +404,15 @@ func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 // mount holding every named role's overlays and the overlays of every arm the project declares
 // in role's container
 // (movedRoleOverlays), the secrets broker's enrollment its next generation is started against
-// (movedEnrollment), the whole session store it was created under (movedSessionStore), and the
-// gh directories its gh volume projects (movedGhDirs). Each is fixed for the
+// (movedEnrollment), the exchange identity it is told of (movedExchangeIdentity), the whole session
+// store it was created under (movedSessionStore), and the gh directories its gh volume projects
+// (movedGhDirs). Each is fixed for the
 // pod's life, so the pod must be replaced for the role to run as one launched now — but each
 // leaves the workers already in the pod running and able to reach this daemon, so each is a
 // reason to open a round (PodDrift) and ask them to push, where replacing the pod under them
 // would end every turn in it and take the issue's disk with it. The two facets whose worker
 // cannot be reached at all are movedInPod's and are never a round's — and for a pod no round
-// covers (roundCovers), the project controller's today, so are these four: no round is opened
+// covers (roundCovers), the project controller's today, so are these five: no round is opened
 // over such a pod, so movedInPod holds every facet there and its launch replaces it, as it always
 // did.
 func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
@@ -372,6 +422,9 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 	}
 	if enrollment, ok := r.movedEnrollment(pod, role); ok {
 		moved = append(moved, enrollment)
+	}
+	if exchange, ok := r.movedExchangeIdentity(pod); ok {
+		moved = append(moved, exchange)
 	}
 	if store, ok := r.movedSessionStore(pod); ok {
 		moved = append(moved, store)
