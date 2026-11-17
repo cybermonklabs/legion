@@ -170,6 +170,8 @@ providers:
         name: M1
 EOF
 printf 'modelRoles:\n  default: offline/m1\n  review: offline/m1\n  oracle: offline/m1\n  deep: offline/m1\n' >"$profile_agent/config.yml"
+# The controller is an interactive Oh My Pi in a pane, which a fresh profile's setup wizard would hold.
+omp_setup_wizard_off "$profile_agent/config.yml"
 
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token")
 cat >"$work/legion.yaml" <<EOF
@@ -339,7 +341,7 @@ grep -qF "[legion] the daemon has no GitHub App to act as; the controller's gh a
   fail "ctl1.stderr does not say the controller's gh acts as nobody: $(cat "$evidence/checks/ctl1.stderr")"
 [ -d "$ctl_state/gh" ] || fail "$ctl_state/gh does not exist"
 [ "$(stat -c %a "$ctl_state/gh")" = 700 ] || fail "$ctl_state/gh is not mode 0700: $(stat -c %a "$ctl_state/gh")"
-[ -z "$(ls -A "$ctl_state/gh")" ] || fail "$ctl_state/gh holds $(ls -A "$ctl_state/gh" | tr '\n' ' ')with no GitHub App configured, want nothing"
+[ -z "$(ls -A "$ctl_state/gh")" ] || fail "$ctl_state/gh holds $(find "$ctl_state/gh" -mindepth 1 -maxdepth 1 -printf '%f ')with no GitHub App configured, want nothing"
 [ ! -e "$ctl_state/github-credential.log" ] || fail "$ctl_state/github-credential.log exists with no GitHub App configured"
 note "no GitHub App: ctl1.stderr says the controller's gh acts as nobody; $ctl_state/gh is an empty 0700 directory and no credential log"
 pass

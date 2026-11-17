@@ -62,3 +62,17 @@ make_omp_home() {
   # through the first link), and a real directory there fails the call instead of taking a link.
   ln -sfT "$natives" "$1/.omp/natives"
 }
+
+# omp_setup_wizard_off FILE: appends to FILE, the agent/config.yml of a profile the run writes under
+# its own home, the setting that keeps Oh My Pi's first-run setup wizard shut. An interactive Oh My
+# Pi in a terminal (`legion controller start` in a tmux pane, a person's session) opens the wizard
+# ("Setup step 1 of 5", "Sign in to your providers") while the profile's setupVersion is below the
+# build's CURRENT_SETUP_VERSION, so on a fresh profile it holds the pane and the session never starts
+# (runInteractiveMode in packages/coding-agent/src/main.ts and selectSetupScenes in
+# packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard: false` shuts it whatever setup
+# version the build counts to; `--mode rpc` never opens it. A named profile reads its settings from
+# its own agent/config.yml alone (getProfileConfigRoot in @oh-my-pi/pi-utils dirs.ts): no file of
+# the home reaches every profile, so each profile the run writes carries the line.
+omp_setup_wizard_off() {
+  printf 'startup:\n  setupWizard: false\n' >>"$1"
+}
