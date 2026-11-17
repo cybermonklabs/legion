@@ -112,14 +112,14 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	}
 	kind, kindErr := s.deps.Machine.RecordKind(r.Context(), recordID)
 	if kindErr == nil && kind != record.KindLauncherCredential {
-		// A broker with BROKER_SIGNIN=off serves no page (Deps.Approval nil), so the refusal names
-		// none, since every /approve path is a 404 there, and says why nobody can decide it.
-		if s.deps.Approval == nil {
+		// A broker with BROKER_SIGNIN=off serves no page, so approveURL names none, since every
+		// /approve path is a 404 there, and the refusal says why nobody can decide it.
+		page := s.approveURL(recordID)
+		if page == "" {
 			writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
 				"a secret request is decided only on the secrets broker's own page, and this broker serves none: it signs nobody in (BROKER_SIGNIN=off), so this request cannot be decided here", "")
 			return
 		}
-		page := s.approveURL(recordID)
 		writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
 			"a secret request is decided only on the secrets broker's own page, by a person signed in to the broker: "+page, page)
 		return

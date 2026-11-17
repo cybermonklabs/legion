@@ -1315,6 +1315,35 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 	}
 }
 
+// TestABrokerWithNoPageLinksNoPageForAPendingRequest: a broker with BROKER_SIGNIN=off builds no
+// approval page (Deps.Approval nil), so every /approve path is a 404 there, and no answer naming a
+// pending secret request links one. The request here is one a run with sign-in on would have left
+// pending, the one kind such a broker can hold until its sweep ends it: POST /v1/requests, GET
+// /v1/requests/{id} and its row in GET /v1/pending all leave approve_url out while it is still
+// pending and listed. TestEveryAnswerNamingAPendingSecretRequestLinksItsPage is the control: the
+// same answers with a page carry the link.
+func TestABrokerWithNoPageLinksNoPageForAPendingRequest(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) { d.Approval = nil })
+	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
+	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "a request an earlier run left", "DEEL_API_KEY"), "session_id": nil})
+	created := decode[wireCreateRequestResponse](t, body)
+	if status != http.StatusOK || created.State != "pending" || created.RecordID == nil || created.ApproveURL != nil {
+		t.Fatalf("POST /v1/requests on a broker with no page = %d %s, want pending on a record with no approve_url", status, body)
+	}
+	code, body := ts.session(t, sessionKey, enrollmentID, http.MethodGet, "/v1/requests/"+created.RequestID, nil)
+	if got := decode[wireRequestStatus](t, body); code != http.StatusOK || got.State != "pending" || got.ApproveURL != nil {
+		t.Fatalf("GET /v1/requests/%s on a broker with no page = %d %s, want pending with no approve_url", created.RequestID, code, body)
+	}
+	_, body = ts.ui(t, http.MethodGet, "/v1/pending?approver="+testApprover, nil)
+	rows := decode[struct {
+		Pending []wirePendingEntry `json:"pending"`
+	}](t, body).Pending
+	if len(rows) != 1 || rows[0].RecordID != *created.RecordID || rows[0].ApproveURL != nil {
+		t.Fatalf("GET /v1/pending on a broker with no page = %s, want the request's row with no approve_url", body)
+	}
+}
+
 // TestTheRecordReadRouteIsGone pins that the broker answers no GET /v1/credential-requests/{record}
 // at all: that route existed only so Dispatch's record page could read a record while the broker
 // had no approval page of its own, and the broker now decides a secret request on its own page.

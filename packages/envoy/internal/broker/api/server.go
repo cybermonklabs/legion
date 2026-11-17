@@ -623,8 +623,13 @@ func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL s
 
 // approveURL is recordID's page on the broker's own approval page (GET /approve/{record}), on the
 // public URL the broker resolved at boot: the one place a person signed in to the broker decides
-// a secret request, which every answer naming a pending one links.
+// a secret request, which every answer naming a pending one links. A broker with
+// BROKER_SIGNIN=off builds no page (Deps.Approval nil), where that path is a 404, so it answers
+// "" and every answer leaves approve_url out.
 func (s *server) approveURL(recordID string) string {
+	if s.deps.Approval == nil {
+		return ""
+	}
 	return s.deps.PublicURL + "/approve/" + recordID
 }
 

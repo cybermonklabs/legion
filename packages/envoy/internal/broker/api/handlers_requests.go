@@ -77,7 +77,8 @@ type createRequestResponse struct {
 	// cannot name. A session reads it to learn that asking for that secret again will not help.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
-	// where a person signed in to the broker decides it; absent when the policy decided it at once.
+	// where a person signed in to the broker decides it; absent when the policy decided it at once,
+	// and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
 }
 
@@ -200,8 +201,8 @@ type requestStatusResponse struct {
 	// Null when the broker recorded none, a request it did not deny among them.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
-	// where a person signed in to the broker decides it; absent once it is no longer pending, and
-	// when the policy decided it at once.
+	// where a person signed in to the broker decides it; absent once it is no longer pending, when
+	// the policy decided it at once, and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
 }
 

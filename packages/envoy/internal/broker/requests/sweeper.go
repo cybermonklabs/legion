@@ -42,7 +42,7 @@ const (
 var sweeps = [...]struct{ name, failed string }{
 	sweepLapsedEnrollments:      {"lapsed-enrollments", "broker sweeper: end lapsed enrollments"},
 	sweepDormantEnrollments:     {"dormant-enrollments", "broker sweeper: end dormant enrollments"},
-	sweepPendingRequests:        {"pending-requests", "broker sweeper: expire pending requests"},
+	sweepPendingRequests:        {"pending-requests", "broker sweeper: expire or deny pending requests"},
 	sweepPendingMachineLogins:   {"pending-machine-logins", "broker sweeper: expire pending machine logins"},
 	sweepSpentOAuthState:        {"spent-oauth-state", "broker sweeper: delete spent OAuth state"},
 	sweepExpiredBrowserSessions: {"expired-browser-sessions", "broker sweeper: delete expired browser sessions"},
