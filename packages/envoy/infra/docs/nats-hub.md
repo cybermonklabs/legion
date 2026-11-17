@@ -1101,16 +1101,19 @@ it opened itself, so a server that joined before `authorization` can keep a rout
 that peer restarts. `authorization` fences a server that tries to join after it; only a restart of
 every server fences one that joined before.
 
-Lowering `stage` below `routes`, or removing `routeAuthorization` from `routes` or
-`authorization`, makes each server log every route URL it removes, password included: a reload
-logs `Removed route <url>` with the whole URL (nats-server 2.15.1 `server/reload.go:543`).
-Measured on two local servers: lowering `routes` to `env` logged 4 such lines carrying the
-password, while the forward step from `env` to `routes` logged none. So change the password after
-such a rollback, and treat the old one as known to whoever reads the hub's logs. A new value under
-the same Secret key reaches no running pod: a container reads a `secretKeyRef` only when it starts,
-and the `env` apply is then a no-op. Mint the new password under a new `secretKey`, or in a new
-Secret, so the `env` apply changes the pods' env and rolls them; then apply `routes` and
-`authorization` again.
+Lowering `stage` below `routes`, or removing `routeAuthorization` from a hub at `routes` or
+`authorization`, makes each server log every route URL it removes with the route password in it
+(nats-server 2.15.1 `server/reload.go:543`). So after such a rollback, treat the old password as
+read by whoever can read the hub's logs, and change it. A new value under the same Secret key
+reaches no running pod: a container reads a `secretKeyRef` only when it starts, so the `env` apply
+would do nothing. A second sync entry for the same Secret Manager secret does not help either: the
+sync names its source by the secret's ID, so both entries would read the same version. Mint the
+new password into a new Secret Manager secret, sync it under a new `secretKey`, check by its hash,
+never by its value, that the key holds the new password, set `routeAuthorization` to that key at
+`env` so the apply rolls the pods, then apply `routes` and `authorization` again.
+
+Measured on two local servers: lowering `routes` to `env` logged 4 `Removed route` lines carrying
+the password, while the forward step from `env` to `routes` logged none.
 
 The password holds letters and digits only, a letter first. It is written into the route URLs
 whole, and nats-server types a variable's value as it types a literal of `nats.conf`: a password of
