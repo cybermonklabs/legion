@@ -923,7 +923,8 @@ Each item below names a task and where its code is, then notes on it.
   A hit names its file and line, or its path with `<name>` where a term stands, or `<name>` alone for a path a term cannot be masked in; a file name holding a `:` or a newline stays whole, a named target and another command's message are masked the same way, a traced run prints nothing, and the log never prints a term.
   With the list unset or empty, a `pull_request` or `pull_request_review` run, which a fork's pull request makes with no secret, and a run outside Actions warn that only the committed rules ran and keep their exit;
   a merge group, a push or a dispatched run fails with exit 2.
-  A term lives in that secret alone, never in a file, commit, issue, pull request or log of this repository.
+  The daemon's leak guard runs the same list: the deployment sets `LEGION_PRIVATE_NAME_TERMS` in the daemon's environment from its own copy of that list, the daemon hands it to every launch as a launch secret, and every role's guard refuses a push or `gh` write to a public destination whose text or file path names a term, with the script's own label and masking; with no list, the daemon logs once at boot that the guard runs the committed rules alone.
+  A term lives in that secret and in the deployment's own configuration alone, never in a file, commit, issue, pull request or log of this repository.
 
 - **A pull request's new text names no issue key of the deployment's projects and holds no Dispatch link** — link the pull request from its issue in Dispatch instead:
   the term list also names each Dispatch project of the deployment, one `key:<KEY>` line each, and `.github/scripts/check-pr-text.sh` refuses an issue key of those projects (`<KEY>-<n>` as a word of its own, in upper case as Dispatch prints it, so the bare word and a lower-case string of that shape such as a job name pass, and `LEGION-<n>` always passes) and any Dispatch link.

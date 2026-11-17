@@ -25,7 +25,8 @@ var ruleFile string
 // maskedBy are the content rules a path component is masked by, the three rules that
 // check-private-names.sh's own `named_parts` function reads: the deployment repository, the
 // company, and the company's first word as a proper noun. That script's fifth rule, the
-// deployment's term list, is no rule this public repository's rule file can carry.
+// deployment's term list, is no rule this public repository's rule file can carry: the guard reads
+// it from its environment instead (Terms), and masks the parts it touches itself (maskTerms).
 var maskedBy = []string{"repository_rule", "company_rule", "proper_noun_rule"}
 
 // rules is the compiled rule file: one detector every record of every call is scanned with, and

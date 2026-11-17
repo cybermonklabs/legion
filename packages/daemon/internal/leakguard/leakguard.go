@@ -148,16 +148,23 @@ func (g *Guard) Rules(ctx context.Context, records ...Record) error {
 	return g.rules(ctx, "the write", records)
 }
 
-// rules is the rule-file pass over records, reported as a refusal of what.
+// rules is the rule-file pass over records, and the deployment's term list (Terms) over the same
+// records where the environment holds one, reported as a refusal of what. A list the environment
+// names and the guard cannot read refuses the write, as a setup failure.
 func (g *Guard) rules(ctx context.Context, what string, records []Record) error {
 	engine, err := compiled()
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
 	}
+	terms, err := Terms(g.base())
+	if err != nil {
+		return &SetupFailure{What: what, Why: "the deployment's term list could not be read", Err: err}
+	}
 	lines, err := engine.scan(ctx, records)
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
 	}
+	lines = append(lines, scanTerms(engine, termMatcher(terms), records)...)
 	if len(lines) == 0 {
 		return nil
 	}
