@@ -184,9 +184,9 @@ func (c *senderCharge) woke() {
 	}
 }
 
-// stored marks the message as one the route stored, may have stored, or answered 504 for, after
-// which the listener cannot say whether it stored it. That costs its sender one whatever the route
-// answers next: forgive does not cancel it.
+// stored marks the message as one the route stored or may have stored, or a role send answered
+// 504, which costs one whether or not a forward went out (roleSend.timedOut). That costs its
+// sender one whatever the route answers next: forgive does not cancel it.
 func (c *senderCharge) stored() {
 	if c != nil {
 		c.spent = true
