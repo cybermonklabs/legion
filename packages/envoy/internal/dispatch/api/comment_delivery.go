@@ -891,12 +891,13 @@ func (s *server) mentionCopyHolderFor(
 	return nil, nil
 }
 
-// roleHolderMayBe is whether sessionID holds role now, or may: the listener names it the holder, or
-// the read failed - unreachable, timed out within mentionLookupTimeout, a status the listener did
-// not explain, an answer that does not decode (dispatchenvoy.ErrUnavailable, which every such
-// failure carries) - which says nothing about who holds the role. The listener's own refusal - no
-// session claims the role, its holder is gone - and a holder that is another session are a no. A
-// deployment with no listener reaches no session, so it answers no.
+// roleHolderMayBe is whether sessionID holds role now, or may. Only two answers are a no: the
+// listener's own refusal that no live session holds the role (dispatchenvoy.ErrNoRoleHolder), and a
+// holder that is another session. Everything else holds the send, since it says nothing about who
+// holds the role: unreachable, timed out within mentionLookupTimeout, a status the listener did
+// not explain or chose for another reason - a 500 for a claim record it cannot read - an answer
+// that does not decode, and an answer that names no holder. A deployment with no listener reaches
+// no session, so it answers no.
 func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bool {
 	if s.deps.Envoy == nil {
 		return false
@@ -905,10 +906,10 @@ func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bo
 	defer cancel()
 	holder, err := s.deps.Envoy.Role(lookup, role)
 	switch {
-	case errors.Is(err, dispatchenvoy.ErrUnavailable) || (err != nil && lookup.Err() != nil):
-		return true
-	case err != nil:
+	case errors.Is(err, dispatchenvoy.ErrNoRoleHolder):
 		return false
+	case err != nil || holder.SessionID == "":
+		return true
 	}
 	return holder.SessionID == sessionID
 }

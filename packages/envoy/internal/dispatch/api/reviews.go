@@ -707,10 +707,14 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.storeDisplayTrees(r.Context(), ask.ID, ask.Question)
 	}
 	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
-	// open request already stood as asked.
+	// open request already stood as asked, whether or not it made its requester a follower
+	// (ask.follower_added, renewApprovalAsk).
 	status := http.StatusOK
-	if len(events) > 0 {
-		status = http.StatusCreated
+	for _, event := range events {
+		if event.Type != "ask.follower_added" {
+			status = http.StatusCreated
+			break
+		}
 	}
 	var askAnswer *shapedAsk
 	if ask != nil {
@@ -870,8 +874,26 @@ func (s *server) renewApprovalAsk(
 		}
 		events = append(events, handedBack)
 	}
-	if err := asks.FollowAuthor(ctx, tx, open.ID, actor); err != nil {
-		return nil, err
+	// The requester follows the request. A renewal that appended no event above - an unchanged
+	// request that already waits on the human - and adds the requester as a follower records
+	// that as ask.follower_added, in this transaction, as the follower route does: a follower is a
+	// destination of the issue's later ask events, and an earlier event of the issue that now
+	// reaches it must hold a later comment's mention to it until the outbox has read the change,
+	// which a new event of the issue does (model.MentionCopyHolderSQL).
+	if actor.Kind == "session" && actor.ID != "" {
+		added, err := asks.Follow(ctx, tx, open.ID, actor.ID)
+		if err != nil {
+			return nil, err
+		}
+		if added && len(events) == 0 {
+			followed, err := s.appendEvent(ctx, tx, ownerOf(open.IssueKey, open.ArtifactID).event(
+				"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
+			))
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, followed)
+		}
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {
 		return nil, err

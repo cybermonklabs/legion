@@ -18,7 +18,8 @@ import (
 // whichever session held the role when the event was recorded. A route the event owes to a role
 // the listener says nobody holds (role:unheld) holds nothing. A lookup that fails says nothing
 // about the holder, so it holds the send: a 503 (role:broken), an answer that does not decode
-// (role:garbled), and a status the listener does not explain (role:other's bare 404).
+// (role:garbled), a status the listener does not explain (role:other's bare 404), and the
+// listener's 500 for a claim record it cannot read (role:unreadable).
 //
 // The control row is the record as it would read keyed on the holder at the time,
 // notifications.agent.ses_stale_holder: the send to s1 then waits for nothing, which is the copy
@@ -49,6 +50,7 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 		{name: "a lookup the listener answers 503", owed: []string{contracts.RoleTopicPrefix + "broken"}, holds: true},
 		{name: "a lookup whose answer does not decode", owed: []string{contracts.RoleTopicPrefix + "garbled"}, holds: true},
 		{name: "a lookup answered by a bare 404", owed: []string{contracts.RoleTopicPrefix + "other"}, holds: true},
+		{name: "a lookup the listener answers 500 for an unreadable claim", owed: []string{contracts.RoleTopicPrefix + "unreadable"}, holds: true},
 		{name: "control: keyed on the holder at the time of the record", owed: []string{contracts.LegacyAgentSubject("ses_stale_holder")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -207,12 +209,12 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 	}
 }
 
-// A send in flight left the queue when it started, so a send that waits for an earlier event and
-// comes back to a queue others have filled meanwhile would push it past its capacity. It is
-// refused instead, as a send past the bound is: its claim is given back, the delivery sweep sends
-// it later, and the queue never holds more than its capacity - here one, another issue's mention
-// of the same session queued behind it, which then goes.
-func TestASendThatWaitsAndFindsTheQueueFullGivesItsClaimBack(t *testing.T) {
+// A send in flight keeps its place in the queue's capacity, so a send that waits for an earlier
+// event always has room to park, and the owner's later sends never pass it. With a capacity of one
+// and the first send of A-1 in flight, the second send of A-1 is refused at once and its claim
+// given back - the delivery sweep sends it later, asking the rule again - and the first parks
+// within the capacity. Nothing of A-1 is sent before the first: the order holds.
+func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	lifetime, stop := context.WithCancel(context.Background())
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -256,27 +258,31 @@ func TestASendThatWaitsAndFindsTheQueueFullGivesItsClaimBack(t *testing.T) {
 		sender.enqueue(context.Background(), item)
 		return item
 	}
-	first := enqueue("first", "A-1")
+	enqueue("first", "A-1")
 	<-started
-	// Another issue's mention of s1 takes the queue's one place, behind the send in flight.
-	enqueue("second", "B-1")
+	second := enqueue("second", "A-1")
 	close(release)
-	waitUntil(t, 5*time.Second, "the send behind the refused one sent", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.Contains(sent, "second")
+	held := heldLane("session:s1", "A-1")
+	waitUntil(t, 5*time.Second, "the first send parked on A-1's held lane", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		_, parked := sender.parked[held]
+		return parked
 	})
 	sender.mu.Lock()
-	queued := len(sender.claims)
+	queued, inflight := len(sender.claims), sender.inflight
 	sender.mu.Unlock()
 	mu.Lock()
 	defer mu.Unlock()
-	t.Logf("queued %d of a capacity of 1; claims given back %v; sent %v", queued, gaveUp, sent)
-	if !slices.Equal(gaveUp, []mentionKey{first.key()}) {
-		t.Fatalf("the sender gave back %v, want the claim of the send that waited and found the queue full", gaveUp)
+	t.Logf("queued %d and in flight %d of a capacity of 1; claims given back %v; sent %v", queued, inflight, gaveUp, sent)
+	if !slices.Equal(gaveUp, []mentionKey{second.key()}) {
+		t.Fatalf("the sender gave back %v, want the claim of the second send, refused while the first held the one place", gaveUp)
 	}
-	if queued > 1 {
-		t.Fatalf("the queue holds %d sends, past its capacity of 1", queued)
+	if queued+inflight > 1 {
+		t.Fatalf("the queue holds %d sends and %d in flight, past its capacity of 1", queued, inflight)
+	}
+	if len(sent) != 0 {
+		t.Fatalf("sent %v while A-1's first send waited, want nothing of A-1 before it", sent)
 	}
 }
 
@@ -310,5 +316,49 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 	t.Logf("held gauge samples %+v", count)
 	if len(count) != 1 || count[0].Value != 3 {
 		t.Fatalf("the held gauge reads %+v, want 3 sends of A-1", count)
+	}
+}
+
+// An approval request that already waits on the human, renewed unchanged by another session, makes
+// that session a follower of the request - a destination of the issue's later ask events - and
+// records it as ask.follower_added in the same transaction, so an earlier event of the issue that
+// now reaches the session holds a later comment's mention to it until the outbox has read the
+// change. The renewal still answers 200: the request stood as asked. A second unchanged renewal by
+// the same session adds nothing and records nothing.
+func TestAnUnchangedApprovalRenewalThatAddsAFollowerRecordsIt(t *testing.T) {
+	ctx := context.Background()
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "TEST", "Approval followers", "A spec")
+	request := func(session string) int {
+		return sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests",
+			map[string]any{"actor": map[string]any{"kind": "session", "id": session}}).Code
+	}
+	if code := request("s-architect"); code != http.StatusCreated {
+		t.Fatalf("open the approval request: status=%d", code)
+	}
+	newest := func() (string, string, int64) {
+		var kind, session string
+		var id int64
+		if err := database.Pool.QueryRow(ctx, `
+			select type, coalesce(payload ->> 'session_id', ''), id from events where issue_key = $1 order by id desc limit 1
+		`, issue.Key).Scan(&kind, &session, &id); err != nil {
+			t.Fatalf("read the issue's newest event: %v", err)
+		}
+		return kind, session, id
+	}
+	_, _, before := newest()
+	if code := request("s-successor"); code != http.StatusOK {
+		t.Fatalf("renew the unchanged request as s-successor: status=%d, want 200", code)
+	}
+	kind, session, id := newest()
+	t.Logf("after the renewal: newest event %d %s %s (before %d)", id, kind, session, before)
+	if id == before || kind != "ask.follower_added" || session != "s-successor" {
+		t.Fatalf("the renewal's newest event is %d %s %s, want ask.follower_added for s-successor after %d", id, kind, session, before)
+	}
+	if code := request("s-successor"); code != http.StatusOK {
+		t.Fatalf("renew it again as s-successor: status=%d, want 200", code)
+	}
+	if _, _, again := newest(); again != id {
+		t.Fatalf("a renewal by a session that already follows recorded event %d, want none after %d", again, id)
 	}
 }

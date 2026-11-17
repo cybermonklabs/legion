@@ -104,9 +104,13 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			_, _ = w.Write([]byte(`{"role":"reviewer","holder":"s1","title":"planner","capabilities":["steer"]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unheld":
-			// The listener's own refusal for a role no session claims.
+			// The listener's own refusal for a role no session claims (writeRoleHolderError).
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":"no session holds role unheld"}`))
+			_, _ = w.Write([]byte(`{"error":"no holder for role unheld","reason":"unclaimed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unreadable":
+			// The listener's 500 for a claim record it cannot decode (writeRoleClaimUnreadable).
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"envoy: the claim record of role unreadable is unreadable: decode role claim"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/broken":
 			w.WriteHeader(http.StatusServiceUnavailable)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/garbled":
@@ -874,12 +878,13 @@ func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
 
 // A mention past the sender's queue bound is not queued: the claim its attempt committed with is
 // given back, so the attempt is pending and unclaimed, and the delivery sweep, once the queue has
-// room and the attempt has waited a claim lease, sends it, once.
+// room and the attempt has waited a claim lease, sends it, once. The bound counts the send in
+// flight as well as the queued one (mentionSender.inflight), so a capacity of two holds both.
 func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	served.mentions.mu.Lock()
-	served.mentions.capacity = 1
+	served.mentions.capacity = 2
 	served.mentions.mu.Unlock()
 	release := state.hold("s1")
 	defer release()

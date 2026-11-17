@@ -27,7 +27,7 @@ const issueRouteWriter = "internal/dispatch/api/issue_patch.go"
 // routeWrite matches a statement, lower-cased with its whitespace collapsed, that writes the route
 // column of Dispatch's issues table: an update that sets it, an insert or a copy that lists it.
 var routeWrite = []*regexp.Regexp{
-	regexp.MustCompile(`\bupdate (public\.)?issues\b( \w+)? set\b[^;]{0,400}?\broute ?=`),
+	regexp.MustCompile(`\bupdate (only )?(public\.)?issues\b( (as )?\w+)? set\b[^;]{0,400}?\broute ?=`),
 	regexp.MustCompile(`\binsert into (public\.)?issues ?\([^)]*\broute\b`),
 	regexp.MustCompile(`\bcopy (public\.)?issues ?\([^)]*\broute\b`),
 }
@@ -200,6 +200,8 @@ func move(tx tx, key string) error {
 		"insert into issues (key, project_key, route) values ('A-1', 'A', 'session:s1');",
 		"COPY issues (key, route) FROM STDIN;",
 		"update issues i set title = 'x', route = 'role:r' where i.key = 'A-1';",
+		"update issues as i set route = $2 where i.key = $1;",
+		"update only issues set route = $2 where key = $1;",
 	} {
 		if !writesRoute(sqlWhitespace.ReplaceAllString(strings.ToLower(text), " ")) {
 			t.Errorf("the guard does not count %q as a route write", text)

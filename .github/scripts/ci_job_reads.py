@@ -1539,6 +1539,7 @@ def go_top_level_spans(code: str, path) -> list:
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so an
 # eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
 # none of this: they stay in the plain step.

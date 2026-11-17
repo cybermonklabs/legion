@@ -18,10 +18,11 @@ import (
 // mentionSendLanes is how many recipients the mention sender sends to at once.
 const mentionSendLanes = 8
 
-// maxQueuedMentionSends bounds the sends the mention sender holds that have not started. A send
-// past it is not queued: the claim its attempt committed with is given back, so the attempt is
-// pending and unclaimed, and the delivery sweep sends it once it has waited a claim lease
-// (resumeOwedDeliveries).
+// maxQueuedMentionSends bounds the sends the mention sender holds: those that have not started and
+// those in flight, each of which keeps its place so it can park if it must wait for an earlier
+// event (mentionSender.inflight, park). A send past it is not queued: the claim its attempt
+// committed with is given back, so the attempt is pending and unclaimed, and the delivery sweep
+// sends it once it has waited a claim lease (resumeOwedDeliveries).
 const maxQueuedMentionSends = 4096
 
 // mentionClaimRefresh is how often the mention sender writes the claims of the sends waiting on
@@ -235,6 +236,10 @@ type mentionSender struct {
 	ready []string
 	// serving is how many goroutines serve lanes.
 	serving int
+	// inflight is how many sends goroutines have started and not finished: each keeps its place
+	// in the queue's capacity, so a send that waits for an earlier event always finds room to park
+	// (park) and the owner's later sends never pass it.
+	inflight int
 	// claims is the claim this sender holds on each send that has not started, as it last wrote
 	// it, so one statement writes them all again and no statement of its own ever touches the
 	// claim a send has taken over. Its size is how many sends are queued, which capacity bounds.
@@ -323,7 +328,7 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 		}
 		return true, false
 	}
-	if len(m.claims) >= m.capacity {
+	if len(m.claims)+m.inflight >= m.capacity {
 		return false, true
 	}
 	m.held[key] = struct{}{}
@@ -383,6 +388,9 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.held, finished)
+	if finished != (mentionKey{}) {
+		m.inflight--
+	}
 	if m.stoppedLocked() {
 		m.serving--
 		return mentionSend{}, "", false
@@ -408,6 +416,7 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 	m.lanes[lane] = m.lanes[lane][1:]
 	item.claimed = m.claims[item.key()]
 	delete(m.claims, item.key())
+	m.inflight++
 	return item, lane, true
 }
 
@@ -431,17 +440,15 @@ func heldLane(lane, owner string) string {
 // of one owner holds no event of another (planChains keeps order per owner). The held lane is
 // deleted once it is empty and served (next), after which the owner's sends join lane again. Its
 // attempt stays held, so a keyed repeat of the comment queues it no second time. A park once the
-// sender stopped still records the claim, which the drain gives back with the rest (wait). A park
-// that finds the queue full - its send left it when it started, and others took the place - is
-// refused as a send past the bound is (enqueue): the claim is given back, and the delivery sweep
-// sends the attempt, asking the rule again (resumeOwedDelivery), so the queue never holds more than
-// its capacity.
+// sender stopped still records the claim, which the drain gives back with the rest (wait). Its
+// send kept its place in the queue while it was in flight (inflight), so the park never passes the
+// queue's capacity and never has to give its place to the owner's later sends.
 //
 // The wait has no bound, so it shows instead: the held gauges count every send on a held lane
-// (heldSamples), each from when it started waiting there, and a send held heldWarnAfter since it
-// first waited is logged once at WARN, naming its owner, the earlier event it waits behind and that
-// event's last publish error - beside the ERROR the outbox writes for that event's own failed
-// publish, which is the cause.
+// (heldSamples), each from when it started waiting there, and each send held heldWarnAfter since it
+// first waited - the one that waited and every send of its owner queued behind it - is logged once
+// at WARN, naming its owner, the earlier event it waits behind and that event's last publish error,
+// beside the ERROR the outbox writes for that event's own failed publish, which is the cause.
 func (m *mentionSender) park(lane string, item mentionSend) {
 	item.parks++
 	now := time.Now()
@@ -452,19 +459,7 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 	owner := item.owner()
 	held := heldLane(lane, owner)
 	m.mu.Lock()
-	if !m.stoppedLocked() && len(m.claims) >= m.capacity {
-		delete(m.held, item.key())
-		m.mu.Unlock()
-		slog.Warn("dispatch: comment mention queue full; the delivery sweep sends the pending attempt that waits for an earlier event",
-			"comment", item.comment.ID, "target", item.mention.Target, "event_id", item.heldBy.EventID)
-		if err := m.release(context.WithoutCancel(m.ctx), []mentionClaim{item.claim()}); err != nil {
-			slog.Error("dispatch: give back the claim of a comment mention this sender refused",
-				"comment", item.comment.ID, "target", item.mention.Target, "error", err)
-		}
-		return
-	}
-	warn := !item.warned && time.Since(item.heldSince) >= m.heldWarnAfter
-	item.warned = item.warned || warn
+	m.inflight--
 	m.claims[item.key()] = item.claimed
 	if held == lane {
 		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
@@ -484,13 +479,21 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 		m.lanes[lane] = kept
 		m.lanes[held] = moved
 	}
+	var warned []mentionSend
+	for index := range m.lanes[held] {
+		send := &m.lanes[held][index]
+		if !send.warned && now.Sub(send.heldSince) >= m.heldWarnAfter {
+			send.warned = true
+			warned = append(warned, *send)
+		}
+	}
 	m.parked[held] = struct{}{}
 	m.mu.Unlock()
-	if warn {
+	for _, send := range warned {
 		slog.Warn("dispatch: a comment mention's send waits behind an earlier event of its owner",
-			"owner", owner, "comment", item.comment.ID, "target", item.mention.Target, "session", item.heldFor,
+			"owner", owner, "comment", send.comment.ID, "target", send.mention.Target, "session", item.heldFor,
 			"event_id", item.heldBy.EventID, "publish_error", deref(item.heldBy.PublishError),
-			"held_for", time.Since(item.heldSince).Round(time.Second))
+			"held_for", now.Sub(send.heldSince).Round(time.Second))
 	}
 	time.AfterFunc(delay, func() { m.unpark(held) })
 }
