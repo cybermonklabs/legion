@@ -6,6 +6,7 @@ import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
@@ -1061,7 +1062,7 @@ async function heldWritesOfGoneHolder(queryClient: QueryClient, login: string): 
   if (who === null) writes.dropLogin(login);
   else if (who === login) writes.releaseUnsettled(login, held);
   else writes.release(login, held);
-  if (who !== login) void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+  if (who !== login) void askSignInAgain(queryClient);
 }
 
 export function AuthGate(): ReactNode {
@@ -1104,7 +1105,7 @@ export function AuthGate(): ReactNode {
   useEffect(() => {
     const writes = writesOf(queryClient);
     return signIns.listen({
-      changed: () => void queryClient.invalidateQueries({ queryKey: ["whoami"] }),
+      changed: () => void askSignInAgain(queryClient),
       holderGone: (gone) => void heldWritesOfGoneHolder(queryClient, gone),
       // The person signed out in another tab: every write they pressed goes here too, its file
       // with it, so no tab holds a write whose file another tab let go of.

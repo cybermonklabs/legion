@@ -121,3 +121,17 @@ export class DispatchQueryClient extends QueryClient {
     return query.state.fetchStatus === "paused" ? Promise.resolve() : followUp;
   }
 }
+
+/**
+ * Reads who is signed in (`whoAmIQuery`) again for news that it may have changed, cancelling a
+ * check still out first: that check was sent before the news and may name the person signed in
+ * before, and an invalidation would wait for its answer rather than start another (TanStack's
+ * client joins a fetch while the query has no data, and this one fetches again only after it), so
+ * the page would be drawn for that person. The cancel takes effect at once, so the invalidation
+ * after it starts a check of its own; a sign-out's `resetQueries` needs no cancel, since a reset
+ * drops the fetch it finds.
+ */
+export function askSignInAgain(client: QueryClient): Promise<void> {
+  void client.cancelQueries({ queryKey: ["whoami"] });
+  return client.invalidateQueries({ queryKey: ["whoami"] });
+}

@@ -10,6 +10,7 @@ import {
   type WriteMethod,
   type WriteRequest,
 } from "../../api/client";
+import { askSignInAgain } from "../../api/query-client";
 import type { AuthenticatedUser } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { indexedDbFiles, type KeptFiles } from "./kept-files";
@@ -986,7 +987,7 @@ export class Writes {
       // answer says whether the check, read afresh, still names the person who pressed it, which
       // makes a repeated 401 Dispatch's refusal (`writeUnderKey`).
       unauthorized: async () => {
-        await this.#client.invalidateQueries({ queryKey: ["whoami"] });
+        await askSignInAgain(this.#client);
         const state = this.#client.getQueryState<AuthenticatedUser>(["whoami"]);
         return (
           state?.status === "success" &&
@@ -1087,7 +1088,7 @@ export class Writes {
     ) {
       const login = entry.write.login;
       this.#drop([...this.#entries.values()].filter((other) => other.write.login === login));
-      void this.#client.invalidateQueries({ queryKey: ["whoami"] });
+      void askSignInAgain(this.#client);
       return;
     }
     const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
