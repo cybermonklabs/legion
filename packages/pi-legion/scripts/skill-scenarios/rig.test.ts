@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { callerMiseEnvironment } from "@legion/test-fixtures/mise-environment";
+import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -30,6 +30,9 @@ const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 const work = temporaryDirectory("skill-scenarios-rig");
 const operatorHome = path.join(work, "operator-home");
+/** The children's own mise state directory: seedMiseState fills it, in the hook below, with copies
+ *  of the caller's trust and ignore records, so whatever mise writes as they run stays in `work`. */
+const miseState = path.join(work, "mise-state");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation
 // registered: a run that selects no row of this file makes neither. Each level is made on its
@@ -39,10 +42,11 @@ beforeAll(() => {
   mkdirSync(operatorHome);
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+  seedMiseState(miseState);
 });
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise configuration: its data, config and state directories, and the global
- * config, system config and trusted paths it names, as mise resolves them
+ * own, and the caller's mise configuration: its data and config directories, the global config,
+ * system config and trusted paths it names, and `miseState`, as mise resolves them
  * (`callerMiseEnvironment`). A tool on PATH can be a mise shim (bun, jq and jj are, on a devbox).
  * Under a fresh HOME such a shim finds neither its installs nor its global config, so it fails, and
  * a project config loads only where the caller's trust records or trusted paths reach. They are
@@ -54,7 +58,7 @@ beforeAll(() => {
 const childEnv = {
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
-  ...callerMiseEnvironment(),
+  ...callerMiseEnvironment(miseState),
 };
 
 let profiles = 0;
