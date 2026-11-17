@@ -159,9 +159,11 @@ func (s *scripted) tokenRequests() []sentRequest {
 	return tokens
 }
 
-// The replies of a GitHub that lists one installation, acme's 7, and mints its token.
+// The replies of a GitHub that lists one installation, acme's 7, holding every permission of the
+// read set, and mints its token.
 var (
-	installed   = reply{status: http.StatusOK, body: `[{"id":7,"account":{"login":"acme"}}]`}
+	installed = reply{status: http.StatusOK, body: `[{"id":7,"account":{"login":"acme"},"permissions":{"actions":"read","attestations":"read",` +
+		`"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}}]`}
 	tokenMinted = reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z"}`}
 )
 

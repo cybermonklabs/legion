@@ -35,16 +35,19 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	var tokensAsked atomic.Int32
+	// granted is what the listing says the installation holds, and what its owner-wide token
+	// holds.
+	granted := map[string]string{"contents": "write", "metadata": "read"}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}, "permissions": granted}})
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
 			tokensAsked.Add(1)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token": "ghs-value-7", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-				"permissions": map[string]string{"contents": "write", "metadata": "read"}, "repository_selection": "all",
+				"permissions": granted, "repository_selection": "all",
 			})
 		default:
 			t.Errorf("unexpected request to GitHub: %s %s", r.Method, r.URL.Path)

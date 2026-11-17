@@ -372,11 +372,91 @@ func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
 	}
 }
 
+// TestTheGitHubStandListsWhatEachInstallationHolds: the broker's minter cuts a read-only
+// narrowing's token request to what the installations listing says the installation holds, so
+// the stand-in's listing says it. An owner GitHubOptions.Permissions does not name holds every
+// permission of the read set, which a read-only narrowing then asks for whole, each at read; an
+// owner it names holds that entry alone, which is all such a narrowing asks for, and which a
+// token request naming no permissions is answered with.
+func TestTheGitHubStandListsWhatEachInstallationHolds(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewGitHubStand(GitHubOptions{
+		Installations: map[string]int64{"acme-org": 7, "zed-org": 9},
+		Permissions:   map[string]map[string]string{"zed-org": {"contents": "read", "metadata": "read", "pull_requests": "write"}},
+	}).Answer)
+	client := clientOf(service)
+	value := gitHubAppValue(t)
+	held := map[string]map[string]string{
+		"acme-org": {
+			"contents": "write", "metadata": "read", "pull_requests": "write", "issues": "read",
+			"actions": "read", "checks": "read", "statuses": "read", "attestations": "read",
+		},
+		"zed-org": {"contents": "read", "metadata": "read", "pull_requests": "write"},
+	}
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, service.URL()+"/app/installations", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := answerOf(t, client, request)
+	var listed []struct {
+		Account struct {
+			Login string `json:"login"`
+		} `json:"account"`
+		Permissions map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(body), &listed); status != http.StatusOK || err != nil || len(listed) != 2 {
+		t.Fatalf("the installations listing answered %d: %s; want 200 and the two installations", status, body)
+	}
+	for _, installation := range listed {
+		if want := held[installation.Account.Login]; !maps.Equal(installation.Permissions, want) {
+			t.Errorf("the listing says %s's installation holds %v; want %v", installation.Account.Login, installation.Permissions, want)
+		}
+	}
+
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, service.URL()+"/app/installations/9/access_tokens", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body = answerOf(t, client, request)
+	var whole struct {
+		Permissions map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(body), &whole); status != http.StatusCreated || err != nil || !maps.Equal(whole.Permissions, held["zed-org"]) {
+		t.Fatalf("zed-org's token asked for with no body answered %d: %s; want 201 holding %v", status, body, held["zed-org"])
+	}
+
+	for _, tc := range []struct {
+		owner, asked string
+	}{
+		{"acme-org", `{"permissions":{"actions":"read","attestations":"read","checks":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`},
+		{"zed-org", `{"permissions":{"contents":"read","metadata":"read","pull_requests":"read"}}`},
+	} {
+		t.Run("a read-only narrowing of "+tc.owner, func(t *testing.T) {
+			before := len(service.Requests())
+			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
+				Value: value, GitHubOwners: []string{tc.owner}, GitHubNarrowing: &secrets.GitHubNarrowing{Owner: tc.owner, ReadOnly: true},
+			})
+			if err != nil || mintedGitHubToken(t, minted.Value, tc.owner) == "" {
+				t.Fatalf("mint a read-only token for %s = %q, %v; want its token", tc.owner, minted.Value, err)
+			}
+			var asked []string
+			for _, seen := range service.Requests()[before:] {
+				if strings.HasSuffix(seen.Path, "/access_tokens") {
+					asked = append(asked, seen.Body)
+				}
+			}
+			if !slices.Equal(asked, []string{tc.asked}) {
+				t.Fatalf("the mint sent the token requests %q; want one, %s", asked, tc.asked)
+			}
+		})
+	}
+}
+
 // TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo: the refusing option answers the 422 GitHub
 // answers a body it will not mint for, and the minter must read that as the caller's narrowing
-// rather than as the upstream's trouble. It answers a read-only narrowing's second request - the
-// one the minter asks without actions - the same way, so no narrowing driven against it releases
-// a token.
+// rather than as the upstream's trouble. It answers a read-only narrowing's one token request
+// the same way, so no narrowing driven against it releases a token.
 func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
@@ -412,8 +492,7 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 // narrowing reads. The repository answer refuses the narrowing naming its repository, mints the
 // one naming another, and mints the request that names no repository at all - the probe that
 // finds the repositories to be the refused part. The permissions answer refuses a read-only
-// narrowing, its second request without actions included, and mints a narrowing that names
-// repositories alone.
+// narrowing and mints a narrowing that names repositories alone.
 func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
 	value := gitHubAppValue(t)
 	refusedRepository := GitHubAnswer{Mode: GitHubTokensRefusedRepository, Repository: "proofs"}

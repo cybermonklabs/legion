@@ -114,12 +114,12 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 		{
 			name:      "a narrowing GitHub refuses",
 			narrowing: lean,
-			// The read-only half is asked for once more without actions, which this answer
-			// refuses too, so neither run holds a token and neither revokes one.
+			// The one token request is refused, so neither run holds a token and neither
+			// revokes one.
 			answer:       airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefused},
 			class:        "narrowing",
-			releaseCalls: []string{installations, tokenRequest, tokenRequest},
-			checkCalls:   []string{installations, tokenRequest, tokenRequest},
+			releaseCalls: []string{installations, tokenRequest},
+			checkCalls:   []string{installations, tokenRequest},
 		},
 		{
 			name:      "a token GitHub mints wider than the narrowing",

@@ -244,9 +244,10 @@ type githubNarrowing struct {
 	// organization permissions among them, unless read_only is set too. The answer names them
 	// sorted, each once.
 	Repositories []string `json:"repositories,omitempty"`
-	// Optional: true limits the token to contents: read, metadata: read, pull_requests: read and
-	// actions: read, less the Actions grant the installation does not hold. A machine that must
-	// only read needs it, with or without repositories.
+	// Optional: true limits the token to read access to contents, metadata and pull_requests, and
+	// to issues, actions, checks, statuses and attestations where the App's installation holds
+	// them. A machine that must only read needs it, with or without repositories. An installation
+	// that does not hold contents, metadata or pull_requests is refused 422 NARROWING_REFUSED.
 	ReadOnly bool `json:"read_only,omitempty"`
 	// unread is why the github_app object a body sent does not read as a narrowing, "" when it
 	// does. UnmarshalJSON sets it in place of returning an error, so parsedNarrowing answers it
