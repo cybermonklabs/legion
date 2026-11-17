@@ -12,6 +12,8 @@ body: |-
   request and for a release alike. The check does not send again a token request that may have
   reached GitHub and failed, so such a request leaves one token live, which nothing can name; a
   request known to have failed before a connection (a name that did not resolve, a failed dial, a
-  certificate the broker did not trust), and every request of a release, is sent again as before.
-  A token whose answer does not name it, and a revoke GitHub does not confirm, are logged at WARN,
-  and that token stays live until it lapses, within the hour GitHub gives it.
+  proxy's refused tunnel, a certificate the broker did not trust), and every request of a release,
+  is sent again as before. Releases give their tokens back in the background, so a release answers
+  without waiting on GitHub. A token whose answer does not name it, and a revoke GitHub does not
+  confirm, are logged at WARN, and that token stays live until it lapses, within the hour GitHub
+  gives it.

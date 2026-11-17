@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -60,11 +62,12 @@ type mintTransportError struct {
 	// read is a failure reading the body of an answer that had begun.
 	read bool
 	// sent is whether the request may have reached the upstream, and it is true for every failure
-	// but one known to come before the transport had a connection to the upstream - a name that
-	// did not resolve, a dial that failed, a certificate the broker did not trust
-	// (beforeConnection) - which did nothing upstream. Any other failure may come after some or
-	// all of the request went out and was served, whatever the write reported. A read that failed
-	// is always sent.
+	// but one known to come before the transport had a connection to the upstream (mintAttempt):
+	// one the trace shows came before a connection, such as a proxy's refused tunnel, or one whose
+	// error says so - a name that did not resolve, a dial that failed, a certificate the broker did
+	// not trust (beforeConnection). Either did nothing upstream. Any other failure may come after
+	// some or all of the request went out and was served, whatever the write reported. A read
+	// that failed is always sent.
 	sent bool
 	// status is the status that answer came with, for a read that failed; 0 where no answer
 	// arrived (answeredStatus).
@@ -189,13 +192,22 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 // mintAttempt is one attempt of a mintCall, under mintAttemptTimeout within the request's own
 // context. A later attempt reads its body from the request's GetBody. A status other than want
 // carries the wait the answer names, read against now (serverWait). A call that failed says
-// whether its request may have reached the upstream (mintTransportError.sent), read from the
-// error alone: a trace says nothing a transport the caller injects need not report, and the
-// standard transport's report of the write can call a request the upstream received whole
-// failed, or come after Do has returned.
+// whether its request may have reached the upstream (mintTransportError.sent): it did not where
+// the error says so (beforeConnection), or where the transport reported to the attempt's trace
+// that it went to get a connection (GetConn) and never reported one (GotConn). The standard
+// transport reports GotConn before it writes a byte, on HTTP/1 and HTTP/2, so a call it failed
+// before then - a proxy that refused the tunnel, a handshake that failed - sent nothing, whatever
+// the error's type. A transport that reports neither, as one a caller injects need not, is read by
+// its error alone. The trace's report of the write is not read: it can call a request the
+// upstream received whole failed, or come after Do has returned.
 func mintAttempt(client *http.Client, request *http.Request, attempt int, now func() time.Time, what, who string, want int, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(request.Context(), mintAttemptTimeout)
 	defer cancel()
+	var askedConnection, gotConnection atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GetConn: func(string) { askedConnection.Store(true) },
+		GotConn: func(httptrace.GotConnInfo) { gotConnection.Store(true) },
+	})
 	sent := request.Clone(ctx)
 	if attempt > 1 && request.GetBody != nil {
 		body, err := request.GetBody()
@@ -206,7 +218,8 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	}
 	response, err := client.Do(sent)
 	if err != nil {
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: !beforeConnection(err)}
+		noConnection := askedConnection.Load() && !gotConnection.Load()
+		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))

@@ -1207,10 +1207,10 @@ for. One more call is not retried: the GitHub token request that the check of a 
 narrowing before the approval request makes, once it failed in any way but one known to come
 before a connection, since GitHub may have received it whole and minted a token that the check
 will never hold, whatever the broker's own write reported. The same call that failed before a
-connection, because its name did not resolve, its connection could not be made, or the broker
-did not trust GitHub's certificate, minted nothing and is retried as any other call is. A TLS
-record error or alert counts as a failure after the request went out, since either can come
-after the handshake.
+connection, because its name did not resolve, its connection or a proxy's tunnel could not be
+made, or the broker did not trust GitHub's certificate, minted nothing and is retried as any other
+call is. A TLS record error or alert counts as a failure after the request went out, since either
+can come after the handshake.
 
 - Each call gets at most 3 attempts, each under a 5-second timeout.
 - Before the second attempt the broker waits a time drawn at random from 0 to 2 seconds, and

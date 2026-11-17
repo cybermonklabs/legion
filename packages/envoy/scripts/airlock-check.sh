@@ -437,7 +437,7 @@ header_of() { records "$1" | jq -r --argjson i "$2" --arg h "$3" '.[$i].header[$
 record_field() { records "$1" | jq -r --argjson i "$2" --arg f "$3" '.[$i][$f] // ""'; }
 
 # github_revokes is how many revokes of an installation token GitHub's stand-in has received.
-github_revokes() { records github | jq '[.[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
+github_revokes() { records github | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
 
 psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
 
@@ -532,7 +532,9 @@ check_k1() {
 	# one string for every request would make it, would end the token the proxy holds for the
 	# grant the session is still running.
 	local proxy_token revokes_before revokes_after proxy_status
-	proxy_token="${K1_HEADER#Bearer }"
+	# The rule names no kind and k1 asks for no --github-token, so the proxy sent S the whole
+	# released value, the JSON object of installations; the token is its one installation's.
+	proxy_token="$(printf '%s' "${K1_HEADER#Bearer }" | jq -Rr '(fromjson? | .installations[]?.token) // empty' | head -n 1)"
 	revokes_before="$K1_GITHUB_REVOKES"
 	revokes_after="$revokes_before"
 	for _ in $(seq 30); do
@@ -541,10 +543,10 @@ check_k1() {
 		sleep 0.5
 	done
 	proxy_status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $proxy_token" "$AIRLOCK_GITHUB_URL/repos/acme-org/k1")"
-	observe "github: GitHub got $((revokes_after - revokes_before)) revoke(s) after the session's own release, and a read at GitHub with the token the proxy sent S answered $proxy_status"
-	judge "$([ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" != 401 ] && echo 0 || echo 1)" \
+	observe "github: GitHub got $((revokes_after - revokes_before)) revoke(s) after the session's own release, and a read at GitHub with the token the proxy sent S, $(shape "$proxy_token"), answered $proxy_status"
+	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" != 401 ] && echo 0 || echo 1)" \
 		"the session's release gives back the token it minted for the slots, and the token the proxy sent S is still live at GitHub" \
-		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token answered $proxy_status, where 401 is a token GitHub no longer knows"
+		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 401 is a token GitHub no longer knows"
 
 	# The negative control: the same two runs for names the rules file does not hold. The stack
 	# takes its shape from its own rules file, so the control adds the two secrets to the
