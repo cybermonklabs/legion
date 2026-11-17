@@ -195,7 +195,8 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	}
 	action := args[0]
 	flags := flag.NewFlagSet("envoy-infra buckets "+action, flag.ContinueOnError)
-	// What the parse writes waits until the warning is out, so the warning stays first.
+	// The flag package's own message quotes a value it could not parse, so what it writes is
+	// printed only after --help, whose listing holds no word given (see below).
 	var parsed bytes.Buffer
 	flags.SetOutput(&parsed)
 	var f fence
@@ -218,12 +219,45 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	if action != "create" || !breakGlass {
 		fmt.Fprint(stderr, bestEffortWarning)
 	}
-	fmt.Fprint(stderr, parsed.String())
+	// No word the command was given is echoed where the parse could not read it as one of its own:
+	// a seed may have been pasted there, and `envoy-infra seed` and `render` echo none either. A
+	// stray argument is named by its position, a malformed value by its flag, and any other word
+	// the parse refused not at all.
 	if err != nil {
+		switch {
+		case errors.Is(err, flag.ErrHelp):
+			fmt.Fprint(stderr, parsed.String())
+		case strings.HasPrefix(err.Error(), "flag needs an argument: -"):
+			// The flag package says this only of a flag it defines, so the name is one of ours.
+			fmt.Fprintf(stderr, "envoy-infra buckets: %v\n%s", err, usage)
+		default:
+			if name := malformedFlag(flags, err); name != "" {
+				fmt.Fprintf(stderr, "envoy-infra buckets: --%s: a malformed value (not echoed: a seed may have been pasted there)\n%s", name, usage)
+			} else {
+				fmt.Fprintf(stderr, "envoy-infra buckets: a flag this command does not take, or a malformed one (not echoed: a seed may have been pasted there)\n%s", usage)
+			}
+		}
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "envoy-infra buckets: unexpected argument %q\n%s", flags.Arg(0), usage)
+		// The action is word 1 after "buckets", so the first word the flags left is word
+		// len(args)-NArg()+1.
+		fmt.Fprintf(stderr, "envoy-infra buckets: word %d after \"buckets\" is no flag and no flag's value (not echoed: a seed may have been pasted there)\n%s", len(args)-flags.NArg()+1, usage)
+		return 2
+	}
+	// A flag's value reaches the lines the command writes - a blocker names each --host,
+	// --kube-context and --connz, a refusal each --bucket, the break-glass line --operator - and
+	// the programs it runs, so a value that holds an nkey seed (bus.HoldsSeed), whole or inside it,
+	// is refused naming the flag, never the value, before anything reads it, as seed and render
+	// refuse one.
+	var seeded []string
+	flags.Visit(func(set *flag.Flag) {
+		if bus.HoldsSeed(set.Value.String()) {
+			seeded = append(seeded, "--"+set.Name)
+		}
+	})
+	if len(seeded) > 0 {
+		fmt.Fprintf(stderr, "envoy-infra buckets: %s: an nkey seed, which is never an argument (not echoed)\n", strings.Join(seeded, ", "))
 		return 2
 	}
 	if natsURL == "" {
@@ -325,6 +359,26 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 		return 1
 	}
 	return create(stdout, stderr, nc.Conn, js, buckets, replicas)
+}
+
+// malformedFlag returns the name of the flag whose value the flag package could not parse, read
+// from its message, "invalid value %q for flag -%s: %v" or, for a boolean flag, "invalid boolean
+// value %q for -%s: %v"; "" for any other error. The quoted value comes first, so the name follows
+// the message's last marker, and only a flag the set defines is returned. It reads the message as
+// envoy-infra render's malformedFlag does (infra/render/render.go).
+func malformedFlag(flags *flag.FlagSet, err error) string {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "invalid value ") && !strings.HasPrefix(msg, "invalid boolean value ") {
+		return ""
+	}
+	for _, marker := range []string{" for flag -", " for -"} {
+		if i := strings.LastIndex(msg, marker); i >= 0 {
+			if name, _, _ := strings.Cut(msg[i+len(marker):], ":"); flags.Lookup(name) != nil {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // refuse writes the refusal and each blocker.

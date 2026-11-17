@@ -975,6 +975,44 @@ func TestNoLineTheCommandWritesCarriesTheURLsCredential(t *testing.T) {
 	}
 }
 
+// A word the command cannot read as its own is never echoed, since an nkey seed may have been
+// pasted there: a stray argument is named by its position, a value its flag cannot parse by the
+// flag, an unknown or malformed flag not at all, and a flag value that holds a seed by the flag.
+// Each is a usage error, 2, before any proof. The seed is a real one (testnats.User), so the
+// seeded-value rows read it as bus.HoldsSeed does. At d92d4615cf the stray argument and every
+// parse error printed the word, and a seeded --host or --bucket went on (a --bucket refusal quoting
+// it, a --host into the proof).
+func TestNoWordTheCommandCannotReadIsEchoed(t *testing.T) {
+	seed, _ := testnats.User(t)
+	const nowhere = "nats://127.0.0.1:1"
+	for _, c := range []struct {
+		name string
+		args []string
+		says string
+	}{
+		{"a stray argument", []string{"create", "--nats", nowhere, "--host", "box-1", seed}, `word 6 after "buckets" is no flag and no flag's value`},
+		{"a stray argument after --", []string{"check", "--host", "box-1", "--", seed}, `word 5 after "buckets" is no flag and no flag's value`},
+		{"a malformed number", []string{"create", "--nats", nowhere, "--host", "box-1", "--replicas", seed}, "--replicas: a malformed value"},
+		{"a malformed number after =", []string{"create", "--nats", nowhere, "--host", "box-1", "--replicas=" + seed}, "--replicas: a malformed value"},
+		{"a malformed boolean", []string{"create", "--nats", nowhere, "--host", "box-1", "--this-machine=" + seed}, "--this-machine: a malformed value"},
+		{"an unknown flag", []string{"create", "--nats", nowhere, "--" + seed}, "a flag this command does not take, or a malformed one"},
+		{"a flag of bad syntax", []string{"create", "---" + seed}, "a flag this command does not take, or a malformed one"},
+		{"a seed as --host", []string{"create", "--nats", nowhere, "--host", seed}, "--host: an nkey seed, which is never an argument"},
+		{"a seed inside --bucket", []string{"create", "--nats", nowhere, "--host", "box-1", "--bucket", "x-" + seed}, "--bucket: an nkey seed, which is never an argument"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+			code, stdout, stderr := runCommand(t, w, nil, c.args...)
+			if strings.Contains(stdout+stderr, seed) || strings.Contains(stdout+stderr, seed[:20]) {
+				t.Fatalf("%s echoed the seed (exit %d):\n%s%s", c.name, code, stdout, stderr)
+			}
+			if code != 2 || !strings.Contains(stderr, c.says) || len(w.calls) != 0 {
+				t.Fatalf("%s = %d, calls %d, want the usage error %q before any proof\n%s", c.name, code, len(w.calls), c.says, stderr)
+			}
+		})
+	}
+}
+
 // The replica count a bucket is created with is the deployment's, read as every program of it
 // reads ENVOY_NATS_REPLICAS (bus.ParseNATSReplicas): a count outside 1 to bus.MaxReplicas, from
 // --replicas or from the variable, is refused as a usage error, with 2, before the command
