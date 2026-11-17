@@ -102,8 +102,9 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the old account grants, so an old account can be deleted only once every pod of it has gone.
 //
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
-// passed, and not a pod older than the boot timeout that its node has still not made ready to
-// start its containers (neverStarted) — ends the process of every role
+// passed, and not a pod older than the boot timeout, scheduled longer than half of it ago, that
+// its node has still not made ready to start its containers (neverStarted) — ends the process of
+// every role
 // still running in it, wherever its turn stood, so the Suspended patch that replaces it names it
 // on the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
@@ -164,11 +165,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	pod := r.storedPod(s.Name)
 	_, initExit := failedInit(pod)
 	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
-	// A pod older than the boot timeout that its node has still not made ready to start its
-	// containers is not live either (neverStarted): no launcher connects from it, so a launch that
-	// kept it would wait out the boot timeout on it, be charged a launch failure, and leave it for
-	// the next try to find again. It is replaced as a pod whose init failed is, and names nothing
-	// displaced, since no role ever ran in it.
+	// A pod older than the boot timeout, scheduled longer than half of it ago, that its node has
+	// still not made ready to start its containers is not live either (neverStarted): no launcher
+	// connects from it, so a launch that kept it would wait out the boot timeout on it, be charged a
+	// launch failure, and leave it for the next try to find again. It is replaced as a pod whose
+	// init failed is, and names nothing displaced, since no role ever ran in it. A pod its node got
+	// more recently, after waiting unscheduled for room, is kept: it is about to start.
 	if unstarted, stuck := neverStarted(pod, r.now(), r.bootTimeout); live && stuck {
 		r.log.Warn("sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers",
 			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", unstarted.Round(time.Second),

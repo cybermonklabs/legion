@@ -78,30 +78,42 @@ func provisioning(pod *corev1.Pod) bool {
 	})
 }
 
-// neverStarted is how long pod has existed while scheduled onto a node that has not made it ready
-// to start its containers, and whether that is longer than bound at now. The kubelet reports
+// neverStarted is how long ago pod was created, while scheduled onto a node that has not made it
+// ready to start its containers, and whether it has never started at now: created longer than
+// bound ago, and scheduled longer than half of bound ago. The kubelet reports
 // PodReadyToStartContainers False until it has mounted the pod's volumes and made its sandbox, and
 // no container of the pod runs before then, an init container or the launcher its roles run in: a
 // node that cannot surface the new persistent disk an issue pod owns (FailedMount) holds the pod
 // there for as long as the pod lives, and a launch that keeps such a pod waits for its launcher in
 // vain at every try (relaunch). Such a pod is Pending, PodScheduled True and
-// PodReadyToStartContainers False, and its time is counted from its creation, not from either
-// condition's transition: the launch's wait for its launcher starts once the store holds the pod,
-// so it gives up about a boot timeout after the pod's creation, while the kubelet writes those
-// conditions seconds later. Counted from them, the next try, a backoff of a second or two after
-// that wait gave up, would find the pod younger than the boot timeout, keep it, and wait on it
-// once more. Nothing else is judged: a pod whose kubelet has not reported the condition, whose
-// wait for its image pull is the launcher wait's own (awaitRoleLauncher); a pod that is not
-// scheduled, whose wait is the scheduler's (verdict); a pod that has left Pending, which has
-// started; and a pod whose creation is unknown.
+// PodReadyToStartContainers False.
+//
+// Two clocks judge it, since neither alone tells such a pod from one about to start. Its creation
+// is what the launch's wait for its launcher runs against: that wait starts once the store holds
+// the pod, so it gives up about a boot timeout after the pod's creation, while the kubelet writes
+// the conditions seconds later. Counted from the conditions alone, the next try, a backoff of a
+// second or two after that wait gave up, would find the pod younger than the boot timeout, keep it,
+// and wait on it once more. Its scheduling, PodScheduled's transition, is what tells it from a pod
+// that waited unscheduled for room in the pool for longer than the bound: such a pod, once a node
+// gets it, reads the same in the seconds until that node has mounted its volumes and made its
+// sandbox, created longer than the bound ago, and a try in that window would delete a pod about to
+// start and send its replacement to the back of the scheduling queue. A pod scheduled less than
+// half the bound ago is so left to start, while the pod the next try finds stuck was scheduled
+// seconds after its creation, so well over half the bound before.
+//
+// Nothing else is judged: a pod whose kubelet has not reported the condition, whose wait for its
+// image pull is the launcher wait's own (awaitRoleLauncher); a pod that is not scheduled, whose
+// wait is the scheduler's (verdict); a pod that has left Pending, which has started; and a pod
+// whose creation or scheduling time is unknown.
 func neverStarted(pod *corev1.Pod, now time.Time, bound time.Duration) (time.Duration, bool) {
 	if pod == nil || phaseOf(pod) != corev1.PodPending || pod.CreationTimestamp.IsZero() {
 		return 0, false
 	}
 	scheduled, ready := podCondition(pod, corev1.PodScheduled), podCondition(pod, corev1.PodReadyToStartContainers)
-	if scheduled == nil || scheduled.Status != corev1.ConditionTrue || ready == nil || ready.Status != corev1.ConditionFalse {
+	if scheduled == nil || scheduled.Status != corev1.ConditionTrue || scheduled.LastTransitionTime.IsZero() ||
+		ready == nil || ready.Status != corev1.ConditionFalse {
 		return 0, false
 	}
 	unstarted := now.Sub(pod.CreationTimestamp.Time)
-	return unstarted, unstarted > bound
+	return unstarted, unstarted > bound && now.Sub(scheduled.LastTransitionTime.Time) > bound/2
 }
