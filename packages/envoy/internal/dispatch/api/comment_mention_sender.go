@@ -420,13 +420,9 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 	m.parked[lane] = struct{}{}
 	m.mu.Unlock()
 	if warn {
-		publishError := ""
-		if item.heldBy.PublishError != nil {
-			publishError = *item.heldBy.PublishError
-		}
 		slog.Warn("dispatch: a comment mention's send waits behind an earlier event of its owner",
 			"owner", item.owner(), "comment", item.comment.ID, "target", item.mention.Target, "session", item.heldFor,
-			"event_id", item.heldBy.EventID, "publish_error", publishError,
+			"event_id", item.heldBy.EventID, "publish_error", deref(item.heldBy.PublishError),
 			"held_for", time.Since(item.heldSince).Round(time.Second))
 	}
 	time.AfterFunc(delay, func() { m.unpark(lane) })

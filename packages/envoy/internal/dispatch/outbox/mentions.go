@@ -1761,12 +1761,13 @@ func decideFallbackCopy(
 // a batch's own send: the holder's agent subject for a role destination whose holder is known, and
 // otherwise the row's own destination - a session's own topic, or the role's topic for a copy kept
 // for the role's next holder, which reaches no session yet (roleForward).
-func fallbackCopyKey(destination string, forward *roleForward) string {
-	if forward != nil && forward.holder != "" {
-		return contracts.LegacyAgentSubject(forward.holder)
-	}
-	return destination
+func fallbackCopyKey(subject string, forward *roleForward) string {
+	return destination{subject: subject, forward: forward}.key()
 }
+
+// copyHolderQuery is model.MentionCopyHolderSQL bound to a comment.created event's id ($1) and a
+// session's key ($2), the statement every read of the rule runs (copyHolder).
+var copyHolderQuery = model.MentionCopyHolderSQL("$1::bigint", "$2::text")
 
 // copyHolder is the earlier event of its owner a copy of the comment whose comment.created event
 // is eventID, bound for the session key key, waits behind - one that still owes a send that
@@ -1777,8 +1778,7 @@ func fallbackCopyKey(destination string, forward *roleForward) string {
 // them.
 func copyHolder(ctx context.Context, deps Deps, eventID int64, key string) (*model.MentionCopyHolder, error) {
 	var by model.MentionCopyHolder
-	err := deps.Store.Pool.QueryRow(ctx, model.MentionCopyHolderSQL("$1::bigint", "$2::text"), eventID, key).
-		Scan(&by.EventID, &by.PublishError)
+	err := deps.Store.Pool.QueryRow(ctx, copyHolderQuery, eventID, key).Scan(&by.EventID, &by.PublishError)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, nil
