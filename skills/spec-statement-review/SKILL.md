@@ -17,17 +17,15 @@ You judge what no program decides, and nothing else, so that one rule never gets
 1. Run `dispatch spec-form --issue <KEY> --artifact <document>`.
    It prints the findings of the form check, one line for each: `- <kind> <node>: <detail>.`
    Dispatch decided each finding already, so do not report it again.
+   After them it prints each text that Dispatch read, one line for each: `<kind> <node>`.
    Then run the same command with `--terms`, which prints the list of terms in place of the findings.
    The list has one line for each term: `<term>: <definition> (<document> version <n> of <KEY>)`.
 
 2. Read the change request with `dispatch doc-read --issue <KEY> --artifact <document>`.
-   A statement is a `:::requirement{#<id>}` block or an entry line ``- **<statement>** `<id>` · under: …``, with `-`, `*` or `+`.
-   Its node is its id.
-   A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names its statements.
-   The terms of the request are the lines under its heading `Terms`, at any level, that start with `-`, `*` or `+`, then `**<term>**: <definition>`.
-   Such a line in a statement or a check adds no term.
-   A heading with other text, such as `**Terms**`, `Terms:` or `terms`, is a finding of the form check, and it opens no terms.
-   Nothing in a code fence or in a quote, a line that starts with `>`, is a statement, a check, a term or a heading.
+   The statements of the request are the `statement` lines of step 1, its checks are the `claim` lines, and its terms are the `definition` lines.
+   No other text of the document is a statement, a check or a term.
+   Find each one in the document by its node: a statement or a check by its id, and a term by its name in bold.
+   The text of a check is its claim, `run` is its procedure, and `serves` names its statements.
    Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
    When they include `verification.md`, run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.
 
