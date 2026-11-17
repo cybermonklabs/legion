@@ -16,15 +16,18 @@ import { askIdOf, decideAsk, listOf, main, UndecidedError } from "../reserve-ask
 
 /**
  * `reserve-ask.ts`, the one live decision under the reserve, against a fake Dispatch that serves
- * the four reads it makes in the shapes the real routes answer: the registration document's text,
- * one ask (`{ask, answers, ...}`), each issue with its `parent`, and version 3's list as bytes.
- * Its trees use a neutral project key: ACME-1 and ACME-2 are roots version 2's hash picks, ACME-3
- * and ACME-4 roots it does not, and the list holds ACME-2 and ACME-4.
+ * the reads it makes in the shapes the real routes answer: the registration document's text, one
+ * ask (`{ask, answers, ...}`), each issue with its `parent` now, each issue's own log
+ * (`/events?after=<seq>&limit=`, rows with the global `id`, `seq`, `type` and the issue as
+ * payload), and version 3's list as bytes. Its trees use a neutral project key: ACME-1 and ACME-2
+ * are roots version 2's hash picks, ACME-3 and ACME-4 roots it does not, and the list holds ACME-2
+ * and ACME-4. Every ask opens at event 50; three issues move to another root at event 60.
  */
 
 const TOKEN = "fake-bearer";
 const LIST = "ACME-2\nACME-4\n";
 const LIST_SHA256 = createHash("sha256").update(LIST, "utf8").digest("hex");
+const OPENED_EVENT = 50;
 
 const VERSIONS = [
   "# The reserve",
@@ -34,39 +37,80 @@ const VERSIONS = [
   "### The rule",
 ].join("\n\n");
 
-const PARENTS: Record<string, string | null> = {
-  "ACME-1": null,
-  "ACME-2": null,
-  "ACME-3": null,
-  "ACME-4": null,
-  "ACME-11": "ACME-1",
-  "ACME-12": "ACME-4",
-  "ACME-20": "ACME-21",
-  "ACME-21": "ACME-20",
-  "ACME-30": "ACME-99",
+/** Each issue's parent over time: the event that set it, and the parent it set. */
+const HISTORY: Record<string, [number, unknown][]> = {
+  "ACME-1": [[10, null]],
+  "ACME-2": [[11, null]],
+  "ACME-3": [[12, null]],
+  "ACME-4": [[13, null]],
+  "ACME-11": [[20, "ACME-1"]],
+  "ACME-12": [[21, "ACME-4"]],
+  "ACME-13": [
+    [22, "ACME-1"],
+    [60, "ACME-2"],
+  ],
+  "ACME-14": [
+    [23, "ACME-3"],
+    [60, "ACME-4"],
+  ],
+  "ACME-15": [
+    [24, "ACME-4"],
+    [60, "ACME-3"],
+  ],
+  "ACME-20": [[25, "ACME-21"]],
+  "ACME-21": [[26, "ACME-20"]],
+  "ACME-30": [[27, "ACME-99"]],
+  "ACME-40": [[28, 5]],
 };
+
+/** An issue's own log, as the route pages it. */
+function logOf(key: string, after: number, limit: number): unknown[] {
+  return (HISTORY[key] ?? [])
+    .map(([id, parent], index) => ({
+      id,
+      seq: index + 1,
+      issue_key: key,
+      type: index === 0 ? "issue.created" : "issue.updated",
+      payload: { key, parent, title: "an issue" },
+    }))
+    .filter((row) => row.seq > after)
+    .slice(0, limit);
+}
 
 const BEFORE_V2 = "2026-11-15T12:00:00Z";
 const V2 = "2026-11-17T12:00:00Z";
 const V3 = "2026-11-18T06:00:00Z";
 
-/** Each ask the fake serves: its issue and its first opening, by an id of the ask's shape. */
-const ASKS: Record<string, { issue: string | null; opened: string }> = {};
-function askFor(issue: string | null, opened: string): string {
+/** Each ask the fake serves, by an id of the ask's shape. */
+const ASKS: Record<string, Record<string, unknown>> = {};
+function askFor(issue: string | null, opened: string, omit?: "issue_key"): string {
   const id = `00000000-0000-4000-8000-${String(Object.keys(ASKS).length + 1).padStart(12, "0")}`;
-  ASKS[id] = { issue, opened };
+  const ask: Record<string, unknown> = {
+    id,
+    issue_key: issue,
+    created_at: opened,
+    opened_event_id: OPENED_EVENT,
+    question: "the request's own words",
+  };
+  if (omit !== undefined) delete ask[omit];
+  ASKS[id] = ask;
   return id;
 }
 const BEFORE_V2_ON_PICKED = askFor("ACME-11", BEFORE_V2);
 const V2_ON_PICKED = askFor("ACME-11", V2);
 const V2_ON_PICKED_LISTED = askFor("ACME-2", V2);
 const V2_ON_UNPICKED = askFor("ACME-3", V2);
+const V2_MOVED_UNDER_LISTED = askFor("ACME-13", V2);
 const V3_UNDER_LISTED = askFor("ACME-12", V3);
 const V3_ON_UNLISTED = askFor("ACME-3", V3);
 const V3_UNDER_UNLISTED = askFor("ACME-11", V3);
+const V3_MOVED_UNDER_LISTED = askFor("ACME-14", V3);
+const V3_MOVED_OUT_OF_LISTED = askFor("ACME-15", V3);
 const V3_ON_NO_ISSUE = askFor(null, V3);
+const V3_WITH_NO_ISSUE_FIELD = askFor("ACME-12", V3, "issue_key");
 const V3_IN_CYCLE = askFor("ACME-20", V3);
 const V3_UNDER_MISSING = askFor("ACME-30", V3);
+const V3_UNDER_BAD_PARENT = askFor("ACME-40", V3);
 
 /** The registration's text the fake serves, which a test may change. */
 let markdown = VERSIONS;
@@ -87,7 +131,8 @@ beforeAll(async () => {
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
-      const path = new URL(request.url).pathname;
+      const url = new URL(request.url);
+      const path = url.pathname;
       seen.push(path);
       if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) {
         return new Response("no bearer", { status: 401 });
@@ -96,21 +141,19 @@ beforeAll(async () => {
       if (path === listPath)
         return new Response(LIST, { headers: { "content-type": "text/plain" } });
       const ask = /^\/api\/v1\/asks\/([^/]+)$/.exec(path)?.[1];
-      const known = ask === undefined ? undefined : ASKS[ask];
-      if (ask !== undefined && known !== undefined) {
-        return Response.json({
-          ask: {
-            id: ask,
-            issue_key: known.issue,
-            created_at: known.opened,
-            question: "the request's own words",
-          },
-          answers: [{ text: "his answer" }],
-        });
+      if (ask !== undefined && Object.hasOwn(ASKS, ask)) {
+        return Response.json({ ask: ASKS[ask], answers: [{ text: "his answer" }] });
+      }
+      const log = /^\/api\/v1\/issues\/([^/]+)\/events$/.exec(path)?.[1];
+      if (log !== undefined && Object.hasOwn(HISTORY, log)) {
+        const after = Number(url.searchParams.get("after") ?? "0");
+        const limit = Number(url.searchParams.get("limit") ?? "200");
+        return Response.json(logOf(log, after, limit));
       }
       const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(path)?.[1];
-      if (issue !== undefined && Object.hasOwn(PARENTS, issue)) {
-        return Response.json({ key: issue, parent: PARENTS[issue] });
+      if (issue !== undefined && Object.hasOwn(HISTORY, issue)) {
+        // The parent now is the last one the issue's history set.
+        return Response.json({ key: issue, parent: HISTORY[issue]?.at(-1)?.[1] });
       }
       return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
     },
@@ -141,6 +184,8 @@ beforeEach(() => {
   seen.length = 0;
 });
 
+const decide = (ask: string) => decideAsk(ask, config, LIST_SHA256);
+
 describe("the fake's trees", () => {
   test("ACME-1 and ACME-2 are roots version 2's hash picks, ACME-3 and ACME-4 are not", () => {
     expect(["ACME-1", "ACME-2", "ACME-3", "ACME-4"].map(pickedRoot)).toEqual([
@@ -152,72 +197,115 @@ describe("the fake's trees", () => {
   });
 });
 
-describe("decideAsk", () => {
-  test("from version 3's cut an ask is kept only when its root now is in the list", async () => {
-    const under = await decideAsk(V3_UNDER_LISTED, config, LIST_SHA256);
-    expect(under).toMatchObject({
+describe("decideAsk from version 3's cut", () => {
+  test("an ask is kept only when its root at the opening and its root now are both listed", async () => {
+    expect(await decide(V3_UNDER_LISTED)).toMatchObject({
       issue: "ACME-12",
-      root: "ACME-4",
-      listed: true,
+      opening_root: "ACME-4",
+      root_now: "ACME-4",
       decision: "kept",
     });
-    const on = await decideAsk(V3_ON_UNLISTED, config, LIST_SHA256);
-    expect(on).toMatchObject({ root: "ACME-3", listed: false, decision: "held" });
+    expect((await decide(V3_ON_UNLISTED)).decision).toBe("held");
     // Version 2's hash picks no root from version 3's cut: an unlisted root is held either way.
-    const picked = await decideAsk(V3_UNDER_UNLISTED, config, LIST_SHA256);
-    expect(picked).toMatchObject({ root: "ACME-1", listed: false, decision: "held" });
+    expect((await decide(V3_UNDER_UNLISTED)).decision).toBe("held");
   });
 
-  test("before version 3's cut version 2's hash holds, and a listed root releases", async () => {
-    expect((await decideAsk(V2_ON_PICKED, config, LIST_SHA256)).decision).toBe("held");
-    expect((await decideAsk(V2_ON_PICKED_LISTED, config, LIST_SHA256)).decision).toBe("kept");
-    expect((await decideAsk(V2_ON_UNPICKED, config, LIST_SHA256)).decision).toBe("kept");
+  test("a tree that moved under a listed root since the opening stays held", async () => {
+    expect(await decide(V3_MOVED_UNDER_LISTED)).toMatchObject({
+      opening_root: "ACME-3",
+      root_now: "ACME-4",
+      opening_listed: false,
+      now_listed: true,
+      decision: "held",
+    });
   });
 
-  test("an ask that opened before version 2's cut, or on no issue, is kept", async () => {
-    expect((await decideAsk(BEFORE_V2_ON_PICKED, config, LIST_SHA256)).decision).toBe("kept");
-    const loose = await decideAsk(V3_ON_NO_ISSUE, config, LIST_SHA256);
-    expect(loose).toMatchObject({ issue: null, root: null, listed: null, decision: "kept" });
+  test("a tree that moved out of a listed root since the opening is held", async () => {
+    expect(await decide(V3_MOVED_OUT_OF_LISTED)).toMatchObject({
+      opening_root: "ACME-4",
+      root_now: "ACME-3",
+      decision: "held",
+    });
+  });
+});
+
+describe("decideAsk before version 3's cut", () => {
+  test("version 2's hash holds a picked root, and a listed root at the opening releases", async () => {
+    expect((await decide(V2_ON_PICKED)).decision).toBe("held");
+    expect((await decide(V2_ON_PICKED_LISTED)).decision).toBe("kept");
+    expect((await decide(V2_ON_UNPICKED)).decision).toBe("kept");
+  });
+
+  test("a listed root now releases nothing when the root at the opening was not listed", async () => {
+    expect(await decide(V2_MOVED_UNDER_LISTED)).toMatchObject({
+      opening_root: "ACME-1",
+      root_now: "ACME-2",
+      decision: "held",
+    });
+  });
+
+  test("an ask that opened before version 2's cut is kept", async () => {
+    expect((await decide(BEFORE_V2_ON_PICKED)).decision).toBe("kept");
+  });
+});
+
+describe("decideAsk on what it cannot read", () => {
+  test("an ask on no issue is kept, and no issue is read", async () => {
+    expect(await decide(V3_ON_NO_ISSUE)).toMatchObject({
+      issue: null,
+      opening_root: null,
+      root_now: null,
+      decision: "kept",
+    });
     expect(seen.some((path) => path.startsWith("/api/v1/issues/"))).toBe(false);
   });
 
+  test("an ask whose answer has no issue field decides nothing, not an ask on no issue", async () => {
+    await expect(decide(V3_WITH_NO_ISSUE_FIELD)).rejects.toBeInstanceOf(UndecidedError);
+  });
+
+  test("a parent now that is not a key, a cycle or a refused read decides nothing", async () => {
+    await expect(decide(V3_UNDER_BAD_PARENT)).rejects.toBeInstanceOf(UndecidedError);
+    await expect(decide(V3_IN_CYCLE)).rejects.toBeInstanceOf(UndecidedError);
+    await expect(decide(V3_UNDER_MISSING)).rejects.toBeInstanceOf(DispatchRefusedError);
+  });
+
   test("the answer carries the rule's facts and no text of the ask or its answer", async () => {
-    const decision = await decideAsk(V3_ON_UNLISTED, config, LIST_SHA256);
+    const decision = await decide(V3_ON_UNLISTED);
     expect(Object.keys(decision).sort()).toEqual(
-      ["ask", "decision", "issue", "listed", "opened_at", "root", "rule_version"].sort()
+      [
+        "ask",
+        "decision",
+        "issue",
+        "now_listed",
+        "opened_at",
+        "opening_listed",
+        "opening_root",
+        "root_now",
+        "rule_version",
+      ].sort()
     );
     expect(decision.rule_version).toBe(RESERVE_RULE_VERSION);
     expect(JSON.stringify(decision)).not.toContain("his answer");
     expect(JSON.stringify(decision)).not.toContain("own words");
   });
+});
 
+describe("decideAsk against the registration", () => {
   test("a registration that names a newer rule version decides nothing and reads no ask", async () => {
     markdown = `${VERSIONS}\n\n## Version ${RESERVE_RULE_VERSION + 1}: a later rule`;
-    await expect(decideAsk(V3_UNDER_LISTED, config, LIST_SHA256)).rejects.toBeInstanceOf(
-      UndecidedError
-    );
+    await expect(decide(V3_UNDER_LISTED)).rejects.toBeInstanceOf(UndecidedError);
     expect(seen.some((path) => path.startsWith("/api/v1/asks/"))).toBe(false);
   });
 
   test("a registration whose text names no rule version decides nothing", async () => {
-    markdown = "# The reserve\n\n### Version 3 is mentioned in a lower heading only";
-    await expect(decideAsk(V3_UNDER_LISTED, config, LIST_SHA256)).rejects.toBeInstanceOf(
-      UndecidedError
-    );
+    markdown = "# The reserve\n\n### Version 3 is named in a lower heading only";
+    await expect(decide(V3_UNDER_LISTED)).rejects.toBeInstanceOf(UndecidedError);
   });
 
   test("a list whose bytes are not the registered ones decides nothing", async () => {
     await expect(decideAsk(V3_UNDER_LISTED, config, "0".repeat(64))).rejects.toBeInstanceOf(
       UndecidedError
-    );
-  });
-
-  test("a root that cannot be named decides nothing, so the scorer holds the ask", async () => {
-    await expect(decideAsk(V3_IN_CYCLE, config, LIST_SHA256)).rejects.toBeInstanceOf(
-      UndecidedError
-    );
-    await expect(decideAsk(V3_UNDER_MISSING, config, LIST_SHA256)).rejects.toBeInstanceOf(
-      DispatchRefusedError
     );
   });
 });
@@ -228,7 +316,7 @@ describe("main", () => {
     expect(await main(["--ask", `dispatch://ACME-12/ask/${V3_UNDER_LISTED}`])).toBe(2);
   });
 
-  test("the registered list's digest is not the fake's, so the real command decides nothing", async () => {
+  test("the real command takes only the registered list, which the fake does not serve", async () => {
     expect(await main(["--ask", V3_UNDER_LISTED])).toBe(2);
   });
 
