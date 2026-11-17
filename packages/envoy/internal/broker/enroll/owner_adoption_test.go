@@ -19,8 +19,8 @@ import (
 // claim tokens spell them (packages/daemon/internal/claim/token.go): the same service launches
 // both, so only the claim tells their requests apart.
 const (
-	plannerClaim     = "legion-infra-infra-2653-planner"
-	implementerClaim = "legion-infra-infra-2653-implementer"
+	plannerClaim     = "legion-acme-acme-12-planner"
+	implementerClaim = "legion-acme-acme-12-implementer"
 )
 
 // claimPod enrols one role process as the Legion daemon does: under the launcher's own token
@@ -243,13 +243,13 @@ func TestALiveEnrollmentOfTheSameOwnerKeepsItsGrants(t *testing.T) {
 	ctx := context.Background()
 	t.Run("a person's sign-in on another box", func(t *testing.T) {
 		svc := newService(t)
-		box := mintCredential(t, svc, str("ada@example.com"), nil, "devbox-1")
+		box := mintCredential(t, svc, str("ada@example.com"), nil, "example-host-1")
 		live, err := svc.Create(ctx, box, Enrollment{Kind: "session", RuntimeID: "box-1", Thumbprint: "tp-box-1", SessionID: str("box-1-session")})
 		if err != nil {
 			t.Fatalf("Create on box 1: %v", err)
 		}
 		grant := insertLiveGrant(t, svc, live.ID)
-		signIn := mintCredential(t, svc, str("ada@example.com"), nil, "devbox-2")
+		signIn := mintCredential(t, svc, str("ada@example.com"), nil, "example-host-2")
 		if _, err := svc.Create(ctx, signIn, Enrollment{Kind: "session", RuntimeID: "box-2", Thumbprint: "tp-box-2", SessionID: str("box-2-session")}); err != nil {
 			t.Fatalf("Create on box 2: %v", err)
 		}
@@ -344,8 +344,8 @@ func TestAClaimIsRefusedOffAPodAndWhenMalformed(t *testing.T) {
 			in.Claim = plannerClaim
 			return approved, in
 		},
-		"capital letters":     func() (Credential, Enrollment) { return pod("Legion-infra-infra-2653-planner") },
-		"a leading digit":     func() (Credential, Enrollment) { return pod("2653-planner") },
+		"capital letters":     func() (Credential, Enrollment) { return pod("Legion-acme-acme-12-planner") },
+		"a leading digit":     func() (Credential, Enrollment) { return pod("12-planner") },
 		"a leading hyphen":    func() (Credential, Enrollment) { return pod("-legion-planner") },
 		"an underscore":       func() (Credential, Enrollment) { return pod("legion_planner") },
 		"a slash":             func() (Credential, Enrollment) { return pod("legion/planner") },

@@ -25,8 +25,8 @@ import (
 // plannerClaim and implementerClaim are two role claims of one issue, as the Legion daemon spells
 // its claim tokens: one service launches both.
 const (
-	plannerClaim     = "legion-infra-infra-2653-planner"
-	implementerClaim = "legion-infra-infra-2653-implementer"
+	plannerClaim     = "legion-acme-acme-12-planner"
+	implementerClaim = "legion-acme-acme-12-implementer"
 )
 
 // launcherLogin is one launcher credential and the key its proofs are signed with.
@@ -195,11 +195,11 @@ func TestAPersonReadsAndCancelsTheirRequestFromAnotherBox(t *testing.T) {
 	boxOne, keyOne := ts.mintLauncherCredential(t, testApprover, "example-host-one")
 	boxTwo, keyTwo := ts.mintLauncherCredential(t, testApprover, "example-host-two")
 	elsewhere, keyElsewhere := ts.mintLauncherCredential(t, "bob@example.com", "example-host-bob")
-	asker := ts.enrolSession(t, launcherLogin{id: boxOne, key: keyOne}, "sami-session-1")
+	asker := ts.enrolSession(t, launcherLogin{id: boxOne, key: keyOne}, "person-session-1")
 	created := ts.askPending(t, asker, "DEEL_API_KEY")
 
 	ts.wantNotYours(t, ts.enrolSession(t, launcherLogin{id: elsewhere, key: keyElsewhere}, "bob-session-1"), created.RequestID)
-	other := ts.enrolSession(t, launcherLogin{id: boxTwo, key: keyTwo}, "sami-session-2")
+	other := ts.enrolSession(t, launcherLogin{id: boxTwo, key: keyTwo}, "person-session-2")
 	ts.wantState(t, other, created.RequestID, "pending")
 	ts.wantCancelled(t, other, created.RequestID)
 	ts.wantState(t, asker, created.RequestID, "cancelled")
@@ -314,7 +314,7 @@ func TestARequestOfAnEnrollmentWithNoOwnerIsItsAlone(t *testing.T) {
 		return enrolled{id: id, key: key}
 	}
 	box, key := ts.mintLauncherCredential(t, testApprover, "example-host-one")
-	owned := ts.enrolSession(t, launcherLogin{id: box, key: key}, "sami-session-1")
+	owned := ts.enrolSession(t, launcherLogin{id: box, key: key}, "person-session-1")
 	asker, sibling := ownerless("asker"), ownerless("sibling")
 
 	created := ts.askPending(t, asker, "DEEL_API_KEY")

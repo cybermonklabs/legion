@@ -217,7 +217,7 @@ func TestContractAPodEnrollmentStatesItsClaim(t *testing.T) {
 	if _, err := c.Login(ctx); err != nil {
 		t.Fatal(err)
 	}
-	const claim = "legion-infra-infra-2653-planner"
+	const claim = "legion-acme-acme-12-planner"
 	enrolled, err := c.Enroll(ctx, PodEnrollment{PodUID: "pod-uid-1", Thumbprint: "tp-1", PodToken: rig.MintPodToken(t, "pod-uid-1"), Session: "planner-session-1", Claim: claim})
 	if err != nil {
 		t.Fatalf("Enroll with a claim: %v", err)
