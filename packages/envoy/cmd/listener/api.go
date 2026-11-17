@@ -60,7 +60,8 @@ type messageBody struct {
 // dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent): one of
 // Dispatch's, and an agent's send under a key minted once for its message, which
 // @legion/envoy-client mints for every send that names none, so a repeat of either gets it. The
-// sender limit reads the same verdict and charges such a repeat nothing (senderCharge). Absent
+// sender limit reads the same verdict and charges such a repeat nothing (senderCharge), unless the
+// verdict answers the bus's resend after a closed connection (bus.StoredAck.Resent). Absent
 // means false, which is what an older listener's answer reads as.
 type sendResponse struct {
 	contracts.Envelope
@@ -819,7 +820,12 @@ const senderStampReadTimeout = 1 * time.Second
 // Before any of them, a message of an agent session whose count under the operator's sender limit
 // is empty is the 429 refuseSenderRateLimited writes, with nothing read, reported or stored
 // (senderLimit.take). A counted message costs its sender one where the wake is reported and where
-// the stream stores it, and nothing where the stream answers that it already held it.
+// the stream stores it or may have: a publish the stream did not acknowledge
+// (bus.ErrUnacknowledged), answered 503, and a duplicate verdict that answers the bus's resend
+// after a closed connection (bus.StoredAck.Resent), which may name this send's own first copy. It
+// costs nothing where the stream answers that it already held the message, and where the publish
+// sent nothing, such as one that waited out the deadline for NATS to reconnect, with no wake
+// reported.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -951,11 +957,17 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		duplicate, err := d.client.PublishReportingDuplicateWithin(ctx, item)
+		ack, err := d.client.PublishAckWithin(ctx, item)
 		if err != nil {
+			// A publish that went out unanswered may have stored the message, so it costs its
+			// sender one whatever is answered; one that sent nothing costs only a wake above.
+			if errors.Is(err, bus.ErrUnacknowledged) {
+				charge.spend()
+			}
 			record.refuseBusUnavailable(w, err)
 			return
 		}
+		duplicate := ack.Duplicate
 		// Counted here, and only here: the send is accepted and the stream has stored it. A
 		// publish the bus refused stored nothing, and a duplicate the stream recognised stored
 		// nothing new, so neither is a message now waiting for a session that stopped answering,
@@ -963,9 +975,10 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if recipientState == session.Unresponsive && !duplicate {
 			d.sendsToUnresponsive.Inc()
 		}
-		// A duplicate costs its sender nothing, also after the wake above spent the charge; a
-		// message the stream stored costs one.
-		if duplicate {
+		// A duplicate costs its sender nothing, also after the wake above spent the charge, unless
+		// it answers a resend, whose first send may have stored the copy it names; a message the
+		// stream stored costs one.
+		if duplicate && !ack.Resent {
 			charge.forgive()
 		} else {
 			charge.spend()
@@ -1192,9 +1205,12 @@ const publishDedupePrefix = "publish."
 // After the refusal of a topic no stream subject captures, a message of an agent session whose
 // count under the operator's sender limit is empty is the 429 refuseSenderRateLimited writes, with
 // no holder resolved, nothing kept, no wake reported and nothing stored (senderLimit.take). A
-// counted message to a topic the stream captures costs its sender one where the stream stores it,
-// and nothing where the stream answers that it already held it; a role send marks its own
-// (roleSend).
+// counted message to a topic the stream captures costs its sender one where the stream stores it
+// or may have: a publish the stream did not acknowledge (bus.ErrUnacknowledged), answered 503,
+// and a duplicate verdict that answers the bus's resend after a closed connection
+// (bus.StoredAck.Resent). It costs nothing where the stream answers that it already held the
+// message, and where the publish sent nothing, such as one that waited out the deadline for NATS
+// to reconnect. A role send marks its own (roleSend).
 //
 // keep is this route's own request field, meaningful only for a role topic, and unset means true:
 // a role message the listener cannot deliver because no live session holds the role - no claim,
@@ -1349,15 +1365,21 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		duplicate, err := d.client.PublishReportingDuplicateWithin(ctx, item)
+		ack, err := d.client.PublishAckWithin(ctx, item)
 		if err != nil {
+			// A publish that went out unanswered may have stored the message, so it costs its
+			// sender one whatever is answered; one that sent nothing costs nothing.
+			if errors.Is(err, bus.ErrUnacknowledged) {
+				charge.spend()
+			}
 			record.refuseBusUnavailable(w, err)
 			return
 		}
 		// A repeat the stream recognises, which a key minted once for its message makes possible
-		// (contracts.DedupeKeyNamesTheUpstreamEvent), costs its sender nothing; a message the
+		// (contracts.DedupeKeyNamesTheUpstreamEvent), costs its sender nothing unless the verdict
+		// answers a resend, whose first send may have stored the copy it names; a message the
 		// stream stored costs one.
-		if duplicate {
+		if ack.Duplicate && !ack.Resent {
 			charge.forgive()
 		} else {
 			charge.spend()

@@ -205,9 +205,17 @@ var senderLimitStart = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 const countedMessage = "a message the sender limit counts"
 
 // senderLimitSentence is the 429's error with its values filled in: what a refused agent reads.
+// A value of 1 takes its noun's singular, `1 message a minute` and `after 1 second`.
 func senderLimitSentence(perMinute, burst, seconds int) string {
-	return fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %d messages a minute and %d at once. You can send it again after %d seconds.",
-		perMinute, burst, seconds)
+	messages, wait := fmt.Sprintf("%d messages", perMinute), fmt.Sprintf("%d seconds", seconds)
+	if perMinute == 1 {
+		messages = "1 message"
+	}
+	if seconds == 1 {
+		wait = "1 second"
+	}
+	return fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %s a minute and %d at once. You can send it again after %s.",
+		messages, burst, wait)
 }
 
 // senderLimitRig is a listener's /v1 routes over one bus with every store open
@@ -629,6 +637,22 @@ func TestSenderLimitRoutes(t *testing.T) {
 		rig.requireCount(t, sender, false)
 	})
 
+	t.Run("the sentence reads 1 message a minute and after 1 second at a rate of 1 and a wait below a second", func(t *testing.T) {
+		rig.limit(1, 1)
+		const sender = "ses_routes_singular"
+		rig.spend(t, sender, 1)
+		// A message comes back every 60 s, so 59.5 s after the take half a second is left.
+		rig.now = rig.now.Add(59500 * time.Millisecond)
+		refused := rig.publishFrom(t, sender, "notifications.team.sender-limit-wait-"+id.New(), nil)
+		refused.requireRefused(t, "the message 59.5 s after the burst", sender, 1, 1, 1)
+		for _, want := range []string{"send 1 message a minute and 1 at once", "after 1 second."} {
+			if !strings.Contains(refused.Error, want) {
+				t.Fatalf("the sentence %q does not read %q", refused.Error, want)
+			}
+		}
+		rig.requireCount(t, sender, false)
+	})
+
 	t.Run("publish after the burst to a topic the stream does not store still answers 400", func(t *testing.T) {
 		rig.limit(4, 1)
 		const sender = "ses_routes_uncaptured"
@@ -666,6 +690,33 @@ func TestSenderLimitCost(t *testing.T) {
 		down.requireUnnamed(t, "the send while the bus is down")
 		frozen.requireNoWake(t, wakeKindAgent, target)
 		frozen.requireCount(t, sender, true)
+	})
+
+	// A publish that waits for NATS to reconnect sends nothing: the bus answers the route's
+	// deadline before any send (bus.ErrUnacknowledged does not wrap it), so the stream cannot hold
+	// the message and the 503 gives the take back.
+	t.Run("topic publish while the listener waits for NATS to reconnect, sending nothing (503) costs nothing", func(t *testing.T) {
+		down, server := newSenderLimitRigOnServer(t)
+		down.limit(4, 1)
+		const sender = "ses_cost_reconnecting"
+		client := down.harness.client
+		server.Stop(t)
+		waitFor(t, 10*time.Second, "the listener's connection to reconnect after its server stopped", func() bool {
+			return !client.Connected() && client.Connection().IsReconnecting()
+		})
+		unsent := down.publishFrom(t, sender, "notifications.team.sender-limit-reconnecting-"+id.New(), nil)
+		unsent.requireStatus(t, "the publish while NATS reconnects", http.StatusServiceUnavailable)
+		unsent.requireOutcome(t, "the publish while NATS reconnects", outcomeBusUnavailable)
+		unsent.requireUnnamed(t, "the publish while NATS reconnects")
+		server.Start(t)
+		waitFor(t, 30*time.Second, "the listener's bus to answer again after its server started", func() bool {
+			if !client.Connected() {
+				return false
+			}
+			_, err := client.JS().StreamInfo(bus.Stream)
+			return err == nil
+		})
+		down.requireCount(t, sender, true)
 	})
 
 	t.Run("duplicate of a stored message (a send repeated under the transport's UUID key) costs nothing", func(t *testing.T) {
@@ -914,6 +965,74 @@ func TestSenderLimitCost(t *testing.T) {
 		refused.requireNamed(t, "the send to a full stream", sender)
 		awaitAgentWake(t, full.wakes, target)
 		full.requireCount(t, sender, false)
+	})
+
+	// A publish whose acknowledgement does not arrive in time may have stored the message, so the
+	// 503 costs one (bus.ErrUnacknowledged). The server stops answering before the publish route's
+	// one read, the sender stamp's, which only enriches the envelope, so the publish goes out into
+	// the frozen connection and waits out the route's deadline. Thawed, the server stores what the
+	// listener sent.
+	t.Run("topic publish answered 503 after the listener sent it, its acknowledgement lost, costs one", func(t *testing.T) {
+		lost, server := newSenderLimitRigOnServer(t)
+		lost.limit(4, 1)
+		const sender = "ses_cost_publish_unacknowledged"
+		topic := "notifications.team.sender-limit-unacknowledged-" + id.New()
+		thaw := server.Freeze(t)
+		t.Cleanup(thaw)
+		unacknowledged := lost.publishFrom(t, sender, topic, nil)
+		thaw()
+		unacknowledged.requireStatus(t, "the publish whose acknowledgement was lost", http.StatusServiceUnavailable)
+		unacknowledged.requireOutcome(t, "the publish whose acknowledgement was lost", outcomeBusUnavailable)
+		unacknowledged.requireNamed(t, "the publish whose acknowledgement was lost", sender)
+		waitFor(t, 10*time.Second, "the stream to store the publish the frozen server held", func() bool {
+			return lost.storedOn(t, topic) == 1
+		})
+		lost.requireCount(t, sender, false)
+	})
+
+	// The same holds for a send to a target with an entry. Its target is read before the publish,
+	// so the server stops answering later: a stand-in for the target's plugin freezes it as the
+	// send's connection probe reaches it and answers nothing, which the probe reads as connected.
+	t.Run("send to a live target answered 503 after the listener sent it, its acknowledgement lost, costs one", func(t *testing.T) {
+		lost, server := newSenderLimitRigOnServer(t)
+		lost.limit(4, 1)
+		const sender, target = "ses_cost_send_unacknowledged", "ses_cost_send_unacknowledged_target"
+		lost.register(t, target, nil)
+		thaws := make(chan func(), 1)
+		t.Cleanup(func() {
+			select {
+			case thaw := <-thaws:
+				thaw()
+			default:
+			}
+		})
+		var freeze sync.Once
+		plugin := testnats.Connect(t, lost.url)
+		t.Cleanup(plugin.Close)
+		if _, err := plugin.Subscribe(bus.DeliverSubject(target), func(msg *natsgo.Msg) {
+			if msg.Header.Get(bus.ConnectionProbeHeader) != "" {
+				freeze.Do(func() { thaws <- server.Freeze(t) })
+			}
+		}); err != nil {
+			t.Fatalf("subscribe %s's relay subject: %v", target, err)
+		}
+		if err := plugin.Flush(); err != nil {
+			t.Fatalf("flush the relay subscription: %v", err)
+		}
+		unacknowledged := lost.sendFrom(t, sender, target, nil)
+		select {
+		case thaw := <-thaws:
+			thaw()
+		default:
+			t.Fatalf("the send probed nothing, so its publish met no frozen server; body %s", unacknowledged.raw)
+		}
+		unacknowledged.requireStatus(t, "the send whose acknowledgement was lost", http.StatusServiceUnavailable)
+		unacknowledged.requireOutcome(t, "the send whose acknowledgement was lost", outcomeBusUnavailable)
+		unacknowledged.requireNamed(t, "the send whose acknowledgement was lost", sender)
+		waitFor(t, 10*time.Second, "the stream to store the send the frozen server held", func() bool {
+			return lost.storedOn(t, contracts.LegacyAgentSubject(target)) == 1
+		})
+		lost.requireCount(t, sender, false)
 	})
 
 	t.Run("role send whose receipt times out (504) costs one", func(t *testing.T) {

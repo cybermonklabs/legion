@@ -133,11 +133,15 @@ func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCha
 // senderCharge is one message's take from its sender's count (senderLimit.take). The route marks
 // it as it goes: spend where it stores the message, may have stored it or reports a wake for it,
 // and forgive where the stream or the role's kept lane answers that the message repeats one
-// already stored. settle, which the route defers right after the take, gives the take back unless
+// already stored. A message the route may have stored is a publish the stream did not
+// acknowledge (bus.ErrUnacknowledged), a duplicate verdict that answers the bus's resend after a
+// closed connection (bus.StoredAck.Resent), and a role send that has made a forward, whatever it
+// answers next. settle, which the route defers right after the take, gives the take back unless
 // the charge is spent and not forgiven, so a path that marks nothing costs nothing: a refusal
-// before any store or wake, an echo, a repeat the role route's own record answers. Each mark
-// comes before the route writes its answer, because the request's log line names the sender of a
-// charge that cost one (counted) at the moment it is written.
+// before any store or wake, a 503 for a publish that sent nothing among them, and a role send's
+// echo or a repeat its own record answers before any forward. Each mark comes before the route
+// writes its answer, because the request's log line names the sender of a charge that cost one
+// (counted) at the moment it is written.
 //
 // A nil senderCharge is a message the limit does not count, and every method is safe on it. Only
 // the request's own goroutine marks and settles a charge.
@@ -204,14 +208,23 @@ type senderRateLimitedAnswer struct {
 	Burst             int            `json:"burst"`
 }
 
-// answer is the 429 body that names r's limit and wait.
+// answer is the 429 body that names r's limit and wait. Where a value of the sentence is 1 its noun
+// is singular, `1 message a minute` and `after 1 second`; the burst's `<burst> at once` has none.
 func (r *senderRefusal) answer() senderRateLimitedAnswer {
 	return senderRateLimitedAnswer{
-		Error: fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %d messages a minute and %d at once. You can send it again after %d seconds.",
-			r.perMinute, r.burst, r.retryAfterSeconds),
+		Error: fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %s a minute and %d at once. You can send it again after %s.",
+			quantity(r.perMinute, "message", "messages"), r.burst, quantity(r.retryAfterSeconds, "second", "seconds")),
 		Reason:            outcomeSenderRateLimited,
 		RetryAfterSeconds: r.retryAfterSeconds,
 		MessagesPerMinute: r.perMinute,
 		Burst:             r.burst,
 	}
+}
+
+// quantity is n followed by its noun: one for a count of 1 and many for every other.
+func quantity(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
 }

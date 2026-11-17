@@ -436,19 +436,24 @@ seconds, rounded up and at least 1, until the count holds one message again. The
 `reason: "sender_rate_limited"`, `retry_after_seconds`, `messages_per_minute`, `burst`, and an
 `error` that is the sentence `Your sending is rate limited. This message was not sent. This
 listener lets one session send <rate> messages a minute and <burst> at once. You can send it again
-after <seconds> seconds.` with the values filled in. The request's log line has the outcome
+after <seconds> seconds.` with the values filled in. Where a value in the sentence is 1, its noun
+is singular: `1 message a minute`, `after 1 second`. The request's log line has the outcome
 `sender_rate_limited` and the field `sender`.
 
 A counted message costs one when the listener stores it, may have stored it (a role send's `504`,
-or any answer after an earlier forward of the same role send) or reports a wake for it. A refusal
-before any store or wake report, such as a `400`, `403`, `413` or `503`, costs nothing. A repeat
-the listener recognises costs nothing too: the stream's `duplicate` answer, a repeat of a role
-message kept for the role's next holder, and a repeat of a role forward the route made in the last
-10 minutes. So does an echo, a role message from the session that holds the role. A role send's
-echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
-forward may have stored the message. A repeat that finds the count at 0 is refused as a new
-message is. The clients show the sentence and do not send the message again by themselves, except
-the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times
+any answer after an earlier forward of the same role send, or a `503` after the listener sent the
+message to the stream and the write's acknowledgement did not arrive in time) or reports a wake
+for it. A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before
+the listener sent anything (one while it waits for NATS to reconnect), costs nothing. A repeat the
+listener recognises costs nothing too: the stream's `duplicate` answer, a repeat of a role message
+kept for the role's next holder, and a repeat of a role forward the route made in the last 10
+minutes. So does an echo, a role message from the session that holds the role. A `duplicate` that
+answers the listener's own second send, made after its connection to NATS closed under the first,
+costs one, since the first may have stored the message. A role send's echo, repeat or `403` costs
+nothing only while the send has made no forward, since an earlier forward may have stored the
+message. A repeat that finds the count at 0 is refused as a new message is. The clients show the
+sentence and do not send the message again by themselves, except the Legion stall notice, whose
+sender waits the seconds and sends it again at most 3 times
 ([The listener's sender limit](../README.md#the-listeners-sender-limit)).
 
 ## What the hub's VM runs

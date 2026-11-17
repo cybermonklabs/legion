@@ -465,7 +465,8 @@ type keptRoleCopy struct {
 	sequence uint64
 	// repeat is whether the keep stored nothing new because the lane already held this
 	// message's copy inside its hour (storeKeptRoleCopy), which the publish route's sender limit
-	// charges nothing for (roleSend.kept).
+	// charges nothing for (roleSend.kept). A copy the keep's own earlier send may have stored is
+	// no repeat.
 	repeat bool
 }
 
@@ -512,6 +513,11 @@ func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contra
 // since the next answer names the copy that publish stored. Every other failure, of a publish or
 // of a read, and a chain that runs out of ctx, is a keep that failed.
 //
+// The copy a duplicate names is a repeat only when no send of this keep under the same id may
+// have stored it: a duplicate that answers the bus's resend after a closed connection
+// (bus.StoredAck.Resent), and one that follows an in-process refusal of such a resend
+// (bus.ErrUnacknowledged), may name the copy this keep's own first send stored.
+//
 // A new copy's hour counts from its store time, read back at its acknowledged sequence, which is
 // what the walk measures its age against. A read that fails counts it from the listener's clock
 // just before the publish, logged at debug: the store time is no earlier than that, so the answer
@@ -520,10 +526,14 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	subject := bus.KeptRoleSubject(role)
 	first := bus.KeptMsgID(item.DedupeKey, role)
 	msgID := first
+	// ownSend is whether a send of this keep under msgID went out unanswered before the stream
+	// refused a later one as in process.
+	ownSend := false
 	for {
 		published := cfg.now()
 		ack, err := publish(ctx, subject, item, msgID)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
+			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
 			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
 				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
 			}
@@ -540,10 +550,11 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
 		}
 		if inside {
-			held.repeat = true
+			held.repeat = !ack.Resent && !ownSend
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
+		ownSend = false
 	}
 }
 

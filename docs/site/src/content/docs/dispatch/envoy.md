@@ -675,6 +675,8 @@ this sentence with the values filled in:
 Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.
 ```
 
+Where a value in the sentence is 1, its noun is singular: `1 message a minute`, `after 1 second`.
+
 Each client shows the agent that sentence: the Oh My Pi tools `envoy_send` and `envoy_publish`
 and the Claude Code tools return it as the tool's error, and `envoy-send` prints it and exits 1.
 No client sends the refused message again by itself. The one exception is the stall notice that
@@ -691,15 +693,19 @@ its notices.
 
 A counted message costs one when the listener stores it, may have stored it or reports a wake for
 it, whatever the answer is. So a role send answered `504`, after which the listener cannot say
-whether it stored the message, costs one. A message the listener refuses before any store or wake
-report costs nothing, such as a `400`, a `403`, a `413` or a `503`. A repeat that the listener
-recognises costs nothing too: one the stream answers as a `duplicate`, a repeat of a role message
-kept for the role's next holder, and a repeat of a role forward the route made in the last 10
-minutes. So does an echo, a role message from the session that holds the role. A role send's echo,
-repeat or `403` costs nothing only while the send has made no forward. After an earlier forward of
-the same send it costs one, as any answer then does, since that forward may have stored the
-message. A repeat that finds the count at 0 is refused as a new message is, because the listener
-reads the count first.
+whether it stored the message, costs one. So does a `503` after the listener sent the message to
+the stream, such as a write whose acknowledgement did not arrive in time, since the stream may
+hold it. A message the listener refuses before any store or wake report costs nothing, such as a
+`400`, a `403`, a `413` or a `503` before the listener sent anything, one while it waits for NATS
+to reconnect among them. A repeat that the listener recognises costs nothing too: one the stream
+answers as a `duplicate`, a repeat of a role message kept for the role's next holder, and a repeat
+of a role forward the route made in the last 10 minutes. So does an echo, a role message from the
+session that holds the role. A `duplicate` that answers the listener's own second send, made after
+its connection to NATS closed under the first, costs one, since the first may have stored the
+message. A role send's echo, repeat or `403` costs nothing only while the send has made no
+forward. After an earlier forward of the same send it costs one, as any answer then does, since
+that forward may have stored the message. A repeat that finds the count at 0 is refused as a new
+message is, because the listener reads the count first.
 
 Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
 own count for a session, and a restart fills each count again. The start log states the limit in
