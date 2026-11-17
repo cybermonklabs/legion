@@ -102,12 +102,67 @@ func TestAGivenBackRequestCanBeTakenAgain(t *testing.T) {
 	if _, ok := k.TakeAt("a", t0.Add(time.Second)); !ok {
 		t.Fatal("a's second take inside the burst was refused")
 	}
-	giveBack()
+	giveBack(t0.Add(time.Second))
 	if _, ok := k.TakeAt("a", t0.Add(2*time.Second)); !ok {
 		t.Fatal("the request given back was not in a's bucket again")
 	}
 	if k.AllowAt("a", t0.Add(3*time.Second)) {
 		t.Fatal("a fourth request was allowed: the give-back returned more than the one request it took")
+	}
+}
+
+// TestAGivenBackRequestComesBackAfterALaterTake pins that a request given back comes back whole
+// however long after it the key's next take came. The rate package's Reservation.CancelAt, which
+// TakeAt gave back with before, returned nothing once that take came a whole Every later, so a
+// message the listener gives back cost its sender one all the same. In a bucket the key all but
+// emptied, the give-back returns the whole request; in one refilled close to its burst, it fills
+// the bucket to its burst and no further. A second call of the give-back returns nothing more.
+func TestAGivenBackRequestComesBackAfterALaterTake(t *testing.T) {
+	limit := Limit{Every: time.Minute / 60, Burst: 60}
+	later := 3 * limit.Every // the key's next take, three requests' refill after the one given back
+	for _, row := range []struct {
+		name string
+		// spent is how many requests the key takes at t0 before the take it gives back.
+		spent int
+		// givenBack is how long after t0 the give-back comes, and want how many requests the
+		// bucket then holds.
+		givenBack time.Duration
+		want      int
+	}{
+		// The two takes leave 2 requests at the later one, and the give-back makes them 3.
+		{"an emptied bucket", limit.Burst - 1, later, 3},
+		// The two takes leave 59 at the later one, 59.5 half an Every on, and the give-back fills
+		// the bucket to its 60 and not to 60.5.
+		{"a bucket refilled close to its burst", 0, later + limit.Every/2, limit.Burst},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			k := NewKeyed(limit)
+			for range row.spent {
+				k.AllowAt("a", t0)
+			}
+			giveBack, ok := k.TakeAt("a", t0)
+			if !ok {
+				t.Fatal("the take to give back was refused")
+			}
+			if _, ok := k.TakeAt("a", t0.Add(later)); !ok {
+				t.Fatal("the key's later take was refused")
+			}
+			at := t0.Add(row.givenBack)
+			giveBack(at)
+			giveBack(at)
+			taken := 0
+			for taken <= limit.Burst && k.AllowAt("a", at) {
+				taken++
+			}
+			if taken != row.want {
+				t.Fatalf("after the give-back a's bucket allowed %d requests, want %d", taken, row.want)
+			}
+			// Those takes left the bucket empty to the nanosecond, so it held whole requests and no
+			// part of one more.
+			if wait := k.WaitAt("a", at); wait != limit.Every {
+				t.Fatalf("after its %d requests a's bucket waits %s, want %s", taken, wait, limit.Every)
+			}
+		})
 	}
 }
 
@@ -146,7 +201,7 @@ func TestKeyedWaitAt(t *testing.T) {
 	if !ok {
 		t.Fatal("the take that makes a full bucket was refused")
 	}
-	giveBack()
+	giveBack(t0)
 	if wait := k.WaitAt("full", t0); wait != 0 {
 		t.Fatalf("a full bucket waits %s, want 0", wait)
 	}

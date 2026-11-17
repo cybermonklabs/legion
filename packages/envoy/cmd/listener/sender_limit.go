@@ -127,7 +127,7 @@ func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCha
 			retryAfterSeconds: ratelimit.RetryAfterSeconds(l.counts.WaitAt(sender, now)),
 		}
 	}
-	return &senderCharge{sender: sender, giveBack: giveBack}, nil
+	return &senderCharge{sender: sender, giveBack: giveBack, now: l.now}, nil
 }
 
 // senderCharge is one message's take from its sender's count (senderLimit.take). The route marks
@@ -147,7 +147,9 @@ func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCha
 // the request's own goroutine marks and settles a charge.
 type senderCharge struct {
 	sender   string
-	giveBack func()
+	giveBack func(at time.Time)
+	// now is the limit's clock, which settle reads the time of the give-back from.
+	now      func() time.Time
 	spent    bool
 	forgiven bool
 }
@@ -177,10 +179,11 @@ func (c *senderCharge) counted() string {
 	return c.sender
 }
 
-// settle gives the take back unless the message cost one. It runs once, after the answer.
+// settle gives the take back at the limit's clock unless the message cost one. It runs once,
+// after the answer.
 func (c *senderCharge) settle() {
 	if c != nil && c.counted() == "" {
-		c.giveBack()
+		c.giveBack(c.now())
 	}
 }
 
