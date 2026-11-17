@@ -651,10 +651,6 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	readCtx, cancel := context.WithTimeout(ctx, senderStampReadTimeout)
 	defer cancel()
 	interest, interestErr := registry.Get(readCtx, sourceSession)
-	if interestErr == nil {
-		sender.Machine = interest.MachineID
-		sender.Cwd = interest.Dir
-	}
 	if held, err := registry.RolesHeldBy(sourceSession); err == nil {
 		sender.Roles = held
 	}
@@ -664,10 +660,12 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	}
 	if entryErr == nil {
 		sender.Title = entry.Title
-		if interestErr != nil {
-			sender.Machine = entry.MachineID
-			sender.Cwd = entry.Dir
-		}
+	}
+	switch {
+	case interestErr == nil:
+		sender.Machine, sender.Cwd = interest.MachineID, interest.Dir
+	case entryErr == nil:
+		sender.Machine, sender.Cwd = entry.MachineID, entry.Dir
 	}
 	return sender
 }

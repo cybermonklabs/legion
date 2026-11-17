@@ -90,16 +90,10 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 			}
 		}
 		last := registrations[len(registrations)-1]
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			if row, held := registry.Cached(sessionID); held && row.MachineID == last.MachineID && row.Dir == last.Dir {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the interest cache never held %s's record through %s", sessionID, last.MachineID)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		waitFor(t, 10*time.Second, "the interest cache to hold "+sessionID+"'s record through "+last.MachineID, func() bool {
+			row, held := registry.Cached(sessionID)
+			return held && row.MachineID == last.MachineID && row.Dir == last.Dir
+		})
 	}
 	requireStamp := func(t *testing.T, sessionID string, stamp *contracts.EnvelopeSender, want session.SessionEntry, names string) {
 		t.Helper()
