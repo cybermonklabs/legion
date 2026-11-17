@@ -30,7 +30,7 @@ func TestSlack(t *testing.T) {
 		{name: "control: another secret's signature", secret: "wrong", timestamp: now, signature: sign("secret", now)},
 		{name: "control: a secret and a bad digest", secret: "secret", timestamp: now, signature: "v0=deadbeef"},
 		{name: "control: a secret and no signature", secret: "secret", timestamp: now},
-		{name: "control: a stale timestamp", secret: "secret", timestamp: old, signature: sign("secret", now)},
+		{name: "control: a stale timestamp, signed over that timestamp", secret: "secret", timestamp: old, signature: sign("secret", old)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Slack(tc.secret, body, tc.timestamp, tc.signature)
