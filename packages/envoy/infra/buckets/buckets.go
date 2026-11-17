@@ -87,6 +87,20 @@ func operatorEnvironment(name string) (string, bool) {
 // would receive every other client's replies, a session's push deliveries among them.
 const InboxPrefix = "_INBOX_envoy_buckets"
 
+// bestEffortWarning is printed on every run, to standard error, before anything else: the proof
+// is observation, not a barrier, until dispatch://INFRA-4015's maintenance transition gives the
+// command an authoritative inventory, executable identity and an admission barrier held from proof
+// through mutation. Each way it names is a test that asserts today's outcome and must flip then
+// (buckets_test.go, TestBestEffortProof...).
+const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it four ways:
+  - an omitted host or dev box: only the --kube-context and --host you name are checked;
+  - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
+  - a writer that starts between the final scan and the create: nothing holds writers out;
+  - an unheld restore: check holds nothing through a later nats stream restore.
+Before you run it, stop every envoy-listener of the deployment (and every envoy-dispatch, for
+envoy_ci_state) and confirm on each host that it has ended. INFRA-4015's barrier replaces this.
+`
+
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]
 
   create     create every copied bucket that is missing (or each --bucket), once no writer runs
@@ -114,6 +128,7 @@ func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 func command(ctx context.Context, args []string, stdout, stderr io.Writer, run Runner, client *http.Client) int {
+	fmt.Fprint(stderr, bestEffortWarning)
 	if len(args) == 0 || (args[0] != "create" && args[0] != "recreate" && args[0] != "check") {
 		help := len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help")
 		fmt.Fprint(stderr, usage)

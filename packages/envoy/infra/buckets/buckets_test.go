@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -434,6 +435,192 @@ func TestTheHostQuerySeesARealWriterProcessUnderEachOfItsNamesUntilItEnds(t *tes
 				t.Fatalf("the host query still lists the ended stand-in %q:\n%s", line, out)
 			}
 		})
+	}
+}
+
+// startStandIn runs a copy of sleep named name for the test's length, a stand-in for a writer the
+// host query reads by name, and returns it.
+func startStandIn(t *testing.T, name string) *exec.Cmd {
+	t.Helper()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("no sleep binary to run as a stand-in writer: %v", err)
+	}
+	raw, err := os.ReadFile(sleep)
+	if err != nil {
+		t.Fatalf("read sleep: %v", err)
+	}
+	binary := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(binary, raw, 0o755); err != nil {
+		t.Fatalf("write the stand-in: %v", err)
+	}
+	process := exec.Command(binary, "300")
+	if err := process.Start(); err != nil {
+		t.Fatalf("start the stand-in: %v", err)
+	}
+	t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
+	return process
+}
+
+// localSSH is a program taking ssh's arguments that runs the remote command here.
+func localSSH(t *testing.T) string {
+	t.Helper()
+	ssh := filepath.Join(t.TempDir(), "local-ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nfor last; do :; done\nexec sh -c \"$last\"\n"), 0o755); err != nil {
+		t.Fatalf("write the local ssh: %v", err)
+	}
+	return ssh
+}
+
+// running reports whether process still runs under name (its /proc/<pid>/comm).
+func running(process *exec.Cmd, name string) bool {
+	comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", process.Process.Pid))
+	return err == nil && strings.TrimSpace(string(comm)) == name[:min(len(name), 15)]
+}
+
+// ownProcesses is a Runner that runs the real host query here (execRunner, through localSSH) and
+// drops every writer line but those of the processes own names: this machine may run writers of its
+// own (a dev box runs listeners), and a test judges only the stand-ins it started.
+func ownProcesses(own func() []*exec.Cmd) Runner {
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := execRunner(ctx, name, args...)
+		if err != nil {
+			return out, err
+		}
+		var kept []string
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			pid, _, isWriter := strings.Cut(line, " ")
+			if isWriter && !slices.ContainsFunc(own(), func(p *exec.Cmd) bool { return p != nil && strconv.Itoa(p.Process.Pid) == pid }) {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		return []byte(strings.Join(kept, "\n") + "\n"), nil
+	}
+}
+
+// Every run prints the best-effort warning first, on standard error, whatever it then does: a run
+// whose proof holds, a refused one, a usage error. At 7b262c2e0a no run printed it.
+func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
+	uri, _ := server(t)
+	for _, c := range []struct {
+		name  string
+		world *world
+		args  []string
+		code  int
+	}{
+		{"a proof that holds", &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, []string{"check", "--nats", uri, "--host", "box-1"}, 0},
+		{"a refused run", &world{hostAnswers: map[string][]string{"box-1": {"7 envoy-listener\nprocesses=150\n" + hostQueryDone + "\n"}}}, []string{"check", "--nats", uri, "--host", "box-1"}, 1},
+		{"a usage error", &world{}, []string{"create", "--nats", uri}, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, _, stderr := runCommand(t, c.world, nil, c.args...)
+			if code != c.code || !strings.HasPrefix(stderr, bestEffortWarning) {
+				t.Fatalf("%v = %d, want %d with the warning first on standard error:\n%s", c.args, code, c.code, stderr)
+			}
+			for _, way := range []string{"an omitted host or dev box", "a renamed binary", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
+				if !strings.Contains(stderr, way) {
+					t.Fatalf("the warning does not name %q:\n%s", way, stderr)
+				}
+			}
+		})
+	}
+}
+
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. A writer on a host the operator
+// did not name gets past the proof: the command creates the bucket while it runs. Today's outcome,
+// asserted so the barrier change, whose authoritative inventory must refuse here, has to invert it.
+// The same writer named with --host refuses, so the pass is not vacuous.
+func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilINFRA4015BarrierLands(t *testing.T) {
+	uri, js := server(t)
+	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
+	named := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
+	if code, _, stderr := runCommand(t, named, nil, "create", "--nats", uri, "--host", "box-1", "--host", "dev-box", "--bucket", bus.SessionBucket); code != 1 || !strings.Contains(stderr, "host dev-box: process 4242 envoy-listener runs") {
+		t.Fatalf("control: create with the writer's host named = %d, want refused naming it:\n%s", code, stderr)
+	}
+	omitted := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
+	code, stdout, stderr := runCommand(t, omitted, nil, "create", "--nats", uri, "--host", "box-1", "--bucket", bus.SessionBucket)
+	if code != 0 || !strings.Contains(stdout, "created "+bus.SessionBucket) {
+		t.Fatalf("create with the writer's host omitted = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout, stderr)
+	}
+	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
+		t.Fatalf("the bucket after the create: %v", err)
+	}
+}
+
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. A writer whose binary was renamed
+// gets past the host check, which reads process names: the command creates the bucket while the
+// renamed writer runs on the named host. The barrier's executable identity must refuse here. The
+// stand-in runs throughout, so the pass is not vacuous.
+func TestBestEffortProofMissesARenamedBinaryUntilINFRA4015BarrierLands(t *testing.T) {
+	uri, js := server(t)
+	renamed := startStandIn(t, "renamed-writer")
+	var stdout, stderr bytes.Buffer
+	code := command(context.Background(), []string{"create", "--nats", uri, "--host", "this-machine", "--ssh", localSSH(t), "--bucket", bus.SessionBucket}, &stdout, &stderr,
+		ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{renamed} }), http.DefaultClient)
+	if !running(renamed, "renamed-writer") {
+		t.Fatal("the renamed stand-in ended during the proof, so the test proves nothing")
+	}
+	if code != 0 {
+		t.Fatalf("create while a renamed writer runs = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
+		t.Fatalf("the bucket after the create: %v", err)
+	}
+}
+
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. A writer that starts after the
+// final scan and before the create gets past the proof: here it starts the moment the host query
+// returns clean, and the command still creates the bucket. The barrier, held from proof through
+// mutation, must keep it out. The writer runs when the create completes, so the pass is not vacuous.
+func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilINFRA4015BarrierLands(t *testing.T) {
+	uri, js := server(t)
+	ssh := localSSH(t)
+	var writer *exec.Cmd
+	judged := ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{writer} })
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := judged(ctx, name, args...)
+		if name == ssh && writer == nil {
+			writer = startStandIn(t, "envoy-listener")
+		}
+		return out, err
+	}
+	var stdout, stderr bytes.Buffer
+	code := command(context.Background(), []string{"create", "--nats", uri, "--host", "this-machine", "--ssh", ssh, "--bucket", bus.SessionBucket}, &stdout, &stderr, run, http.DefaultClient)
+	if writer == nil || !running(writer, "envoy-listener") {
+		t.Fatal("no writer started after the scan, so the test proves nothing")
+	}
+	if code != 0 {
+		t.Fatalf("create with a writer started after the final scan = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
+		t.Fatalf("the bucket after the create: %v", err)
+	}
+}
+
+// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's BARRIER LANDS. check holds nothing once it
+// returns: a writer starts after it, and the operator's restore (here the bucket created as `nats
+// stream restore` creates it) goes ahead under that writer with nothing refusing it. The barrier's
+// protected restore must refuse here. A second check now refuses, so the writer is real.
+func TestBestEffortCheckHoldsNothingThroughARestoreUntilINFRA4015BarrierLands(t *testing.T) {
+	uri, js := server(t)
+	ssh := localSSH(t)
+	var writer *exec.Cmd
+	judged := ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{writer} })
+	var stdout, stderr bytes.Buffer
+	if code := command(context.Background(), []string{"check", "--nats", uri, "--host", "this-machine", "--ssh", ssh}, &stdout, &stderr, judged, http.DefaultClient); code != 0 {
+		t.Fatalf("check before the writer starts = %d:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	writer = startStandIn(t, "envoy-listener")
+	config, _ := bus.CopiedBucketConfig(bus.SessionBucket, 1)
+	if _, err := js.CreateKeyValue(&config); err != nil {
+		t.Fatalf("the restore after check, under a writer = %v, want today's best-effort outcome, nothing refusing it", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := command(context.Background(), []string{"check", "--nats", uri, "--host", "this-machine", "--ssh", ssh}, &stdout, &stderr, judged, http.DefaultClient); code != 1 ||
+		!strings.Contains(stderr.String(), fmt.Sprintf("process %d envoy-listener runs", writer.Process.Pid)) {
+		t.Fatalf("control: check with the writer running = %d, want refused naming it:\n%s", code, stderr.String())
 	}
 }
 
