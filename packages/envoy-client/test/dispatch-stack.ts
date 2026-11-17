@@ -1,5 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { pythonInterpreter } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
 import {
@@ -86,10 +87,12 @@ function testDatabaseServer(): string {
  * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
  * when `go` or the DSN is missing, the build fails, or the server does not come up.
  *
- * The server serves on a socket `scripts/e2e/lib/held-port.py` (run with the `python3` on `PATH`)
- * opened on a port the kernel chose and handed to it as `DISPATCH_LISTEN_FD`: the server's own URL
- * (`DISPATCH_SERVER_URL`) names that port before it starts, and nothing else can take the port in
- * between, as a port picked free and handed over by number could be.
+ * The server serves on a socket `scripts/e2e/lib/held-port.py` opened on a port the kernel chose
+ * and handed to it as `DISPATCH_LISTEN_FD`: the server's own URL (`DISPATCH_SERVER_URL`) names
+ * that port before it starts, and nothing else can take the port in between, as a port picked
+ * free and handed over by number could be. The helper runs on the interpreter `python3` names in
+ * the caller's environment, by its path (`pythonInterpreter`): under the server's own HOME, a
+ * python3 looked up on PATH can be a version manager's shim with no version there.
  *
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
@@ -141,7 +144,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     // the server in its own process, so the process started here is the server.
     const server = Bun.spawn(
       [
-        "python3",
+        pythonInterpreter(),
         HELD_PORT,
         "exec",
         "--port-file",

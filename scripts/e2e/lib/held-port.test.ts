@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { pythonInterpreter, skipWithout } from "@legion/test-fixtures/host-tools";
 import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 import {
   temporaryDirectories,
@@ -51,6 +51,11 @@ const started: Running[] = [];
 let nats: Server | undefined;
 const natsClients: Socket[] = [];
 let natsUrl = "";
+// The interpreter `python3` names in this process's own environment, which the hook below reads
+// and every run of the helper starts by its path (`pythonInterpreter`): each run's environment is
+// PATH and two names of its own, where a python3 looked up by name can be a version manager's
+// shim with no version.
+let python = "";
 
 const onLinux = process.platform === "linux";
 if (!onLinux) {
@@ -65,6 +70,7 @@ const skip = !onLinux || withoutGo;
 
 beforeAll(async () => {
   if (skip) return;
+  python = pythonInterpreter();
   const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
     cwd: envoy,
     stdout: "pipe",
@@ -154,7 +160,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
 
 function exec(name: string, portFile: string, command: string[], from?: string): Running {
   return start(name, [
-    "python3",
+    python,
     helper,
     "exec",
     ...(from ? ["--from", from] : []),
@@ -348,7 +354,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     const running = start(
       "exec of a shell that waits, then the listener",
       [
-        "python3",
+        python,
         helper,
         "exec",
         "--port-file",
@@ -412,7 +418,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     const socket = join(socketDirectory(), "missing-keeper.sock");
     const keptFile = join(work, "missing-kept.port");
     const keeper = start("the keeper", [
-      "python3",
+      python,
       helper,
       "keep",
       "--port-file",
@@ -441,7 +447,7 @@ describe.skipIf(skip)("held-port.py keep", () => {
     const portFile = join(work, "kept.port");
     const socket = join(socketDirectory(), "keeper.sock");
     const keeper = start("the keeper", [
-      "python3",
+      python,
       helper,
       "keep",
       "--port-file",

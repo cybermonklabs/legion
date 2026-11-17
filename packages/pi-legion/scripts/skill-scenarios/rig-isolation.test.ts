@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { pythonInterpreter, skipWithout } from "@legion/test-fixtures/host-tools";
 import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -245,30 +245,11 @@ const setpgid = [
   "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
 ].join("\n");
 
-/**
- * The interpreter `python3` names in the caller's own environment (`sys.executable`), which the
- * hook below reads before any row runs the rig, and which runs that parent by its own path.
- *
- * `python3` looked up on the rig's PATH can be a version manager's shim, and that shim rewrites
- * the environment of what it runs by the configuration it finds. On a devbox it is mise's: when
- * this file's HOME held no mise configuration of the caller's, the shim ran the system python3 with
- * every mise install directory taken off PATH, and the rig's `bun` was then mise's bun shim, which
- * had no version under that HOME either ("No version is set for shim: bun"): every run failed
- * rig.sh's settings check. Run by its own path, the interpreter passes the rig exactly the
- * environment this file gives it, whatever configuration mise finds.
- */
-function pythonInterpreter(): string {
-  const answer = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const executable = answer.stdout.toString().trim();
-  if (answer.exitCode !== 0 || !path.isAbsolute(executable))
-    throw new Error(
-      `python3 named no interpreter of its own (status ${answer.exitCode}, ${JSON.stringify(executable)}): ${answer.stderr.toString()}`
-    );
-  return executable;
-}
+/** The interpreter `python3` names in the caller's own environment (`pythonInterpreter`), which
+ *  the hook below reads before any row runs the rig, and which runs that parent by its own path.
+ *  Looked up on the rig's PATH under this file's HOME, python3 was mise's shim on a devbox, which
+ *  ran the system python3 with every mise install directory taken off PATH, and the rig's `bun`
+ *  was then mise's bun shim with no version under that HOME ("No version is set for shim: bun"). */
 let python = "";
 
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
