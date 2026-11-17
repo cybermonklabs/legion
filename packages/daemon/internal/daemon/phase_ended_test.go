@@ -76,6 +76,10 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			if !slotted(t, pool, "LEGION-208") {
 				t.Fatalf("LEGION-208 holds no slot after the conflict: the admission pass of that fact grants the implementing start its row")
 			}
+			var ended int64
+			if err := pool.QueryRow(ctx, `select id from outbox where kind = 'phase_ended' and payload->>'role' = $1`, string(tc.role)).Scan(&ended); err != nil {
+				t.Fatalf("read the %s's phase-ended row: %v", tc.role, err)
+			}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("run the conflict's effects: %v", err)
 			}
@@ -104,8 +108,8 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			if !told[0].keep {
 				t.Fatalf("the message was published with keep: false, want keep: the listener is its keeper for a role no live session holds")
 			}
-			if _, ok := record.ParseOutboxKey(told[0].key); !ok {
-				t.Fatalf("the message went under key %q, want its row's own (legion-outbox:<id>): a retry under it while the copy is kept stores nothing new (notify.HTTPPublisher.PublishKept)", told[0].key)
+			if want := record.OutboxKey(ended); told[0].key != want {
+				t.Fatalf("the message went under key %q, want its row's own, %q: a retry under it while the copy is kept stores nothing new (notify.HTTPPublisher.PublishKept)", told[0].key, want)
 			}
 			// The architect's own notice is a row of its own, to its own topic, as before.
 			architect := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleArchitect))

@@ -33,6 +33,7 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	publisher := &outboxPublisher{}
 	runner, _, pool := hookRunner(t, publisher)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
+	row := noticeRowID(t, pool)
 
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("drain the hook prompt: %v", err)
@@ -51,8 +52,8 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	if !published[0].keep {
 		t.Fatalf("the prompt was published with keep: false, want keep: the listener is its keeper for a role no live session holds")
 	}
-	if _, ok := record.ParseOutboxKey(published[0].key); !ok {
-		t.Fatalf("the prompt went under key %q, want its row's own (legion-outbox:<id>): a retry under it while the copy is kept stores nothing new (notify.HTTPPublisher.PublishKept)", published[0].key)
+	if want := record.OutboxKey(row); published[0].key != want {
+		t.Fatalf("the prompt went under key %q, want its row's own, %q: a retry under it while the copy is kept stores nothing new (notify.HTTPPublisher.PublishKept)", published[0].key, want)
 	}
 	if left := outboxRows(t, pool); left != 0 {
 		t.Fatalf("outbox rows left = %d, want the row finished", left)
