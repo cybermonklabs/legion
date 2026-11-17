@@ -2734,10 +2734,11 @@ function claimLines(analysis: Analysis): string[] {
       "where the never-decide rule held or the draw left out every case of it. n is those in " +
       "which the arm decided at least one answered approval request; a tree disagrees when any " +
       "request decided in it disagrees with the person's answer; the trees with no decided " +
-      "request are never-decide, apart and not in n, and the share beside them is over the " +
-      "trees holding an answered approval request, the one to read against the share decided " +
-      "on development data. The bound is the one-sided 90 percent Clopper-Pearson upper bound " +
-      "on the disagreeing trees over n, at any n, and 1 where n is 0."
+      "request are never-decide, apart and not in n. The never-decide column's share is of " +
+      "every eligible tree, as item 8 counts it; the next column's is of the trees holding an " +
+      "answered approval request, the one to read against the share decided on development " +
+      "data. The bound is the one-sided 90 percent Clopper-Pearson upper bound on the " +
+      "disagreeing trees over n, at any n, and 1 where n is 0."
   );
   lines.push("");
   lines.push(
@@ -2779,10 +2780,12 @@ function claimLines(analysis: Analysis): string[] {
   // registration asks, and the words say why it is not read against the 1 in 20.
   for (const { arm, claim } of measured) {
     if (claim.missing === null) continue;
+    // The report's words open with "no bound: " for its own bounds; this bound is printed.
+    const words = claim.missing.replace(/^no bound: /, "");
     lines.push(
       "",
-      `${arm}: ${claim.missing}. Its bound above is printed, as the registration asks, and not ` +
-        `read against ${num(RATE, 2)}: a lost judgement can turn a disagreeing tree into a ` +
+      `${arm}: ${words}. Its bound above is printed, as the registration asks, and not read ` +
+        `against ${num(RATE, 2)}: a lost judgement can turn a disagreeing tree into a ` +
         "never-decide one."
     );
   }

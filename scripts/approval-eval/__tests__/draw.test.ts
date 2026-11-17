@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import {
   DrawError,
   drawSlices,
   type FinalTestSource,
+  main,
   pinnedBacklogRoots,
   renderingCheckOf,
   TARGETS,
@@ -448,6 +449,48 @@ describe("drawSlices under a read of the reserve", () => {
     expect(claimCutRefusal(Date.parse("2026-11-18T00:00:00Z"))).toContain(
       "takes a --cut at or before the reserve's cut, 2026-11-16T00:00:00Z"
     );
+  });
+
+  test("the command that reads the reserve stops before the corpus on each claim guard", async () => {
+    // Each guard runs before any corpus is read, so a corpus path that does not exist shows the
+    // guard, not a missing file, answered.
+    const base = ["--corpus", "/nowhere/corpus", "--out", "/nowhere/out"];
+    const claim = [
+      "--seed",
+      "7",
+      "--scorer-records",
+      "/nowhere/a",
+      "--round-sessions",
+      "/nowhere/b",
+    ];
+    const runs: Array<[string[], string]> = [
+      [[...base, "--cut", "2026-11-16T00:00:00Z"], "takes --seed, the seed its registration names"],
+      [
+        [...base, "--cut", "2026-11-16T00:00:00Z", "--seed", "7"],
+        "takes --scorer-records and --round-sessions",
+      ],
+      [
+        [...base, "--cut", "2026-11-18T00:00:00Z", ...claim],
+        "takes a --cut at or before the reserve's cut, 2026-11-16T00:00:00Z",
+      ],
+    ];
+    const before = process.env.APPROVAL_EVAL_RESERVE;
+    process.env.APPROVAL_EVAL_RESERVE = "read:claim:test";
+    const lines: string[] = [];
+    const error = spyOn(console, "error").mockImplementation((line?: unknown) => {
+      lines.push(String(line));
+    });
+    try {
+      for (const [argv, words] of runs) {
+        lines.length = 0;
+        expect(await main(argv)).toBe(2);
+        expect(lines.join("\n")).toContain(words);
+      }
+    } finally {
+      error.mockRestore();
+      if (before === undefined) delete process.env.APPROVAL_EVAL_RESERVE;
+      else process.env.APPROVAL_EVAL_RESERVE = before;
+    }
   });
 
   test("an eligible tree whose every case the never-decide rule held is recorded in no slice", () => {

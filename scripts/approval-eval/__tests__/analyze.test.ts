@@ -1426,7 +1426,7 @@ describe("the claim's measure, over the final test's trees", () => {
     const text = renderReport(analysis).join("\n");
     expect(text).toContain("at most 0.949 | not read");
     expect(text).toContain(
-      "bare-opus: no bound: this arm is missing 5.6 percent of its judgements (335 of 355 " +
+      "bare-opus: this arm is missing 5.6 percent of its judgements (335 of 355 " +
         "answered), and the plan gives no bound past 5 percent. Its bound above is printed"
     );
   });

@@ -1101,7 +1101,8 @@ async function draw(flags: Flags): Promise<number> {
   return 0;
 }
 
-async function main(argv: readonly string[]): Promise<number> {
+/** The command: the flags, the draw, and the exit status it takes. */
+export async function main(argv: readonly string[]): Promise<number> {
   let flags: Flags;
   try {
     flags = readFlags(argv);
