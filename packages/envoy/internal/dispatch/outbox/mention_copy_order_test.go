@@ -208,10 +208,11 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 }
 
 // The read load of fallback copies held behind an earlier event is bounded by mentionPendingDelay:
-// a waiting row is released for that long after each pass that decides it, so the rule is read
-// at most once per row per delay, whatever wakes the holder meanwhile. Measured with the outbox
-// running for eight seconds over 50 rows held behind one event whose topic send the stream keeps
-// refusing: the rule's reads are counted on a traced pool, and so is every statement.
+// a waiting row is released for that long after each pass that decides it, and a pass claims only
+// the rows that are due, so the rule is read at most once per row per delay, whatever wakes the
+// holder meanwhile. Measured with the outbox running for eight seconds over 50 rows held behind
+// one event whose topic send the stream keeps refusing, the holder woken every 100 ms beside its
+// own timers: the rule's reads are counted on a traced pool, and so is every statement.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	const rows = 50
 	const window = 8 * time.Second
@@ -243,7 +244,26 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	publisher := &failingPublisher{topic: "notifications.dispatch.issue.T-1.message.created", answer: fmt.Errorf("no responders")}
 	started := time.Now()
 	stop := runDeps(t, withHeldRoles(Deps{Store: traced, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), 5*time.Second)
+	// A wake every 100 ms - what an event committed beside the outbox gives it - so each wake
+	// runs a pass, and only the rows' own delay keeps the reads down.
+	waking, stopWaking := context.WithCancel(ctx)
+	woken := make(chan struct{})
+	go func() {
+		defer close(woken)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-waking.Done():
+				return
+			case <-ticker.C:
+				broker.Publish(model.Event{ID: earlier.ID, IssueKey: new("T-1"), Type: "message.created"})
+			}
+		}
+	}()
 	time.Sleep(window)
+	stopWaking()
+	<-woken
 	stop()
 	elapsed := time.Since(started)
 	if at := publishedAt(t, database, earlier.ID); at != nil {
