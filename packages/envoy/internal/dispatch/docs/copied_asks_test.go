@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const copiedAsksDocument = "Context\n\n" +
@@ -299,16 +300,16 @@ func openAsksUnder(t *testing.T, service *Service, blockID string) []string {
 }
 
 // requireOneOpenAskOn waits for the settlement a retraction arms on document: exactly one open ask
-// under blockID on the issue, on document.
+// under blockID on the issue, on document. It waits as long as a room's own work may take
+// (roomWait), and fails naming the asks it read last.
 func requireOneOpenAskOn(t *testing.T, service *Service, blockID, document string) {
 	t.Helper()
 	var open []string
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if open = openAsksUnder(t, service, blockID); len(open) == 1 && open[0] == document {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	if testwait.Holds(roomWait(t), 20*time.Millisecond, func() bool {
+		open = openAsksUnder(t, service, blockID)
+		return len(open) == 1 && open[0] == document
+	}) {
+		return
 	}
 	t.Fatalf("open asks under %s = %v, want one, on the copy %s", blockID, open, document)
 }
