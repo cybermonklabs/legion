@@ -2371,6 +2371,8 @@ jobs:
               # local-instance-support.test.ts:2-5, run in this job's test step and in no other,
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
+              # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
+              - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
