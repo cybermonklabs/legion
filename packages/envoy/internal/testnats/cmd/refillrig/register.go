@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // runRegister registers every session of the sets through the listener's own route, as an agent's
@@ -38,12 +40,12 @@ func runRegister(args []string) error {
 	for range *workers {
 		wg.Go(func() {
 			for j := range jobs {
-				body, _ := json.Marshal(map[string]any{
-					"session_id":      sessionID(j.set.name, j.index),
-					"dir":             "/refill/" + j.set.name,
-					"title":           sessionTitle(j.set.name, j.index, j.set.variant),
-					"topics":          topics(j.set, j.index, *role),
-					"self_subscribed": true,
+				body, _ := json.Marshal(listenerwire.SubscribeRequest{
+					SessionID:      sessionID(j.set.name, j.index),
+					Dir:            "/refill/" + j.set.name,
+					Title:          sessionTitle(j.set.name, j.index, j.set.variant),
+					Topics:         topics(j.set, j.index, *role),
+					SelfSubscribed: true,
 				})
 				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
 				if err == nil {

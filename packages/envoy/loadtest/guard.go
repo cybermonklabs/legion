@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
 
 // stackFile is $LOADTEST_ROOT/stack.json. stack.sh setup writes it; stack.sh rewrites the pids as it
@@ -494,7 +495,7 @@ func checkStack(ctx context.Context, e endpoints) error {
 	if status != http.StatusOK {
 		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, trunc(body))
 	}
-	status, body, err = guardGet(ctx, client, e.listener+"/v1/sessions", e.listenerToken)
+	status, body, err = (&listenerclient.Client{URL: e.listener, Token: e.listenerToken, HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
@@ -503,7 +504,7 @@ func checkStack(ctx context.Context, e endpoints) error {
 	}
 	other := make([]byte, 16)
 	_, _ = rand.Read(other)
-	status, _, err = guardGet(ctx, client, e.listener+"/v1/sessions", hex.EncodeToString(other))
+	status, _, err = (&listenerclient.Client{URL: e.listener, Token: hex.EncodeToString(other), HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
