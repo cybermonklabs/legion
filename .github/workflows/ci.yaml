@@ -2197,8 +2197,8 @@ jobs:
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
-              # extensions/envoy.test.ts:57-64 imports test/envoy-stack, stall-proxy and
-              # stall-scenario; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
+              # extensions/envoy.test.ts:57-65 imports test/envoy-stack, stall-proxy, stall-scenario
+              # and subscribe-answer; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/scripts/build-dispatch-cli.sh'
@@ -2829,7 +2829,7 @@ jobs:
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
               # compiles with the rest of that package.
               - 'packages/contracts/fixtures/live/**'
-              # internal/dispatch/api/openapi_test.go:189-190, whose
+              # internal/dispatch/api/openapi_test.go:199-200, whose
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
               # at run time, through a path built relative to the test binary; the guard step
               # compiles it with the rest of that package.
