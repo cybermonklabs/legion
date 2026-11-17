@@ -492,7 +492,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. unread names each approved document under the root whose approved version Dispatch cannot read, so that no rule compared its texts. A version that the document does not have is 404 VERSION_NOT_FOUND. */
+    /** @description Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. nodes names each text that Dispatch read, by its kind and its node, in the order of the document. definitions names each term that the document defines, with its definition. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. unread names each approved document under the root whose approved version Dispatch cannot read, so that no rule compared its texts. A version that the document does not have is 404 VERSION_NOT_FOUND. */
     get: operations["getApiV1ArtifactsByIdSpecForm"];
     put?: never;
     post?: never;
@@ -6077,6 +6077,10 @@ export interface components {
       method: string;
       path: string;
     };
+    SpecFormDefinition: {
+      definition: string;
+      term: string;
+    };
     SpecFormError: {
       changes_reason?: string;
       code: string;
@@ -6097,10 +6101,12 @@ export interface components {
     };
     SpecFormRead: {
       artifact_id: string;
+      definitions: components["schemas"]["SpecFormDefinition"][] | null;
       findings: components["schemas"]["SpecFormFinding"][] | null;
       findings_total: number;
       in_scope: boolean;
       name: string;
+      nodes: components["schemas"]["SpecFormText"][] | null;
       plays: string;
       refuses_approval: boolean;
       root: null | string;
@@ -6126,6 +6132,10 @@ export interface components {
       issue: string;
       term: string;
       version: number;
+    };
+    SpecFormText: {
+      kind: string;
+      node: string;
     };
     SpecFormUnread: {
       artifact_id: string;
@@ -14251,11 +14261,13 @@ export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type SpecFormDefinition = components["schemas"]["SpecFormDefinition"];
 export type SpecFormError = components["schemas"]["SpecFormError"];
 export type SpecFormFinding = components["schemas"]["SpecFormFinding"];
 export type SpecFormRead = components["schemas"]["SpecFormRead"];
 export type SpecFormSummary = components["schemas"]["SpecFormSummary"];
 export type SpecFormTerm = components["schemas"]["SpecFormTerm"];
+export type SpecFormText = components["schemas"]["SpecFormText"];
 export type SpecFormUnread = components["schemas"]["SpecFormUnread"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type Subscriber = components["schemas"]["Subscriber"];

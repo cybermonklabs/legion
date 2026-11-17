@@ -226,6 +226,13 @@ type specFormRead struct {
 	Unread []specFormUnread `json:"unread"`
 	// RefusesApproval is whether an approval request or an approval of this version is refused.
 	RefusesApproval bool `json:"refuses_approval"`
+
+	// Nodes is each text that the judgment read, by its kind and its node, in the order of the
+	// document, and Definitions is each term that the document defines under Terms, which is no
+	// part of the root's list (spec_form_nodes.go). Texts counts them: each kind as Nodes lists it,
+	// and definitions as Definitions does.
+	Nodes       []specFormText       `json:"nodes"`
+	Definitions []specFormDefinition `json:"definitions"`
 }
 
 // specFormDocument is one document a judgment named: the document, the version judged, where it
@@ -241,6 +248,10 @@ type specFormDocument struct {
 	terms      []specFormTerm
 	unread     []specFormUnread
 	unreadable *specFormFinding
+
+	// nodes and definitions are what texts counts (textsRead), once judged.
+	nodes       []specFormText
+	definitions []specFormDefinition
 }
 
 // specFormResult is the judgment of the documents specFormOf named, in their order.
@@ -570,6 +581,7 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 		document.unread = approved.unreadOf(j.skip)
 	}
 	document.texts = extracted.Counts
+	document.nodes, document.definitions = textsRead(extracted)
 	document.findings = []specFormFinding{}
 	if document.unreadable != nil {
 		document.findings = append(document.findings, *document.unreadable)

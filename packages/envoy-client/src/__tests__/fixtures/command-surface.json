@@ -1813,6 +1813,10 @@
       "text": [
         "spec.md version 1:",
         "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions against 0 terms: no text breaks it.",
+        "Dispatch read these texts in spec.md version 1, each by its kind and its node:",
+        "statement store-comment",
+        "statement index-comment",
+        "purpose comments",
         "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review."
       ]
     },

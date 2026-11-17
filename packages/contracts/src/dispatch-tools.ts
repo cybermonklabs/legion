@@ -1530,6 +1530,7 @@ export const dispatchToolSpecs = [
       "It lists each statement, check, component purpose and term that breaks the form, with its rule. " +
       "It writes nothing. " +
       "It says whether the document is under a root of The Spec, and how many texts it read. " +
+      "Then it names each text that it read, by its kind and its node, and each term that the document defines. " +
       "With root, it lists each issue under that root and the form of each document that the root covers. " +
       "With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it.",
     arguments: (z) => ({
