@@ -1410,7 +1410,7 @@ k7_broker() {
 		if curl -sf --max-time 2 "$K7_API_URL/healthz" >/dev/null 2>&1; then return 0; fi
 		sleep 0.5
 	done
-	echo "airlock-check: k7's API front never answered /healthz within 30 seconds; see $d/api-front.log" >&2
+	echo "airlock-check: k7's API front never answered /healthz in 60 tries, each a curl of up to 2 s and a 0.5 s sleep (30 s when the front refuses at once, up to 150 s when each curl waits out its 2 s); see $d/api-front.log" >&2
 	exit 1
 }
 
