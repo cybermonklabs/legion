@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import {
   type AppCredentialSource,
@@ -35,6 +35,10 @@ const { url: standIn, seen, verified, dir } = standInGitHub("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
+// The PATH every child of this file gets: the caller's, behind this Bun's own directory. A child
+// shell runs `bun` by name under `home`, where a `bun` that is a mise shim has no version ("bun is
+// not a valid shim").
+const childPath = `${dirname(process.execPath)}:${process.env.PATH ?? ""}`;
 
 // A GitHub that never answers: a port the row that calls this holds bound and never listens on
 // (`refusingOrigin`), so every request to it is refused, and no other process can bind it to
@@ -79,8 +83,8 @@ const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
 // is given stdin, so a token command that inherited it would read `stdin-leak` where the
 // closed-stdin case expects nothing.
 async function run(path: string, env: Record<string, string> = {}, api = standIn) {
-  const child = Bun.spawn(["bun", script, path, api], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, ...env },
+  const child = Bun.spawn([process.execPath, script, path, api], {
+    env: { PATH: childPath, HOME: home, ...env },
     stdin: new Blob(["stdin-leak"]),
     stdout: "pipe",
     stderr: "pipe",
@@ -110,7 +114,7 @@ read_app_logins
 ${then}`;
   const child = Bun.spawn(["bash", "-c", shell], {
     env: {
-      PATH: process.env.PATH ?? "",
+      PATH: childPath,
       HOME: home,
       LIB: join(import.meta.dir, "workflow.sh"),
       work,
@@ -197,7 +201,7 @@ describe("app-logins.ts", () => {
   const behindReader = async (body: string, stall: number) => {
     const shell = `{\n${body}\n} 2>&1 | { sleep ${stall}; cat; }`;
     const child = Bun.spawn(["bash", "-c", shell], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+      env: { PATH: childPath, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -310,11 +314,14 @@ describe("app-logins.ts", () => {
   // the row guards is the writer: no `EPIPE` may leave it.
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
     const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
-    const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const child = Bun.spawn(
+      [process.execPath, script, config(app("101", relayed), app("202")), standIn],
+      {
+        env: { PATH: childPath, HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
     // The read end is closed before the child has finished starting, let alone written: every
     // write the helper makes to fd 2 from here on meets a reader that is gone.
     await child.stderr.cancel();
@@ -519,8 +526,8 @@ describe("app-logins.ts", () => {
   test("--roles reads only the roles it names, and refuses one it does not know", async () => {
     const path = join(dir, `legion-${++configs}.yaml`);
     writeFileSync(path, `github_apps:\n  implement:\n${app("101")}\n`);
-    const one = Bun.spawn(["bun", script, "--roles", "implement", path, standIn], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+    const one = Bun.spawn([process.execPath, script, "--roles", "implement", path, standIn], {
+      env: { PATH: childPath, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -533,8 +540,8 @@ describe("app-logins.ts", () => {
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ implement: "example-implement[bot]" });
     for (const roles of ["merger", "implement,implement", ""]) {
-      const bad = Bun.spawnSync(["bun", script, "--roles", roles, path], {
-        env: { PATH: process.env.PATH ?? "", HOME: home },
+      const bad = Bun.spawnSync([process.execPath, script, "--roles", roles, path], {
+        env: { PATH: childPath, HOME: home },
         stderr: "pipe",
       });
       expect(bad.exitCode).toBe(2);

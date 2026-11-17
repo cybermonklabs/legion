@@ -18,14 +18,24 @@ export function hostTool(name: string): string | null {
  * it runs python3, and it throws, naming what python3 answered, when that is no absolute path.
  */
 export function pythonInterpreter(): string {
-  const answer = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  return ownExecutable("python3", ["-I", "-c", "import sys; print(sys.executable)"]);
+}
+
+/** The interpreter `node` names in this process's own environment (`process.execPath`), by its
+ *  absolute path, for the same reason as {@link pythonInterpreter}: node is a mise shim on a
+ *  devbox too. Bun's own is `process.execPath` in the test itself. */
+export function nodeInterpreter(): string {
+  return ownExecutable("node", ["-p", "process.execPath"]);
+}
+
+/** What `name`, run with `args` in this process's environment, prints as its own executable,
+ *  which must be an absolute path. */
+function ownExecutable(name: string, args: readonly string[]): string {
+  const answer = Bun.spawnSync([name, ...args], { stdout: "pipe", stderr: "pipe" });
   const executable = answer.stdout.toString().trim();
   if (answer.exitCode !== 0 || !isAbsolute(executable))
     throw new Error(
-      `python3 named no interpreter of its own (status ${answer.exitCode}, ${JSON.stringify(executable)}): ${answer.stderr.toString()}`
+      `${name} named no interpreter of its own (status ${answer.exitCode}, ${JSON.stringify(executable)}): ${answer.stderr.toString()}`
     );
   return executable;
 }

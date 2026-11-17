@@ -78,7 +78,7 @@ function parseOptions(argv: readonly string[]): Options {
 const options = parseOptions(process.argv.slice(2));
 const { PATH } = process.env;
 
-const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(["bun", options.server], {
+const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn([process.execPath, options.server], {
   cwd: options.stateDirectory,
   env: {
     PATH: PATH ?? "",

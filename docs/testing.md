@@ -138,7 +138,17 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
-- A suite that starts a program under a HOME of its own, on the caller's PATH, passes it the
+- A suite that starts Bun, Python or Node under an environment of its own starts each by its path,
+  never by its name on PATH: Bun as `process.execPath`, Python as `pythonInterpreter()` and Node as
+  `nodeInterpreter()` (`@legion/test-fixtures/host-tools`), each of which asks the interpreter the
+  caller's own environment runs for its executable. On a dev box these are mise shims, and under a
+  HOME of the suite's own a shim has no version ("bun is not a valid shim"), or runs another
+  interpreter that stands behind it on PATH (`packages/claude-envoy/tests/open-asks-hook.test.ts`,
+  `packages/envoy-client/test/dispatch-stack.ts`, `scripts/e2e/lib/held-port.test.ts`). A module
+  that runs under Playwright's Node asks `bun` for its own `process.execPath` once
+  (`packages/dispatch/e2e/dispatch-cli.ts`).
+
+- A suite that starts any other program under a HOME of its own, on the caller's PATH, passes it the
   caller's mise configuration: `callerMiseEnvironment(stateDir)`
   (`@legion/test-fixtures/mise-environment`) resolves MISE_DATA_DIR and MISE_CONFIG_DIR, and the
   MISE_GLOBAL_CONFIG_FILE, MISE_SYSTEM_CONFIG_DIR, MISE_SYSTEM_CONFIG_FILE and

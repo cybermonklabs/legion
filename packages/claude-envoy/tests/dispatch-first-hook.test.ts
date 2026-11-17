@@ -18,7 +18,7 @@ async function runHook(
   input: Record<string, unknown> = sessionStart,
   mode = "dispatch-first",
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
-  const run = Bun.spawn(["bun", hookEntry, mode], {
+  const run = Bun.spawn([process.execPath, hookEntry, mode], {
     env: { PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify(input)),
     stdout: "pipe",

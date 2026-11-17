@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
@@ -25,6 +26,10 @@ const dir = temporaryDirectory("claude-backend-key-runner-test");
 
 const bin = join(dir, "bin");
 const scratch = join(dir, "tmp");
+// The run's own mise state, seeded with the caller's trust records (seedMiseState): a real tool
+// linked into the run's bin below can be a mise shim (jq is, on a devbox), which finds its version
+// through the caller's mise configuration, and the run's HOME is this directory.
+const miseState = join(dir, "mise-state");
 // The proc root the run's process walks read: refuse_leftovers in prerequisites and run_processes
 // in cleanup read `${proc_root:-/proc}`. Over the host's /proc refuse_leftovers runs three commands
 // for each process the host has, so the row's time, held to the run's 60 s, was the host's process
@@ -114,6 +119,7 @@ beforeAll(() => {
   mkdirSync(bin);
   mkdirSync(scratch);
   mkdirSync(proc);
+  seedMiseState(miseState);
   // The stand-ins the prerequisites need only find: each prints nothing and exits 0.
   const quiet = ["go", "docker", "ss", "tmux", "mise", "gh", "jj", "pgrep", "claude", "python3"];
   for (const name of quiet) stub(name, "exit 0");
@@ -153,6 +159,10 @@ test.skipIf(skip)(
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,
+        // The caller's mise configuration, for a linked tool that is a mise shim, and none of its
+        // [env] (MISE_NO_ENV): a shim applies that env over the run's own variables.
+        ...callerMiseEnvironment(miseState),
+        MISE_NO_ENV: "1",
         proc_root: proc,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,

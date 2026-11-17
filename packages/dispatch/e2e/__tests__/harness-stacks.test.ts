@@ -202,7 +202,7 @@ test.skipIf(withoutDatabase)(
     // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
     // resolves the database once, when it starts its psql.
     const resolve = [
-      "bun",
+      process.execPath,
       "-e",
       `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
     ];
@@ -227,7 +227,11 @@ test(
   "psql names both variables when neither its stack nor the plain name has a database",
   async () => {
     const refused = await run(
-      ["bun", "-e", `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`],
+      [
+        process.execPath,
+        "-e",
+        `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
+      ],
       { [stacksVariable]: JSON.stringify([{}, {}]), TEST_PARALLEL_INDEX: "1" }
     );
     expect(refused.code).not.toBe(0);

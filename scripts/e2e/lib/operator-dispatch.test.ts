@@ -7,11 +7,15 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorDispatch } from "./operator-dispatch";
 
 const dir = temporaryDirectory("operator-dispatch-test");
+// The PATH every child of this file gets: the caller's, behind this Bun's own directory.
+// lib/operator-dispatch.sh runs `bun` by name under a HOME of the test's own, where a `bun` that is
+// a mise shim has no version ("bun is not a valid shim").
+const childPath = `${dirname(process.execPath)}:${process.env.PATH ?? ""}`;
 
 const home = join(dir, "home");
 const profile = join(dir, "profile");
@@ -101,9 +105,9 @@ describe("operatorDispatch", () => {
 // reads it from there.
 describe("bun lib/operator-dispatch.ts <bearer file>", () => {
   const cli = (args: readonly string[], env: Record<string, string>) =>
-    Bun.spawnSync(["bun", join(import.meta.dir, "operator-dispatch.ts"), ...args], {
+    Bun.spawnSync([process.execPath, join(import.meta.dir, "operator-dispatch.ts"), ...args], {
       cwd,
-      env: { PATH: process.env.PATH ?? "", ...env },
+      env: { PATH: childPath, ...env },
     });
 
   test("writes the bearer to the file, owner-only, and prints the file and the URL alone", () => {
@@ -165,7 +169,7 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
   const run = (directory: string, extra: Record<string, string> = {}) =>
     Bun.spawnSync(["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh")], {
       cwd: directory,
-      env: { HOME: home, PATH: process.env.PATH ?? "", ...extra },
+      env: { HOME: home, PATH: childPath, ...extra },
     });
   // The three runs and the old checkout they read are made in a hook, not in this body: the
   // directories they run in are made by the file's own `beforeAll`, which Bun runs first.
@@ -252,7 +256,7 @@ printf '%s|%s|%s\\n' "$prod_dispatch_url" "$prod_baseline" "$(ls -A "$work")"`;
           cwd,
           env: {
             HOME: join(dir, "empty-home"),
-            PATH: process.env.PATH ?? "",
+            PATH: childPath,
             DISPATCH_URL: `http://127.0.0.1:${server.port}`,
             DISPATCH_TOKEN: "operator-bearer",
           },

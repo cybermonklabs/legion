@@ -142,7 +142,7 @@ let proxy: Subprocess<"ignore", "pipe", "inherit">;
 const childHome = temporaryDirectory("round-robin-proxy-home");
 
 beforeAll(async () => {
-  proxy = Bun.spawn(["bun", proxyScript], {
+  proxy = Bun.spawn([process.execPath, proxyScript], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: childHome,
@@ -441,7 +441,7 @@ describe("DISPATCH_E2E_PROCESSES", () => {
     });
   // A process of its own per import: the refusal is the module's evaluation, which runs once.
   const importPorts = (env: Record<string, string>) =>
-    run(["bun", "-e", `await import(${JSON.stringify(harnessPortsModule)})`], env);
+    run([process.execPath, "-e", `await import(${JSON.stringify(harnessPortsModule)})`], env);
 
   // Each value is one import of its own, so the row's limit is read from the two lists.
   const refusedProcesses = ["3", "two", " 2", "0"];
@@ -558,7 +558,7 @@ describe("DISPATCH_E2E_PROCESSES", () => {
     async () => {
       // The ports resolve, and a collision is refused, when `harnessPorts` is called, not on import.
       const resolve = [
-        "bun",
+        process.execPath,
         "-e",
         `(await import(${JSON.stringify(harnessPortsModule)})).harnessPorts()`,
       ];

@@ -13,7 +13,7 @@ async function runHook(
   input: Record<string, unknown>,
   env: Record<string, string> & { readonly HOME: string },
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
-  const run = Bun.spawn(["bun", hookEntry, "open-asks"], {
+  const run = Bun.spawn([process.execPath, hookEntry, "open-asks"], {
     env: { PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
