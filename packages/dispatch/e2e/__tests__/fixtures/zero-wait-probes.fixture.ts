@@ -270,26 +270,36 @@ export async function plantedAssignedValues(menu: Locator): Promise<void> {
 }
 // biome-ignore-end lint/suspicious/noAssignInExpressions: the assignment's value is planted
 
-/** One probe per kind of data flow the scan does not follow, each a pass but the second, in this
- *  order: an answer passed into a function that branches on it, a method called on the answer,
- *  refused because a loop walks its result, an answer kept in a property and in an array
- *  element, a name copied into another name, an answer `??` only replaces, and one returned. */
+/** One probe per decision made where the scan does not read, each a pass, in this order: an
+ *  answer passed into a function that branches on it, an answer handed to `expect`, a callback
+ *  `forEach` runs once per element, an answer kept in a property, in an array literal's element
+ *  and stored into an element, a name copied from a bound name and one computed from it, an
+ *  answer `??` only replaces, a call's result returned and an answer returned. */
 export async function plantedLimits(
   menu: Locator,
   rows: Locator,
-  state: { shown: boolean }
+  state: { shown: boolean },
+  pick: boolean
 ): Promise<boolean> {
   await clickWhen(menu, await menu.isVisible());
-  for (const text of (await rows.allTextContents()).slice(1)) expect(text).not.toBe("");
+  expect(await rows.count()).toBe(3);
+  (await rows.all()).forEach((row) => void row.click());
   state.shown = await menu.isChecked();
   if (state.shown) await menu.uncheck();
   const answers = [await menu.isEnabled()];
   if (answers[0]) await menu.click();
+  const stored: boolean[] = [];
+  stored[0] = await menu.isDisabled();
+  if (stored[0]) await menu.focus();
   const seen = await menu.isHidden();
   const copy = seen;
   if (copy) await menu.hover();
+  const value = await menu.inputValue();
+  const trimmed = value.trim();
+  if (trimmed) await menu.fill(trimmed);
   const href = (await menu.getAttribute("href")) ?? "";
   expect(href).toBe("/");
+  if (pick) return Boolean(await menu.isEditable());
   return (await rows.count()) > 1;
 }
 
@@ -319,35 +329,22 @@ export async function plantedReadsAnywhere(menu: Locator): Promise<void> {
 // biome-ignore-end lint/correctness/noInnerDeclarations: the planted `var` is a loop body's
 // biome-ignore-end lint/suspicious/noVar: a `var` its loop's condition reads is planted here
 
-// biome-ignore-start lint/complexity/noExtraBooleanCast: a name passed into `Boolean` is planted
-/** One name per way a position reads a name bound to an answer, in this order: passed into
- *  `Boolean`, walked through a method called on it, the `.length` an `if` compares and the left
- *  of an `&&` an `if` reads. Each is refused as the same answer written in its place is: a call
- *  on the answer whose result decides reads it as an operator on it does. */
+/** One name per way a position reads a name bound to an answer, in this order: walked through a
+ *  method called on it, beside the same walk over the answer in place, the `.length` an `if`
+ *  compares and the left of an `&&` an `if` reads. Each is refused as the same answer written in
+ *  its place is: a call on the answer whose result decides reads it as an operator on it does. */
 export async function plantedBoundReads(
   menu: Locator,
   rows: Locator,
   open: boolean
 ): Promise<void> {
-  const shown = await menu.isVisible();
-  if (Boolean(shown)) await menu.click();
   const items = await rows.all();
   for (const item of items.slice(1)) await item.click();
+  for (const text of (await rows.allTextContents()).slice(1)) expect(text).not.toBe("");
   const texts = await rows.allTextContents();
   if (texts.length > 0) await menu.hover();
   const checked = await menu.isChecked();
   if (checked && open) await menu.uncheck();
-}
-// biome-ignore-end lint/complexity/noExtraBooleanCast: a name passed into `Boolean` is planted
-
-/** A name bound to an answer that an `if` reads only as the key of an element access, which is
- *  refused as the same answer used as a key in place is. */
-export async function plantedBoundKey(
-  menu: Locator,
-  handlers: Record<string, boolean>
-): Promise<void> {
-  const label = await menu.inputValue();
-  if (handlers[label]) await menu.click();
 }
 
 // biome-ignore-start lint/complexity/noExtraBooleanCast: an answer passed into `Boolean` is planted
@@ -389,28 +386,41 @@ export async function plantedCallRefusals(
 // biome-ignore-end lint/complexity/noUselessStringRaw: a tagged template on the answer is planted
 // biome-ignore-end lint/complexity/noExtraBooleanCast: an answer passed into `Boolean` is planted
 
-/** One probe per decision made where the scan does not read, each a pass, in this order: an answer
- *  passed into a function that branches on it, an answer handed to `expect`, a callback `forEach`
- *  runs once per element, an answer stored into a property and into an element, a name copied
- *  from a bound name and one computed from it, and a call's result returned. */
-export async function plantedCallPasses(
+/** One read of the page's state per Locator read the rule names beside the ones above, each
+ *  refused with no wait before it, in this order: a `for...of` over the answer of `evaluateAll`,
+ *  of `evaluate` and of `boundingBox`, then an `if` on each of the three. */
+export async function plantedEvaluateReads(
+  page: Page,
   menu: Locator,
-  rows: Locator,
-  state: { shown: boolean }
-): Promise<boolean> {
-  await clickWhen(menu, await menu.isVisible());
-  expect(await rows.count()).toBe(3);
-  (await rows.all()).forEach((row) => void row.click());
-  state.shown = await menu.isChecked();
-  if (state.shown) await menu.uncheck();
-  const answers: boolean[] = [];
-  answers[0] = await menu.isEnabled();
-  if (answers[0]) await menu.click();
-  const seen = await menu.isHidden();
-  const ok = seen;
-  if (ok) await menu.hover();
-  const value = await menu.inputValue();
-  const trimmed = value.trim();
-  if (trimmed) await menu.fill(trimmed);
-  return Boolean(await menu.isEditable());
+  rows: Locator
+): Promise<void> {
+  for (const id of await rows.evaluateAll((nodes) => nodes.map((node) => node.id))) {
+    await page.locator(`#${id}`).click();
+  }
+  for (const title of await page.evaluate(() => [document.title, document.URL])) {
+    expect(title).not.toBe("");
+  }
+  for (const edge of Object.values((await menu.boundingBox()) ?? {})) {
+    expect(edge).toBeGreaterThanOrEqual(0);
+  }
+  if ((await rows.evaluateAll((nodes) => nodes.length)) > 1) await rows.first().click();
+  if (await page.evaluate(() => document.hasFocus())) await menu.click();
+  if ((await menu.boundingBox()) === null) throw new Error("the planted menu has no box");
 }
+
+/** A function literal passed to `evaluate` whose body branches on a read: it runs in the page,
+ *  where the read is the DOM's own, so it is skipped, and the call's answer decides nothing. */
+export async function plantedPageSideBranch(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    if (document.body.getAttribute("data-ready") === "yes") document.body.dataset.seen = "yes";
+  });
+}
+
+// biome-ignore-start lint/suspicious/noAssignInExpressions: the compound assignment is planted
+/** A name bound to an answer that a compound assignment reads before it writes it: `-=` reads
+ *  `n`, so the `while` its value stands in reads the answer and is refused. */
+export async function plantedCompoundRead(rows: Locator): Promise<void> {
+  let n = await rows.count();
+  while ((n -= 1) >= 0) await rows.nth(n).click();
+}
+// biome-ignore-end lint/suspicious/noAssignInExpressions: the compound assignment is planted

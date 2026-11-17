@@ -165,8 +165,10 @@ const section = (page: Page, label: string): Locator =>
   page.locator(`section[aria-label="${label}"]`);
 
 /** Where a section's box starts down the page, which is what says the page draws the order
- *  first and the faults under it. */
+ *  first and the faults under it. Read once the section shows. */
 async function topOf(locator: Locator): Promise<number> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the section, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error("the section this row reads is not on the page");
   return box.y;

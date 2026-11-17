@@ -58,9 +58,10 @@ test("every probe of the suite that decides a path reads a settled state or says
 // comment too short to be a reason, the two `if`s whose only branch throws, the branches that are
 // no `if`, and then one probe per position of the grammar, per binding, per read of a name
 // written above or beside its binding, per step of the climb, per way a name's value reaches a
-// position and per form of a call whose result decides, in place and through a name, which the
-// rows below read one group at a time. Nothing else of the fixture is refused, so none of the
-// shapes planted to pass is.
+// position, per form of a call whose result decides, in place and through a name, per read of
+// the evaluate family and of `boundingBox`, and a compound assignment that reads a bound name,
+// which the rows below read one group at a time. Nothing else of the fixture is refused, so none
+// of the shapes planted to pass is.
 test("each planted refusal is refused at its line, for what its answer decides", () => {
   expect(
     refusedProbes(fixtureProbes).map(({ probe }) => [probe.line, probe.name, probe.position])
@@ -122,30 +123,35 @@ test("each planted refusal is refused at its line, for what its answer decides",
     [254, "textContent", "if"],
     [263, "isVisible", "if"],
     [266, "isChecked", "= outer -> if@269"],
-    [283, "allTextContents", "for-of"],
-    [311, "isVisible", "= seen -> while@309"],
-    [315, "isChecked", "var done -> while@313"],
-    [332, "isVisible", "const shown -> if@333"],
-    [334, "all", "const items -> for-of@335"],
-    [336, "allTextContents", "const texts -> if@337"],
-    [338, "isChecked", "const checked -> if@339"],
-    [349, "inputValue", "const label -> if@350"],
-    [364, "inputValue", "const value -> if@365"],
-    [366, "inputValue", "if"],
-    [367, "textContent", "const text -> ?.@368"],
-    [369, "textContent", "?."],
-    [370, "isVisible", "const shown -> if@371"],
-    [372, "isVisible", "if"],
-    [373, "inputValue", "const entered -> if@374"],
-    [375, "inputValue", "if"],
-    [376, "allTextContents", "const texts -> if@377"],
+    [321, "isVisible", "= seen -> while@319"],
+    [325, "isChecked", "var done -> while@323"],
+    [341, "all", "const items -> for-of@342"],
+    [343, "allTextContents", "for-of"],
+    [344, "allTextContents", "const texts -> if@345"],
+    [346, "isChecked", "const checked -> if@347"],
+    [361, "inputValue", "const value -> if@362"],
+    [363, "inputValue", "if"],
+    [364, "textContent", "const text -> ?.@365"],
+    [366, "textContent", "?."],
+    [367, "isVisible", "const shown -> if@368"],
+    [369, "isVisible", "if"],
+    [370, "inputValue", "const entered -> if@371"],
+    [372, "inputValue", "if"],
+    [373, "allTextContents", "const texts -> if@374"],
+    [375, "allTextContents", "if"],
+    [376, "allTextContents", "const labels -> if@377"],
     [378, "allTextContents", "if"],
-    [379, "allTextContents", "const labels -> if@380"],
-    [381, "allTextContents", "if"],
-    [382, "textContent", "const title -> if@383"],
-    [384, "textContent", "if"],
-    [385, "inputValue", "const kind -> if@386"],
-    [387, "inputValue", "if"],
+    [379, "textContent", "const title -> if@380"],
+    [381, "textContent", "if"],
+    [382, "inputValue", "const kind -> if@383"],
+    [384, "inputValue", "if"],
+    [397, "evaluateAll", "for-of"],
+    [400, "evaluate", "for-of"],
+    [403, "boundingBox", "for-of"],
+    [406, "evaluateAll", "if"],
+    [407, "evaluate", "if"],
+    [408, "boundingBox", "if"],
+    [423, "count", "let n -> while@424"],
   ]);
 
   // The refusal names the file, the line, the probe, what it decides, and both ways out.
@@ -244,10 +250,11 @@ test("a probe read by an `if` whose only branch throws is refused", () => {
 });
 
 // The shapes planted to pass as no deciding probe at all: one read again by `expect.poll` or by
-// `expect(...).toPass` until it holds, one the page runs in `page.evaluate`, one handed to
-// `expect(...)`, and the probe a wrapper returns. Each line is held to the probe it plants, so a
-// fixture edit that moved one cannot pass for the scan skipping it. The last assertion lists every
-// line the scan reads a deciding probe on, so no planted pass is read as one.
+// `expect(...).toPass` until it holds, one the page runs in `page.evaluate`, whose own answer
+// decides nothing, one handed to `expect(...)`, and the probe a wrapper returns. Each line is
+// held to the probe it plants, so a fixture edit that moved one cannot pass for the scan skipping
+// it. The last assertion lists every line the scan reads a deciding probe on, so no planted pass
+// is read as one.
 test("a probe a retry or the page reads, or that decides no path, is no instance", () => {
   const passes: [number, string][] = [
     [23, "return menu.isVisible();"],
@@ -260,9 +267,9 @@ test("a probe a retry or the page reads, or that decides no path, is no instance
   expect(fixtureProbes.map((probe) => probe.line)).toEqual([
     30, 32, 35, 37, 41, 44, 62, 65, 72, 94, 101, 109, 111, 111, 114, 120, 138, 139, 142, 143, 144,
     145, 152, 157, 158, 159, 160, 161, 162, 164, 165, 173, 174, 175, 182, 184, 187, 190, 193, 196,
-    199, 201, 203, 206, 209, 219, 221, 224, 236, 241, 249, 250, 251, 252, 253, 254, 263, 266, 283,
-    311, 315, 332, 334, 336, 338, 349, 364, 366, 367, 369, 370, 372, 373, 375, 376, 378, 379, 381,
-    382, 384, 385, 387,
+    199, 201, 203, 206, 209, 219, 221, 224, 236, 241, 249, 250, 251, 252, 253, 254, 263, 266, 321,
+    325, 341, 343, 344, 346, 361, 363, 364, 366, 367, 369, 370, 372, 373, 375, 376, 378, 379, 381,
+    382, 384, 397, 400, 403, 406, 407, 408, 423,
   ]);
 });
 
@@ -350,11 +357,11 @@ test("a probe is refused where its name's scope reads it, wherever the read is w
     [263, "if ((found = await menu.isVisible()))", "if"],
     [266, "outer = await menu.isChecked();", "= outer -> if@269"],
     [269, "if (outer || found)", ""],
-    [309, "while (!seen) await look();", ""],
-    [310, "async function look(): Promise<void> {", ""],
-    [311, "seen = await menu.isVisible();", "= seen -> while@309"],
-    [313, "while (!done) {", ""],
-    [315, "var done: boolean | undefined = await menu.isChecked();", "var done -> while@313"],
+    [319, "while (!seen) await look();", ""],
+    [320, "async function look(): Promise<void> {", ""],
+    [321, "seen = await menu.isVisible();", "= seen -> while@319"],
+    [323, "while (!done) {", ""],
+    [325, "var done: boolean | undefined = await menu.isChecked();", "var done -> while@323"],
   ]);
 });
 
@@ -373,51 +380,52 @@ test("a probe reached through each step of the climb is refused at its `if`", ()
 });
 
 // What WHAT IT DOES NOT SEE names passes: an answer passed into a function that branches on it,
-// an answer kept in a property or an array element, a name copied into another name, an answer
-// that `??` only replaces with a literal, and an answer returned. A method called on the answer
-// is no limit where its result decides: the loop over its `.slice(1)` is refused, as a loop over
-// the answer itself is. Each line is held to what it plants, so a fixture edit that moved one
-// cannot pass for the scan skipping it, and no other line of the function holds a deciding probe.
+// an answer handed to `expect`, a callback `forEach` runs once per element, an answer kept in a
+// property, in an array literal's element and stored into an element, a name copied from a bound
+// name and one computed from it, an answer that `??` only replaces with a literal, a call's
+// result returned and an answer returned. Each line is held to what it plants, so a fixture edit
+// that moved one cannot pass for the scan skipping it, and no line of the function or of the
+// callee it hands an answer to holds a deciding probe.
 test("a probe whose answer goes only through a named limit is no instance", () => {
   const passes: [number, string][] = [
-    [282, "await clickWhen(menu, await menu.isVisible());"],
-    [298, "if (shown) await menu.click();"],
-    [284, "state.shown = await menu.isChecked();"],
-    [285, "if (state.shown)"],
-    [286, "const answers = [await menu.isEnabled()];"],
-    [287, "if (answers[0])"],
-    [288, "const seen = await menu.isHidden();"],
-    [289, "const copy = seen;"],
-    [290, "if (copy)"],
-    [291, 'const href = (await menu.getAttribute("href")) ?? "";'],
-    [293, "return (await rows.count()) > 1;"],
+    [284, "await clickWhen(menu, await menu.isVisible());"],
+    [308, "if (shown) await menu.click();"],
+    [285, "expect(await rows.count()).toBe(3);"],
+    [286, "(await rows.all()).forEach((row) => void row.click());"],
+    [287, "state.shown = await menu.isChecked();"],
+    [288, "if (state.shown)"],
+    [289, "const answers = [await menu.isEnabled()];"],
+    [290, "if (answers[0])"],
+    [292, "stored[0] = await menu.isDisabled();"],
+    [293, "if (stored[0])"],
+    [294, "const seen = await menu.isHidden();"],
+    [295, "const copy = seen;"],
+    [296, "if (copy)"],
+    [297, "const value = await menu.inputValue();"],
+    [298, "const trimmed = value.trim();"],
+    [299, "if (trimmed)"],
+    [300, 'const href = (await menu.getAttribute("href")) ?? "";'],
+    [302, "if (pick) return Boolean(await menu.isEditable());"],
+    [303, "return (await rows.count()) > 1;"],
   ];
   for (const [line, text] of passes) expect(fixtureLines[line - 1]).toContain(text);
-  expectPlanted([[283, "for (const text of (await rows.allTextContents()).slice(1))", "for-of"]]);
-  expect(
-    fixtureProbes
-      .filter((probe) => probe.line >= 277 && probe.line <= 299)
-      .map((probe) => probe.line)
-  ).toEqual([283]);
+  expect(fixtureProbes.filter((probe) => probe.line >= 273 && probe.line <= 309)).toEqual([]);
 });
 
 // A name bound to an answer reaches a position through the steps an answer written there takes,
-// a call among them: passed into `Boolean`, walked through `items.slice(1)`, a `.length`
-// compared, the left of an `&&` and a key each carry it on to the position, which refuses it as
-// it refuses the same answers in place. Each line is held to what it plants, so a fixture edit
-// that moved one cannot pass for the scan reading it.
+// a call among them: walked through `items.slice(1)`, a `.length` compared and the left of an
+// `&&` each carry it on to the position, which refuses it as it refuses the same answers in
+// place, the walk over `.slice(1)` of the answer in place beside its bound form. Each line is
+// held to what it plants, so a fixture edit that moved one cannot pass for the scan reading it.
 test("a bound name reaches a position wherever an answer written in its place would", () => {
   expectPlanted([
-    [332, "const shown = await menu.isVisible();", "const shown -> if@333"],
-    [333, "if (Boolean(shown))", ""],
-    [334, "const items = await rows.all();", "const items -> for-of@335"],
-    [335, "for (const item of items.slice(1))", ""],
-    [336, "const texts = await rows.allTextContents();", "const texts -> if@337"],
-    [337, "if (texts.length > 0)", ""],
-    [338, "const checked = await menu.isChecked();", "const checked -> if@339"],
-    [339, "if (checked && open)", ""],
-    [349, "const label = await menu.inputValue();", "const label -> if@350"],
-    [350, "if (handlers[label])", ""],
+    [341, "const items = await rows.all();", "const items -> for-of@342"],
+    [342, "for (const item of items.slice(1))", ""],
+    [343, "for (const text of (await rows.allTextContents()).slice(1))", "for-of"],
+    [344, "const texts = await rows.allTextContents();", "const texts -> if@345"],
+    [345, "if (texts.length > 0)", ""],
+    [346, "const checked = await menu.isChecked();", "const checked -> if@347"],
+    [347, "if (checked && open)", ""],
   ]);
 });
 
@@ -428,58 +436,70 @@ test("a bound name reaches a position wherever an answer written in its place wo
 // for the scan reading it.
 test("a call whose result decides is refused through a bound name and in place", () => {
   expectPlanted([
-    [364, "const value = await menu.inputValue();", "const value -> if@365"],
-    [365, 'if (value.includes("B"))', ""],
-    [366, 'if ((await menu.inputValue()).includes("B"))', "if"],
-    [367, "const text = await menu.textContent();", "const text -> ?.@368"],
-    [368, 'if (text?.includes("B"))', ""],
-    [369, 'if ((await menu.textContent())?.includes("B"))', "?."],
-    [370, "const shown = await menu.isVisible();", "const shown -> if@371"],
-    [371, "if (Boolean(shown))", ""],
-    [372, "if (Boolean(await menu.isVisible()))", "if"],
-    [373, "const entered = await menu.inputValue();", "const entered -> if@374"],
-    [374, "if (/B/.test(entered))", ""],
-    [375, "if (/B/.test(await menu.inputValue()))", "if"],
-    [376, "const texts = await rows.allTextContents();", "const texts -> if@377"],
-    [377, 'if (new Set(texts).has("B"))', ""],
-    [378, 'if (new Set(await rows.allTextContents()).has("B"))', "if"],
-    [379, "const labels = await rows.allTextContents();", "const labels -> if@380"],
-    [380, 'if ("".concat(...labels) === "B")', ""],
-    [381, 'if ("".concat(...(await rows.allTextContents())) === "B")', "if"],
-    [382, "const title = await menu.textContent();", "const title -> if@383"],
-    [383, 'title}` === "B")', ""],
-    [384, 'await menu.textContent()}` === "B")', "if"],
-    [385, "const kind = await menu.inputValue();", "const kind -> if@386"],
-    [386, "if (handlers[kind])", ""],
-    [387, "if (handlers[await menu.inputValue()])", "if"],
+    [361, "const value = await menu.inputValue();", "const value -> if@362"],
+    [362, 'if (value.includes("B"))', ""],
+    [363, 'if ((await menu.inputValue()).includes("B"))', "if"],
+    [364, "const text = await menu.textContent();", "const text -> ?.@365"],
+    [365, 'if (text?.includes("B"))', ""],
+    [366, 'if ((await menu.textContent())?.includes("B"))', "?."],
+    [367, "const shown = await menu.isVisible();", "const shown -> if@368"],
+    [368, "if (Boolean(shown))", ""],
+    [369, "if (Boolean(await menu.isVisible()))", "if"],
+    [370, "const entered = await menu.inputValue();", "const entered -> if@371"],
+    [371, "if (/B/.test(entered))", ""],
+    [372, "if (/B/.test(await menu.inputValue()))", "if"],
+    [373, "const texts = await rows.allTextContents();", "const texts -> if@374"],
+    [374, 'if (new Set(texts).has("B"))', ""],
+    [375, 'if (new Set(await rows.allTextContents()).has("B"))', "if"],
+    [376, "const labels = await rows.allTextContents();", "const labels -> if@377"],
+    [377, 'if ("".concat(...labels) === "B")', ""],
+    [378, 'if ("".concat(...(await rows.allTextContents())) === "B")', "if"],
+    [379, "const title = await menu.textContent();", "const title -> if@380"],
+    [380, 'title}` === "B")', ""],
+    [381, 'await menu.textContent()}` === "B")', "if"],
+    [382, "const kind = await menu.inputValue();", "const kind -> if@383"],
+    [383, "if (handlers[kind])", ""],
+    [384, "if (handlers[await menu.inputValue()])", "if"],
   ]);
 });
 
-// A decision made where the scan does not read passes: an answer passed into a function that
-// branches on it, an answer handed to `expect`, a callback `forEach` runs once per element, an
-// answer stored into a property and into an element, a name copied from a bound name and one
-// computed from it, and a call's result returned. Each line is held to what it plants, so a
-// fixture edit that moved one cannot pass for the scan skipping it, and no line of the function
-// holds a deciding probe.
-test("a probe whose answer is decided on only where the scan does not read is no instance", () => {
+// The evaluate family and `boundingBox` answer for the page as it stands, as `getAttribute`
+// does, so each decides a path where its answer stands in a position: the iterable of a
+// `for...of` and the condition of an `if`, each with no wait before it. Each line is held to
+// what it plants, so a fixture edit that moved one cannot pass for the scan reading it.
+test("an `evaluateAll`, `evaluate` or `boundingBox` read is refused where it decides", () => {
+  expectPlanted([
+    [397, "for (const id of await rows.evaluateAll(", "for-of"],
+    [400, "for (const title of await page.evaluate(", "for-of"],
+    [403, "for (const edge of Object.values((await menu.boundingBox()) ?? {}))", "for-of"],
+    [406, "if ((await rows.evaluateAll((nodes) => nodes.length)) > 1)", "if"],
+    [407, "if (await page.evaluate(() => document.hasFocus()))", "if"],
+    [408, "if ((await menu.boundingBox()) === null) throw new Error(", "if"],
+  ]);
+});
+
+// A function literal passed to `evaluate` runs in the page, so a read its body branches on is
+// the DOM's own and no probe, and the call's own answer, thrown away here, decides nothing. Each
+// line is held to what it plants, so a fixture edit that moved one cannot pass for the scan
+// skipping it.
+test("a branch inside a function `evaluate` runs in the page is no instance", () => {
   const passes: [number, string][] = [
-    [401, "await clickWhen(menu, await menu.isVisible());"],
-    [402, "expect(await rows.count()).toBe(3);"],
-    [403, "(await rows.all()).forEach((row) => void row.click());"],
-    [404, "state.shown = await menu.isChecked();"],
-    [405, "if (state.shown)"],
-    [407, "answers[0] = await menu.isEnabled();"],
-    [408, "if (answers[0])"],
-    [409, "const seen = await menu.isHidden();"],
-    [410, "const ok = seen;"],
-    [411, "if (ok)"],
-    [412, "const value = await menu.inputValue();"],
-    [413, "const trimmed = value.trim();"],
-    [414, "if (trimmed)"],
-    [415, "return Boolean(await menu.isEditable());"],
+    [414, "await page.evaluate(() => {"],
+    [415, 'if (document.body.getAttribute("data-ready") === "yes")'],
   ];
   for (const [line, text] of passes) expect(fixtureLines[line - 1]).toContain(text);
-  expect(fixtureProbes.filter((probe) => probe.line >= 392 && probe.line <= 416)).toEqual([]);
+  expect(fixtureProbes.filter((probe) => probe.line >= 411 && probe.line <= 417)).toEqual([]);
+});
+
+// A compound assignment reads its target before it writes it, so its left side carries the
+// name's value on: in `while ((n -= 1) >= 0)` the `n` bound to a count reaches the `while`. Each
+// line is held to what it plants, so a fixture edit that moved one cannot pass for the scan
+// reading it.
+test("a compound assignment carries a bound answer on to its position", () => {
+  expectPlanted([
+    [423, "let n = await rows.count();", "let n -> while@424"],
+    [424, "while ((n -= 1) >= 0)", ""],
+  ]);
 });
 
 // `Promise.all` is named like `locator.all()`, but it waits for the promises it is handed and

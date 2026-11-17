@@ -52,6 +52,8 @@ async function openPhonePage(context: BrowserContext): Promise<Page> {
  *  the page put the card is where it is measured. */
 async function settle(card: Locator, label: string): Promise<void> {
   await expect(card, `${label}: the newest card`).toBeVisible({ timeout: 20_000 });
+  // The page function waits in the page until the box holds still or its deadline passes, so
+  // the answer is that wait's own verdict.
   const never = await card.evaluate(
     (element) =>
       new Promise<string | null>((resolve) => {
@@ -82,8 +84,12 @@ async function landing(
   page: Page,
   card: Locator
 ): Promise<{ apart: boolean; inView: boolean; where: string }> {
+  // Every caller settled the card first, visible and still, so its box is there.
   const box = await card.boundingBox();
-  const composer = await page.getByRole("form", { name: "Comment composer" }).boundingBox();
+  const docked = page.getByRole("form", { name: "Comment composer" });
+  await expect(docked).toBeVisible();
+  // The wait above drew the docked composer, and a drawn element has a box, so it is there.
+  const composer = await docked.boundingBox();
   const view = await page.evaluate(() => ({
     height: window.innerHeight,
     scrollY: window.scrollY,

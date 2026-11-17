@@ -299,6 +299,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     // 80 seeded rows and the epic, which is a row of the table like any other.
     await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
+    // The handle is taken once on purpose: it names this scroller element, which the row checks
+    // later is still the one connected.
     const original = await scroller.elementHandle();
     const ancestorRequested = Promise.withResolvers<void>();
     const ancestorReady = Promise.withResolvers<void>();
@@ -320,6 +322,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
         return row ? { key: row.dataset.issueRow, top: row.getBoundingClientRect().top } : null;
       });
     await expect.poll(visibleAnchor).not.toBeNull();
+    // The poll above waited until a row sat under that point, and nothing has moved the table
+    // since, so this reads the row the poll found.
     const anchor = await visibleAnchor();
     if (!anchor?.key) throw new Error("No visible issue could be anchored after scrolling");
     expect(await scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
@@ -371,8 +375,14 @@ test("a refused bulk write retries after reload while the other operations have 
       // The bar is fixed to the window, so the geometry that matters is the page at its top,
       // where the bar sits under the header and the table begins below it.
       await page.evaluate(() => window.scrollTo(0, 0));
-      const bar = await page.getByRole("toolbar").boundingBox();
-      const box = await page.getByTestId("issues-table-scroll").boundingBox();
+      const toolbar = page.getByRole("toolbar");
+      const table = page.getByTestId("issues-table-scroll");
+      await expect(toolbar).toBeVisible();
+      await expect(table).toBeVisible();
+      // The waits above drew the bar and the table, and a drawn element has a box.
+      const bar = await toolbar.boundingBox();
+      // The table was waited for above too, so its box is there as the bar's is.
+      const box = await table.boundingBox();
       if (!bar || !box) throw new Error("The selection toolbar or table is missing");
       expect(
         bar.y + bar.height <= box.y || bar.y >= box.y + box.height,
@@ -443,8 +453,14 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     const titleHeader = page
       .getByRole("columnheader")
       .filter({ has: page.getByRole("button", { name: "Title", exact: true }) });
+    await expect(keyHeader).toBeVisible();
+    await expect(titleHeader).toBeVisible();
+    await expect(box).toBeVisible();
+    // The waits above drew both headers and the table, and a drawn element has a box.
     const keyBefore = await keyHeader.boundingBox();
+    // The title header was waited for above too, so its box is there as the key's is.
     const titleBefore = await titleHeader.boundingBox();
+    // The table was waited for above too, so its box is there as the key's is.
     const tableBox = await box.boundingBox();
     if (!keyBefore || !titleBefore || !tableBox)
       throw new Error("The identifying columns are missing");
@@ -457,7 +473,10 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     await box.evaluate((element) => {
       element.scrollLeft = element.scrollWidth;
     });
+    // The headers were waited for above, and a scroll moves them without taking them off the
+    // page, so the key header's box is there.
     const keyAfter = await keyHeader.boundingBox();
+    // The title header was waited for above as well, so its box is there as the key's is.
     const titleAfter = await titleHeader.boundingBox();
     if (!keyAfter || !titleAfter)
       throw new Error("The identifying columns disappeared after scrolling");
@@ -467,6 +486,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       page.locator("[data-issue-row]").first().locator("[data-issue-link]")
     ).toBeVisible();
     const remainingControl = page.getByRole("button", { name: "Filter Updated", exact: true });
+    await expect(remainingControl).toBeVisible();
+    // The wait above drew the control, and a drawn element has a box, so the box is there.
     const controlAtEnd = await remainingControl.boundingBox();
     if (!controlAtEnd) throw new Error("The Updated filter is missing");
     await box.evaluate(
@@ -475,6 +496,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       },
       Math.max(0, titleAfter.x + titleAfter.width - controlAtEnd.x)
     );
+    // The control was waited for above, and a scroll moves it without taking it off the page, so
+    // its box is there.
     const controlBox = await remainingControl.boundingBox();
     if (!controlBox) throw new Error("No control is visible beside the identifying columns");
     expect(controlBox.x).toBeGreaterThanOrEqual(titleAfter.x + titleAfter.width - 1);

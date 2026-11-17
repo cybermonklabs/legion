@@ -149,6 +149,8 @@ export async function readAskThrough(
 export async function verticalOrder(items: Record<string, Locator>): Promise<string[]> {
   const placed: [string, number][] = [];
   for (const [name, locator] of Object.entries(items)) {
+    await expect(locator.first()).toBeVisible();
+    // The wait above drew the part, and a drawn element has a box, so the box is there.
     const box = await locator.first().boundingBox();
     if (box === null) throw new Error(`${name} is not on the page`);
     placed.push([name, box.y]);

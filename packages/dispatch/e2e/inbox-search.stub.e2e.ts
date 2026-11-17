@@ -159,6 +159,8 @@ test.describe("inbox search", () => {
 
     // Pointed at: the pointer rests in the middle of another row and stays there.
     const pointed = inboxRow(page, scene.leaseAskId);
+    await expect(pointed).toBeVisible();
+    // The wait above drew the row, and a drawn element has a box, so the box is there.
     const box = await pointed.boundingBox();
     if (box === null) {
       throw new Error("the Inbox drew no box for the row the pointer was to rest on");

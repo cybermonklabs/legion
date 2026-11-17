@@ -371,11 +371,16 @@ test("dragging a selection from the question into the first list of an ask holdi
 }) => {
   await withTwoLists(browser, async ({ alicePage, first, second }) => {
     await selectQuestionIntoFirstList(alicePage, first, second);
+    // The helper above set this selection in the page itself before it returned, so the
+    // selection's box is there to read at once.
     const from = await alicePage.evaluate(() => {
       const box = window.getSelection()?.getRangeAt(0).getBoundingClientRect();
       return box && { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     });
-    const to = await optionList(alicePage, 1).getByText(second).boundingBox();
+    const option = optionList(alicePage, 1).getByText(second);
+    await expect(option).toBeVisible();
+    // The wait above drew the second list's option, and a drawn element has a box.
+    const to = await option.boundingBox();
     if (!from || !to) throw new Error("the selection or the second list's option has no box");
     await alicePage.mouse.move(from.x, from.y);
     await alicePage.mouse.down();

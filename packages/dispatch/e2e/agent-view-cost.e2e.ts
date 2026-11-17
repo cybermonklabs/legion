@@ -78,7 +78,8 @@ test("eight agents opened in turn cost the page two live views, not eight", asyn
     const page = await context.newPage();
     await page.goto("/");
     // The heap of the shell with its rail and no live view at all, which is what the eight
-    // opens below are measured against.
+    // opens below are measured against: this instant's reading is the measurement itself, and
+    // the branch on it asks only whether this browser reports a heap.
     const heapBefore = await heapBytes(page);
 
     const subscriptions: number[] = [];
@@ -89,6 +90,8 @@ test("eight agents opened in turn cost the page two live views, not eight", asyn
       subscriptions.push(await openAgentSubscriptions(page));
       drawn.push(await drawnLiveViews(page).count());
     }
+    // The heap with the eight open, read once as the measurement, and branched on only for
+    // whether this browser reports a heap at all.
     const heapAfter = await heapBytes(page);
 
     test.info().annotations.push(

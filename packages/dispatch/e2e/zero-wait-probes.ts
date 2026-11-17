@@ -30,19 +30,28 @@
  *   the ones above the call's statement. So a probe on a later line of its statement stands under
  *   no reason, and its refusal tells the writer to give it a line of its own.
  *
- * WHAT A PROBE IS. A call `x.<name>(...)` whose member name is one of `probeMethods`: the reads
- * Playwright answers for the page as it stands when they are read. `isVisible`, `isHidden`,
- * `count`, `all`, `allTextContents` and `allInnerTexts` wait for nothing, and the rest wait at
- * most for an element to match and then answer for that instant, so none of them waits for the
- * state a branch chooses between. A call whose receiver is the plain identifier `Promise` is no
- * probe, though its member is named like one: `Promise.all(...)` waits for the promises it is
- * handed and reads no page. A call of a wrapper is a probe as well. A wrapper is a function
- * declaration, or a `const name =` arrow or function expression, one of whose own `return`
- * statements - a nested function's do not count - returns a probe or `await` of one, or an arrow
- * whose expression body is one, parentheses read through. The wrappers are collected by name in
- * one pass over every file read, before any probe is judged, because a helper declares one and a
- * spec calls it: a spec's `if (await menuShows(page))` branches on the `isVisible` that a
- * helper's `menuShows` returns.
+ * WHAT A PROBE IS. A call `x.<name>(...)` whose member name is one of `probeMethods`. The list
+ * follows one rule over Playwright's `Locator` methods: a probe is a method whose answer is the
+ * page's state at one instant, waiting for nothing or at most for an element to attach, so none
+ * of them waits for the state a branch chooses between. By that rule `isVisible`, `count`,
+ * `all`, `getAttribute`, `evaluate`, `evaluateAll`, `boundingBox` and the rest `probeMethods`
+ * holds are probes, and these are not: the actions, which change the page rather than answer its
+ * state, most of them after waiting for the element to be actionable (`click`, `fill`, `press`,
+ * `selectOption` and the rest), and `screenshot`, which waits for that too; the waits
+ * themselves, `waitFor` and `waitForFunction`; the builders, whose answer is a locator and not a
+ * state (`filter`, `nth`, `locator`, the `getBy` family, `normalize` and the rest); and what
+ * reads no page (`page`, `description`, `toString`, `highlight` and `hideHighlight`). A probe
+ * is read by its member NAME, so a call of that name on another object is one too:
+ * `page.evaluate(...)` answers the page's state at one instant just as `locator.evaluate(...)`
+ * does. A call whose receiver is the plain identifier `Promise` is no probe, though its member
+ * is named like one: `Promise.all(...)` waits for the promises it is handed and reads no page.
+ * A call of a wrapper is a probe as well. A wrapper is a function declaration, or a
+ * `const name =` arrow or function expression, one of whose own `return` statements - a nested
+ * function's do not count - returns a probe or `await` of one, or an arrow whose expression body
+ * is one, parentheses read through: a helper that returns `page.evaluate(...)` or
+ * `rows.boundingBox()` is one. The wrappers are collected by name in one pass over every file
+ * read, before any probe is judged, because a helper declares one and a spec calls it: a spec's
+ * `if (await menuShows(page))` branches on the `isVisible` that a helper's `menuShows` returns.
  *
  * WHAT DECIDES A PATH. The positions below are the places TypeScript's grammar gives a value to
  * decide what runs next, and `conditionKind` enumerates them by the `SyntaxKind` of the node that
@@ -86,13 +95,14 @@
  * which WHAT IT DOES NOT SEE names, is thrown away, or is bound to a name, and nothing else ends
  * the climb: a function or a class written in place; a `return`, a `yield` or a `throw`; an
  * element of an array literal, a spread among them, and a property of an object literal; the left
- * operand of a comma and a `void`, whose value is thrown away; the left side of an assignment,
- * where the value goes rather than a value read there; an initializer that binds a name, below;
- * and a statement or a declaration, since the climb is over expressions. Every other parent
- * carries the value on: `await`, parentheses, `as`, `satisfies`, a non-null `!`, every operand of
- * an operator but those two left sides, either branch of a `?:`, a template literal, a property or
- * an element read on the answer, the key of an element access, and a call, a `new`, a spread
- * argument and a tagged template, the answer the receiver or an argument alike. So
+ * operand of a comma and a `void`, whose value is thrown away; the target of a plain `=`, where
+ * the value goes rather than a value read there, while a compound operator such as `+=` reads its
+ * target, so in `while ((n -= 1) >= 0)` the `n` reaches the `while`; an initializer that binds a
+ * name, below; and a statement or a declaration, since the climb is over expressions. Every other
+ * parent carries the value on: `await`, parentheses, `as`, `satisfies`, a non-null `!`, every
+ * operand of an operator but those two left sides, either branch of a `?:`, a template literal, a
+ * property or an element read on the answer, the key of an element access, and a call, a `new`,
+ * a spread argument and a tagged template, the answer the receiver or an argument alike. So
  * `(await rows.all()).length > 0`, `Boolean(await menu.isVisible())`,
  * `(await menu.inputValue()).includes("B")` and `handlers[await menu.inputValue()]` each reach
  * the `if` they stand in. `carrier` enumerates the stops by `SyntaxKind`, as `conditionKind`
@@ -141,7 +151,9 @@
  *   `exposeFunction`, `exposeBinding`, `route` and `routeWebSocket`. The first seven run it in
  *   the page, where a `getAttribute` is the DOM's own read and no Playwright probe; the last four
  *   run it when the page calls it or sends a request, so it reads at that event rather than at a
- *   moment the row chose.
+ *   moment the row chose. What runs in the page is no probe, but the call's answer is: the
+ *   answer of `evaluate`, `evaluateAll` and `evaluateHandle` is the page's state at the instant
+ *   they ran, so a branch on it is read as a branch on any probe is.
  *
  * WHAT IS READ. Every file `suiteFiles` of `e2e/fixed-waits.ts` reads, for the reasons that
  * module's WHAT IS READ gives: every `.ts` under the `e2e` directory but `__tests__`, whose
@@ -237,23 +249,33 @@ type RefusedProbe = {
   why: string;
 };
 
-/** The reads WHAT A PROBE IS names, by the member name they are called under. */
+/** The reads WHAT A PROBE IS names, by the member name they are called under: every method of
+ *  Playwright's `Locator` whose answer is the page's state at one instant, waiting for nothing or
+ *  at most for an element to attach, as Playwright 1.64.1's `Locator` documents each. */
 const probeMethods: ReadonlySet<string> = new Set([
-  "isVisible",
-  "isHidden",
-  "isEnabled",
-  "isDisabled",
-  "isChecked",
-  "isEditable",
-  "count",
   "all",
-  "allTextContents",
   "allInnerTexts",
-  "textContent",
-  "innerText",
-  "innerHTML",
+  "allTextContents",
+  "ariaSnapshot",
+  "ariaSnapshotJSON",
+  "boundingBox",
+  "count",
+  "elementHandle",
+  "elementHandles",
+  "evaluate",
+  "evaluateAll",
+  "evaluateHandle",
   "getAttribute",
+  "innerHTML",
+  "innerText",
   "inputValue",
+  "isChecked",
+  "isDisabled",
+  "isEditable",
+  "isEnabled",
+  "isHidden",
+  "isVisible",
+  "textContent",
 ]);
 
 /** The calls WHAT IS SKIPPED names, by the member name of the callee: each runs a function literal
@@ -371,7 +393,7 @@ function unparenthesized(node: ts.Expression): ts.Expression {
 }
 
 /** Whether `node` begins a function of its own: a `return` inside it is not its parent's, and a
- *  name it declares is read in its own conditions and not its parent's. */
+ *  name it declares belongs to its own scope and not its parent's. */
 function isFunctionLike(node: ts.Node): boolean {
   return (
     ts.isFunctionDeclaration(node) ||
@@ -646,9 +668,7 @@ function carrier(node: ts.Node): ts.Node | undefined {
   const parent = node.parent;
   switch (parent.kind) {
     // The answer leaves the function: a decision on it is made by the caller.
-    case ts.SyntaxKind.ReturnStatement:
     case ts.SyntaxKind.YieldExpression:
-    case ts.SyntaxKind.ThrowStatement:
       return undefined;
     // An element of an array literal, a spread among them, or a property of an object literal: a
     // decision on it reads the element or the property. A shorthand's default in a pattern,
@@ -663,11 +683,14 @@ function carrier(node: ts.Node): ts.Node | undefined {
     case ts.SyntaxKind.VoidExpression:
       return undefined;
     case ts.SyntaxKind.BinaryExpression: {
-      // The comma throws its left operand's value away, and an assignment's left side is where
-      // the value goes, not a value read there.
+      // The comma throws its left operand's value away, and the target of a plain `=` is where
+      // the value goes, not a value read there. A compound operator such as `+=` reads its
+      // target, so its left side carries; that of an `&&=`, an `||=` or a `??=` is a position
+      // `conditionKind` names, where the climb has ended before it asks here.
       const binary = parent as ts.BinaryExpression;
       const operator = binary.operatorToken.kind;
-      const leftDropped = operator === ts.SyntaxKind.CommaToken || isAssignment(operator);
+      const leftDropped =
+        operator === ts.SyntaxKind.CommaToken || operator === ts.SyntaxKind.EqualsToken;
       return leftDropped && binary.left === node ? undefined : parent;
     }
     // An initializer, where `bindingOf` reads the name it binds.
@@ -675,16 +698,15 @@ function carrier(node: ts.Node): ts.Node | undefined {
     case ts.SyntaxKind.Parameter:
     case ts.SyntaxKind.BindingElement:
       return undefined;
-    // A class field's or an enum member's initializer, and the file: the climb is over
-    // expressions.
+    // A class field's or an enum member's initializer: the climb is over expressions.
     case ts.SyntaxKind.PropertyDeclaration:
     case ts.SyntaxKind.EnumMember:
-    case ts.SyntaxKind.SourceFile:
       return undefined;
     default:
       // A function or a class written in place: a decision in it is made inside a function the
       // answer is passed into, or after it is returned. A statement, a declaration's among them:
-      // the climb is over expressions.
+      // the climb is over expressions. A `return` and a `throw` are statements, so the answer
+      // they hand on leaves the function, and its caller decides on it.
       return isFunctionLike(parent) || ts.isClassLike(parent) || ts.isStatement(parent)
         ? undefined
         : parent;
@@ -715,38 +737,6 @@ function enclosingFunction(node: ts.Node): ts.Node {
   return current ?? node.getSourceFile();
 }
 
-/** Whether the function `scope` stands inside the function or file `outer`, at any depth. */
-function isNestedIn(scope: ts.Node, outer: ts.Node): boolean {
-  let current = scope;
-  while (!ts.isSourceFile(current)) {
-    current = enclosingFunction(current);
-    if (current === outer) return true;
-  }
-  return false;
-}
-
-/** One position of a file that decides a path: the node that stands there, what it decides, and
- *  the function it stands in, which a name bound to a probe's answer is read against. */
-type Condition = {
-  readonly expression: ts.Node;
-  readonly kind: string;
-  readonly scope: ts.Node;
-};
-
-/** Every position of `sourceFile` that decides a path, in the order the file writes them. */
-function conditionsOf(sourceFile: ts.SourceFile): Condition[] {
-  const conditions: Condition[] = [];
-  const visit = (node: ts.Node): void => {
-    const kind = conditionKind(node);
-    if (kind !== undefined) {
-      conditions.push({ expression: node, kind, scope: enclosingFunction(node) });
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(sourceFile, visit);
-  return conditions;
-}
-
 /** Whether `identifier` reads the value of the name it spells, by what it is: no reference is
  *  its parent's `name`, `propertyName` or `label`, which is a property's name (`obj.shown`'s
  *  `shown`, `{ shown: 1 }`'s key, `{ shown: s }`'s in a pattern), a declaration's own name or a
@@ -760,29 +750,6 @@ function isReference(identifier: ts.Identifier): boolean {
     label?: ts.Node;
   };
   return identifier !== name && identifier !== propertyName && identifier !== label;
-}
-
-/** Every reference to one of `names` under `position` whose value reaches it, in the order the
- *  file writes them: an identifier spelled so that `isReference` reads as one, from which the
- *  climb ends at `position`, as it would from an answer written in its place. A name written in a
- *  type is none, so the walk goes into no type: `x as shown` reads no `shown`. An instantiation
- *  expression, `f<T>`, is a value, and only its type arguments are types. */
-function readsOf(position: ts.Node, names: readonly string[]): ts.Identifier[] {
-  const found: ts.Identifier[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) return;
-    if (
-      ts.isIdentifier(node) &&
-      names.includes(node.text) &&
-      isReference(node) &&
-      climb(node).at(-1) === position
-    ) {
-      found.push(node);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(position);
-  return found;
 }
 
 /** The names `name` binds: itself where it is a plain name, else every name of the pattern,
@@ -906,42 +873,59 @@ function scopeOf(binding: Binding): ts.Node {
   }
 }
 
-/** Where the positions of `conditions` read a name `binding` binds, as `DecidingProbe.position`
- *  spells it: `const shown -> ternary@42`. Nothing where none does. A position reads it where it
- *  stands in the binding's scope or in a function nested in it, written anywhere there, and holds
- *  a reference to the name whose value reaches it, as `readsOf` reads one. */
-function bindingReads(binding: Binding, conditions: readonly Condition[]): string | undefined {
+/** Where the positions of the scope of `binding` read a name it binds, as
+ *  `DecidingProbe.position` spells it: `const shown -> ternary@42`. Nothing where none does.
+ *
+ * One walk of the scope `scopeOf` names, nested functions included, reads it: from each
+ * reference to a bound name, an identifier `isReference` reads as one, the climb runs as it would
+ * from an answer written in its place, and where it ends at a position, that position reads the
+ * name, at the line of the first reference that reaches it. A name written in a type is none, so
+ * the walk goes into no type: `x as shown` reads no `shown`. An instantiation expression, `f<T>`,
+ * is a value, and only its type arguments are types. The positions are listed in the order the
+ * file writes them: by where each starts, and one before a position it holds that starts with
+ * it. */
+function bindingReads(binding: Binding): string | undefined {
   const sourceFile = binding.node.getSourceFile();
-  const scope = scopeOf(binding);
   const read = new Set<string>();
-  const uses: string[] = [];
-  for (const condition of conditions) {
-    if (condition.scope !== scope && !isNestedIn(condition.scope, scope)) continue;
-    const references = readsOf(condition.expression, binding.names);
-    if (references.length === 0) continue;
-    for (const reference of references) read.add(reference.text);
-    const line = sourceFile.getLineAndCharacterOfPosition(references[0].getStart(sourceFile)).line;
-    uses.push(`${condition.kind}@${line + 1}`);
-  }
-  if (uses.length === 0) return undefined;
+  const uses = new Map<ts.Node, string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) return;
+    if (ts.isIdentifier(node) && binding.names.includes(node.text) && isReference(node)) {
+      const path = climb(node);
+      const position = path[path.length - 1];
+      const kind = conditionKind(position);
+      if (kind !== undefined) {
+        read.add(node.text);
+        if (!uses.has(position)) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
+          uses.set(position, `${kind}@${line + 1}`);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scopeOf(binding));
+  if (uses.size === 0) return undefined;
+  const ordered = [...uses]
+    .sort(
+      ([first], [second]) =>
+        first.getStart(sourceFile) - second.getStart(sourceFile) || second.getEnd() - first.getEnd()
+    )
+    .map(([, use]) => use);
   const names = binding.names.filter((name) => read.has(name));
-  return `${binding.how} ${names.join(",")} -> ${uses.join(",")}`;
+  return `${binding.how} ${names.join(",")} -> ${ordered.join(",")}`;
 }
 
 /** What `probe` decides, as `DecidingProbe.position` spells it, or nothing where it decides no
- *  path: the position the climb reaches, or else every binding it passes that a position reads.
- *  `conditions` are its file's. */
-function positionOf(
-  probe: ts.CallExpression,
-  conditions: readonly Condition[]
-): string | undefined {
+ *  path: the position the climb reaches, or else every binding it passes that a position reads. */
+function positionOf(probe: ts.CallExpression): string | undefined {
   const path = climb(probe);
   const kind = conditionKind(path[path.length - 1]);
   if (kind !== undefined) return kind;
   const reads: string[] = [];
   for (const node of path) {
     const binding = bindingOf(node);
-    const read = binding === undefined ? undefined : bindingReads(binding, conditions);
+    const read = binding === undefined ? undefined : bindingReads(binding);
     if (read !== undefined) reads.push(read);
   }
   return reads.length === 0 ? undefined : reads.join("; ");
@@ -964,12 +948,11 @@ export function probesOfFiles(directory: string, files: readonly string[]): Deci
   const wrappers = wrapperNames(parsed);
   const probes: DecidingProbe[] = [];
   for (const { file, sourceFile } of parsed) {
-    const conditions = conditionsOf(sourceFile);
     walkSkipped(sourceFile, (node, skipped) => {
       if (skipped || !ts.isCallExpression(node)) return;
       const name = probeName(node, wrappers);
       if (name === undefined) return;
-      const position = positionOf(node, conditions);
+      const position = positionOf(node);
       if (position === undefined) return;
       const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
       probes.push({

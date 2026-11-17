@@ -397,8 +397,12 @@ test("the phone Conversation opens a full-height thread view with its composer p
     const thread = page.getByRole("dialog", { name: "Thread" });
     await expect(thread).toBeVisible();
     const viewport = page.viewportSize();
+    const composer = thread.getByRole("form", { name: "Comment composer" });
+    await expect(composer).toBeVisible();
+    // The waits above drew the thread and its composer, and a drawn element has a box.
     const threadBox = await thread.boundingBox();
-    const composerBox = await thread.getByRole("form", { name: "Comment composer" }).boundingBox();
+    // The composer was waited for above too, so its box is there as the thread's is.
+    const composerBox = await composer.boundingBox();
     if (viewport === null || threadBox === null || composerBox === null) {
       throw new Error("The phone thread view did not expose a measurable layout.");
     }
@@ -529,7 +533,10 @@ test("two suggestions on one block are each accepted from their collapsed card @
     await expect(secondCard).toContainText("Closer to the photo.");
     for (const card of [firstCard, secondCard]) {
       for (const name of ["Accept suggestion", "Reject suggestion"]) {
-        const bounds = await card.getByRole("button", { name }).boundingBox();
+        const button = card.getByRole("button", { name });
+        await expect(button).toBeVisible();
+        // The wait above drew the button, and a drawn element has a box, so the box is there.
+        const bounds = await button.boundingBox();
         if (bounds === null) {
           throw new Error(`${name} has no bounds on a collapsed card.`);
         }

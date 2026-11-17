@@ -202,7 +202,8 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
     await page.getByRole("link", { name: "Download version 1" }).click();
     await download;
     // The browser announced the download as a navigation to another document: the case the
-    // guard has to tell apart from a page being left.
+    // guard has to tell apart from a page being left. The page records that navigation when it
+    // starts, before the download it turns into reaches this process, so the read holds it.
     const events = await page.evaluate<NavigationEventTrace[] | undefined>(() => {
       const eventWindow = window as Window & { seenNavigations?: NavigationEventTrace[] };
       return eventWindow.seenNavigations;

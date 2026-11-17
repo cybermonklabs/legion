@@ -456,8 +456,6 @@ const boundedCalls: readonly BoundedCall[] = [
  *  which under the export's own name is the same export. A file that imports neither calls it
  *  nowhere, whatever it declares. */
 type ImportedNames = {
-  /** The export these names call. */
-  readonly exported: string;
   /** Bare names a call of which is a call of the export. */
   readonly bare: ReadonlySet<string>;
   /** Names a member of which is that export, reached through `import * as` or bound to the
@@ -534,17 +532,17 @@ function importedNames(
     ts.forEachChild(node, collect);
   };
   ts.forEachChild(sourceFile, collect);
-  return { exported, bare, namespaces };
+  return { bare, namespaces };
 }
 
-/** Whether `call` calls the export `names` stand for under the names the file imported it by: a
- *  bare name, or a member of a namespace. A function of the file's own that happens to share the
- *  export's name is no call of it. */
-function callsImport(call: ts.CallExpression, names: ImportedNames): boolean {
+/** Whether `call` calls `exported` under the names the file imported it by: a bare name, or a
+ *  member of a namespace. A function of the file's own that happens to share the export's name
+ *  is no call of it. */
+function callsImport(call: ts.CallExpression, names: ImportedNames, exported: string): boolean {
   const callee = call.expression;
   if (ts.isPropertyAccessExpression(callee)) {
     return (
-      callee.name.text === names.exported &&
+      callee.name.text === exported &&
       ts.isIdentifier(callee.expression) &&
       names.namespaces.has(callee.expression.text)
     );
@@ -772,7 +770,7 @@ type WaitingNames = {
  *  those. */
 function reachOf(call: ts.CallExpression, waiting: WaitingNames): Reach | undefined {
   for (const { exported, names, boundOf } of waiting.imports) {
-    if (callsImport(call, names)) return { reached: exported, bound: boundOf(call) };
+    if (callsImport(call, names, exported)) return { reached: exported, bound: boundOf(call) };
   }
   return ts.isIdentifier(call.expression) ? waiting.helpers.get(call.expression.text) : undefined;
 }
@@ -969,7 +967,9 @@ function waitsOf(
       continue;
     }
     const callee = `\`${node.expression.getText()}\``;
-    const direct = waiting.imports.some(({ names }) => callsImport(node, names));
+    const direct = waiting.imports.some(({ exported, names }) =>
+      callsImport(node, names, exported)
+    );
     named.add(direct ? callee : `${callee} (which waits for \`${reach.reached}\`)`);
   }
   return { waitsFor: [...named], bound: reachOfAll(waits)?.bound };
@@ -1134,7 +1134,7 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
         kind === "file" ? { waitsFor: [], bound: undefined } : waitsOf(call, waiting);
       for (const limit of ofCall.limits) {
         const line = lineOf(limit);
-        const fromBounds = ts.isCallExpression(limit) && callsImport(limit, derived);
+        const fromBounds = ts.isCallExpression(limit) && callsImport(limit, derived, boundsExport);
         const stated: StatedLimit = {
           text: limit.getText(sourceFile),
           reason: reasonAbove(limit),

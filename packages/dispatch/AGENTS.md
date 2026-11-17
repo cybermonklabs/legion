@@ -2248,9 +2248,11 @@ controls.
 `e2e/zero-wait-probes.ts`, which `e2e/__tests__/zero-wait-probes.test.ts` runs
 over the suite, refuses a zero-wait probe whose answer decides a path, unless a
 reason stands directly above it.
-A probe is a read that answers for the page as it stands and waits for no state:
-`isVisible`, `count`, `all`, `getAttribute` and the like, or a call of a wrapper
-that returns one.
+A probe is a `Locator` read whose answer is the page's state at one instant,
+waiting for nothing or at most for an element to attach: `isVisible`, `count`,
+`all`, `getAttribute`, `evaluate`, `evaluateAll`, `boundingBox` and the rest the
+guard's header lists by that rule, or a call of a wrapper that returns one.
+A probe is read by its name, so `page.evaluate(...)` is one too.
 A call on the plain identifier `Promise` is none: `Promise.all(...)` waits for
 the promises it is handed and reads no page.
 Its answer decides a path where it stands in a place TypeScript's grammar lets a
@@ -2268,8 +2270,9 @@ first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`.
 The guard reaches that place from the probe through every parent but a list of
 stops, enumerated by `SyntaxKind`: a function or a class written in place, a
 `return`, a `yield` or a `throw`, an element of an array literal or a property
-of an object literal, a comma's left operand, a `void`, an assignment's target,
-an initializer that binds a name, and a statement or a declaration.
+of an object literal, a comma's left operand, a `void`, the target of a plain
+`=` (a `+=` and its kin read their target, so it carries), an initializer that
+binds a name, and a statement or a declaration.
 So `await`, parentheses, `as`, `!`, an operator, a template literal,
 `(await rows.all()).length`, a key, and a call, the answer its receiver or an
 argument alike, carry the answer on: `(await menu.inputValue()).includes("B")`
@@ -2309,7 +2312,8 @@ of them is visible, and answers the first that is.
 The guard skips a probe inside a function passed to `expect.poll`, the subject
 of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
 `route` and the others its header lists), because each of those is read again,
-or at a moment the row did not pick.
+or at a moment the row did not pick; what a page-side callback runs is no probe,
+but the answer of `evaluate` and its kin is one.
 `e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
 controls, `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
 `e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops,

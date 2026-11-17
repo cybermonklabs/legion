@@ -807,6 +807,8 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     // failure this guards against is a control whose box grows beyond the words in it.
     const options = card.getByRole("group", { name: "Answer options" });
     await expect(options.getByRole("radio")).toHaveCount(4);
+    await expect(card).toBeVisible();
+    // The wait above drew the card, and a drawn element has a box, so the box is there.
     const cardBox = await card.boundingBox();
     if (cardBox === null) throw new Error("the ask card has no layout box");
     // The count of four radios above settled these rows: each radio stands inside its label.

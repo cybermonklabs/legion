@@ -240,8 +240,15 @@ async function expectDotBeside(page: Page, neighbour: string): Promise<void> {
   const header = page.getByTestId("artifact-header");
   const dot = connectedDot(header);
   await expect(dot).toHaveText("connected");
-  const beside = await header.getByRole("button", { name: neighbour }).boundingBox();
+  const button = header.getByRole("button", { name: neighbour });
+  await expect(button).toBeVisible();
+  await expect(dot).toBeVisible();
+  await expect(header).toBeVisible();
+  // The waits above drew the button, the dot and the card, and a drawn element has a box.
+  const beside = await button.boundingBox();
+  // The dot was waited for above, so its box is there as the button's is.
   const dotBox = await dot.boundingBox();
+  // The card was waited for above, so its box is there as the button's is.
   const card = await header.boundingBox();
   if (beside === null || dotBox === null || card === null) {
     throw new Error("the version actions are not visible");

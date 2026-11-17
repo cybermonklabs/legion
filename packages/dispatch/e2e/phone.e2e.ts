@@ -716,6 +716,8 @@ test("an inline link keeps its line and grows its hit box without covering its n
  *  vertically rather than horizontally); Chromium reports the clamped box's display as
  *  `flow-root`, so the clamp is read from its own property. */
 async function expectEllipsis(link: Locator): Promise<void> {
+  await expect(link).toBeVisible();
+  // The wait above drew the link, so the styles and the boxes read here are the drawn ones.
   const state = await link.evaluate((node) => {
     const clippers = [node, ...node.querySelectorAll("*")].filter((element) => {
       const style = getComputedStyle(element);
@@ -751,6 +753,8 @@ async function expectEllipsis(link: Locator): Promise<void> {
  *  one before it. Below 1280 px `styles.css` makes every link and button an inline-flex row,
  *  which puts a `block` control's lines side by side. */
 async function expectStacked(control: Locator): Promise<void> {
+  await expect(control).toBeVisible();
+  // The wait above drew the control, so the boxes of its lines read here are the drawn ones.
   const rows = await control.evaluate((node) =>
     [...node.children].map((child) => {
       const box = child.getBoundingClientRect();

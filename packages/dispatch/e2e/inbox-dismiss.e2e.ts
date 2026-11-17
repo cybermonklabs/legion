@@ -429,7 +429,8 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(rows).toHaveCount(GROUP_PAGE);
     expect(await bandHeadings(page)).toEqual([`P2 (${THREADS})`]);
 
-    // One row ticked, then **Select all**: the band holds every row, drawn or not.
+    // One row ticked, then **Select all**: the band holds every row, drawn or not. The count
+    // above waited for the `GROUP_PAGE` rows the band draws, so the read takes each drawn row.
     const drawn = await rows.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
     );
