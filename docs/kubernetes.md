@@ -1974,8 +1974,10 @@ The daemon queues one at the boot ready of a claim, at each boot, and in the tra
 The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
-A Dispatch without the route answers `404 NOT_FOUND`, and the daemon retries the row until Dispatch has the route.
-The daemon also retries a `5xx`.
+A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the daemon waits: it runs the row again on its backoff, at most 64 s apart, until Dispatch has the route.
+While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
+That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
+The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
 A `400` from the route is final: the daemon ends the row and logs one ERROR line with the issue and Dispatch's code, and the next ready, end or other change of a claim on that issue queues a fresh publication.
 
 **The session of an ended claim keeps its role for a time.**

@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -297,23 +299,27 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 	}
 }
 
-// What becomes of a row is decided by Dispatch's answer alone. An outage is retried: a transport
-// failure, a 5xx, a 400 with no code (from whatever stands in front of Dispatch), and the 404 that
-// a Dispatch without the route answers under its router's code
-// NOT_FOUND, so the daemon and Dispatch deploy in either order. A refusal that no retry changes
-// ends the row: the route's 404 ISSUE_NOT_FOUND, and a 400 with Dispatch's code, which names a set
-// that Dispatch will never take. A 400 ends the row with one ERROR line that names the issue and
-// Dispatch's code, and nothing else: the issue's next ready or end of a claim queues a fresh
-// publication, which reads the live set again.
+// What becomes of a row is decided by Dispatch's answer alone. An outage is retried as a failure:
+// a transport failure, a 404 NOT_FOUND "not found" that a handler answers for a row it did not find
+// (Dispatch's writeHandlerError), a 5xx, and a 400 with no code (from whatever stands in front of
+// Dispatch). The 404 that a Dispatch without the route answers under its router's code NOT_FOUND,
+// "no route for …", is a wait, so the daemon and Dispatch deploy in either order with no ERROR
+// line while they do (TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt). A refusal
+// that no retry changes ends the row: the route's 404 ISSUE_NOT_FOUND, and a 400 with Dispatch's
+// code, which names a set that Dispatch will never take. A 400 ends the row with one ERROR line
+// that names the issue and Dispatch's code, and nothing else: the issue's next ready or end of a
+// claim queues a fresh publication, which reads the live set again.
 func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
 	logs := &syncBuffer{}
-	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
+	// At DEBUG, since the router's 404 meets the row at its second attempt, where a wait logs DEBUG.
+	r.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r.seedClaim(issue, claim.RoleTester, "ses-1", supervise.StateWorking, time.Minute)
 	r.client.answers = []error{
 		fmt.Errorf("publish the role holders of %s: %w", issue, errors.New("Dispatch is down")),
 		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/" + issue + "/role-holders"},
+		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"},
 		&dispatch.Error{Status: http.StatusInternalServerError, Code: "INTERNAL", Message: "internal server error"},
 		&dispatch.Error{Status: http.StatusBadRequest, Message: "<html>400 Bad Request</html>"},
 		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ROLE_HOLDER", Message: "the session of tester is not a session id."},
@@ -330,6 +336,7 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	}{
 		{what: "a Dispatch that is down", rows: 1},
 		{what: "the router's 404 NOT_FOUND of a Dispatch with no such route", rows: 1, after: time.Minute},
+		{what: "a handler's 404 NOT_FOUND for a row it did not find", rows: 1, after: time.Minute},
 		{what: "a 500", rows: 1, after: time.Minute},
 		{what: "a 400 with no code, from whatever stands in front of Dispatch", rows: 1, after: time.Minute},
 		{what: "the 400 that refuses the set", rows: 0, after: time.Minute},
@@ -351,7 +358,7 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 		t.Fatalf("%d of the answers were never given, so the rows never met them", answers)
 	}
 
-	var refused, failed []string
+	var refused, failed, waited []string
 	for _, line := range strings.Split(logs.String(), "\n") {
 		if strings.Contains(line, "role-holders publish refused by Dispatch") {
 			refused = append(refused, line)
@@ -359,9 +366,15 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 		if strings.Contains(line, `msg="outbox row failed"`) {
 			failed = append(failed, line)
 		}
+		if strings.Contains(line, `msg="outbox row waits"`) {
+			waited = append(waited, line)
+		}
 	}
 	if len(failed) != 4 {
-		t.Errorf("logged %d failed rows, want the four retried answers:\n%s", len(failed), logs.String())
+		t.Errorf("logged %d failed rows, want the four retried failures:\n%s", len(failed), logs.String())
+	}
+	if len(waited) != 1 || !strings.Contains(waited[0], "no route for PUT") {
+		t.Errorf("logged the waits %q, want one, the router's 404:\n%s", waited, logs.String())
 	}
 	if len(refused) != 2 {
 		t.Fatalf("logged %d refusals, want the 400 and the ISSUE_NOT_FOUND once each:\n%s", len(refused), logs.String())
@@ -371,5 +384,106 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	}
 	if line := refused[1]; !strings.Contains(line, "level=WARN") || !strings.Contains(line, "code="+dispatch.IssueNotFound) {
 		t.Errorf("the ISSUE_NOT_FOUND line is %q, want a WARN that names the code", line)
+	}
+}
+
+// A Dispatch older than the route answers each publication with its router's 404 NOT_FOUND "no
+// route for …" (routes/router.go, staticHandler), and the daemon and Dispatch deploy in either
+// order. So the row waits rather than fails: it logs `outbox row waits` and no ERROR line, at INFO
+// on its first run, DEBUG on the next six, and WARN from its seventh retry, when its backoff has
+// reached its cap of about a minute (waitWarnAttempts); each run leaves the row in the outbox with
+// its next run ahead of it. Once Dispatch serves the route, the next run lands the live set and
+// ends the row. The stand-in answers as the router does, through the daemon's real HTTP client,
+// so the client's reading of that body is what decides.
+func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
+	const issue = "LEGION-208"
+	r := newRoleHoldersRig(t)
+	logs := &syncBuffer{}
+	r.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	r.seedClaim(issue, claim.RoleTester, "ses-1", supervise.StateWorking, time.Minute)
+
+	var mu sync.Mutex
+	routed, asked := false, 0
+	var landed [][]dispatch.RoleHolder
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked++
+		w.Header().Set("Content-Type", "application/json")
+		if !routed || req.Method != http.MethodPut || req.URL.Path != "/api/v1/issues/"+issue+"/role-holders" {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"code": "NOT_FOUND", "error": "no route for " + req.Method + " " + req.URL.Path, "hint": "GET /api/v1 lists every route",
+			})
+			return
+		}
+		var body struct {
+			Holders []dispatch.RoleHolder `json:"holders"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		landed = append(landed, body.Holders)
+		_ = json.NewEncoder(w).Encode(map[string]any{"issue": issue, "holders": body.Holders})
+	}))
+	t.Cleanup(server.Close)
+	r.runner.dispatch = dispatch.New(server.URL, "agent-token")
+	run := func() {
+		t.Helper()
+		if drained, _ := r.runner.drain(r.ctx, "", []record.OutboxKind{record.OutboxKindRoleHoldersPublish}); !drained {
+			t.Fatal("the role-holders lane did not drain")
+		}
+	}
+	r.enqueue(issue)
+
+	const tries = waitWarnAttempts + 1
+	for try := 1; try <= tries; try++ {
+		run()
+		var attempts int
+		var nextAt time.Time
+		if err := r.pool.QueryRow(r.ctx, `select attempts, next_at from outbox where kind = $1 and issue = $2`,
+			string(record.OutboxKindRoleHoldersPublish), issue).Scan(&attempts, &nextAt); err != nil {
+			t.Fatalf("after try %d, read the row: %v", try, err)
+		}
+		if attempts != try || !nextAt.After(r.clock()) {
+			t.Fatalf("after try %d the row has %d attempts and runs next at %s, want %d attempts and a run after %s", try, attempts, nextAt, try, r.clock())
+		}
+		mu.Lock()
+		reached := asked
+		mu.Unlock()
+		if reached != try {
+			t.Fatalf("after try %d the stand-in was asked %d times, want once a try", try, reached)
+		}
+		r.ahead += 2 * time.Minute
+	}
+
+	mu.Lock()
+	routed = true
+	mu.Unlock()
+	run()
+	if want := [][]dispatch.RoleHolder{{{Role: "tester", Session: "ses-1"}}}; !reflect.DeepEqual(landed, want) {
+		t.Fatalf("once the route was served the stand-in took %+v, want %+v", landed, want)
+	}
+	if rows := outboxRows(t, r.pool); rows != 0 {
+		t.Fatalf("after the publication landed the outbox holds %d rows, want none", rows)
+	}
+
+	var levels []string
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, "level=ERROR") {
+			t.Errorf("logged an ERROR line while Dispatch had no route: %s", line)
+		}
+		if strings.Contains(line, `msg="outbox row waits"`) {
+			for _, field := range strings.Fields(line) {
+				if level, ok := strings.CutPrefix(field, "level="); ok {
+					levels = append(levels, level)
+				}
+			}
+		}
+	}
+	want := []string{"INFO", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "WARN"}
+	if !slices.Equal(levels, want) {
+		t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs.String())
 	}
 }

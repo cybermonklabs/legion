@@ -357,6 +357,25 @@ const (
 // change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
 
+// NoRoute is whether err is a Dispatch process's answer that it has no route for the request: its
+// router's 404 under the code NOT_FOUND whose message starts "no route for "
+// (packages/envoy/internal/dispatch/routes/router.go, staticHandler; the TypeScript clients'
+// NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
+// older build while a release rolls out, so no handler ran and the request is taken once the
+// release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
+// know, says "not found" instead, and is not this answer. No mechanism shares a value between
+// this module and Dispatch's, so the spellings change together.
+func NoRoute(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+}
+
+const (
+	noRouteCode          = "NOT_FOUND"
+	noRouteMessagePrefix = "no route for "
+)
+
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal
 // Dispatch itself made counts, which is a 4xx carrying one of its error codes.

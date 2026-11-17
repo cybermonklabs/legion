@@ -1178,9 +1178,15 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // issue never publish a stale set. It is sent whole, empty included, since it replaces what
 // Dispatch holds, so a role whose claim ended leaves the set with no delete route.
 //
-// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
-// and nothing here treats that as final, nor a 5xx (permanentRefusal, which ends the row on
-// ISSUE_NOT_FOUND and on a coded 400 alone), so the daemon and Dispatch deploy in either order.
+// A Dispatch that has not got the route yet answers its router's 404 (dispatch.NoRoute), so the
+// daemon and Dispatch deploy in either order: that answer is a wait, not a failure. The row runs
+// again on its backoff and is logged as a wait is (settle): INFO at its first run, DEBUG after,
+// and WARN from waitWarnAttempts on, about two minutes after the first run, once a minute at the
+// backoff's cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
+// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer
+// is decided as it was: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row
+// (permanentRefusal), and a 5xx, a codeless 4xx, a handler's 404 NOT_FOUND "not found" and a
+// transport failure are failures retried on the same backoff.
 func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
 	if r.dispatch == nil {
 		return errors.New("role holders executor has no Dispatch client")
@@ -1198,6 +1204,9 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
 	}
 	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
+		if dispatch.NoRoute(err) {
+			return wait.Errorf("the role holders of %s wait for a Dispatch that serves the route: %v", payload.Issue, err)
+		}
 		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
 	}
 	return nil
