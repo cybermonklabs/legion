@@ -108,6 +108,9 @@ type fakeProcess struct {
 	resident uint64
 	// unreadableExe makes exe a plain file, whose readlink fails as an unreadable link does.
 	unreadableExe bool
+	// unreadableSmaps makes smaps a directory, whose read fails as a smaps the guard may not
+	// read does.
+	unreadableSmaps bool
 	// zombie writes the process's stat in state Z: it has exited and its parent has not reaped it.
 	zombie bool
 	// fds are the files the process holds open by a descriptor, each a path under the pod's files
@@ -167,7 +170,14 @@ func (p *fakePod) write(fp fakeProcess) {
 		cmdline += arg + "\x00"
 	}
 	p.writeWhole(filepath.Join(dir, "cmdline"), cmdline)
-	p.writeWhole(filepath.Join(dir, "smaps"), smapsOf(fp))
+	if smaps := filepath.Join(dir, "smaps"); fp.unreadableSmaps {
+		_ = os.RemoveAll(smaps)
+		if err := os.MkdirAll(smaps, 0o755); err != nil {
+			p.t.Fatal(err)
+		}
+	} else {
+		p.writeWhole(smaps, smapsOf(fp))
+	}
 	if fp.threads > 0 {
 		state := "S (sleeping)"
 		if fp.zombie {
@@ -968,7 +978,7 @@ func TestMemoryGuardCountsAMappedMemfdThroughItsMappingAlone(t *testing.T) {
 	// The kill lowers nothing, and the stop's line sums the sizes of the processes it may end.
 	h.tickAfter(5 * time.Second)
 	endable := gib + 50*mib + 100*mib + 522*mib
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0 unread_processes=none",
 		3800*mib, endable, 2*gib, 3800*mib-endable-2*gib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
@@ -998,7 +1008,7 @@ func TestMemoryGuardCountsAMemfdTwoProcessesHoldOnceForTheLarger(t *testing.T) {
 	}
 	h.tickAfter(5 * time.Second)
 	endable := gib + 300*mib + 200*mib + 1100*mib
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0 unread_processes=none",
 		3700*mib, endable, gib, 3700*mib-endable-gib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
@@ -1029,7 +1039,7 @@ func TestMemoryGuardCountsNothingForAnOrdinaryFileOrADescriptorItCannotRead(t *t
 		t.Fatalf("the unread lines are %q, want none", unread)
 	}
 	endable := 100*mib + 600*mib + 300*mib
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0 unread_processes=none",
 		3700*mib, endable, gib, 3700*mib-endable-gib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
@@ -1047,7 +1057,7 @@ func TestMemoryGuardEndsNothingWhenWhatItMayEndIsUnderTheFloor(t *testing.T) {
 	h.tick()
 	h.tick()
 	h.requireKilled()
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0 unread_processes=none",
 		3500*mib, 400*mib, 3*gib, 28*mib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
@@ -1157,7 +1167,7 @@ func TestMemoryGuardStopsForARiseAKillDoesNotLower(t *testing.T) {
 	}
 	h.tickAfter(5 * time.Second)
 	h.requireKilled(701)
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0 unread_processes=none",
 		3692*mib, 462*mib, 3230*mib, 0, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
@@ -3039,7 +3049,7 @@ func TestMemoryGuardWritesARepeatingStopsLineAtMostOnceAMinute(t *testing.T) {
 		return reads[pid]
 	}
 	stopped := func(leftOut int) string {
-		return fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=%d",
+		return fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=%d unread_processes=none",
 			3500*mib, 400*mib, 3*gib, 28*mib, podLimit, leftOut)
 	}
 	h.run()
@@ -3627,6 +3637,39 @@ func TestMemoryGuardHonoursTheClassifier(t *testing.T) {
 	h.requireKilled(kernel, eval)
 }
 
+// When the guard stops for a rise, its line names each process it could not read: the pid, and the
+// size where its memory map reads; it ends neither (INFRA-3531 R3 of spec version 29). Pid 960's
+// exe and smaps do not read, as a non-dumpable process's in the container's own user namespace did
+// under gVisor; pid 961's exe does not read and its smaps reads 500 MiB, as a process whose main
+// thread exited while another holds its memory. Beside the agent, the processes the guard may end
+// hold 200 MiB, under the floor, so at the mark it gives the rise up with reason nothing to end,
+// and its line reads unread_processes=960,961:524288000 after every field it carried before.
+func TestMemoryGuardNamesInItsStoppedLineEachProcessItCouldNotReadAndEndsNone(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(3 * gib))
+	for i := range 5 {
+		pod.add(fakeProcess{pid: 500 + i, ppid: 100, args: []string{"sleep", "600"}, anon: 40 * mib})
+	}
+	pod.add(
+		fakeProcess{pid: 960, ppid: 100, args: []string{"python3", "private.py"}, anon: gib, unreadableExe: true, unreadableSmaps: true},
+		fakeProcess{pid: 961, ppid: 100, args: []string{"python3", "threads.py"}, anon: 500 * mib, unreadableExe: true},
+	)
+	pod.setAnon(3500 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.run()
+	h.tick()
+	h.requireKilled()
+	if tried := h.signal.attempts(); len(tried) != 0 {
+		t.Fatalf("the guard tried to kill %v, want none", tried)
+	}
+	endable, unread := 200*mib, 500*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=0 unread_processes=960,961:%d",
+		3500*mib, endable, 3*gib, unread, int64(3500*mib)-int64(endable+3*gib+unread), podLimit, unread)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
 func TestMemoryGuardDoesNotEndAProcessItCannotRead(t *testing.T) {
 	pod := newFakePod(t)
 	pod.add(
@@ -3647,8 +3690,8 @@ func TestMemoryGuardDoesNotEndAProcessItCannotRead(t *testing.T) {
 	if len(unread) != 1 || !strings.HasPrefix(unread[0], "launcher: memory guard: unread pid=950 reason=read the exe: ") {
 		t.Fatalf("the unread lines are %q, want one for pid 950", unread)
 	}
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0",
-		3700*mib, gib, 2*gib, 3700*mib-3*gib, podLimit)
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0 unread_processes=950:%d",
+		3700*mib, gib, 2*gib, 3700*mib-3*gib, podLimit, 2*gib)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
 	}
@@ -3827,8 +3870,8 @@ func TestMemoryGuardMovesToTheNextLargestWhenAKillFails(t *testing.T) {
 	if got := h.log.with("unread"); len(got) != 0 {
 		t.Fatalf("the refused process was logged unread as well: %q", got)
 	}
-	stopped := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0",
-		3800*mib, 2*gib, gib, 3800*mib-3*gib, podLimit)
+	stopped := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0 unread_processes=1000:%d",
+		3800*mib, 2*gib, gib, 3800*mib-3*gib, podLimit, gib)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{stopped}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, stopped)
 	}

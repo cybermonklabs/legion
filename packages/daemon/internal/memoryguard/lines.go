@@ -20,6 +20,14 @@ import (
 // stoppedLine at most once in each stoppedEvery, and the line written counts in left_out the
 // stopped lines left out since the one before it (stopRise).
 //
+// A process the guard cannot read is one whose stat, exe, ns/pid or smaps did not read (a scan's
+// unread), or one the kill failed on: the guard never ends it, since it cannot tell what it is or
+// rank it. The stoppedLine's unread is the sum of their smaps sizes where each reads, and its last
+// field, unread_processes, names each of them in pid order, comma-separated: `<pid>` where its
+// smaps does not read, `<pid>:<bytes>` where it does, and `none` where there is none (INFRA-3531
+// R3 of spec version 29). It comes after every field the line carried before it, so a reader of
+// those fields reads them as it did.
+//
 // The sizes the guard reads at each reading in the band below the mark and after a kill write no
 // line: they decide the order of the next kill (rank), whose endedLine names the process it ended,
 // the process that grew the most over its last few reads (growthWindow), else the largest one that
@@ -36,7 +44,7 @@ const (
 	noSettingsLine = linePrefix + "off: the daemon's acknowledgement carries no settings"
 	refusedLine    = linePrefix + "settings refused: %v; nothing changes"
 	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d executable="%s"`
-	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=%d"
+	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=%d unread_processes=%s"
 	hourLine       = linePrefix + "hour start=%s end=%s reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d" +
 		` largest_pid=%d largest_role=%s largest_size=%d largest_executable="%s"`
 	offLine        = linePrefix + "off reason=%s"

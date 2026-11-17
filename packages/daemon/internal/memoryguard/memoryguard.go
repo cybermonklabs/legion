@@ -1576,12 +1576,21 @@ func (g *Guard) logUnread(t *Table) {
 // reading's (act, watch). A guard that has given the rise up reads no size until the reading is
 // below the mark, and keeps none (forgetSizes).
 //
+// The line names each process the assessment counted unread, by its pid and, where its smaps
+// reads, its size there (unread_processes, INFRA-3531 R3 of spec version 29), every pid of
+// a.table.unread, those whose stat could not be read among them, in pid order: a process the guard
+// could not read is one it never ends (assess), and the line says which they are and what each
+// holds. Under gVisor at 8f4ff73f such a process was one whose main thread had exited while another
+// thread held its memory (exe and ns/pid EACCES, smaps with no Anonymous), a non-dumpable process in
+// the container's own user namespace (exe and smaps EACCES), and a process being killed, whose exe
+// read EACCES for a few milliseconds.
+//
 // A stop that repeats, as a reading that holds near the mark goes below it and back above it,
 // writes its line at most once in each stoppedEvery by the guard's clock: each stop in between is
 // counted and left out, and the next line written carries that count (left_out). What the line
-// alone needs, the smaps of every process the guard may not end, is read only for a line written.
-// The scan a stop is decided on, with the smaps of the processes the guard may end, is read at
-// every rise, since it decides whether to act.
+// alone needs, the smaps of every process the guard may not end and the list of those it could
+// not read, is read and built only for a line written. The scan a stop is decided on, with the
+// smaps of the processes the guard may end, is read at every rise, since it decides whether to act.
 func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a *assessment) {
 	defer g.releaseSmaps()
 	g.phase = stopped
@@ -1598,31 +1607,34 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 	if a.leftOut != 0 {
 		counted[a.leftOut] = true
 	}
-	pids := slices.Collect(maps.Keys(a.table.byPID))
-	for pid := range a.table.unread {
-		if _, listed := a.table.byPID[pid]; !listed {
-			pids = append(pids, pid)
-		}
-	}
-	for _, pid := range pids {
-		if counted[pid] {
+	for pid := range a.table.byPID {
+		if _, isUnread := a.table.unread[pid]; counted[pid] || isUnread {
 			continue
 		}
-		size, err := g.size(pid, nil)
-		if err != nil {
-			continue
-		}
-		if _, isUnread := a.table.unread[pid]; isUnread {
-			unread += size
-		} else {
+		if size, err := g.size(pid, nil); err == nil {
 			protected += size
 		}
+	}
+	var named []byte
+	for _, pid := range slices.Sorted(maps.Keys(a.table.unread)) {
+		if len(named) > 0 {
+			named = append(named, ',')
+		}
+		named = strconv.AppendInt(named, int64(pid), 10)
+		if size, err := g.size(pid, nil); err == nil {
+			unread += size
+			named = strconv.AppendUint(append(named, ':'), size, 10)
+		}
+	}
+	unreadProcesses := "none"
+	if len(named) > 0 {
+		unreadProcesses = string(named)
 	}
 	// The line says where the memory is, and a killed process that has not exited still holds
 	// its own: it counts in endable here, though every decision leaves it out (leaveOut).
 	endable := a.endableBytes + a.leftOutBytes
 	unheld := int64(reading) - int64(endable+protected+unread)
-	g.logf(stoppedLine, reason, reading, endable, protected, unread, unheld, limit, g.stoppedLeftOut)
+	g.logf(stoppedLine, reason, reading, endable, protected, unread, unheld, limit, g.stoppedLeftOut, unreadProcesses)
 	g.stoppedAt, g.stoppedLeftOut = now, 0
 }
 

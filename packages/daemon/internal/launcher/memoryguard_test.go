@@ -106,16 +106,20 @@ func (p *guardPod) writeFile(path, content string) {
 // its PID namespace, its working directory when it matters, the anonymous memory its smaps reads,
 // the resident pages of a file on disk it maps shared, a database's say, which raise the cgroup's
 // counter and not AnonPages, and which no size the guard ranks by counts, and its resident size,
-// which its stat's rss field holds in pages, the size the guest watch reads of it.
+// which its stat's rss field holds in pages, the size the guest watch reads of it. unreadableExe
+// makes its exe a plain file, whose readlink fails as an unreadable link does, and unreadableSmaps
+// its smaps a directory, whose read fails as a smaps the guard may not read does.
 type guardProcess struct {
-	pid, ppid int
-	exe       string
-	args      []string
-	ns        string
-	cwd       string
-	anon      uint64
-	mapped    uint64
-	resident  uint64
+	pid, ppid       int
+	exe             string
+	args            []string
+	ns              string
+	cwd             string
+	anon            uint64
+	mapped          uint64
+	resident        uint64
+	unreadableExe   bool
+	unreadableSmaps bool
 }
 
 // add writes each process. The test process holds a pid of its own, which stands for the
@@ -160,7 +164,14 @@ func (p *guardPod) write(gp guardProcess) {
 			"7f3a00000000-7f3b00000000 rw-s 00000000 08:01 1310722                    /var/lib/legion/big.db\nSize:           %d kB\nRss:            %d kB\nAnonymous:      0 kB\n",
 			gp.mapped>>10, gp.mapped>>10)
 	}
-	p.writeWhole(filepath.Join(dir, "smaps"), smaps)
+	if path := filepath.Join(dir, "smaps"); gp.unreadableSmaps {
+		_ = os.RemoveAll(path)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			p.t.Fatal(err)
+		}
+	} else {
+		p.writeWhole(path, smaps)
+	}
 	links := []struct{ name, target string }{{"exe", gp.exe}, {filepath.Join("ns", "pid"), gp.ns}}
 	if gp.cwd != "" {
 		links = append(links, struct{ name, target string }{"cwd", gp.cwd})
@@ -168,6 +179,10 @@ func (p *guardPod) write(gp guardProcess) {
 	for _, link := range links {
 		path := filepath.Join(dir, link.name)
 		_ = os.Remove(path)
+		if link.name == "exe" && gp.unreadableExe {
+			p.writeWhole(path, "")
+			continue
+		}
 		if err := os.Symlink(link.target, path); err != nil {
 			p.t.Fatal(err)
 		}
@@ -1668,6 +1683,42 @@ func TestControllerPodMemoryGuardRunsTheGuardWhateverMicroVMSays(t *testing.T) {
 	}
 	if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlEval || reports[0].Cause != shimwire.MemoryKillCauseGuard {
 		t.Fatalf("the controller's manager holds the reports %+v, want the guard's one report of pid %d", reports, ctlEval)
+	}
+}
+
+// When the guard stops for a rise in the controller's pod, its line names each process it could not
+// read, the pid, and the size where its memory map reads, and it ends neither (INFRA-3531 R3 of
+// spec version 29). The shell command Oh My Pi ran has started pid 1760, whose executable and smaps
+// do not read, and pid 1761, whose executable does not read and whose smaps reads 500 MiB; what the
+// guard may end of the controller's tree holds 200 MiB, under the floor. At the mark it gives the
+// rise up with reason nothing to end, ends no process, and its line ends with
+// unread_processes=1760,1761:524288000.
+func TestControllerPodMemoryGuardNamesInItsStoppedLineEachProcessItCouldNotReadAndEndsNone(t *testing.T) {
+	const private, threads = 1760, 1761
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 3 * guardGiB, ctlEval: 100 * guardMiB, ctlKernel: 100 * guardMiB})
+	pod.add(
+		guardProcess{pid: private, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "private.py"}, anon: guardGiB,
+			unreadableExe: true, unreadableSmaps: true},
+		guardProcess{pid: threads, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "threads.py"}, anon: 500 * guardMiB,
+			unreadableExe: true},
+	)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("the guard killed %v, want none; its log:\n%s", kills, rig.log())
+	}
+	stopped := guardLines(log, "stopped for this rise reason=nothing to end ")
+	want := fmt.Sprintf(" unread=%d ", 500*guardMiB)
+	named := fmt.Sprintf(" left_out=0 unread_processes=%d,%d:%d", private, threads, 500*guardMiB)
+	if len(stopped) != 1 || !strings.Contains(stopped[0], want) || !strings.HasSuffix(stopped[0], named) {
+		t.Fatalf("the stopped lines are %q, want one with%sending%q; its log:\n%s", stopped, want, named, rig.log())
+	}
+	if reports := waitingReports(m); len(reports) != 0 {
+		t.Fatalf("the controller's manager holds the reports %+v, want none", reports)
 	}
 }
 
