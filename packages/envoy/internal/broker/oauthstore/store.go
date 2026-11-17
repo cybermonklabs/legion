@@ -184,18 +184,17 @@ type Store struct {
 	// it must be set before the provider serves the token-exchange grant.
 	ExchangeSubject func(ctx context.Context, request oauth2.Requester, subjectToken map[string]any) (string, error)
 
-	// SessionPairs maps each account principal (exchange.AccountPrincipal: "account:" and the
-	// ServiceAccount subject) to every principal it is paired with, both ways, as cmd/broker reads
-	// BROKER_SESSION_ACCOUNT_PAIRS: either account of a pair takes a session name the other holds
-	// (BindSession). It is what lets an operator move a deployment's pods to another account
-	// without each role's new pod being refused its own session name. nil pairs nothing. It must
-	// be set before the store serves an enrollment or a token exchange.
-	SessionPairs map[string][]string
+	// sessionPairs maps each account principal to every principal it is paired with for session
+	// names, both ways (SetSessionPairs, the one writer, so the map is symmetric). nil pairs
+	// nothing.
+	sessionPairs map[string][]string
 
-	// Reserved maps each session name the configuration fixes to the principal it fixes it for
-	// (exchange.Set.Reservations, as the caller builds it), so BindSession refuses a pair any name
-	// the configuration fixes, even one another principal still holds as an ordinary claim. nil
-	// reserves nothing. It must be set before the store serves an enrollment or a token exchange.
+	// Reserved maps each session name the configuration fixes to the principal it fixes it for,
+	// so BindSession refuses a pair any name the configuration fixes, even one another principal
+	// still holds as an ordinary claim. oauth.New sets it from the exchange policy the provider is
+	// composed with (exchange.Set.Reservations), the same map the provider's own fixed claim and
+	// ReserveSessions read. nil reserves nothing. It must be set before the store serves an
+	// enrollment or a token exchange.
 	Reserved map[string]string
 
 	// sweepMu serialises Sweep's refresh walk, which reads and advances sweepAt.

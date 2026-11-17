@@ -758,8 +758,8 @@ An enrollment under the name then takes what the other account's enrollments of 
 the rule above for a successor under the same principal: the grants, the pending requests and the
 withheld names (`enroll.go`, `adopt`).
 A pair works both ways, so pods moved back take the names back the same way.
-A pair does not chain: with A paired with B and B with C, C takes a name B holds and never one A
-holds, since only the holder's own pairs count.
+A pair does not chain: a claim reads the claimant's own pairs, and every pair works both ways, so
+with A paired with B and B with C, C takes a name B holds and never one A holds.
 No pair takes a name an entry of the token exchange fixes.
 A take holds the name for the taker's own claim, 90 days past its own lease or token, and not for
 what was left of the holder's.

@@ -366,7 +366,7 @@ type Claims struct {
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
 	// token naming a session another principal writes under, unless the broker pairs the caller's
-	// account with that principal's (oauthstore.Store.SessionPairs), when the claim takes the
+	// account with that principal's (oauthstore.Store.SetSessionPairs), when the claim takes the
 	// name. It is the listed account for a pod, the listed workflow (its repository, path and ref)
 	// for a run, the listed Google account for a machine, and the person for a dev box session,
 	// each spelled with its kind first (account:, workflow:, google:, person:) so principals of

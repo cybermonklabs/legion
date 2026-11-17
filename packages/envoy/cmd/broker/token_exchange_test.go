@@ -615,7 +615,7 @@ func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *test
 // enrols under the same name and is refused 403 SESSION_HELD, the name staying podAccount's, since
 // a name the configuration fixes goes to its entry and to no pair. What refuses it is the
 // broker's own read of the names its exchange entries fix (oauthstore.Store.Reserved, which
-// cmd/broker sets from the exchange's reservations): the row itself is an ordinary claim, so
+// oauth.New sets from the exchange's reservations): the row itself is an ordinary claim, so
 // without that read the pair would take it.
 func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
 	databaseURL := storetest.URL(t)

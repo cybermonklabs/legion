@@ -552,7 +552,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	case taken != "":
 		// The other way: a claim the configuration does not fix takes a live name only from an
-		// account paired with its own (oauthstore.Store.SessionPairs), as an operator moving a
+		// account paired with its own (oauthstore.Store.SetSessionPairs), as an operator moving a
 		// deployment's pods to another account does. Logged once it has committed, as the other.
 		slog.Warn("broker: the token exchange took a session name from the account paired with its own",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
@@ -881,8 +881,8 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 // it from, so an entry is never refused its own name, whatever a replica started with another
 // configuration reserved. Every other claim is the ordinary one, which a name another principal
 // holds refuses unless that principal is an account paired with the claimant's
-// (oauthstore.Store.SessionPairs): such a claim takes the name, answering whom it took it from,
-// though never a name the configuration fixes, and a pair does not chain.
+// (oauthstore.Store.SetSessionPairs): such a claim takes the name, answering whom it took it
+// from, though never a name the configuration fixes, and a pair does not chain.
 // oauthstore.Store.BindSession makes both claims, and its refusal is the only refusal of a claim.
 //
 // A name another principal holds and the claimant may not take is invalid_grant, because the
@@ -1207,9 +1207,9 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
 // another principal the name, an account paired with the holder's excepted
-// (oauthstore.Store.SessionPairs), and this refuses another pod of the same principal, which the
-// claim cannot tell apart because the name belongs to the account; a pod of a paired account is
-// held to it too. It runs here rather than inside decide because a refusal raised through the
+// (oauthstore.Store.SetSessionPairs), and this refuses another pod of the same principal, which
+// the claim cannot tell apart because the name belongs to the account; a pod of a paired account
+// is held to it too. It runs here rather than inside decide because a refusal raised through the
 // library's store hook arrives as invalid_request, and this one is invalid_grant: the subject
 // token is sound and it is the broker's state that refuses it, exactly as the claim refuses a
 // session name another principal holds and the caller may not take.

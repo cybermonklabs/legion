@@ -194,10 +194,10 @@ type PodVerifier interface {
 // enrollment's bind and its own rows commit or roll back together.
 type SessionBinder interface {
 	BindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error)
-	// PairedWith is every principal paired with principal (oauthstore.Store.SessionPairs, both
-	// ways): each takes a session name principal holds, and principal takes one any of them
-	// holds. adopt's session rule matches them beside the enrollment's own principal. It is nil
-	// for a principal in no pair, and the caller does not write to the slice.
+	// PairedWith is every principal paired with principal (oauthstore.Store.SetSessionPairs,
+	// which writes each pair both ways): each takes a session name principal holds, and principal
+	// takes one any of them holds. adopt's session rule matches them beside the enrollment's own
+	// principal. It is nil for a principal in no pair, and the caller does not write to the slice.
 	PairedWith(principal string) []string
 }
 

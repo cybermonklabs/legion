@@ -230,16 +230,6 @@ const (
 	unpairedPrincipal      = "account:system:serviceaccount:example-ns:unpaired-worker"
 )
 
-// pairAccounts pairs the two accounts of each pair on s, both ways, which is the shape cmd/broker
-// hands BROKER_SESSION_ACCOUNT_PAIRS to the store in.
-func pairAccounts(s *oauthstore.Store, pairs ...[2]string) {
-	s.SessionPairs = map[string][]string{}
-	for _, pair := range pairs {
-		s.SessionPairs[pair[0]] = append(s.SessionPairs[pair[0]], pair[1])
-		s.SessionPairs[pair[1]] = append(s.SessionPairs[pair[1]], pair[0])
-	}
-}
-
 // heldBy reads the row holding session: its principal, its expiry, and whether it is held with no
 // expiry ('infinity', which reads as the zero time).
 func heldBy(t *testing.T, pool *pgxpool.Pool, session string) (principal string, expires time.Time, forever bool) {
@@ -299,7 +289,7 @@ func raceForName(t *testing.T, s *oauthstore.Store, pool *pgxpool.Pool, session,
 func TestAPairedAccountTakesTheNameItsPairHolds(t *testing.T) {
 	ctx := context.Background()
 	s, pool := newStore(t)
-	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal})
+	s.SetSessionPairs([][2]string{{sharedWorkerPrincipal, projectWorkerPrincipal}})
 	const session = "implementer-g1"
 	if _, err := s.BindSession(ctx, session, sharedWorkerPrincipal, false, time.Now().Add(200*24*time.Hour)); err != nil {
 		t.Fatalf("the shared account's claim: %v", err)
@@ -325,15 +315,16 @@ func TestAPairedAccountTakesTheNameItsPairHolds(t *testing.T) {
 	}
 }
 
-// TestAnAccountNotPairedWithTheHolderIsRefused: only the holder's own pairs take its name. With
-// the shared account paired with the project's and the project's with a third, the third is
-// refused the shared account's name, since a pair does not chain, and so is an account paired
-// with nobody; neither refusal moves the name or its expiry. A store given no pairs, the broker
-// with BROKER_SESSION_ACCOUNT_PAIRS unset, refuses even the project's account.
+// TestAnAccountNotPairedWithTheHolderIsRefused: a claim reads the claimant's own pairs, and every
+// pair works both ways, so only an account paired with the holder takes its name. With the shared
+// account paired with the project's and the project's with a third, the third is refused the
+// shared account's name, since a pair does not chain, and so is an account paired with nobody;
+// neither refusal moves the name or its expiry. A store given no pairs, the broker with
+// BROKER_SESSION_ACCOUNT_PAIRS unset, refuses even the project's account.
 func TestAnAccountNotPairedWithTheHolderIsRefused(t *testing.T) {
 	ctx := context.Background()
 	s, pool := newStore(t)
-	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal}, [2]string{projectWorkerPrincipal, thirdWorkerPrincipal})
+	s.SetSessionPairs([][2]string{{sharedWorkerPrincipal, projectWorkerPrincipal}, {projectWorkerPrincipal, thirdWorkerPrincipal}})
 	const session = "implementer-g1"
 	hour := time.Now().Add(time.Hour)
 	if _, err := s.BindSession(ctx, session, sharedWorkerPrincipal, false, hour); err != nil {
@@ -354,7 +345,7 @@ func TestAnAccountNotPairedWithTheHolderIsRefused(t *testing.T) {
 	}
 	refused("an account paired only with the holder's pair", thirdWorkerPrincipal)
 	refused("an account paired with nobody", unpairedPrincipal)
-	s.SessionPairs = nil
+	s.SetSessionPairs(nil)
 	refused("the project's account, with no pairs given", projectWorkerPrincipal)
 }
 
@@ -367,7 +358,7 @@ func TestAnAccountNotPairedWithTheHolderIsRefused(t *testing.T) {
 func TestAPairNeverTakesANameTheConfigurationFixes(t *testing.T) {
 	ctx := context.Background()
 	s, pool := newStore(t)
-	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal})
+	s.SetSessionPairs([][2]string{{sharedWorkerPrincipal, projectWorkerPrincipal}})
 	hour := time.Now().Add(time.Hour)
 	if left, err := s.ReserveSessions(ctx, map[string]string{"legion-daemon:ACME": sharedWorkerPrincipal}); err != nil || len(left) != 0 {
 		t.Fatalf("ReserveSessions = %v, %v, want the unheld name reserved", left, err)
@@ -410,7 +401,7 @@ func TestAPairNeverTakesANameTheConfigurationFixes(t *testing.T) {
 func TestTwoClaimsRacingForAPairsNameEndWithOneHolder(t *testing.T) {
 	ctx := context.Background()
 	s, pool := newStore(t)
-	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal}, [2]string{sharedWorkerPrincipal, thirdWorkerPrincipal})
+	s.SetSessionPairs([][2]string{{sharedWorkerPrincipal, projectWorkerPrincipal}, {sharedWorkerPrincipal, thirdWorkerPrincipal}})
 	for _, c := range []struct {
 		name    string
 		session string
@@ -466,7 +457,7 @@ func TestTwoClaimsRacingForAPairsNameEndWithOneHolder(t *testing.T) {
 func TestAPairedTakeNamesTheHolderTheUpdateRead(t *testing.T) {
 	ctx := context.Background()
 	s, pool := newStore(t)
-	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal}, [2]string{projectWorkerPrincipal, thirdWorkerPrincipal})
+	s.SetSessionPairs([][2]string{{sharedWorkerPrincipal, projectWorkerPrincipal}, {projectWorkerPrincipal, thirdWorkerPrincipal}})
 	const session = "implementer-g1"
 	if _, err := s.BindSession(ctx, session, sharedWorkerPrincipal, false, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("the shared account's claim: %v", err)

@@ -82,9 +82,9 @@ type testServer struct {
 	// registry is the server's own metrics, the answer recorder's broker_answers_total among them.
 	registry *metrics.Registry
 	// sessions is the store the enrollment route binds session names through
-	// (enroll.Service.Sessions). A test pairs two accounts on it (SessionPairs, both ways) before
-	// the server serves an enrollment, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS into it
-	// before the broker serves.
+	// (enroll.Service.Sessions). A test pairs two accounts on it (SetSessionPairs) before the
+	// server serves an enrollment, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS into it before
+	// the broker serves.
 	sessions *oauthstore.Store
 }
 

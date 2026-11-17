@@ -95,8 +95,7 @@ func TestAPairedAccountsEnrollmentTakesTheNameAndWhatItCarries(t *testing.T) {
 		t.Helper()
 		ts := newTestServer(t)
 		if paired {
-			worker, other := exchange.AccountPrincipal(workerAccount), exchange.AccountPrincipal(otherAccount)
-			ts.sessions.SessionPairs = map[string][]string{worker: {other}, other: {worker}}
+			ts.sessions.SetSessionPairs([][2]string{{exchange.AccountPrincipal(workerAccount), exchange.AccountPrincipal(otherAccount)}})
 		}
 		daemon := ts.serviceLogin(t)
 		old := ts.enrolPodWith(t, daemon, podEnrolment{account: workerAccount, podUID: uuid.NewString(), session: session})

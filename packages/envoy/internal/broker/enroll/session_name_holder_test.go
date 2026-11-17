@@ -50,17 +50,16 @@ func enrollmentsNaming(t *testing.T, svc *Service, session string) int {
 	return rows
 }
 
-// pairAccounts pairs the ServiceAccount subjects a and b for session names, both ways, as
-// cmd/broker reads one pair of BROKER_SESSION_ACCOUNT_PAIRS into the store an enrollment binds its
-// name through (oauthstore.Store.SessionPairs).
+// pairAccounts pairs the ServiceAccount subjects a and b for session names, as cmd/broker reads
+// one pair of BROKER_SESSION_ACCOUNT_PAIRS into the store an enrollment binds its name through
+// (oauthstore.Store.SetSessionPairs, which writes the pair both ways).
 func pairAccounts(t *testing.T, svc *Service, a, b string) {
 	t.Helper()
 	binder, ok := svc.Sessions.(*oauthstore.Store)
 	if !ok {
 		t.Fatalf("the service binds session names through %T, want the *oauthstore.Store cmd/broker wires", svc.Sessions)
 	}
-	first, second := exchange.AccountPrincipal(a), exchange.AccountPrincipal(b)
-	binder.SessionPairs = map[string][]string{first: {second}, second: {first}}
+	binder.SetSessionPairs([][2]string{{exchange.AccountPrincipal(a), exchange.AccountPrincipal(b)}})
 }
 
 // enrollmentTookName is the line Create logs once an enrollment that took its session name from

@@ -23,15 +23,15 @@ var (
 )
 
 // ErrSessionHeld is a session name another principal holds and the claimant may not take: its
-// holder is no account paired with the claimant (Store.SessionPairs; only the holder's own pairs
-// count, so a pair does not chain), or the configuration fixes the name, which no pair takes. It
+// holder is no account paired with the claimant (SetSessionPairs; a claim reads the claimant's own
+// pairs, so a pair does not chain), or the configuration fixes the name, which no pair takes. It
 // is the one refusal BindSession has, and the text names the session so an operator reading it
 // knows which name is taken without having to find the request again.
 var ErrSessionHeld = errors.New("oauthstore: another identity holds this session name")
 
 // SessionRetention is how long a session name stays its principal's after the last token minted
 // under it expires: 90 days. Until then the name is refused to every other principal but an
-// account paired with its principal (Store.SessionPairs), which takes it unless the configuration
+// account paired with its principal (SetSessionPairs), which takes it unless the configuration
 // fixes it, and a pair does not chain: an account paired only with the principal's pair is
 // refused too. After it, the sweep deletes the row and the name is anyone's to claim.
 //
@@ -200,16 +200,17 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 // everything downstream that believes the token.
 //
 // Beside a fixed claim, the one claim that takes a live name from its holder is that of an
-// account paired with the holder (SessionPairs, PairedWith; nil pairs nothing), so a deployment
-// whose pods move to another account keeps each role's session name, which the role's new pod
-// would otherwise be refused. A pair works both ways: pods moved back take the names back the
-// same way. It does not chain: with A paired with B and B with C, C takes a name B holds and
-// never one A holds, since only the holder's own pairs count. And it never takes a name the
-// configuration fixes: one held with no expiry (ReserveSessions, a fixed claim), nor one Reserved
-// fixes for anyone, though another principal still holds it as an ordinary claim, since such a
-// name goes to its entry at the entry's own claim and to nobody else. A take holds the name for
-// the taker's own claim, SessionRetention past expires, not for what was left of the holder's;
-// only a principal re-claiming its own name keeps the later of the two expiries.
+// account paired with the holder (SetSessionPairs, PairedWith; with none set, none is paired),
+// so a deployment whose pods move to another account keeps each role's session name, which the
+// role's new pod would otherwise be refused. A pair works both ways: pods moved back take the
+// names back the same way. It does not chain: a claim reads the claimant's own pairs, and every
+// pair works both ways, so with A paired with B and B with C, C takes a name B holds and never one
+// A holds. And it never takes a name the configuration fixes: one held with no expiry
+// (ReserveSessions, a fixed claim), nor one Reserved fixes for anyone, though another principal
+// still holds it as an ordinary claim, since such a name goes to its entry at the entry's own
+// claim and to nobody else. A take holds the name for the taker's own claim, SessionRetention past
+// expires, not for what was left of the holder's; only a principal re-claiming its own name keeps
+// the later of the two expiries.
 //
 // The configuration decides here, at the claim, rather than at ReserveSessions: two replicas
 // started with configurations that disagree, as during a rollout that re-points a fixed name,
@@ -291,11 +292,31 @@ func (s *Store) bindSession(ctx context.Context, session, principal string, fixe
 	return "", nil
 }
 
-// PairedWith is every principal SessionPairs pairs principal with: each takes a session name
-// principal holds, and principal takes one any of them holds (BindSession). It is nil for a
-// principal in no pair, and the slice is the store's own, which the caller must not write to.
+// SetSessionPairs pairs the two principals of each of pairs for session names, each principal
+// spelled as exchange.AccountPrincipal spells an account ("account:" and the ServiceAccount
+// subject), and replaces whatever pairs were set before; nil or empty pairs nothing. Either
+// principal of a pair takes a session name the other holds (BindSession), so it writes each pair
+// both ways and the set is symmetric by construction. It is what lets an operator move a
+// deployment's pods to another account without each role's new pod being refused its own session
+// name, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS. It must be called before the store
+// serves an enrollment or a token exchange, since the claims read the pairs with no lock.
+func (s *Store) SetSessionPairs(pairs [][2]string) {
+	paired := make(map[string][]string, 2*len(pairs))
+	for _, pair := range pairs {
+		paired[pair[0]] = append(paired[pair[0]], pair[1])
+		paired[pair[1]] = append(paired[pair[1]], pair[0])
+	}
+	s.sessionPairs = paired
+}
+
+// PairedWith is every principal SetSessionPairs paired principal with, the pairs a claim by
+// principal reads (BindSession): principal takes a session name any of them holds, and, since
+// every pair works both ways, each of them takes one principal holds. A claim reads the
+// claimant's own pairs alone, so a pair does not chain: with A paired with B and B with C, C takes
+// a name B holds and never one A holds. It is nil for a principal in no pair, and the slice is the
+// store's own, which the caller must not write to.
 func (s *Store) PairedWith(principal string) []string {
-	return s.SessionPairs[principal]
+	return s.sessionPairs[principal]
 }
 
 // ReserveSessions holds every session name reserved maps to a principal (the names the entries of
