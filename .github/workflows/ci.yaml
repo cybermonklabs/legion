@@ -1575,21 +1575,24 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ts-filters.test.sh'
-              # :47 symlinks the script, the engine it borrows the changes job's filters from
-              # and the path model both import into every fixture.
+              # :50 symlinks the script, the engine it borrows the changes job's filters from,
+              # the path model both import and the Go build-tag module the engine imports into
+              # every fixture.
               - '.github/scripts/check-ts-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_build_tags.py'
             go_test_step_expansion_test: &go_test_step_expansion_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
               # :38 loads the script by path, and the script imports the engine, which imports
-              # the path model.
+              # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_build_tags.py'
               # Its last case reads the two step lines the reader exists for, out of the files
               # that hold them.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'

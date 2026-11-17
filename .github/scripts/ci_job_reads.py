@@ -2081,15 +2081,17 @@ SCRIPT_TEST_GATES = [
                                                     "over a module with a negated tag"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:49-50)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50-52)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
+        (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the engine imports, linked in beside it"),
     ]),
     harness("go_test_step_expansion_test", "Test the go test step expansion",
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
         (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:38)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
+        (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
     ]),
