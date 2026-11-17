@@ -4823,15 +4823,11 @@ What each node type weighs:
 | `html` | a piece of inline HTML | 2 | the HTML |
 | `footnote_reference` | a footnote reference | 2 | label |
 
-A browser's edits over the document websocket are weighed by the bounds that socket holds, not by
-this count: no element count stands between a keystroke and the room, so a live document can hold
-more than 65,536 elements, and a server write to such a document is refused `413 CAP_EXCEEDED` for
-as long as it would leave it heavier still, until someone shortens it, while a write that leaves it
-no heavier passes and a rebuild from its latest stored version restores it whatever it weighs. What
-a browser is refused instead is `4413 DOC_TOO_LARGE` at the byte bound (1 MiB, with 64 KiB of creep
-past it and 8 KiB of new content in one update at the bound) and at the 1,200,000 values one apply
-may decode, and `4413 DOC_NEEDS_REBUILD` at the decode cap (1,048,576 structs) and at the
-16,777,216 bytes of encoded state one room may hold; Document errors below has the rest.
+A browser's edits over the document websocket are weighed by the bounds that socket holds, not by this count.
+No element count stands between a keystroke and the room, so a live document can hold more than 65,536 elements.
+A server write to such a document is refused `413 CAP_EXCEEDED` for as long as it would leave it heavier still, until someone shortens it, while a write that leaves it no heavier passes and a rebuild from its latest stored version restores it whatever it weighs.
+What a browser is refused instead is `4413 DOC_TOO_LARGE`: at the byte bound (1 MiB, with 64 KiB of creep past it and 8 KiB of new content in one update at the bound), at the 1,200,000 values one apply may decode, at the decode cap (1,048,576 structs) and at the 16,777,216 bytes of encoded state one room may hold.
+At those last two the close is `4413 DOC_NEEDS_REBUILD` where the rebuild route would take the room as it stands, since only there is a rebuild the remedy; Document errors below has the rest.
 
 ## Input errors
 
