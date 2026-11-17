@@ -18,7 +18,7 @@ import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-na
 
 /**
  * Whether the controls inside a node's words and facts take a place in the tab order (part G's
- * R9 of dispatch://INFRA-1196). The outline is one tab stop and its keys reach a row's
+ * R9). The outline is one tab stop and its keys reach a row's
  * controls, so `CutWords`, `NodeFacts` and `RowText` keep every control out of the tab order by
  * default, the ones that arrive after the first paint included; a view that no tree's keys reach
  * passes `tabStops`, and every control keeps its place, a late one included.

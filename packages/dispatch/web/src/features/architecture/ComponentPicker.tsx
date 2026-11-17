@@ -11,9 +11,8 @@ import {
 } from "../../theme/classes";
 
 /** The trigger inside `NoTooltips`: `secondaryButtonCompact`'s shape in the new issue page's
- *  colours (dispatch://INFRA-3935 R6 and R9, decision 56 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md), as its other compact secondary controls
- *  draw it: the header control's rule and muted words on the paper, quiet words while busy. */
+ *  colours, as its other compact secondary controls draw it: the header control's rule and
+ *  muted words on the paper, quiet words while busy. */
 const PAGE_TRIGGER = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`;
 
 export interface ComponentPickerProps {
@@ -114,10 +113,9 @@ export function ComponentPicker({
       triggerAriaLabel={triggerAriaLabel}
       triggerClassName={page === null ? secondaryButtonCompact : PAGE_TRIGGER}
     >
-      {/* While it saves, inside `NoTooltips` the trigger says the page's words with their mark
-          (dispatch://INFRA-3935 R8 and R9, decision 114 of
-          dispatch://INFRA-1196/artifact/part-decisions-md), which the components line's name
-          begins with (`componentsControlName`); outside it says `main`'s "Saving…" (R1). */}
+      {/* While it saves, inside `NoTooltips` the trigger says the page's words with their mark,
+          which the components line's name begins with (`componentsControlName`); outside it
+          says `main`'s "Saving…". */}
       {saving ? (
         page === null ? (
           "Saving…"

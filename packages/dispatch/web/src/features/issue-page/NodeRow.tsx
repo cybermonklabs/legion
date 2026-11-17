@@ -65,9 +65,8 @@ import {
 import { documentWord, RowText } from "./RowText";
 
 /**
- * One row of the issue's outline, and the body it opens on focus (dispatch://INFRA-1196 R1,
- * R6, R9, R34, and the architect's rulings 1, 4, 5 and 6 in
- * dispatch://INFRA-1196/artifact/build-rulings-md).
+ * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
+ * architect's rulings 1, 4, 5 and 6).
  *
  * A row reads from the left as the prototype's `.card` does: its bullet in its kind's colour,
  * which is also its fold control where it holds nodes, then its words, and at their end the
@@ -169,10 +168,11 @@ export function NodeRow({
   ownAnswer: boolean;
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
-   *  every row does but two of the outline's: its first row as the page opens on it with no
-   *  question waiting on the reader, which stays where it stands until the reader acts, and
-   *  the row the reader is editing, which the editor's own caret keeps in view while it grows
-   *  as the reader writes. Both are `IssueTree.tsx`'s to set. */
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -868,11 +868,11 @@ export function NodeOptions({
  * What the reader can do with the focused row, on one quiet line under it (the prototype's
  * `.acts`, drawn on the focused row alone): Reply on every row that takes a reply - a comment, a
  * message, an ask whatever its state, and the issue itself, whose reply is a new comment on it
- * (R16, dispatch://INFRA-3677) - Answer on an open question, and Change answer on a question the
+ * (R16) - Answer on an open question, and Change answer on a question the
  * reader answered. Each sets the line at the foot of the outline and puts the caret in it; `r`
  * and `a` press the first two from the keyboard (`useTreeKeymap.ts`). A typed node - a
  * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
- * block (dispatch://INFRA-1253), so it draws none; and with no writer (`OutlineWriterProvider`)
+ * block, so it draws none; and with no writer (`OutlineWriterProvider`)
  * the row draws none of the three.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
@@ -961,7 +961,7 @@ export function RowActs({
 
 /**
  * A person's answer to an ask, which is part of the ask and no node of its own
- * (dispatch://INFRA-1150 R3, dispatch://INFRA-1196 R1): the page's word for it, who answered by
+ * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
  * to mark it in, and what they wrote, whole and character for character, keeping the line breaks
  * they typed (R9, ruling 1). The reader's own answer carries the ink rule their own words carry

@@ -46,8 +46,12 @@ func referenceTargets(t *testing.T, handler http.Handler, references []string) (
 // version are each answered with the kind and the name of the one item of its owner that
 // carries the prefix, and each echoes the short reference as the request wrote it. The
 // comment's prefix under an issue that holds no comment names nothing, and is answered gone. A
-// document is named by its slug and never by its id, so a prefix of its id names no document
-// and is answered gone too.
+// prefix of a document's id is answered gone too, though it resolves: ResolvePrefixes finds the
+// document that carries it (artifactShortIDCandidates), and wholeReferences writes the document's
+// uuid into the reference's ID, where a document's reference holds its slug. The graph keys a
+// document by its slug (text.TargetID), so TargetNames finds nothing under that uuid and the
+// member is answered gone. GET /api/v1/references reads such a reference the same way
+// (wholeReference), as the design of the new issue page decided.
 func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -92,6 +96,8 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 		{Ref: "dispatch://" + other.Key + "/ask/" + ask[:8], Kind: "ask", Name: "An ask named short?"},
 		{Ref: "dispatch://" + other.Key + "/message/" + message.ID[:8], Kind: "message", Name: "A message named short."},
 		{Ref: shortBlock + "@v" + strconv.Itoa(edited.Number), Kind: "block", Name: "First paragraph."},
+		// Resolved to the document, then written under its uuid where its reference holds a
+		// slug, so TargetNames finds nothing and the member is gone (the doc comment above).
 		{Ref: "dispatch://" + other.Key + "/artifact/" + notes.Artifact.ID[:8], Kind: "artifact", Gone: true},
 	}
 	references := make([]string, len(wanted))
@@ -156,7 +162,9 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 // reference's parse. A block id written short that two blocks of the document carry refuses
 // nothing: that reference is answered as one member, gone and ambiguous, with no name, and the
 // other member of the set is answered with its name. The other member's answer carries no key
-// ambiguous at all.
+// ambiguous at all. The tag covers ambiguous: once no block carries the prefix, the reference is
+// gone and not ambiguous, every other field as it was, and the ambiguous answer's tag sent back
+// is answered with the new answer under a new tag, never 304.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -228,5 +236,17 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 	}
 	if _, carried := keys[1]["ambiguous"]; carried {
 		t.Errorf("the other member is %v, want no key ambiguous", keys[1])
+	}
+
+	ambiguousTag := answered.Header().Get("ETag")
+	uploadDocument(t, handler, "/api/v1/issues/"+shared.Key, "spec.md", ":::requirement{#cafe-one}\nThe only requirement.\n:::\n")
+	cleared := referenceTargetsRequest(t, handler, []string{short, reference}, ambiguousTag)
+	if cleared.Code != http.StatusOK || cleared.Header().Get("ETag") == ambiguousTag {
+		t.Fatalf("once no block carries the prefix, the ambiguous answer's tag answered status=%d etag=%q (was %q), want the new answer under a new tag",
+			cleared.Code, cleared.Header().Get("ETag"), ambiguousTag)
+	}
+	wanted[0].Ambiguous = false
+	if members := decodeBody[model.ReferenceTargets](t, cleared).Targets; !reflect.DeepEqual(members, wanted) {
+		t.Fatalf("once no block carries the prefix, the set answered %#v, want %#v", members, wanted)
 	}
 }

@@ -60,35 +60,44 @@ function saveLabels(draft: readonly string[], labels: readonly string[]): string
 }
 
 /** `main`'s name for the labels control: the name it answers to in every state outside
- *  `NoTooltips`, and inside while the issue has a label and no save is in flight (R1). */
+ *  `NoTooltips`, and inside while the control draws a label (`displayLabels`: the open popover's
+ *  draft, else the issue's labels) and no save is in flight. */
 const editLabelsName = "Edit labels";
 
-/** The name the labels control answers to inside `NoTooltips`, which the new issue page's add
- *  menu, its `l` key and its rows find it by rather than drawing a second one. With no label it
- *  is the words the control draws, then the issue's key ("Add a label to CORE-1", as the
- *  priority's is "Add a priority to CORE-1"), so a voice user saying what they read presses it
- *  (WCAG 2.5.3); with no key it is those words alone. With a label it is `main`'s "Edit labels".
- *  While a save is in flight, which the caller says by passing the page's `ANSWER_LINES` as
- *  `saving`, the control draws their `saving_labels` ("Saving labels…") whatever it holds, so the
- *  name is those words with their trailing ellipsis dropped, then "of" and the issue's key
- *  ("Saving labels of CORE-1"), or those words alone with no key (dispatch://INFRA-3935 R8,
- *  decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md). The words are the page's
- *  list's, passed in rather than imported: the page names the control outside React from the
- *  list it imports, and this file imports nothing of that list (`components/tooltips.tsx`). */
+/** The name the labels control answers to, which the new issue page's add menu, its `l` key and
+ *  its rows find it by inside `NoTooltips` rather than drawing a second one. `inside` is
+ *  required: the control's state inside `NoTooltips`, or `null` outside it, where the name is
+ *  `main`'s "Edit labels" in every state. Inside it carries the labels the control draws,
+ *  whether a save is in flight, and the page's words (`ANSWER_LINES` and `CONTROL_LABELS`). With
+ *  no label the name is the words the control draws, then the list's `control_name_to` and the
+ *  issue's key ("Add a label to CORE-1", as the priority's is "Add a priority to CORE-1"), so a
+ *  voice user saying what they read presses it (WCAG 2.5.3); with no key it is those words
+ *  alone. With a label it is `main`'s "Edit labels". While a save is in flight the control draws
+ *  `saving_labels` ("Saving labels…") whatever it holds, so the name is those words with their
+ *  trailing ellipsis dropped, then the list's `control_name_of` and the issue's key ("Saving
+ *  labels of CORE-1"), or those words alone with no key. The words are the page's list's, passed
+ *  in rather than imported: the page names the control outside React from the list it imports,
+ *  and this file imports nothing of that list (`components/tooltips.tsx`). */
 export function labelsControlName(
-  labels: readonly string[],
   issueKey: string | undefined,
-  controlLabels: PageWords["CONTROL_LABELS"],
-  saving?: Pick<PageWords["ANSWER_LINES"], "saving_labels">
+  inside: {
+    readonly labels: readonly string[];
+    readonly saving: boolean;
+    readonly words: Pick<PageWords, "ANSWER_LINES" | "CONTROL_LABELS">;
+  } | null
 ): string {
-  if (saving !== undefined) {
-    const words = withoutEllipsis(saving.saving_labels);
-    return issueKey === undefined ? words : `${words} of ${issueKey}`;
+  if (inside === null) return editLabelsName;
+  const { words } = inside;
+  if (inside.saving) {
+    const said = withoutEllipsis(words.ANSWER_LINES.saving_labels);
+    return issueKey === undefined
+      ? said
+      : `${said} ${words.CONTROL_LABELS.control_name_of} ${issueKey}`;
   }
-  if (labels.length > 0) return editLabelsName;
+  if (inside.labels.length > 0) return editLabelsName;
   return issueKey === undefined
-    ? controlLabels.add_label
-    : `${controlLabels.add_label} to ${issueKey}`;
+    ? words.CONTROL_LABELS.add_label
+    : `${words.CONTROL_LABELS.add_label} ${words.CONTROL_LABELS.control_name_to} ${issueKey}`;
 }
 
 export interface IssueLabelsProps {
@@ -96,8 +105,9 @@ export interface IssueLabelsProps {
    *  new issue page's Details draws the prototype's `.lchip`). Given, the labels wrap. */
   readonly chipClassName?: string;
   readonly disabled: boolean;
-  /** The issue's key, which ends the control's name inside `NoTooltips` while the issue has no
-   *  label or a save is in flight (`labelsControlName`). Outside `NoTooltips` it changes nothing. */
+  /** The issue's key, `labelsControlName`'s first argument, which ends the control's name inside
+   *  `NoTooltips` while the control draws no label (`displayLabels`: the open popover's draft,
+   *  else `labels`) or a save is in flight. Outside `NoTooltips` it changes nothing. */
   readonly issueKey?: string;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;
@@ -142,19 +152,13 @@ export function IssueLabels({
   const displayLabels = open ? draft : labels;
   // Inside `NoTooltips` the control's name begins with the words it draws: "Add a label" with no
   // label (below), as the priority's "Add a priority to CORE-1" does, and "Saving labels…" while it
-  // saves, so a voice user says what they read (WCAG 2.5.3 Label in Name; dispatch://INFRA-3935
-  // R2 and R8, decisions 91 and 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
-  // `labelsControlName` builds that name, and the page finds the control by it. Everywhere
-  // outside it is `main`'s name (R1).
-  const triggerName =
-    page === null
-      ? editLabelsName
-      : labelsControlName(
-          displayLabels,
-          issueKey,
-          page.CONTROL_LABELS,
-          saving ? page.ANSWER_LINES : undefined
-        );
+  // saves, so a voice user says what they read (WCAG 2.5.3 Label in Name).
+  // `labelsControlName` builds that name, and the page finds the control by it. Given `null`
+  // everywhere outside, it is `main`'s name.
+  const triggerName = labelsControlName(
+    issueKey,
+    page === null ? null : { labels: displayLabels, saving, words: page }
+  );
 
   const setOpenState = useCallback(
     (next: boolean) => {
@@ -200,8 +204,7 @@ export function IssueLabels({
     <>
       <div
         // Inside `NoTooltips` the rail's labels wrap with or without a chip shape of the host's:
-        // a label is a value, and a line that keeps its width pushes a long one past its row
-        // (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md).
+        // a label is a value, and a line that keeps its width pushes a long one past its row.
         className={
           variant === "rail"
             ? chipClassName === undefined && page === null
@@ -215,8 +218,7 @@ export function IssueLabels({
           <span
             // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a
             // long label anywhere, so a 40-character label with no space wraps inside Details
-            // rather than running past it (dispatch://INFRA-3935 R4/R6, decision 91 of
-            // dispatch://INFRA-1196/artifact/part-decisions-md). Everywhere else it stays whole.
+            // rather than running past it. Everywhere else it stays whole.
             className={
               page === null
                 ? chipClassName === undefined
@@ -251,8 +253,7 @@ export function IssueLabels({
           searchLabel="Search or create label"
           selected={draft}
           triggerAriaLabel={triggerName}
-          // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935
-          // R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): a label above is
+          // Inside `NoTooltips` each colour is one of the new issue page's: a label above is
           // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the
           // header control's rule and muted words on the paper, with quiet words while it is busy.
           triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${
@@ -273,8 +274,7 @@ export function IssueLabels({
             <span {...page.pageChrome}>
               {/* With no label the control says what it does, as the priority's says "Add a
                   priority": its row of Details already names the property, so the property's
-                  name here drew "Labels" twice (dispatch://INFRA-3935 R4/R6, decision 91 of
-                  dispatch://INFRA-1196/artifact/part-decisions-md). */}
+                  name here drew "Labels" twice. */}
               {saving
                 ? page.ANSWER_LINES.saving_labels
                 : displayLabels.length === 0

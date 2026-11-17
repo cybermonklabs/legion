@@ -4,8 +4,7 @@ import { createPortal } from "react-dom";
 import { AUTHOR_TEXT_ATTRIBUTE } from "./page-structure";
 
 /**
- * Where each document the issue page has open is drawn (dispatch://INFRA-1196 R2, R16,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t17`).
+ * Where each document the issue page has open is drawn (R2, R16).
  *
  * One document has one room, so the page mounts one editor for it and never a second: a row
  * that opens a node's own text takes the editor the page already has rather than building one
@@ -81,7 +80,7 @@ function createStageBoard(): StageBoard {
       made.className = "flex min-w-0 flex-col";
       // Whatever is drawn on a stage is one document as its author wrote it - its blocks, their
       // attributes and the words inside them - and never the page's own vocabulary, wherever
-      // the stage is placed (dispatch://INFRA-1196 R21, `page-structure.ts`).
+      // the stage is placed (R21, `page-structure.ts`).
       made.setAttribute(AUTHOR_TEXT_ATTRIBUTE, "");
       elements.set(artifactId, made);
       // A host can claim a stage before its document is drawn: a row the reader puts the caret

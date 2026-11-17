@@ -8,9 +8,9 @@ function scrolledTo(y: number): void {
   Object.defineProperty(window, "scrollY", { configurable: true, value: y, writable: true });
 }
 
-// R11 and decision 40: the identity block draws its shadow once the page has scrolled more than
-// 40 px, as the prototype's `#hdr-sticky.stuck` does (`scrollY > 40`), and not at the first
-// pixel; a place the page restores past 40 px draws it in the commit that restores it.
+// R11: the identity block draws its shadow once the page has scrolled more than 40 px, as the
+// prototype's `#hdr-sticky.stuck` does (`scrollY > 40`), and not at the first pixel; a place
+// the page restores past 40 px draws it in the commit that restores it.
 test("the header's shadow appears only after 40 px of scroll", () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const original = globalThis.ResizeObserver;
@@ -51,9 +51,9 @@ test("the header's shadow appears only after 40 px of scroll", () => {
   }
 });
 
-// Ruling 5: at 760 px and below the header scrolls away with the page and the filter row is the
-// band that stays, so the header is never stuck there and draws no shadow, however far the page
-// has scrolled; once the width passes 760 px, the same place draws it.
+// At 760 px and below the header scrolls away with the page and the filter row is the band that
+// stays, so the header is never stuck there and draws no shadow, however far the page has
+// scrolled; once the width passes 760 px, the same place draws it.
 test("the header draws no shadow where it scrolls away", () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const original = globalThis.ResizeObserver;

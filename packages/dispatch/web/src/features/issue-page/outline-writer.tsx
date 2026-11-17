@@ -12,7 +12,7 @@ import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/ro
 import type { TreeNode } from "./issue-tree";
 
 /**
- * Where the reader writes on the issue page (dispatch://INFRA-1196 R16): the one line at the foot
+ * Where the reader writes on the issue page (R16): the one line at the foot
  * of the outline, and what it is written to. With nothing set it writes a new comment on the
  * issue, or a question with the Question chip pressed. A row's Reply - its control, or `r` - sets
  * it to reply to that row, and an open question's Answer - its control, one of its options, or
@@ -48,7 +48,7 @@ export interface OutlineWriter {
   readonly reply: ReplyTarget | null;
   /** Sets the line to reply to `node` and puts the caret in it. An open question's Reply is a
    *  question back, which hands the turn to whoever asked it; an answered or resolved one's is a
-   *  word under it that carries no turn (dispatch://INFRA-3677). */
+   *  word under it that carries no turn, so a reader can answer the thread they are reading. */
   readonly replyTo: (item: ReplyItem) => void;
   /** The name the line's writes are held under (`held-sends.ts`), so a send that is out, or was
    *  refused, comes back with its draft and its reply whatever unmounts the line. */
@@ -68,8 +68,8 @@ export interface OutlineWriter {
 }
 
 /** The kinds the line writes in today's model: a comment, and a question, which is an ask. A
- *  statement and a decision written from the line need dispatch://INFRA-1253 and
- *  dispatch://INFRA-1150, and the line draws no chip that writes nothing. */
+ *  statement and a decision written from the line need writes that today's model does not
+ *  have, and the line draws no chip that writes nothing. */
 export type WriterKind = "ask" | "comment";
 
 /**

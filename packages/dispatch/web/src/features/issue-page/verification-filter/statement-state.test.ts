@@ -30,10 +30,10 @@ import {
 } from "./verification-fixtures";
 
 /**
- * How the Verification filter reads the issue's results (dispatch://INFRA-1196 R17): the one
- * commit the page names, how each statement stands at it, and how many statements carry a
- * check. Each row below is one of the ways a statement can stand, read over the tree the filter
- * leaves and the results read the page already made.
+ * How the Verification filter reads the issue's results: the one commit the page names, how
+ * each statement stands at it, and how many statements carry a check. Each row below is one of
+ * the ways a statement can stand, read over the tree the filter leaves and the results read the
+ * page already made.
  *
  * What the body draws of this reading is `VerificationFilterBody.drawn.test.tsx`.
  */
@@ -90,7 +90,7 @@ test("a statement one of whose checks failed at that commit reads Not met", () =
 // Unknown". The commit is the one the server names for the check - the basis it compares with
 // (`compared_with`) - and the server reads this pass at another commit (`other_commit`), so no
 // pass of the check stands (`pass_stands` is `no`) and the check reads Out of date, as the
-// pass's own fact does (dispatch://INFRA-1196 decision 152).
+// pass's own fact does.
 test("a pass recorded against another commit reads Out of date and leaves its statement Unknown", () => {
   const elsewhere = check({
     block_id: "c-two",
@@ -117,8 +117,7 @@ test("a pass recorded against another commit reads Out of date and leaves its st
 
 // A statement whose only check passed at another commit than the one its check compares with:
 // the page names the commit of the one result it holds, and the check still reads as the server
-// reads that pass (`other_commit`), since the commit the page names decides no check's state
-// (dispatch://INFRA-1196 decision 152).
+// reads that pass (`other_commit`), since the commit the page names decides no check's state.
 test("a pass at another commit alone names that commit and leaves the statement Unknown", () => {
   const elsewhere = check({
     block_id: "c-one",
@@ -527,7 +526,7 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
   // The reverse: a fail that stands at the commit its own check compares with, which is not the
   // commit the page names, since another check's pass is newer. The server reads it at its
   // check's basis (`at_basis`), so it is a fail on its row, in the body and in the count alike,
-  // as its own fact reads it (dispatch://INFRA-1196 decision 152).
+  // as its own fact reads it.
   const passedHere = check({ block_id: "c-one", results: [result({ id: "pass-here" })] });
   const failedElsewhere = check({
     block_id: "c-two",
@@ -553,7 +552,7 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
   });
 });
 
-// Decision 152 (c): the server reads each result at the commit it names for that result's own
+// The server reads each result at the commit it names for that result's own
 // check. A `before_merge` check compares with the pull request's head, and an `after_merge` one
 // with the branch the pull request merged into, so a newer result of the second at another
 // commit says nothing of the first. The page read every check against the one commit it names,
@@ -746,7 +745,7 @@ test("a passed check stands on its newest pass over the words it has now", () =>
   expect(read.statements.map((held) => held.state)).toEqual(["met"]);
 });
 
-// Ruling 6: the body draws the newest result of each check and folds the rest, so the model
+// The body draws the newest result of each check and folds the rest, so the model
 // hands it the rest apart, newest first, and names the result the state stands on. Each result
 // ran at the commit the server names for the check, its basis (`at_basis`), so the newest pass
 // is what the passed check stands on.

@@ -6,6 +6,7 @@ import { api } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
+import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
@@ -18,6 +19,15 @@ import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { useIssueTree } from "../useIssueTree";
+
+/** What each read the outline waits on takes, as the tree's own reads take it
+ *  (`useIssueTree.ts`'s `EVENT_FRESH`): events keep it fresh and its age never does, so the slot
+ *  mounted again on a press of a view more than 30 s after the load reads none of them again, and
+ *  window focus fetches again only a read in error. */
+const EVENT_FRESH = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
 export function BodySlot({ issue, route }: SlotProps): ReactNode {
@@ -40,12 +50,16 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const nodesHeld = useQueries({
     combine: (answers) => answers.every((answer) => answer.data !== undefined),
     queries: [
-      issueCoverageQuery(key),
-      issueDecisionsQuery(key, true),
-      issueResultsQuery(key),
-      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] },
-      { queryFn: () => api.listComments(key), queryKey: ["comments", key] },
-      { queryFn: () => api.listIssueMessages(key), queryKey: ["issue-messages", key] },
+      { ...issueCoverageQuery(key), ...EVENT_FRESH },
+      { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
+      { ...issueResultsQuery(key), ...EVENT_FRESH },
+      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key], ...EVENT_FRESH },
+      { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+      {
+        queryFn: () => api.listIssueMessages(key),
+        queryKey: ["issue-messages", key],
+        ...EVENT_FRESH,
+      },
     ],
   });
   const readsHeld = nodesHeld && blocksHeld;
@@ -72,14 +86,9 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
         <IssueTree
           artifacts={artifacts}
           context={view.context}
-          {...(readsHeld
-            ? {
-                emptyLine:
-                  address.filter === ""
-                    ? EMPTY_STATE_LINES.conversation
-                    : EMPTY_STATE_LINES.no_match,
-              }
-            : {})}
+          emptyLine={
+            address.filter === "" ? EMPTY_STATE_LINES.conversation : EMPTY_STATE_LINES.no_match
+          }
           filtering={view.filtering}
           focusReveal
           // The words filter's Escape comes before the outline is left.

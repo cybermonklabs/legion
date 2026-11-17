@@ -104,7 +104,7 @@ export function FormActions({
 }
 
 /** Where the issue's messages go. The sentence that says what a route is and what it is not was
- *  a tooltip: it is drawn here, where a reader is deciding what to set (R11). */
+ *  a tooltip: it is drawn here, where a reader is deciding what to set. */
 function RouteForm({
   drafts,
   isClosed,
@@ -168,7 +168,7 @@ function RouteForm({
         saving={isClosed || !drafts.routeIsValid || saving}
       />
       {/* What the box takes, in words (`HELP_LINES.route_shape`): a refusal while the draft is
-          one Dispatch would not take, and the box's description otherwise (R21). */}
+          one Dispatch would not take, and the box's description otherwise. */}
       <span
         className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
         id="issue-route-help"

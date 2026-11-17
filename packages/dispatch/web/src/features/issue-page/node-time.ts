@@ -1,5 +1,5 @@
 /**
- * When a node was made, in the page's own short form (dispatch://INFRA-1196 R9, R34): the day
+ * When a node was made, in the page's own short form (R9, R34): the day
  * and the month, "5 Nov", "14 Nov", as the approved pictures draw it at the right of a row, and
  * the year after them for a day of another year than the reader's, "5 Nov 2025". The day is the
  * reader's own, in the time zone their browser keeps.

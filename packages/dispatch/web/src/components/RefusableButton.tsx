@@ -17,8 +17,7 @@ const LOOKS = {
   "secondary-compact": secondaryButtonCompact,
 } as const;
 
-/** Each look inside `NoTooltips`, in the new issue page's colours (dispatch://INFRA-3935 R6,
- *  decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md), on the same shape as
+/** Each look inside `NoTooltips`, in the new issue page's colours, on the same shape as
  *  `LOOKS`: the primary is filled with the page's ink, and refused is the page's own refused
  *  send, muted words on the hairline grey; the compact secondary is the page's header control,
  *  its rule and muted words on the paper, with quiet words while refused. */

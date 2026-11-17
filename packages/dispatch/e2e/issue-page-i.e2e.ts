@@ -221,6 +221,58 @@ async function expectFocusedRowOnScreen(page: Page, after: string, failure: stri
     .toBe(true);
 }
 
+/**
+ * What is wrong with where a zoom left the crumb line it draws and the focused row, one line of
+ * the failure each: the line's top under the band that stays at the top, as tall as the page
+ * publishes on the document element (`IDENTITY_HEIGHT_PROPERTY`), and the focused row's top off
+ * the screen - above that band, or below the window's foot less the box the page publishes the
+ * height of there (`FOOT_HEIGHT_PROPERTY`). Empty where both stand on screen. The row is read by
+ * its top, since a row taller than the window stands whole on it nowhere.
+ */
+function zoomMisplaced(page: Page): Promise<string[]> {
+  return tree(page).evaluate(
+    (element, { band, foot }) => {
+      const published = getComputedStyle(document.documentElement);
+      const top = Number.parseFloat(published.getPropertyValue(band)) || 0;
+      const floor = window.innerHeight - (Number.parseFloat(published.getPropertyValue(foot)) || 0);
+      const wrong: string[] = [];
+      const line = element.parentElement
+        ?.querySelector("[data-crumb]")
+        ?.parentElement?.getBoundingClientRect();
+      if (line === undefined) wrong.push("no crumb line is drawn");
+      else if (line.top < top - 1) {
+        wrong.push(
+          `the crumb line stands at ${Math.round(line.top)} to ${Math.round(line.bottom)} px, under a band ${top} px tall`
+        );
+      }
+      const row = document.activeElement?.closest("[data-node-row]")?.getBoundingClientRect();
+      if (row === undefined) wrong.push("the focus is on no row");
+      else if (row.top < top - 1 || row.top >= floor) {
+        wrong.push(
+          `the focused row's top stands at ${Math.round(row.top)} px, off the screen between ${top} and ${Math.round(floor)} px`
+        );
+      }
+      return wrong;
+    },
+    { band: IDENTITY_HEIGHT_PROPERTY, foot: FOOT_HEIGHT_PROPERTY }
+  );
+}
+
+/** The crumb line a zoom draws is below the band that stays at the top and the focused row's top
+ *  is on screen (`zoomMisplaced`), once the zoom has drawn and still a second later. */
+async function expectZoomPlaced(page: Page, after: string): Promise<void> {
+  await expect
+    .poll(() => zoomMisplaced(page), {
+      message: `${after} left the crumb line under the band or the focused row's top off the screen`,
+    })
+    .toEqual([]);
+  // The zoomed row goes on growing as its body draws, and a row placed again as it grew took
+  // the line back under the band, where it still stood 1.5 s after the zoom: the same reading
+  // after a second of that.
+  await page.waitForTimeout(1_000);
+  expect(await zoomMisplaced(page), `${after}, a second later`).toEqual([]);
+}
+
 /** Presses End or Home and reads that it moved the focus to the outline's last or first drawn
  *  row, which a row reads before where that row stands: a key that moved nowhere, or to another
  *  row, leaves a row on screen just as well. */
@@ -959,8 +1011,10 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedSpineCases, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
@@ -1943,7 +1997,8 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
 // c-tree, the crumb (the architect's ruling on a node's one line): where the tree is read one
 // node at a time, a crumb is the node's first line by that rule, cut at a word, never cut again
 // mid-word by its box, and a line that is a whole sentence carries no ellipsis after its own full
-// stop. The issue's crumb is its key. The Contents entry's half is the Spec view's.
+// stop. The issue's crumb is its key. The Contents entry's half is left to the Contents pane's
+// own entries, which this tree does not hold yet.
 // SLOW(>=2s): the whole issue seeded and loaded at a phone's size on a reply's address, waited on
 // until the reply has the focus, then zoomed into and measured.
 test("a crumb draws its node's first line, cut at a word @phone @phone-only", async ({
@@ -2417,11 +2472,12 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
 });
 
 // SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some sixty keys
-// pressed at two sizes, each followed by a read of where the focus is.
+// pressed at two sizes, each followed by a read of where the focus is, and the page loaded again
+// for a zoom into a long comment's row, read again a second later.
 test("Tab enters and leaves the tree at one stop and every move keeps the row on screen", async ({
   browser,
 }) => {
-  const { context, page } = await openTree(browser);
+  const { context, page, seeded } = await openTree(browser);
   try {
     const order = await visibleIds(page);
 
@@ -2524,17 +2580,64 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     // the band, where on a long issue the line drawn above it stood at -5 to 39 px under a band
     // 51 px tall, and the reader read it only once they had scrolled.
     await page.keyboard.press(".");
-    const crumbLine = tree(page)
-      .locator("xpath=..")
-      .locator("[data-crumb]")
-      .first()
-      .locator("xpath=..");
-    await expect
-      .poll(() => onScreen(crumbLine), {
-        message: ". at 390x664 left the crumb line it draws under the band that stays at the top",
-      })
-      .toBe(true);
+    await expectZoomPlaced(page, ". at 390x664");
     await expectFocusedRowOnScreen(page, ". at 390x664", "left the focused row off the screen");
+    // Right on the row the zoom is rooted at, which is drawn open over what it holds, moves to
+    // its first child, and where nothing is under it says so at the row, as every key with
+    // nowhere to go does. At 390 by 664 it zoomed into the row it was on: nothing moved and
+    // nothing was said.
+    const [zoomRoot, under] = await drawnRows(page);
+    expect(zoomRoot?.id, ". left the focus on another row than the zoom's own").toBe(
+      await focusedRow(page)
+    );
+    await page.keyboard.press("ArrowRight");
+    if (under !== undefined && Number(under.level) > Number(zoomRoot?.level)) {
+      await expect
+        .poll(() => focusedRow(page), {
+          message: "Right on the zoom's own row did not move to its first child",
+        })
+        .toBe(under.id);
+    } else {
+      await expect(
+        nodeRow(page, zoomRoot?.id ?? "")
+          .first()
+          .locator("[data-row-report]"),
+        "Right on the zoom's own row, with nothing under it, did not say so at the row"
+      ).toHaveText(KEY_REPORTS.nothing_under);
+      expect(await focusedRow(page), "Right with nothing under the row moved the focus").toBe(
+        zoomRoot?.id
+      );
+    }
+
+    // A zoom into a row taller than the window leaves the line below the band and the row's top
+    // just under the line. Placed by the page's one rule, as it was zoomed into and again as it
+    // grew, the row's top went to just under the band, which took the line above it under the
+    // band: on a real issue at this size rows of 1,634 and 1,464 px left the line at 15 to 59 and
+    // at -53 to 59 px under a band 51 px tall, still there 1.5 s later. No row of the seed is that
+    // tall, so a comment of thirty paragraphs is.
+    const long = await createComment(seeded.key, {
+      body: Array.from(
+        { length: 30 },
+        (_, paragraph) => `Paragraph ${paragraph + 1} of words taller than any window.`
+      ).join("\n\n"),
+    });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectTreeDrawn(page);
+    // The page lands on the question that waits on the reader once its read answers, which
+    // would take the focus back from a row focused before then.
+    const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    await expect
+      .poll(() => focusedRow(page), {
+        message: "the page loaded again with the focus off its open question",
+      })
+      .toBe(question);
+    const longRow = await focusRow(page, long.id);
+    expect(
+      await longRow.evaluate((element) => element.getBoundingClientRect().height),
+      "the long comment's focused row is not taller than the window"
+    ).toBeGreaterThan(664);
+    await page.keyboard.press(".");
+    await expectZoomPlaced(page, ". on a row taller than the window at 390x664");
   } finally {
     await context.close();
   }
@@ -2653,7 +2756,8 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
     // From the requirement to its checks and their latest results: each is drawn under it, and
     // the arrow keys walk down to them from the requirement's row. The decision's chip that
-    // names the requirement, and following it, are the Spec view's step of the chain.
+    // names the requirement, and following it, are left to the Spec view's own rows, which this
+    // tree does not hold yet.
     expect(await parentOfRow(page, check), "the check that serves r1 is not under it").toBe(
       informed
     );
@@ -2683,7 +2787,7 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
     // No gap that every node of a kind carries is drawn: no requirement and no decision says
     // anything about a source, a read-back or an author. The head's gap and the Spec view's
-    // readings are the Spec view's own rows' to read.
+    // readings are left to the Spec view's own rows, which this tree does not hold yet.
     expect(
       (await drawnRows(page))
         .filter((row) => row.type === "requirement" || row.type === "decision")

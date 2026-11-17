@@ -11,12 +11,12 @@ import { CONTROL_LABELS } from "./page-words";
 import { useShellNavigation } from "./shell-navigation";
 
 /**
- * Row one of the header (dispatch://INFRA-1196 R13), in R13's order: the breadcrumb - the
- * project, then the parent where the issue has one, each as the way back up to it - the issue's
- * key, the control that copies it, and the one overflow menu that holds the pin, close, reopen
- * and the control that sets the parent. At its right end, Details opens the panel of every other
- * property over the right of the page (R14); below the phone's width the row starts with the
- * `☰` that opens the navigation, where the shell draws no rail (the 390 px picture).
+ * Row one of the header, in this order: the breadcrumb - the project, then the parent where the
+ * issue has one, each as the way back up to it - the issue's key, the control that copies it, and
+ * the one overflow menu that holds the pin, close, reopen and the control that sets the parent.
+ * At its right end, Details opens the panel of every other property over the right of the page;
+ * below the phone's width the row starts with the `☰` that opens the navigation, where the shell
+ * draws no rail (the 390 px picture).
  *
  * It is the prototype's `.row1` and `.crumb`: the crumbs in the quiet grey, the key in the ink.
  */
@@ -36,7 +36,7 @@ export function IssueIdentityRow({
   const details = useMarginDrawer();
   return (
     // The row wraps rather than cutting a key: at 320 px the Details control takes a second
-    // line, and nothing on the row is ever drawn short (R17).
+    // line, and nothing on the row is ever drawn short.
     <div className="flex min-h-[22px] min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
       {navigation === undefined ? null : (
         <button
@@ -65,8 +65,8 @@ export function IssueIdentityRow({
           <>
             {/* No `dispatch-inline-link`: that class is for a link inside a sentence's line box,
                 and this link is a flex item of row one, where the class's 6 px of padding below
-                1280 px makes the row 30 px tall and the band 69 px, not the 63 px R5 holds it
-                to. The header's own rule in `styles.css` takes the 44 px floor off it. */}
+                1280 px makes the row 30 px tall and the band 69 px, not the 63 px the band is
+                held to. The header's own rule in `styles.css` takes the 44 px floor off it. */}
             <Link
               className={`min-w-0 underline underline-offset-2 [overflow-wrap:anywhere] ${linkHoverText}`}
               to={buildIssuePath({ key: parent, kind: "issue" })}

@@ -9,7 +9,7 @@ import {
 
 /**
  * What a check and a recorded result hold that their rows have no line for, as the facts their
- * bodies draw (dispatch://INFRA-1196 R15, `dispatch://INFRA-1196/artifact/plan-md#b-t16`).
+ * bodies draw.
  *
  * Pure, over the results read alone, so the body of a check is the same wherever the tree draws
  * it. Two rules decide what is here:
@@ -19,9 +19,8 @@ import {
  *   check CI proves also names the CI run that proves it, and, while that run has left it no
  *   result, the server's sentence saying why (`ci`, which the server gives no other check).
  * - **A result draws only what it recorded.** `Failed 0`, `Skipped 0` and `Excluded 0` took
- *   three rows under every pass on the old tab
- *   (`dispatch://INFRA-1196/artifact/design-notes-md` section 5, fault 9), so a count is drawn
- *   when it counts something, and a commit Dispatch could not place is drawn not at all.
+ *   three rows under every pass on the old tab, so a count is drawn when it counts something,
+ *   and a commit Dispatch could not place is drawn not at all.
  *
  * A `when` reads as words, a `run` as a command with its own copy control, and a screenshot as
  * a picture through the bytes route the page already serves.

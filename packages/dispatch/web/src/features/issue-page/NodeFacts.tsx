@@ -16,13 +16,12 @@ import { ANSWER_LINES, CONTROL_LABELS, nodeFactLabel } from "./page-words";
 import { useOutOfTabOrder } from "./RowText";
 
 /**
- * The facts a node's body draws under its text (dispatch://INFRA-1196 R15,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t16`): a check's four attributes and what a
+ * The facts a node's body draws under its text (R15): a check's four attributes and what a
  * recorded result says of itself (`check-facts.ts`).
  *
  * It is a two-column grid and not a wrapping row, which is the cause of most of the sixteen
- * faults measured on the old Verification tab
- * (`dispatch://INFRA-1196/artifact/design-notes-md` section 5): a label never wraps away from
+ * faults measured on the old Verification tab (section 5 of the page's design notes): a label
+ * never wraps away from
  * its value, and every value sits in a column of its own that may be zero wide
  * (`min-w-0`) and breaks inside a word where it has nothing else to break on, so nothing
  * reaches past the card at 390 px and no two pieces of text are drawn over each other.

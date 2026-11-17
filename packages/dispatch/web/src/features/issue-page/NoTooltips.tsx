@@ -19,11 +19,11 @@ const WORDS: PageWords = {
 /**
  * The issue page's surface: every shared control inside draws no `title`, draws the fact a
  * `title` held as visible text or as its accessible name, and says the page's words with their
- * marks (`components/tooltips.tsx`, dispatch://INFRA-1196 R6, R19). A part that fills a slot of
- * the page wraps what it draws in this.
+ * marks (`components/tooltips.tsx`). A part that fills a slot of the page wraps what it draws
+ * in this.
  *
  * It imports the page's word list, so only the lazily loaded page imports it: no file that
- * today's pages load names this module (R33).
+ * today's pages load names this module.
  */
 export function NoTooltips({ children }: { children: ReactNode }): ReactNode {
   return <PageWordsProvider words={WORDS}>{children}</PageWordsProvider>;

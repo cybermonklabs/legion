@@ -16,8 +16,7 @@ import {
 } from "./page-words";
 
 /**
- * The page with no filter on, and the four filters, as views of the one tree
- * (dispatch://INFRA-1196 R1, R2).
+ * The page with no filter on, and the four filters, as views of the one tree.
  *
  * With no filter on - Conversation - the view is the whole tree, folded to the frontier by the
  * outline (`tree-fold.ts`). The words filter (`?q=`) narrows it to the nodes whose words hold
@@ -30,7 +29,7 @@ import {
  * is one only where it is a statement of the spec (`isStatement`), and a check only where it is
  * a check of the Verification document (`isCheck`): a `requirement` or `check` block of any
  * other document is a block and nothing more, which no filter draws or counts as its kind
- * (`kindOf`, dispatch://INFRA-1196 decision 152). Every other parent of a drawn node - an ask,
+ * (`kindOf`). Every other parent of a drawn node - an ask,
  * a comment, a message, a requirement under Plan - is one line on its child's row
  * (`TreeNode.parentLine`), never a row: a drawn node whose parent is no row is drawn where that
  * parent stood, under the nearest drawn node above it, or at the top. A check serves several
@@ -38,7 +37,7 @@ import {
  * draws a node once, at its own place, since a plan task drawn under each requirement it serves
  * would be one step drawn several times (R26).
  *
- * Today's reads give no query node (dispatch://INFRA-1253), so each filter is read off the tree
+ * Today's reads give no query node, so each filter is read off the tree
  * `issue-tree.ts` builds from the reads that exist: the kinds are R2's, and the context and the
  * parent's line are this module's.
  *

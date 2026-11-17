@@ -1,7 +1,7 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
 
 /**
- * The slot a page fills in the shell's margin (dispatch://INFRA-1196 R12).
+ * The slot a page fills in the shell's margin.
  *
  * The margin is mounted once beside the router and every page shares it, so the margin must not
  * know which page is showing: it offers this slot and draws whatever the page put in it. A page
@@ -24,15 +24,15 @@ const MarginFillRegistry = createContext<(fill: MarginFill | undefined) => void>
 /** Whether the shell's margin has a column of its own at this width that draws what the page
  *  put in the slot. False outside the provider, and false while the margin is collapsed to its
  *  rail or is the phone sheet, so a page that draws a panel draws it itself rather than
- *  handing it to a margin that is not there (dispatch://INFRA-1196 R11, R12). */
+ *  handing it to a margin that is not there. */
 const MarginDrawsSlotContext = createContext(false);
 
 /**
  * The margin as a drawer: on the issue page the panel opens over the right of the page, the
  * Details drawer, instead of keeping a column of its own, so the page's own column is the window
- * less the navigation rail (dispatch://INFRA-1196 R14). The shell holds whether it is open, as
- * it holds every other preference of the margin's, and a page reads it to draw the control that
- * opens it. Undefined wherever the margin is a column, which is every other page.
+ * less the navigation rail. The shell holds whether it is open, as it holds every other
+ * preference of the margin's, and a page reads it to draw the control that opens it. Undefined
+ * wherever the margin is a column, which is every other page.
  */
 export interface MarginDrawer {
   readonly open: boolean;
@@ -46,9 +46,9 @@ export interface MarginDrawer {
 
 /**
  * What the new issue page hands the shell through the drawer, so that the shell draws the page's
- * words and follows its address rule with no import of the page's word list or its model
- * (dispatch://INFRA-1196 R33): the page's lazy root sets it. While it is not set, Details draws
- * no head words and the margin names no item.
+ * words and follows its address rule with no import of the page's word list or its model: the
+ * page's lazy root sets it. While it is not set, Details draws no head words and the margin
+ * names no item.
  */
 export interface MarginDrawerPage {
   /** The attributes that mark the drawer's own words as the page's own. */

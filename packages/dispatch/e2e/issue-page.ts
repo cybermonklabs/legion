@@ -17,7 +17,7 @@ import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 /**
- * How a browser row opens the new issue page (dispatch://INFRA-1196) and reads its frame: the
+ * How a browser row opens the new issue page and reads its frame: the
  * page's root, the view row, the icon rail, Details and the Contents pane and sheet.
  *
  * This is part D's file, and no later part changes it (decision 2 of the parts): each later part

@@ -321,11 +321,10 @@ export function ProofDocument({
   const documentRef = buildDispatchReference(documentRoute(artifact));
   const tooltips = useTooltips();
   // Inside `NoTooltips` each colour the document's own lines and controls draw is one of the new
-  // issue page's (dispatch://INFRA-3935 R6, decision 56 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md): a refusal is its failed red, a reading of
-  // the document its muted words, a count its label chip, the open decision a link in the ink,
-  // and a control its header control's rule and muted words on the paper. What the editor, the
-  // decision blocks and the references draw is theirs.
+  // issue page's: a refusal is its failed red, a reading of the document its muted words, a
+  // count its label chip, the open decision a link in the ink, and a control its header
+  // control's rule and muted words on the paper. What the editor, the decision blocks and the
+  // references draw is theirs.
   const failedText = tooltips ? dangerText : pageFailedText;
   const countChip = tooltips ? `${badgeMed.bg} ${badgeMed.text}` : pageLabelChip;
   const controlOnPage = `${pageLineBorder} ${pagePaperBg} ${pageMutedText}`;
@@ -1110,9 +1109,14 @@ export function ProofDocument({
             version.
           </p>
           <button
+            // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
+            // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
+            // is `disabled` while it rebuilds, as on `main`.
+            aria-disabled={(!tooltips && rebuild.isPending) || undefined}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            disabled={rebuild.isPending}
+            disabled={tooltips && rebuild.isPending}
             onClick={() => {
+              if (rebuild.isPending) return;
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1143,8 +1147,7 @@ export function ProofDocument({
       {schemaReadOnly && !isClosed && connection === "connected" ? <p>Reload to edit.</p> : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
           list beside it. Inside `NoTooltips` no title gives back what an ellipsis cut, and the
-          question is a value, so it breaks anywhere and the row grows to hold it (decision 104 of
-          dispatch://INFRA-1196/artifact/part-decisions-md). */}
+          question is a value, so it breaks anywhere and the row grows to hold it. */}
       {page && version === undefined && openDecision !== undefined ? (
         <nav
           aria-label="Open decisions"

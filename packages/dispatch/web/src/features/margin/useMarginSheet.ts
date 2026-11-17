@@ -111,7 +111,7 @@ export function useMarginSheet(): MarginSheetModel {
   // route or by `?comment=` and `?ask=` - is a node of the outline, which the page opens on that
   // node: the margin marks its own copy of that item and lands on nothing, since an expanded
   // thread's reply box takes the focus off the node and a hold scrolls the drawer off the entry
-  // the address named (dispatch://INFRA-1196 R20). Before the page has set its rule the margin
+  // the address named (R20). Before the page has set its rule the margin
   // names no item. With no drawer an item is landed on as it always was.
   const drawerItem = drawer?.page?.routeItem({ hash, pathname, search });
   const routeItemId =
@@ -612,7 +612,7 @@ export function useMarginSheet(): MarginSheetModel {
     setTab,
     // Below `xl` the margin's scrollport is laid out only while the compact sheet is expanded;
     // in Details it is laid out while the drawer is open, at every width, so a linked card and
-    // an opened composer are held in view there once the drawer opens (dispatch://INFRA-1196 R14).
+    // an opened composer are held in view there once the drawer opens (R14).
     sheetExpanded: drawer === undefined ? sheetExpanded : drawer.open,
     tab,
     visibleArtifact,

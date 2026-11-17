@@ -43,10 +43,10 @@ import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
- * Part G of dispatch://INFRA-1196, "A node's row" (dispatch://INFRA-3947): one node of an issue
+ * Part G of the new issue page, "A node's row": one node of an issue
  * drawn as one row of the approved design, in the new page's body, which draws the
  * conversation's rows with every branch unfolded until part I's outline replaces them. Each row
- * is one `check` block of dispatch://INFRA-3947/artifact/verification-md,
+ * is one `check` block of part G's Verification document,
  * named by its `-g` string, and reads the page through `e2e/issue-page-g.ts`; every row unfolds
  * each folded branch before it reads, so it holds on part I's outline too.
  *
@@ -305,7 +305,8 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
 // page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
 // places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
-// goes on to `t c`, whose outline takes the focus; the Spec view's own rows read `t s` again.
+// goes on to `t c`, whose outline takes the focus; reading `t s` again is left to the Spec view's
+// own rows, which this tree does not hold yet.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({

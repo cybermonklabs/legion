@@ -9,8 +9,8 @@ import {
   rowReferenceWords,
 } from "./row-references";
 
-// dispatch://INFRA-1196 R19 and R21, the tester's F14 and F17: a row draws every reference in its
-// words as a link named from the page's one batched read, and asks the server nothing for it.
+// A row draws every reference in its words as a link named from the page's one batched read,
+// and asks the server nothing for it.
 
 const NAMES = new Map([
   ["dispatch://CORE-7", "The header draws the approval of each step"],
@@ -27,10 +27,9 @@ test("what a text cites is every whole address and every bare key, each once", (
   expect(citedReferences("")).toEqual([]);
 });
 
-// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an item id or a block id
-// written short in the owner its reference names, and answers under the reference as the request
-// wrote it. So an address written short is asked as written, beside one written whole, and a row
-// names its link from that answer.
+// The batched read resolves an item id or a block id written short in the owner its reference
+// names, and answers under the reference as the request wrote it. So an address written short is
+// asked as written, beside one written whole, and a row names its link from that answer.
 test("an address that writes its id short is asked for as written, and named from its answer", () => {
   const short = "dispatch://CORE-1/comment/c0b271c7";
   const shortBlock = "dispatch://CORE-1/spec#b-abcd1234";
@@ -114,10 +113,10 @@ test("the pass links what painted words cite, and names it again when the names 
   expect(links()).toHaveLength(1);
 });
 
-// dispatch://INFRA-1196 decision 62: a short reference two or more targets carry the id of is
-// answered ambiguous, and drawn as written with no link, as the tree's chip draws it. A row read
-// only the names, which hold no name for it, so it linked the reference and drew it as its short
-// form, which names no one target.
+// A short reference two or more targets carry the id of is answered ambiguous, and drawn as
+// written with no link, as the tree's chip draws it. A row read only the names, which hold no
+// name for it, so it linked the reference and drew it as its short form, which names no one
+// target.
 const AMBIGUOUS = "dispatch://CORE-1/comment/c0b271c7";
 
 test("a reference the read answered ambiguous is no reference a row links", () => {

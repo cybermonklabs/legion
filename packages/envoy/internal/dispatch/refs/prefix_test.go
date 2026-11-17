@@ -137,22 +137,81 @@ func insertPrefixBlockText(t *testing.T, tx pgx.Tx, artifactID, blockID string, 
 }
 
 // resolvedPrefix is the candidate prefix names, failing the test when it names none or several.
+// Where ResolvePrefixes is the same function (bothResolve), it asks ResolvePrefixes the same id
+// alone too, and fails the test unless that names the same candidate and marks no id ambiguous.
 func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix string, viewer Viewer) Candidate {
 	t.Helper()
 	candidate, err := ResolvePrefix(context.Background(), tx, kind, scope, prefix, viewer)
 	if err != nil {
 		t.Fatalf("resolve the %s prefix %q in %#v: %v", kind, prefix, scope, err)
 	}
+	id := ShortID{Kind: kind, Scope: scope, Prefix: prefix}
+	if !bothResolve(id) {
+		return candidate
+	}
+	whole, ambiguous := shortIDAnswers(t, tx, id)
+	if got, ok := whole[id]; !ok || !reflect.DeepEqual(got, candidate) || len(ambiguous) != 0 {
+		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; ResolvePrefix names %#v", kind, prefix, scope, whole, ambiguous, candidate)
+	}
 	return candidate
 }
 
-// requireNoPrefixMatch fails the test unless prefix names nothing, the one no-match signal.
+// requireNoPrefixMatch fails the test unless prefix names nothing, the one no-match signal. Where
+// ResolvePrefixes is the same function (bothResolve), it fails the test unless ResolvePrefixes,
+// asked the same id alone, answers no entry for it in either of its answers.
 func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, prefix string, viewer Viewer) {
 	t.Helper()
 	candidate, err := ResolvePrefix(context.Background(), q, kind, scope, prefix, viewer)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the %s prefix %q in %#v = %#v, %v; want pgx.ErrNoRows", kind, prefix, scope, candidate, err)
 	}
+	id := ShortID{Kind: kind, Scope: scope, Prefix: prefix}
+	if !bothResolve(id) {
+		return
+	}
+	if whole, ambiguous := shortIDAnswers(t, q, id); len(whole) != 0 || len(ambiguous) != 0 {
+		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; ResolvePrefix names nothing", kind, prefix, scope, whole, ambiguous)
+	}
+}
+
+// requireShortIDAmbiguous fails the test unless ResolvePrefixes, asked the id alone, marks it
+// ambiguous and names no item for it. Each test that asks ResolvePrefix for ErrPrefixAmbiguous
+// asks this of the same id, since both functions answer by one rule (choosePrefixCandidate).
+func requireShortIDAmbiguous(t *testing.T, q Queryer, kind string, scope Scope, prefix string) {
+	t.Helper()
+	id := ShortID{Kind: kind, Scope: scope, Prefix: prefix}
+	if whole, ambiguous := shortIDAnswers(t, q, id); len(whole) != 0 || len(ambiguous) != 1 || !ambiguous[id] {
+		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; want the id ambiguous alone", kind, prefix, scope, whole, ambiguous)
+	}
+}
+
+// shortIDAnswers is the two answers of ResolvePrefixes asked id alone, failing the test on an
+// error.
+func shortIDAnswers(t *testing.T, q Queryer, id ShortID) (map[ShortID]Candidate, map[ShortID]bool) {
+	t.Helper()
+	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, []ShortID{id})
+	if err != nil {
+		t.Fatalf("ResolvePrefixes of the %s prefix %q in %#v: %v", id.Kind, id.Prefix, id.Scope, err)
+	}
+	return whole, ambiguous
+}
+
+// bothResolve reports whether ResolvePrefixes is the same function as ResolvePrefix for id, so
+// that resolvedPrefix and requireNoPrefixMatch hold the two to one answer for it. That is every
+// id but a message id whose scope names no issue, so every call of the two helpers in this file
+// is compared but those that ask for a message with no issue named: the calls of
+// TestResolvePrefixAnswersADirectMessageFirstLineOnlyToTheConversation, and the one of
+// TestResolvePrefixesHoldsTheScopeChecksOfResolvePrefix that reads its direct message. Its
+// message calls that name an issue are compared, which holds messageShortIDCandidates to the
+// message query of ResolvePrefix. ResolvePrefixes resolves a message within its issue alone, as
+// a reference names one (PrefixScope), and answers a message id whose scope names no issue as
+// no match, where ResolvePrefix looks among every message, the direct ones too. The viewer of a
+// call is no condition: ResolvePrefixes reads every candidate as the zero Viewer, and
+// ResolvePrefix reads its viewer for the first line of a direct message alone, which is a
+// candidate only where a message id's scope names no issue. So a call with a human or a session
+// viewer is compared too.
+func bothResolve(id ShortID) bool {
+	return id.Kind != "message" || id.Scope.IssueKey != ""
 }
 
 // A prefix of the one id that starts with it names that item, read without case; a prefix no id
@@ -181,6 +240,7 @@ func TestResolvePrefixNamesTheOneItemAndRefusesWhatCanStartNoID(t *testing.T) {
 
 // A prefix two items carry is refused with both listed, in id order, each with its reference, its
 // owner and its first line, so a person can tell them apart and write more of the id.
+// ResolvePrefixes marks the same id ambiguous.
 func TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates(t *testing.T) {
 	tx := prefixFixture(t)
 	const first = "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
@@ -202,6 +262,7 @@ func TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates(t *testing.T) {
 	if message := ambiguous.Error(); !strings.Contains(message, "4c9f3e12") || !strings.Contains(message, "2") {
 		t.Fatalf("the refusal reads %q, want the prefix and the count in it", message)
 	}
+	requireShortIDAmbiguous(t, tx, "comment", Scope{}, "4c9f3e12")
 }
 
 // A lookup that names an owner reads that owner's items alone: an issue's, or a project
@@ -227,6 +288,7 @@ func TestResolvePrefixLooksWithinTheOwnerAlone(t *testing.T) {
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("the same prefix across both issues = %v, want both listed", err)
 	}
+	requireShortIDAmbiguous(t, tx, "comment", Scope{}, "7a000000")
 
 	document := "8a000000-0000-4000-8000-00000000000a"
 	handbook := insertPrefixDocument(t, tx, document, nil, "CORE", "handbook", "Handbook", false)
@@ -348,6 +410,7 @@ func TestResolvePrefixNamesTheBlockWrittenExactlyAsThePrefix(t *testing.T) {
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("the block prefix %q = %#v, %v; want both blocks listed", "DEADbeef", candidate, err)
 	}
+	requireShortIDAmbiguous(t, tx, "block", Scope{Document: spec}, "DEADbeef")
 }
 
 // A direct message's first line is answered to a human and to a session in the conversation - the
@@ -405,4 +468,102 @@ func TestResolvePrefixNamesADocument(t *testing.T) {
 		t.Fatalf("the document of CORE-1 = %#v, want %#v", got, want)
 	}
 	requireNoPrefixMatch(t, tx, "artifact", Scope{IssueKey: "CORE-2"}, "8a000000", Viewer{Human: true})
+}
+
+// ResolvePrefixes copies the owner and version checks of the queries of ResolvePrefix, and
+// resolvedPrefix and requireNoPrefixMatch ask both, so each check below has one answer through
+// both functions, asked as the index-time resolver asks. A comment written on a project document
+// is read within that document alone, as an ask is (TestResolvePrefixLooksWithinTheOwnerAlone),
+// and another document names none. A pinned version holds no block that was deleted at it or at
+// an earlier version. A pinned version that no block-aware build indexed holds no block at all,
+// though the text of a block is recorded at an earlier version. A message id whose scope names
+// an issue is read within that issue alone: another issue names none of its messages, two of its
+// messages under one prefix are ambiguous within it, which requireShortIDAmbiguous holds
+// ResolvePrefixes to, and a direct message, which has no issue, is no candidate within an issue
+// though it carries the prefix. With no issue named, ResolvePrefix alone reads that direct
+// message (bothResolve).
+func TestResolvePrefixesHoldsTheScopeChecksOfResolvePrefix(t *testing.T) {
+	tx := prefixFixture(t)
+	const handbookID = "8a000000-0000-4000-8000-000000000031"
+	handbook := insertPrefixDocument(t, tx, handbookID, nil, "CORE", "handbook", "Handbook", false)
+	glossary := insertPrefixDocument(t, tx, "8a000000-0000-4000-8000-000000000032", nil, "CORE", "glossary", "Glossary", false)
+	const onDocument = "a1000000-0000-4000-8000-000000000001"
+	const onIssue = "a1000000-0000-4000-8000-000000000002"
+	insertPrefixDocumentComment(t, tx, onDocument, handbookID, "A remark on the handbook.")
+	insertPrefixComment(t, tx, onIssue, "CORE-1", "A remark on the issue.")
+	wantComment := Candidate{
+		Kind: "comment", ID: onDocument, Ref: "dispatch://CORE/artifact/handbook/comment/" + onDocument,
+		Document: "dispatch://CORE/artifact/handbook", FirstLine: "A remark on the handbook.",
+	}
+	if got := resolvedPrefix(t, tx, "comment", Scope{Document: handbook}, "a1000000", Viewer{}); !reflect.DeepEqual(got, wantComment) {
+		t.Fatalf("the comment of the project document = %#v, want %#v", got, wantComment)
+	}
+	if got := resolvedPrefix(t, tx, "comment", Scope{IssueKey: "CORE-1"}, "a1000000", Viewer{}); got.ID != onIssue {
+		t.Fatalf("the comment of CORE-1 = %#v, want %s", got, onIssue)
+	}
+	requireNoPrefixMatch(t, tx, "comment", Scope{Document: glossary}, "a1000000", Viewer{})
+
+	// The versions the index recorded: the plan held cccc11110 and eeee11110 at 1 and deleted
+	// eeee11110 at 2. A build that indexed no block saved version 3, and version 4 rewrote
+	// cccc11110.
+	issueKey := "CORE-1"
+	const planID = "8a000000-0000-4000-8000-000000000033"
+	plan := insertPrefixDocument(t, tx, planID, &issueKey, "CORE", "plan", "Plan", false)
+	kept, gone, rewritten := "Kept since version one.", "Deleted at version two.", "Rewritten at version four."
+	insertPrefixBlockText(t, tx, planID, "cccc11110", 1, &kept)
+	insertPrefixBlockText(t, tx, planID, "eeee11110", 1, &gone)
+	insertPrefixBlockText(t, tx, planID, "eeee11110", 2, nil)
+	insertPrefixBlockText(t, tx, planID, "cccc11110", 4, &rewritten)
+	wantGone := Candidate{
+		Kind: "block", ID: "eeee11110", Ref: "dispatch://CORE-1/artifact/plan#b-eeee11110",
+		IssueKey: "CORE-1", FirstLine: gone,
+	}
+	if got := resolvedPrefix(t, tx, "block", Scope{Document: plan, Version: 1}, "eeee1111", Viewer{}); !reflect.DeepEqual(got, wantGone) {
+		t.Fatalf("the block of the plan at version 1 = %#v, want %#v", got, wantGone)
+	}
+	if got := resolvedPrefix(t, tx, "block", Scope{Document: plan, Version: 2}, "cccc1111", Viewer{}); got.ID != "cccc11110" || got.FirstLine != kept {
+		t.Fatalf("the kept block of the plan at version 2 = %#v, want cccc11110 as version 1 wrote it", got)
+	}
+	// Deleted at the pinned version, and deleted at a version before the pinned one.
+	requireNoPrefixMatch(t, tx, "block", Scope{Document: plan, Version: 2}, "eeee1111", Viewer{})
+	requireNoPrefixMatch(t, tx, "block", Scope{Document: plan, Version: 4}, "eeee1111", Viewer{})
+	// Version 4 was indexed and holds the rewritten text. Version 3 was not indexed, so it holds
+	// no block, though the text of version 1 is recorded before it.
+	if got := resolvedPrefix(t, tx, "block", Scope{Document: plan, Version: 4}, "cccc1111", Viewer{}); got.ID != "cccc11110" || got.FirstLine != rewritten {
+		t.Fatalf("the kept block of the plan at version 4 = %#v, want cccc11110 as version 4 wrote it", got)
+	}
+	requireNoPrefixMatch(t, tx, "block", Scope{Document: plan, Version: 3}, "cccc1111", Viewer{})
+
+	// The direct message carries the prefix of the message of CORE-1 and is no candidate within
+	// CORE-1, and WEB-1 holds neither.
+	createReferenceProject(t, tx, "WEB")
+	createReferenceIssue(t, tx, "WEB-1", "WEB")
+	const message = "b2000000-0000-4000-8000-000000000001"
+	const direct = "b2000000-d000-4000-8000-000000000002"
+	target := "session:sess-one"
+	insertPrefixMessage(t, tx, message, &issueKey, `{"kind":"user","id":"alice"}`, "A word on the issue.", nil, nil)
+	insertPrefixMessage(t, tx, direct, nil, `{"kind":"user","id":"alice"}`, "A word in private.", &target, nil)
+	wantMessage := Candidate{
+		Kind: "message", ID: message, Ref: "dispatch://CORE-1/message/" + message,
+		IssueKey: "CORE-1", FirstLine: "A word on the issue.",
+	}
+	if got := resolvedPrefix(t, tx, "message", Scope{IssueKey: "CORE-1"}, "b2000000", Viewer{}); !reflect.DeepEqual(got, wantMessage) {
+		t.Fatalf("the message of CORE-1 = %#v, want %#v", got, wantMessage)
+	}
+	requireNoPrefixMatch(t, tx, "message", Scope{IssueKey: "WEB-1"}, "b2000000", Viewer{})
+	requireNoPrefixMatch(t, tx, "message", Scope{IssueKey: "CORE-1"}, "b2000000-d", Viewer{})
+	if got := resolvedPrefix(t, tx, "message", Scope{}, "b2000000-d", Viewer{}); got.ID != direct {
+		t.Fatalf("the direct message with no issue named = %#v, want %s", got, direct)
+	}
+	// Two messages of CORE-1 under one prefix are ambiguous within it, listed in id order.
+	const first = "b3000000-0000-4000-8000-000000000001"
+	const second = "b3000000-0000-4000-8000-000000000002"
+	insertPrefixMessage(t, tx, second, &issueKey, `{"kind":"user","id":"alice"}`, "The second word.", nil, nil)
+	insertPrefixMessage(t, tx, first, &issueKey, `{"kind":"user","id":"alice"}`, "The first word.", nil, nil)
+	_, err := ResolvePrefix(context.Background(), tx, "message", Scope{IssueKey: "CORE-1"}, "b3000000", Viewer{})
+	var ambiguous *ErrPrefixAmbiguous
+	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 || ambiguous.Candidates[0].ID != first || ambiguous.Candidates[1].ID != second {
+		t.Fatalf("two messages of CORE-1 under one prefix = %v, want both listed in id order", err)
+	}
+	requireShortIDAmbiguous(t, tx, "message", Scope{IssueKey: "CORE-1"}, "b3000000")
 }

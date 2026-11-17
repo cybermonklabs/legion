@@ -17,9 +17,9 @@ import { authorText } from "./page-structure";
  * header's `e` key, which clicks it (`useHeaderKeys.ts`).
  *
  * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
- * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it (dispatch://
- * INFRA-1196 R13, ruling 5). It keeps that size while the identity block is stuck to the top of
- * the screen, as the approved picture of the scrolled page draws it.
+ * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it. It keeps that
+ * size while the identity block is stuck to the top of the screen, as the approved picture of
+ * the scrolled page draws it.
  *
  * The heading and the editor are one box. Both sit in one grid cell, and while the reader
  * edits, the heading stays in that cell unseen, holding the draft and drawn whole, so the
@@ -32,7 +32,7 @@ import { authorText } from "./page-structure";
  * only then clamps it again.
  *
  * Escape and Enter end the edit from the keyboard, and give the focus back to the heading the
- * reader opened the editor from, so the keyboard reader is where they were (R11). A focus alone
+ * reader opened the editor from, so the keyboard reader is where they were. A focus alone
  * never opens the editor: the page gives the focus back to the heading on its own - Details
  * closing onto the control that opened it, a return to the window - and an editor opened then
  * would take the next shortcut key as text of the title.

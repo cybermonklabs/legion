@@ -15,12 +15,12 @@ import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
 /**
- * What the header's rows read (dispatch://INFRA-3943, part P of dispatch://INFRA-1196): the
- * header, its properties line, its readings against R3's limits and the typeface, and the one
- * issue they read it on. The rows open the page with part D's `phase` and `gotoIssue`
- * (`e2e/issue-page.ts`) and measure the header to D's `filterRow`.
+ * What the header's rows read: the header, its properties line, its readings against the
+ * header's height limits and the typeface, and the one issue they read it on. The rows open the
+ * page with `phase` and `gotoIssue` (`e2e/issue-page.ts`) and measure the header to the view
+ * row's `filterRow`.
  *
- * This is part P's file (decision 2 of the parts): no other part's rows read it.
+ * This is the header rows' own file: no other part's rows read it.
  *
  * - **The header** `header[data-issue-header]` inside `[data-issue-page]`, drawing no box of its
  *   own (`display: contents`), and in it the band that stays from 761 px up,
@@ -50,8 +50,7 @@ export function viewportAt(width: number): { readonly height: number; readonly w
   return { height: width < 1024 ? 844 : DESKTOP.height, width };
 }
 
-/** INFRA-1196's own title, 115 characters: the one the header's widths were read on
- *  (dispatch://INFRA-1196/comment/f31b8ac4-874c-4735-94c8-8af17a95eba2). */
+/** A real issue's title, 115 characters: the one the header's widths were read on. */
 export const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
 
@@ -100,12 +99,11 @@ export interface HeaderSeed {
 }
 
 /**
- * One issue holding every part of the header's list (R1 of dispatch://INFRA-3943), written
- * through `e2e/api.ts`: a parent whose route reaches nobody, so the parent draws the header's one
- * route marker; the issue under it in progress, at P1, assigned to alice, with a spec and a
- * Verification document, three children (one done, one in progress, one to do) and two questions
- * an agent asked, which wait on alice. No approval request is open: a row that needs one asks
- * for it.
+ * One issue holding every part of the header's list, written through `e2e/api.ts`: a parent
+ * whose route reaches nobody, so the parent draws the header's one route marker; the issue under
+ * it in progress, at P1, assigned to alice, with a spec and a Verification document, three
+ * children (one done, one in progress, one to do) and two questions an agent asked, which wait
+ * on alice. No approval request is open: a row that needs one asks for it.
  */
 export async function seedHeader(): Promise<HeaderSeed> {
   await createProject({ key: HEADER_PROJECT, name: "Header" });
@@ -170,7 +168,7 @@ export function propertiesLine(page: Page): Locator {
 }
 
 /** Waits for the header's properties line: every row's first step, so a page that draws only
- *  part A's key and title fails on this and not on a later reading. */
+ *  the key and the title fails on this and not on a later reading. */
 export async function expectHeaderDrawn(page: Page): Promise<void> {
   await expect(propertiesLine(page), "the new page draws no properties line").toBeVisible();
 }
@@ -376,6 +374,21 @@ export function badgeValue(page: Page, label: string): Locator {
   );
 }
 
+/** The header's approval chip of the document `artifactId`: the issue's own chip, or the chip of
+ *  a gated root's entry. */
+export function approvalChip(page: Page, artifactId: string): Locator {
+  return issueHeader(page).locator(`[data-approval-artifact="${cssValue(artifactId)}"]`);
+}
+
+/** The entry of a gated root's step `step` among the header's approval steps: the approval of the
+ *  document that step approves - its chip, or `Not requested` - and, while that document's
+ *  request waits on the reader, its actions. */
+export function approvalEntry(page: Page, step: string): Locator {
+  return issueHeader(page)
+    .getByTestId("issue-approval-steps")
+    .locator(`[data-approval-step="${cssValue(step)}"]`);
+}
+
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
  * its tag with the name a reader hears; and every run of words drawn outside those, as
@@ -443,11 +456,10 @@ export function undersizedTargets(page: Page): Promise<string[]> {
   });
 }
 
-/** The controls R3 holds to 24 px tall at every width (finding F13 of
- *  dispatch://INFRA-1196/artifact/tester-findings-md): the status, the priority, the assignee,
- *  the count, Approve, Request changes, the labels' count and the control that copies the key,
- *  24 by 24 px as row one's other controls are, each as `<name>: <height>` where it is drawn
- *  shorter. */
+/** The controls the header holds to 24 px tall at every width: the status, the priority, the
+ *  assignee, the count, Approve, Request changes, the labels' count and the control that copies
+ *  the key, 24 by 24 px as row one's other controls are, each as `<name>: <height>` where it is
+ *  drawn shorter. */
 export function shortControls(page: Page, key: string): Promise<string[]> {
   return issueHeader(page).evaluate((header, key) => {
     const named: [string, Element | null][] = [
@@ -469,7 +481,8 @@ export function shortControls(page: Page, key: string): Promise<string[]> {
   }, key);
 }
 
-/** The header as R3 measures it: from the top of the header to the top of the view row. */
+/** The header as its height limit measures it: from the top of the header to the top of the
+ *  view row. */
 interface HeaderReading {
   readonly height: number;
   /** The words of each line drawn between the two, top to bottom. */
@@ -581,10 +594,9 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 }
 
 /**
- * R3's limit on the header at `width`: 3 lines and 130 px at 1440 px; at 390 px, on the 20-label
- * seed and the measured title, 8 lines and 250 px while no approval request waits on the reader
- * and 9 lines and 280 px while one does (ruling 8 of
- * dispatch://INFRA-1196/artifact/build-rulings-md). No other width has a limit.
+ * The header's height limit at `width`: 3 lines and 130 px at 1440 px; at 390 px, on the
+ * 20-label seed and the measured title, 8 lines and 250 px while no approval request waits on
+ * the reader and 9 lines and 280 px while one does. No other width has a limit.
  */
 function headerLimit(
   width: number,
@@ -630,8 +642,7 @@ export async function expectHeaderWithinItsLimit(
   }
 }
 
-/** What stays at the top of the screen and what scrolls away (ruling 5), where the page stands
- *  now. */
+/** What stays at the top of the screen and what scrolls away, where the page stands now. */
 export interface StickyReading {
   /** The band - the key's row and the title - by its box on the screen. */
   readonly block: { readonly bottom: number; readonly height: number; readonly top: number };
@@ -701,8 +712,7 @@ export function stickyReading(page: Page): Promise<StickyReading | null> {
   });
 }
 
-/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in
- *  (part B). */
+/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in. */
 export const TYPEFACE = "Dispatch Inter";
 
 /** The address the page's stylesheet loads the typeface from, read from its own `@font-face`

@@ -304,9 +304,8 @@ html:has([data-issue-page]) {
 }
 
 /* What a scroll brings into view on the new issue page stands below everything that stays at the
-   top of the screen above its rows (decision 113 of
-   dispatch://INFRA-1196/artifact/part-decisions-md). The page scrolls the document, so the
-   padding is on `html`. `--issue-identity-height` is the band the header publishes
+   top of the screen above its rows (decision 113 of the parts). The page scrolls the document,
+   so the padding is on `html`. `--issue-identity-height` is the band the header publishes
    (`identity-block.ts`): its identity block from 761 px up, and at 760 px and below the view row,
    where the header scrolls away. `--issue-view-row-height` is the view row's own height while it
    stays, at 760 px and below, and 0 px above (`slots/view-row.tsx`), so the row is counted on a
@@ -334,7 +333,7 @@ html:has([data-issue-page]) {
 
 /* Each control inside the header's identity block takes a top scroll margin of minus the whole
    padding above, at every width, and at 760 px and below so does each control of the header, so a
-   focus that enters one while it is on the screen never scrolls the page (decision 113). From
+   focus that enters one while it is on the screen never scrolls the page. From
    761 px up the block stays at the top of the screen and is the band the padding keeps clear, so
    without the margin a focus there - Shift+Tab from the properties line under it, or Tab from one
    control of the block to the next - scrolls the page up to bring the control below the band, and
@@ -343,8 +342,13 @@ html:has([data-issue-page]) {
    header is above the screen, so nothing that stays ever covers a header control: one lying in
    the band at the top would scroll the page for nothing. From 761 px up the properties line,
    outside the block, keeps no margin, so a focus on one of its controls that lies under the stuck
-   block still scrolls it out from under the block. `[data-identity-block]` and
-   `[data-issue-header]` are `IssueHeader.tsx`'s. */
+   block still scrolls it out from under the block. `[data-identity-block]` is the block that
+   `features/issue-page/IssueHeader.tsx` draws, and only the new page draws it, so its rule needs
+   no scope; today's issue page draws `[data-issue-header]` too, so the header's rule names the
+   new page's outermost element, `[data-issue-page]`, as an ancestor, with no `:has()`. Their
+   subjects name the controls rather than every element, as the view row's rule above does: a
+   universal subject under an `html:has()` ancestor made each change of the page recalculate the
+   style of the whole document. */
 [data-identity-block] :is(a[href], button, input, select, textarea, [tabindex]) {
   scroll-margin-top: calc(
     -1 *
@@ -372,9 +376,8 @@ html:has([data-issue-page]) {
   /* The new issue page's header draws its status and its title's editor in its own type at
      every width, as the prototype does: the status at 12 px, sized to its value, so the header
      at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
-     waits (ruling 8 of dispatch://INFRA-1196/artifact/build-rulings-md), and the title's editor
-     at the heading's own size, which it must match so ending an edit moves nothing
-     (dispatch://INFRA-1196 R13). This file's rules are in no cascade layer and Tailwind's are, so
+     waits, and the title's editor at the heading's own size, which it must match so ending an
+     edit moves nothing. This file's rules are in no cascade layer and Tailwind's are, so
      `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
      header control opens keeps the 1rem floor above, so a phone does not zoom into its fields. */
   html:has([data-issue-page]) [data-issue-page]
@@ -390,7 +393,7 @@ html:has([data-issue-page]) {
   }
   /* The padding keeps what a scroll brings into view clear of the review sheet at the foot of
      the screen. The new issue page has no such sheet: its panel is Details, which opens over the
-     page (dispatch://INFRA-1196 R14), so nothing covers the foot there, and a landing centred on
+     page (R14), so nothing covers the foot there, and a landing centred on
      a passage is centred on the screen rather than 80 px above it. */
   html:has([data-issue-page]) {
     scroll-padding-bottom: 0;
@@ -405,7 +408,7 @@ html:has([data-issue-page]) {
   }
 
   /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
-     (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md), so its controls take WCAG
+     (the architect's ruling 5), so its controls take WCAG
      2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
      keeps the floor. Only the new page draws the row (`identity-block.ts`'s
      `FILTER_ROW_ATTRIBUTE`), so the rule takes no `html:has()` scope: under one, each row the
@@ -418,10 +421,9 @@ html:has([data-issue-page]) {
   /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
      size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
      target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
-     nine lines and 280 px while an approval request waits (ruling 8 of
-     dispatch://INFRA-1196/artifact/build-rulings-md). `revert-layer` takes the floor above off
-     and gives back the size the control's own classes set. A menu or a dialog a header control
-     opens keeps the 44 px floor. */
+     nine lines and 280 px while an approval request waits. `revert-layer` takes the floor above
+     off and gives back the size the control's own classes set. A menu or a dialog a header
+     control opens keeps the 44 px floor. */
   html:has([data-issue-page]) [data-issue-page]
     [data-issue-header]
     :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
@@ -486,7 +488,7 @@ html:has([data-issue-page]) {
 }
 
 /* Below 1280 px a row of the new issue page takes none of the 44 px floor above on its fold
-   control and its inline controls (dispatch://INFRA-1196 part G, R1; the floor itself stays as
+   control and its inline controls (part G, R1; the floor itself stays as
    it is on every other page and control). A node's bullet is its fold control, the prototype's
    18 by 24 px `.bul`, and 24 by 24 px at 760 px and below (`NODE_ROW_LAYOUT.foldControl`):
    nothing else in its row is a target beside it, so a 24 px circle on it meets no other target
@@ -804,7 +806,7 @@ html:has([data-issue-page]) {
   }
 }
 
-/* A node's words in the issue page's outline (dispatch://INFRA-1196 part G, R1) stand flush in
+/* A node's words in the issue page's outline (part G, R1) stand flush in
    their row: the first block of them takes no margin above it and the last none below. The
    spacing between their blocks is set further down, beside `.dispatch-markdown`'s own rules. */
 [data-node-words] .dispatch-markdown > :first-child {
@@ -975,7 +977,7 @@ html:has([data-issue-page]) {
   font-weight: 600;
 }
 
-/* A node's words in the issue page's outline (dispatch://INFRA-1196 part G, R1, the prototype's
+/* A node's words in the issue page's outline (part G, R1, the prototype's
    `.body`): they take the row's 15 px on 24 px lines, and its paragraphs, lists, quotes and code
    stand 6 px apart and a heading 6 px under what precedes it, rather than at the spacing
    `prose` gives a whole document. */

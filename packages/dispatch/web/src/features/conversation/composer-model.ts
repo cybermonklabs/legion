@@ -56,7 +56,7 @@ export interface ReplyTarget {
   readonly id: string;
   /** What the reply answers: a comment (`reply_to`), a message (`in_reply_to`), or an ask, whose
    *  reply is a comment naming it (`ask_id`) - an open ask's question back, or a word under an
-   *  answered or resolved one (dispatch://INFRA-3677). */
+   *  answered or resolved one, so a reader can answer the thread they are reading. */
   readonly parentKind: "ask" | "comment" | "message";
   /** Canonical targets carried by a comment parent, prefilled as editable @ mentions. */
   readonly mentions?: readonly { readonly target: string; readonly title: string }[];

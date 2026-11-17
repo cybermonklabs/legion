@@ -78,15 +78,14 @@ export interface TimestampProps {
 /** Renders a relative time ("4 minutes ago") that keeps itself current, with the absolute
  * value available on hover (`title`) and to assistive tech (`datetime`). Inside `NoTooltips`
  * (`components/tooltips.tsx`, the new issue page) it carries no `title`, and with `exact` it
- * says the instant in words instead (dispatch://INFRA-1196 R19). */
+ * says the instant in words instead. */
 export function Timestamp({ at, className, exact = false }: TimestampProps): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const [, forceUpdate] = useState(0);
   useEffect(() => subscribe(() => forceUpdate((count) => count + 1)), []);
   // Inside `NoTooltips` an instant is a value the page draws whole, so it keeps `max-w-full` and
-  // breaks anywhere, as every value there does (dispatch://INFRA-3935 R6, decision 104 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md); outside it keeps the host's class alone.
+  // breaks anywhere, as every value there does; outside it keeps the host's class alone.
   const shownClassName =
     page === null
       ? className

@@ -68,7 +68,7 @@ export interface ApiRequests {
   byRoute(): readonly RouteCount[];
   /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
    *  only the ones counted here. This is how the recorded baseline measures one load
-   *  (dispatch://INFRA-1196/artifact/request-baseline-md: "between navigation and network idle
+   *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
    *  that waits on another read's answer has been sent. */
@@ -144,7 +144,7 @@ export function watchApiRequests(page: Page): ApiRequests {
 }
 
 /** How long nothing may be in flight before a load is counted finished. It is the recorded
- *  baseline's own window (dispatch://INFRA-1196/artifact/request-baseline-md: "between
+ *  baseline's own window ("between
  *  navigation and network idle (nothing in flight for 1500 ms)"). */
 const LOAD_QUIET_MS = 1_500;
 

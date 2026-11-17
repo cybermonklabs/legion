@@ -12,8 +12,7 @@ import {
 } from "./tree-keys";
 
 /**
- * What the tree's keyboard asks of the model (dispatch://INFRA-1196 R9,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t15`), over a tree built by hand.
+ * What the tree's keyboard asks of the model, over a tree built by hand.
  */
 
 function node(

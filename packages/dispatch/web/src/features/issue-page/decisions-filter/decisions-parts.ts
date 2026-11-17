@@ -15,7 +15,7 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
 
 /**
  * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
- * comments (dispatch://INFRA-1196 R2, R9, R35).
+ * comments (R2, R9, R35).
  *
  * The filter is one list in parts, each under its own heading and in this order (R2):
  *
@@ -29,8 +29,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    one the reader sent a Change on, which waits on its agent.
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
  *    and each agent decision a statement rests on that the reader kept or asked to change, by
- *    the time they did. An answered ask is the person's decision itself
- *    (dispatch://INFRA-1150 R1), and a declined one reads as a question the person declined,
+ *    the time they did. An answered ask is the person's decision itself, and a declined one
+ *    reads as a question the person declined,
  *    never as an answer.
  * 4. **What others decided**, newest first: the same entries where the person who answered,
  *    declined, kept or changed is not the reader, a question its asker took back, and a section
@@ -61,15 +61,15 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * ## What today's reads hold, and what they do not
  *
  * - **The `shaped` tie** is a link from a block of a decision to a block of the spec
- *   (`Decision.links`), which is the edge as today's read carries it; the tuple is
- *   dispatch://INFRA-1150's. A tie counts where its far end is a statement of this issue, read
+ *   (`Decision.links`), which is the edge as today's read carries it; the tuple is the decision
+ *   model's. A tie counts where its far end is a statement of this issue, read
  *   from the tree.
  * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
  *   the decisions read holds no other time for one.
  * - **A Change** is a comment a person anchored to the decision's words since it last changed
  *   (`decision-review.ts`'s `decisionChanges`); the decisions read holds no state for it.
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
- *   dispatch://INFRA-1150's: the read holds no author and one yes or no, `unsure`, which the
+ *   the decision model's: the read holds no author and one yes or no, `unsure`, which the
  *   row draws as the one word it has.
  */
 
@@ -343,7 +343,7 @@ export function decisionsParts({
     if (row.kind !== "agent") {
       // A section the server marks a person's that restates no answer of this issue: it names
       // an ask the tree does not hold, or one nobody answered. The server's word for whose it
-      // is stands, and no read says which person (dispatch://INFRA-1150's `decided_by`).
+      // is stands, and no read says which person (the decision model's `decided_by`).
       others.push(entry);
     } else if (row.replaced) {
       agents.push(entry);

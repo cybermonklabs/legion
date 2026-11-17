@@ -4,17 +4,17 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 /**
  * How tall the band that stays at the top of the screen is right now, on the document element,
  * so anything that must not sit under it reads one number rather than guessing: the tree's
- * focused row scrolls clear of it (dispatch://INFRA-1196 R9), and a keyboard target is "on
- * screen" only below this line (`e2e/issue-page.ts`'s `onScreen`). From 761 px up the band is the
- * identity block, the issue's key and title; at 760 px and below the header scrolls away and the
- * band is the filter row, which stays (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md,
- * the prototype's `#hdr-sticky` and `#viewbar`). Unset while no identity block is drawn.
+ * focused row scrolls clear of it, and a keyboard target is "on screen" only below this line
+ * (`e2e/issue-page.ts`'s `onScreen`). From 761 px up the band is the identity block, the issue's
+ * key and title; at 760 px and below the header scrolls away and the band is the filter row,
+ * which stays (the prototype's `#hdr-sticky` and `#viewbar`). Unset while no identity block is
+ * drawn.
  */
 export const IDENTITY_HEIGHT_PROPERTY = "--issue-identity-height";
 
 /** The widths the header scrolls away at and the filter row stays: the prototype's own media
  *  query, which the header's and the filter row's `max-[761px]:` classes repeat, Tailwind's
- *  `max-[761px]:` being a width under 761 px (dispatch://INFRA-1196 decision 72). */
+ *  `max-[761px]:` being a width under 761 px. */
 export const HEADER_SCROLLS_QUERY = "(max-width: 760px)";
 
 /** The mark the filter row's own element carries (`IssuePresets.tsx`), by which the band is found
@@ -32,7 +32,7 @@ export const FOOT_HEIGHT_PROPERTY = "--issue-composer-height";
 
 /** How far from the band a target is placed when it has to be scrolled to: enough that it does
  *  not sit flush against it. */
-const CLEARANCE = 8;
+export const CLEARANCE = 8;
 
 /**
  * Brings `element` inside the viewport, clear of the band that stays at the top of the screen

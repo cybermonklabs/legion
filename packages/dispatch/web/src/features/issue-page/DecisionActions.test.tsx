@@ -23,7 +23,7 @@ import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
- * The two controls a decision's node draws (dispatch://INFRA-1196 R7). The tree is one tab stop,
+ * The two controls a decision's node draws (R7). The tree is one tab stop,
  * so neither takes the tab order and the row's own keys press them (`useTreeKeymap.ts`); what
  * this file reads is what the controls themselves do, which is what both a pointer and those
  * keys get.

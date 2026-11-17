@@ -65,10 +65,9 @@ export function PriorityControl({
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
  *
- * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`,
- * dispatch://INFRA-1196 R13): three bars filled by how urgent the priority is, beside `P1` in
- * the ink, or the word Priority in the quiet grey while it has none. The select over it is the
- * same either way.
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
+ * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
+ * quiet grey while it has none. The select over it is the same either way.
  */
 export function PriorityEditor({
   disabled = false,
@@ -87,9 +86,8 @@ export function PriorityEditor({
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
-  // there is one of that page's (dispatch://INFRA-3935 R6, decision 56 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md). The prototype's `.prio` draws how urgent
-  // a priority is by its bars and its word, never by a colour, so P0 and P3 wear the same chip.
+  // there is one of that page's. The prototype's `.prio` draws how urgent a priority is by its
+  // bars and its word, never by a colour, so P0 and P3 wear the same chip.
   const badgeTone =
     page === null
       ? `${tone.bg} ${tone.text}`
@@ -99,8 +97,7 @@ export function PriorityEditor({
   const shown = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
-  // and its wrapper narrows to the line rather than keep its width (dispatch://INFRA-3935 R6,
-  // decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). The header variant is the
+  // and its wrapper narrows to the line rather than keep its width. The header variant is the
   // new page's shape alone, so it wraps on every surface.
   return (
     <>

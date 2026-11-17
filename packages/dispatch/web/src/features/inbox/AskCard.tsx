@@ -180,16 +180,15 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
 };
 
 /**
- * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's
- * (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md), by
- * the role `main`'s colour has: the card is the page's paper inside its hairline rule; the
- * question is the ink, what a reader acts on the muted grey, what qualifies it the quiet grey,
- * a link the ink, and a question that changed under the reader the page's warning, its waiting
+ * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's, by the
+ * role `main`'s colour has: the card is the page's paper inside its hairline rule; the question
+ * is the ink, what a reader acts on the muted grey, what qualifies it the quiet grey, a link
+ * the ink, and a question that changed under the reader the page's warning, its waiting
  * orange; the answer box is the page's field, which keeps `main`'s focus rule, the application's
- * one focus indicator (decision 58 of the same artifact); Answer and Ask back instead are
- * filled with the ink, as the page's one filled control is, and the other actions are its
- * header control's rule and muted words. What the card's children draw - the recipients, the
- * thread, the options, the earlier approval - is theirs.
+ * one focus indicator; Answer and Ask back instead are filled with the ink, as the page's one
+ * filled control is, and the other actions are its header control's rule and muted words. What
+ * the card's children draw - the recipients, the thread, the options, the earlier approval - is
+ * theirs.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -212,7 +211,7 @@ const ON_PAGE = {
   warning: pageStateText.waiting,
 } as const;
 
-/** The card's urgency accent inside `NoTooltips`, in the new issue page's colours (R6): blocking
+/** The card's urgency accent inside `NoTooltips`, in the new issue page's colours: blocking
  *  the failed red, high the waiting orange, med the questions' blue, low the hairline grey. */
 const PAGE_URGENCY_ACCENT: Record<AskUrgency, string> = {
   blocking: "border-l-page-failed",
@@ -222,7 +221,7 @@ const PAGE_URGENCY_ACCENT: Record<AskUrgency, string> = {
 };
 
 /** The urgency notch's words inside `NoTooltips`, matching `PAGE_URGENCY_ACCENT` on the page's
- *  paper (R6). */
+ *  paper. */
 const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   blocking: pageFailedText,
   high: pageStateText.waiting,
@@ -328,9 +327,9 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const handedOnBy = ask.asked_of_by ?? "";
   const handedOnAt = ask.asked_of_at ?? null;
   const tone = waitingOn === "" ? badgeLow : badgePrimary;
-  // Inside `NoTooltips` each colour is one of the new issue page's (R6, decision 56): the line is
-  // its quiet words, and the badge its label chip, or the quiet words on the same ground while
-  // `waitingOn` is empty (the ask names no login), as the assignee's badge is drawn there.
+  // Inside `NoTooltips` each colour is one of the new issue page's: the line is its quiet words,
+  // and the badge its label chip, or the quiet words on the same ground while `waitingOn` is
+  // empty (the ask names no login), as the assignee's badge is drawn there.
   const badgeTone =
     page === null
       ? `${tone.bg} ${tone.text}`
@@ -339,8 +338,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
         : pageLabelChip;
   // Inside `NoTooltips` who the ask waits on and who handed it on are values, so each breaks
   // anywhere and the badge's wrapper narrows to the line rather than keep its width; the select
-  // still covers the badge however many lines it takes (`badgeSelectPageWrapper`, decision 104 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  // still covers the badge however many lines it takes (`badgeSelectPageWrapper`).
   return (
     <div
       className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${page === null ? textMutedOnSurface : pageQuietText}`}
@@ -562,8 +560,7 @@ export function AskCard({
         ? agentText.label(displayedAsk.author)
         : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
   // The asker's name, cut with its tooltip where one is drawn; inside `NoTooltips`, where no
-  // tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead (decision
-  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md).
+  // tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead.
   const askerName = (name: ReactNode) =>
     tooltips ? (
       <TruncatedText className="min-w-0" title={askerTitle}>
@@ -799,8 +796,7 @@ export function AskCard({
               here to copy.
             </p>
             <p
-              // Inside `NoTooltips` the reader's own words are a value, which breaks anywhere
-              // (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md).
+              // Inside `NoTooltips` the reader's own words are a value, which breaks anywhere.
               className={`mt-1 text-sm whitespace-pre-wrap ${tooltips ? textPrimaryOnSurface : `max-w-full [overflow-wrap:anywhere] ${ON_PAGE.ink}`}`}
             >
               {unsentAnswer}
@@ -897,8 +893,7 @@ export function AskCard({
               pending author has an empty label and still says when it was asked. Inside
               `NoTooltips` no title gives back what an ellipsis cut, and a name and an instant
               are values, which wrap there: each name breaks anywhere inside its own part of the
-              group, which still holds its one line, so no separator opens a line there either
-              (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). */}
+              group, which still holds its one line, so no separator opens a line there either. */}
           <span
             className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "whitespace-nowrap " : ""}@max-sm:flex-wrap`}
           >

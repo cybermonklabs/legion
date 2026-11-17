@@ -34,7 +34,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
 
 /**
- * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
+ * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
  * R34, and the architect's ruling 1 on R1).
  *
  * The row is rendered on its own rather than through `IssueTree`, because what these rows are
@@ -291,7 +291,7 @@ test("a folded branch's line writes a bare address as its short form", () => {
   }
 });
 
-// R1, R9, INFRA-1150 R3, ruling 1: an answered ask carries the person's answer in its own row,
+// R1, R9, ruling 1: an answered ask carries the person's answer in its own row,
 // and no row of its own: who answered by a name and a shape, what they chose among the ask's own
 // options, and what they wrote as the store holds it, character for character and whole.
 test("an answered ask draws the answer in its own row, word for word", () => {

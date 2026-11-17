@@ -98,7 +98,7 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
 }
 
 /**
- * What a reader does with a decision, on the decision's own node (dispatch://INFRA-1196 R7, the
+ * What a reader does with a decision, on the decision's own node (R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
  *
  * The old Decisions tab drew four sections of cards in a panel of its own and put Keep and

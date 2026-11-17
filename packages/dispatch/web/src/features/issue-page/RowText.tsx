@@ -29,7 +29,7 @@ import {
 } from "./row-references";
 
 /**
- * A node's own text, as its row in the outline draws it (dispatch://INFRA-1196 R16, R20, R34),
+ * A node's own text, as its row in the outline draws it (R16, R20, R34),
  * in the size and the colour of the words it is drawn among.
  *
  * A text whose read sent the server's reading of it (`tree`) is drawn from that reading, with

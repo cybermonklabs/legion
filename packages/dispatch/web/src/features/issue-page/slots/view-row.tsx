@@ -17,7 +17,7 @@ import { useIssueKeymap } from "../useIssueKeymap";
 import { useIssueTree } from "../useIssueTree";
 
 /**
- * The view row (dispatch://INFRA-1196 R2, R11): the five view controls and Keys
+ * The view row (R2, R11): the five view controls and Keys
  * (`IssuePresets.tsx`), each control's signal read off the issue's one tree, and below 1024 px,
  * with no view on, the Outline control beside the one control (`contents-frame.tsx`). It binds
  * the views' chords (`useIssueKeymap.ts`).
@@ -73,8 +73,8 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
  * `--issue-identity-height` (`identity-block.ts`). `styles.css` sets the new page's
  * `scroll-padding-top` from the two, so what a scroll brings into view (`scrollIntoView`) stands
  * below everything that stays, and gives the row's own controls a top scroll margin of minus this
- * height, so a focus that enters the row scrolls no page (decision 113 of
- * dispatch://INFRA-1196/artifact/part-decisions-md). Unset while no view row is drawn.
+ * height, so a focus that enters the row scrolls no page (decision 113 of the parts). Unset while
+ * no view row is drawn.
  */
 const VIEW_ROW_HEIGHT_PROPERTY = "--issue-view-row-height";
 

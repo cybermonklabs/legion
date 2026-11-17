@@ -15,8 +15,7 @@ import { textHead } from "../refs/tree-fragment";
 const TITLE_MAX = 60;
 
 /**
- * What a node's words cite, and how a row of the issue page draws it (dispatch://INFRA-1196
- * R19, R21, the tester's F14 and F17).
+ * What a node's words cite, and how a row of the issue page draws it.
  *
  * A row names every reference in its words from the page's one batched read of what the tree's
  * references point at (`GET /api/v1/reference-targets`, `useIssueTree.ts`), which it reads
@@ -31,7 +30,7 @@ const TITLE_MAX = 60;
  * the batched read answered that its issue exists: `UTF-16` and `SHA-256` are read as keys by
  * the grammar the web shares with the server, name no issue, and are drawn as the words they
  * are. A short reference the read answered ambiguous links nothing either and is drawn as
- * written (`useKnownAmbiguousReferences`, dispatch://INFRA-1196 decision 62).
+ * written (`useKnownAmbiguousReferences`).
  */
 
 /** One reference in a text, where it stands and what it names. */
@@ -137,8 +136,7 @@ function readingOf(text: string, issues: readonly string[] | undefined): Reading
  * writes an item id or a block id short is asked as written too: the read resolves the short id
  * in the owner the reference names and answers under the reference as the request wrote it,
  * which is the reference a row links it by (`rowReferences`); where no item or two of them carry
- * the prefix it answers the reference gone, and `ambiguous` where two do (dispatch://INFRA-1196
- * decision 55).
+ * the prefix it answers the reference gone, and `ambiguous` where two do.
  */
 export function citedReferences(text: string): string[] {
   if (text === "") return [];
@@ -172,9 +170,8 @@ const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
  *  a read of its own, one per document, which a row does not make. A reference in `ambiguous` -
  *  one the batched read answered that two or more targets carry the short id of, which the page
  *  publishes (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text
- *  it is and links nothing, as the tree's chip draws it (`NodeChip.ambiguous`,
- *  dispatch://INFRA-1196 decision 62): a link would draw it as its short form, which names no
- *  one target. */
+ *  it is and links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): a link would draw
+ *  it as its short form, which names no one target. */
 export function rowReferences(
   text: string,
   issues: readonly string[],
@@ -226,7 +223,7 @@ const ROW_REFERENCE = "data-row-reference";
 const ROW_WRITTEN = "data-row-written";
 
 /** A link in a node's words that are drawn as stored: the words' own ink over the bullets'
- *  grey, as `styles.css` draws one in a drawn text (ruling 5). */
+ *  grey, as `styles.css` draws one in a drawn text. */
 export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]";
 
 /** Writes `anchor`'s words: an issue's key set apart from its title, as a link to an issue reads
@@ -257,9 +254,8 @@ function nameAnchor(
  * from `names`, and a link an earlier pass made takes the name the read has brought since. A
  * reference in `ambiguous` links nothing (`rowReferences`), and a link an earlier pass made for
  * one the read has answered ambiguous since is put back as the words it was made over, so it is
- * drawn as written (dispatch://INFRA-1196 decision 62). Out of the tab order, as everything
- * inside a row is (R9). Run again after every paint and whenever `names` or `ambiguous` changes;
- * it finds nothing to do twice.
+ * drawn as written. Out of the tab order, as everything inside a row is (R9). Run again after
+ * every paint and whenever `names` or `ambiguous` changes; it finds nothing to do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,

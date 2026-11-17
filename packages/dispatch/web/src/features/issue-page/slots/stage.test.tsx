@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
 
-import { QueryError } from "../../../components/QueryError";
 import { CONTROL_LABELS } from "../page-words";
+import { FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
 
 /**
@@ -73,7 +73,7 @@ test("a view leaves the focus where a control already holds it", async () => {
 });
 
 /** A view whose read is refused from its first load: a moment after it mounts it draws the
- *  refused read's error line, with its Retry, and no tree. */
+ *  refused read's line (`FailedReadLine`), with its Retry, and no tree. */
 function RefusedView(): ReactNode {
   const [refused, setRefused] = useState(false);
   useEffect(() => {
@@ -81,7 +81,9 @@ function RefusedView(): ReactNode {
     return () => window.clearTimeout(answered);
   }, []);
   if (!refused) return null;
-  return <QueryError message="Couldn't read the view." onRetry={() => undefined} />;
+  return (
+    <FailedReadLine message="Couldn't read the view." onRetry={() => undefined} retrying={false} />
+  );
 }
 
 test("a view whose read is refused puts the focus on its Retry", async () => {

@@ -329,9 +329,9 @@ test("a block a spec address names is found in the spec, not in another document
   }
 });
 
-// R20 and the architect's ruling 5 on R12: the children's own address (`/children`, today's
-// Children tab) names the first row of their group in the outline, which the page unfolds the
-// path to and puts the focus on; the documents' address (`/artifacts`) opens the node menu.
+// R20: the children's own address (`/children`, today's Children tab) names the first row of
+// their group in the outline, which the page unfolds the path to and puts the focus on; the
+// documents' address (`/artifacts`) opens the node menu.
 test("the children's address names the first row of their group, and the documents' address opens the node menu", () => {
   const children = issueAddress({ key: "CORE-1", kind: "children" }, "", "", "spec");
   expect(children.target).toEqual({ id: "CORE-1", kind: "children" });

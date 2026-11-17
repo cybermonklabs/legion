@@ -4,10 +4,10 @@ import type { Ask, Comment, MessageRead } from "../../api/types";
 type CommentTurn = Pick<Comment, "ask_id" | "author" | "id" | "reply_to">;
 
 /**
- * Which comments and messages an agent wrote outside every thread a person wrote in
- * (dispatch://INFRA-1196 R1, R15, R20): the outline draws none of them, and the history in the
- * panel draws each, with its text, its replies and its reply control. Once a person writes in
- * such a thread it is the conversation's, and the outline draws the whole of it.
+ * Which comments and messages an agent wrote outside every thread a person wrote in: the
+ * outline draws none of them, and the history in the panel draws each, with its text, its
+ * replies and its reply control. Once a person writes in such a thread it is the
+ * conversation's, and the outline draws the whole of it.
  *
  * A comment thread is a comment and every reply under its head (`reply_to`, which the server
  * climbs to the head as it stores, `comment_create.go`'s `threadHeadOf`); a message thread is a

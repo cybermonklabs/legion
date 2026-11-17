@@ -29,6 +29,62 @@ function usableControl(selector: string): HTMLElement | null {
   return disabled ? null : node;
 }
 
+/** A document's approval chip (`ApprovalChip`'s `data-approval-artifact`). The header draws it on
+ *  its properties line alone (`IssuePropertiesRow.tsx`): one for the issue's document, and one on
+ *  each entry of a gated root's steps. */
+const APPROVAL_CHIP = "[data-approval-artifact]";
+
+/** A chip's two actions: the buttons beside it in the box `ApprovalChip` draws it in, or in the
+ *  box that keeps the two together (`keepActionsTogether`). The dialogs the chip opens are drawn
+ *  deeper in that box, so none of their buttons is one of these. */
+const CHIP_ACTIONS = ":scope > button, :scope > span > button";
+
+/** The words each action draws (`ApprovalChip`): Approve says the version on a stale approval.
+ *  Neither action carries an attribute of its own, so each is found by the words a reader reads
+ *  on it; its name may also say the document (`actionsDocument`), its words never do. */
+const ACTION_WORDS = {
+  approve: /^Approve( v\d+)?$/,
+  "request-changes": /^Request changes$/,
+} as const;
+
+/**
+ * The `action` of the approval chip that holds the focus, or `null` when the focus is on no chip
+ * of the header and on neither of a chip's two actions, when the chip draws no such action - no
+ * request of its document waits on the reader, or the document is approved, which draws no
+ * Approve - or when the action refuses a press while its review is written: Approve is `disabled`
+ * then, and Request changes `aria-disabled`. Like `usableControl`, the one fact a key's `run` and
+ * its `when` both read.
+ *
+ * The chip's box is the nearest box around the focus that holds a chip of its own, so the action
+ * found is always the focused document's, never the one of another entry on the line.
+ */
+function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonElement | null {
+  const header = document.querySelector(HEADER);
+  const active = document.activeElement;
+  if (header == null || !(active instanceof HTMLElement) || !header.contains(active)) {
+    return null;
+  }
+  let box: HTMLElement | null = active;
+  while (box !== null && box !== header) {
+    const chip = box.querySelector(`:scope > ${APPROVAL_CHIP}`);
+    if (chip !== null) {
+      const actions = [...box.querySelectorAll<HTMLButtonElement>(CHIP_ACTIONS)].filter(
+        (button) => button !== chip
+      );
+      if (active !== chip && !actions.some((button) => button === active)) {
+        return null;
+      }
+      const button = actions.find((each) => ACTION_WORDS[action].test(each.textContent ?? ""));
+      if (button === undefined) {
+        return null;
+      }
+      return button.disabled || button.getAttribute("aria-disabled") === "true" ? null : button;
+    }
+    box = box.parentElement;
+  }
+  return null;
+}
+
 /**
  * The line at the outline's foot while it answers a question: the question's options are its
  * chips there, which the keyboard reaches, so its controls own the keys as an ask card's do.
@@ -61,10 +117,10 @@ function outsideInputsAndAskCards(): boolean {
 }
 
 /**
- * The header's keys (dispatch://INFRA-1196 R11), the ones today's header binds, each with its
- * target on the new header: `s` focuses the status and `p` the priority, `0` to `3` set the
- * priority, `e` puts the caret in the title, `Shift+P` pins and unpins, and Escape leaves a
- * focused status or priority.
+ * The header's keys: the ones today's header binds, each with its target on the new header (`s`
+ * focuses the status and `p` the priority, `0` to `3` set the priority, `e` puts the caret in the
+ * title, `Shift+P` pins and unpins, and Escape leaves a focused status or priority), and `a` and
+ * `Shift+R`, which approve and open Request changes on the focused approval chip or entry.
  *
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
  * pushes none. The digits go through the header's one priority write, the one its picker and the
@@ -110,6 +166,29 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       label: "Pin or unpin the issue",
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
+    },
+    // `a` and `Shift+R` are the approval's only while the focus is on the chip or entry of a
+    // document whose request waits on the reader, or on one of its two actions; anywhere else
+    // they are left to other bindings of the page. Each presses the action that chip draws, so a
+    // key is taken exactly while that action would take a click.
+    //
+    // Each is a palette row too, offered on the same focus, as a focused row's own actions are
+    // (`agents/keyboard.ts`'s pin, `IssueBoard.tsx`'s `o`): the palette reads its rows while the
+    // focus is still on the chip and runs the one chosen once the focus is back on it
+    // (`SearchPalette.tsx`), and neither key walks a list or repeats an action with a row.
+    {
+      id: "approve",
+      keys: "a",
+      label: "Approve the focused approval request",
+      run: () => focusedApprovalAction("approve")?.click(),
+      when: () => focusedApprovalAction("approve") !== null,
+    },
+    {
+      id: "request-changes",
+      keys: "Shift+R",
+      label: "Request changes on the focused approval request",
+      run: () => focusedApprovalAction("request-changes")?.click(),
+      when: () => focusedApprovalAction("request-changes") !== null,
     },
     {
       // `s` and `p` put focus in a native select, where every single-key binding is suspended
