@@ -82,6 +82,12 @@ export function recordedFor(session: object, id = "ses_a"): readonly unknown[] {
   return recorded.get(session)?.get(id) ?? [];
 }
 
+/** The branch entry `pi.appendEntry("envoy-answers-sent", data)` writes, with `id`: how a branch
+ *  lists an answers message a request sent. */
+export function answersSentEntry(data: unknown, id: string): unknown {
+  return { type: "custom", customType: "envoy-answers-sent", id, data };
+}
+
 /** A request of `session` (a session of its own unless given), not compacting unless told, whose
  *  `record` keeps each entry for `session` and `id` and whose `branch` returns `branch`'s entries
  *  followed by one `custom` entry (`envoy-answers-sent`) per entry recorded for them, in the order
@@ -99,12 +105,7 @@ export function requestOf(
     read,
     branch: () => [
       ...branch(),
-      ...recordedFor(session, id).map((data, index) => ({
-        type: "custom",
-        customType: "envoy-answers-sent",
-        id: `a${index}`,
-        data,
-      })),
+      ...recordedFor(session, id).map((data, index) => answersSentEntry(data, `a${index}`)),
     ],
     session,
     id,
