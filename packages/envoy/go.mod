@@ -239,4 +239,12 @@ require (
 // its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
 // about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
 // of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.6
+// v1.55.1-theorem.7 adds the apply check this package's bound on a browser's rendering stands
+// on (v1.55.1-sami.17): Doc.SetApplyCheck runs a caller's check after a remote apply integrates
+// and before its transaction commits, through a read-only view that takes no lock, and an error
+// rolls the apply back byte for byte; a drain the check refuses is taken back alone and the
+// update stands, which the providers answer as applied. An update's bytes do not show what it
+// does to the rendering - a 35-byte frame setting a list's start number grew one document by
+// 800,024 bytes, and a 7-byte delete of an inline-code mark's format items grew another by
+// 2,799,998 - so only a check of the result can hold the bound (render_check.go).
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.7
