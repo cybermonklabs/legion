@@ -3,9 +3,12 @@
 package daemon
 
 // approved_version_news_seed_live_test.go holds part one's seed of the approved-version-news live
-// proof and its setup checks, moved unchanged out of approved_version_news_live_test.go: the seed
-// that starts each claim through the daemon's own start path, and the checks that every claim
-// stands at the entry that path gives it.
+// proof and its setup checks: the seed that starts each claim through the daemon's own start path,
+// and the checks that every claim stands at the entry that path gives it. Part two's seed
+// (approved_version_news_sessions_live_test.go) starts its roles through the same path and checks
+// them by the same rule, so the pieces both seeds use are here: the start of a fixture's roles
+// (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), and the read of
+// a told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint).
 
 import (
 	"context"
@@ -76,16 +79,35 @@ func (r *versionNewsLive) standAtTheirEntries() {
 // and both numbers.
 func (r *versionNewsLive) standingEntry(c *versionNewsClaimant) int64 {
 	r.t.Helper()
-	var entry, given int64
-	if err := r.st.Pool().QueryRow(context.Background(), `select coalesce((select entry from phases where issue = $1 and role = $2), 0),
-		coalesce((select given_entry from claims where token = $3), 0)`, c.issue, string(c.role), string(c.token)).Scan(&entry, &given); err != nil {
+	entry, given, err := claimEntries(context.Background(), r.st.Pool(), c.issue, c.role, c.token)
+	if err != nil {
 		r.fail("read the entries of %s: %v", c.name(), err)
 	}
-	if entry < 1 || given != entry {
-		r.fail("%s stands at entry %d of its phases row and was given entry %d, where the daemon's start path leaves each claim it starts "+
-			"at an entry of 1 or more, given that entry", c.name(), entry, given)
+	if refusal := entryRefusal(c.name(), entry, given); refusal != "" {
+		r.fail("%s", refusal)
 	}
 	return entry
+}
+
+// claimEntries reads the entry role's phases row on issue names and the entry token's claim was
+// given, each 0 where its row does not exist: the two numbers whose comparison decides whether a
+// holder takes its news directly (newsClaimTakes).
+func claimEntries(ctx context.Context, db record.RowQuerier, issue string, role claim.Role, token claim.Token) (entry, given int64, err error) {
+	err = db.QueryRow(ctx, `select coalesce((select entry from phases where issue = $1 and role = $2), 0),
+		coalesce((select given_entry from claims where token = $3), 0)`, issue, string(role), string(token)).Scan(&entry, &given)
+	return entry, given, err
+}
+
+// entryRefusal is why a claim, named name, that stands at entry of its role's phases row and was
+// given given does not stand where the daemon's start path leaves every claim it starts: at an
+// entry of 1 or more, given that entry. It is "" where the claim stands there. Both seeds fail a
+// run in setup on it, and the sentence names the claim and both numbers.
+func entryRefusal(name string, entry, given int64) string {
+	if entry >= 1 && given == entry {
+		return ""
+	}
+	return fmt.Sprintf("%s stands at entry %d of its phases row and was given entry %d, where the daemon's start path leaves each claim it starts "+
+		"at an entry of 1 or more, given that entry", name, entry, given)
 }
 
 // seed records every member of every tree as the daemon holds it mid-run, and starts each claim
@@ -152,15 +174,9 @@ func (r *versionNewsLive) seed() {
 }
 
 // seedTree records tree's members and starts each claim the fixture names on them through the
-// daemon's start path, in tx, and answers how each holder row written by hand differs from the row
-// that path writes (seedHolderRow), one entry for each row that differs. The root is recorded at
-// admitted first, as admission's promotion finds it, and its architect is started as that
-// promotion starts it (workflow.Engine.StartArchitect): the derivation gives a root at admitted a
-// first task, raised as the architect's entry. The root is then moved to the phase its step needs,
-// as the transitions after that promotion leave it. Each member's phase worker is started as the
-// promotion of a mid-phase member starts it (workflow.Engine.StartPromotedWorker), which raises
-// that role's entry on the phase the member stands in. A role the fixture names that is neither
-// the root's architect nor its member's phase worker has no start on that path, and is refused.
+// daemon's start path (startRoles), in tx, and answers how each holder row written by hand differs
+// from the row that path writes (seedHolderRow), one entry for each row that differs. Each member's
+// holder row is written before its own start, whose raise leaves a row already there as it stands.
 func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, tree *versionNewsTree, told bool, number *int64) ([]string, error) {
 	issues := make([]record.Issue, len(tree.members))
 	for i, member := range tree.members {
@@ -179,9 +195,6 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 			issue.Parent = &parent
 		}
 		issues[i] = issue
-		if i == 0 {
-			issue.Phase = phase.Admitted
-		}
 		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
 			return nil, err
 		}
@@ -200,16 +213,6 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 		}
 	}
 	root := issues[0]
-	admitted := root
-	admitted.Phase = phase.Admitted
-	if err := engine.StartArchitect(ctx, tx, admitted); err != nil {
-		return nil, fmt.Errorf("start the architect of %s: %w", root.Key, err)
-	}
-	if root.Phase != phase.Admitted {
-		if err := r.records.PutIssue(ctx, tx, root); err != nil {
-			return nil, err
-		}
-	}
 	var differences []string
 	for i, member := range tree.members {
 		if told && member.phase != phase.Admitted {
@@ -221,20 +224,48 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 				differences = append(differences, differs)
 			}
 		}
-		for _, role := range member.roles {
-			switch {
-			case i == 0 && role == claim.RoleArchitect:
-			case role != claim.RoleArchitect && role == phase.RoleFor(member.phase):
-				if err := engine.StartPromotedWorker(ctx, tx, issues[i], role); err != nil {
-					return nil, fmt.Errorf("start the %s of %s: %w", role, member.key, err)
-				}
-			default:
-				return nil, fmt.Errorf("tree %s names the %s of %s in %s, which the daemon's start path does not start: it starts a root's "+
-					"architect and a member's phase worker", tree.name, role, member.key, member.phase)
-			}
+		if err := startRoles(ctx, tx, r.records, engine, issues[i], member.roles); err != nil {
+			return nil, fmt.Errorf("tree %s: %w", tree.name, err)
 		}
 	}
 	return differences, nil
+}
+
+// startRoles starts each of roles on issue through the daemon's own start path, in tx, as
+// admission's promotion starts them. A tree root's architect is started as the promotion of a
+// queued root starts it (workflow.Engine.StartArchitect), on the root recorded at admitted, where
+// that promotion finds it: the derivation gives a root at admitted a first task, raised as the
+// architect's entry. The root is then recorded again in the phase it stands in, as the transitions
+// after that promotion leave it. A member's phase worker is started as the promotion of a mid-phase
+// member starts it (workflow.Engine.StartPromotedWorker), which raises that role's entry on the
+// phase the member stands in, with the phase's resume task as the entry's work. Each start writes
+// the role's phases row and queues the start on the outbox. A role that is neither has no start on
+// that path, and is refused.
+func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *workflow.Engine, issue record.Issue, roles []claim.Role) error {
+	for _, role := range roles {
+		switch {
+		case role == claim.RoleArchitect && claim.IsTreeRoot(issue.Key, issue.Tree):
+			admitted := issue
+			admitted.Phase = phase.Admitted
+			if err := records.PutIssue(ctx, tx, admitted); err != nil {
+				return err
+			}
+			if err := engine.StartArchitect(ctx, tx, admitted); err != nil {
+				return fmt.Errorf("start the architect of %s: %w", issue.Key, err)
+			}
+			if err := records.PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+		case role != claim.RoleArchitect && role == phase.RoleFor(issue.Phase):
+			if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+				return fmt.Errorf("start the %s of %s: %w", role, issue.Key, err)
+			}
+		default:
+			return fmt.Errorf("the fixture names the %s of %s in %s, which the daemon's start path does not start: it starts a root's "+
+				"architect and a member's phase worker", role, issue.Key, issue.Phase)
+		}
+	}
+	return nil
 }
 
 // toldVersions is the versions a holder row of tree's told record names when its holder took
@@ -251,27 +282,45 @@ func toldVersions(tree *versionNewsTree) string {
 	return string(encoded)
 }
 
-// versionNewsTold is a holder row of the told record by the three fields its writers set:
-// versions as the database prints them, whether it owes the opening, and its opening's number.
-// versions reads "no row" where there is none.
+// versionNewsTold is a row of the told record by the three fields its writers set: versions as the
+// database prints them, whether it owes the opening, and its opening's number. versions reads "no
+// row" where there is none.
 type versionNewsTold struct {
 	versions    string
 	openingOwed bool
 	openingSeq  int64
 }
 
-// heldTold is issue's holder row of the told record as tx reads it.
-func heldTold(ctx context.Context, tx pgx.Tx, issue string) (versionNewsTold, error) {
+// heldTold is issue's row of the told record for audience ("holder" or "architect") as tx reads
+// it. The audience is the row's own text rather than the record package's name for it, so part
+// one's driver still builds against a base commit, whose record package names no audience.
+func heldTold(ctx context.Context, tx pgx.Tx, issue, audience string) (versionNewsTold, error) {
 	var told versionNewsTold
-	err := tx.QueryRow(ctx, `select versions::text, opening_owed, opening_seq from design_news_told where issue = $1 and audience = 'holder'`,
-		issue).Scan(&told.versions, &told.openingOwed, &told.openingSeq)
+	err := tx.QueryRow(ctx, `select versions::text, opening_owed, opening_seq from design_news_told where issue = $1 and audience = $2`,
+		issue, audience).Scan(&told.versions, &told.openingOwed, &told.openingSeq)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return versionNewsTold{versions: "no row"}, nil
 	}
 	if err != nil {
-		return versionNewsTold{}, fmt.Errorf("read the holder row of %s: %w", issue, err)
+		return versionNewsTold{}, fmt.Errorf("read the %s row of %s: %w", audience, issue, err)
 	}
 	return told, nil
+}
+
+// toldInSavepoint answers the told row read reads in a savepoint of tx, which is rolled back once
+// read has answered, so nothing written to answer it stays. what names the row, for an error. The
+// rows a seed writes by hand are checked against the rows the start path writes in such a
+// savepoint, for a state the seed itself cannot write.
+func toldInSavepoint(ctx context.Context, tx pgx.Tx, what string, read func(pgx.Tx) (versionNewsTold, error)) (versionNewsTold, error) {
+	probe, err := tx.Begin(ctx)
+	if err != nil {
+		return versionNewsTold{}, fmt.Errorf("open the savepoint %s is read in: %w", what, err)
+	}
+	told, err := read(probe)
+	if rollback := probe.Rollback(ctx); rollback != nil && err == nil {
+		err = fmt.Errorf("roll back the savepoint %s was read in: %w", what, rollback)
+	}
+	return told, err
 }
 
 // differences is each field of seeded that differs from path, named with both values.
@@ -306,7 +355,7 @@ func (r *versionNewsLive) seedHolderRow(ctx context.Context, tx pgx.Tx, engine *
 		values ($1, 'holder', $2::jsonb, false, now())`, member.Key, toldVersions(tree)); err != nil {
 		return "", fmt.Errorf("seed the holder row of %s: %w", member.Key, err)
 	}
-	seeded, err := heldTold(ctx, tx, member.Key)
+	seeded, err := heldTold(ctx, tx, member.Key, "holder")
 	if err != nil {
 		return "", err
 	}
@@ -320,17 +369,14 @@ func (r *versionNewsLive) seedHolderRow(ctx context.Context, tx pgx.Tx, engine *
 
 // toldByStartPath is the holder row the daemon's start path writes for member while tree's gate
 // stands approved at version 1 of each document tree registers, read in a savepoint of tx that is
-// rolled back once the row is read, so nothing of it stays. In the savepoint it writes the gate
-// rows a person's approval of each of those versions leaves on root, then raises a worker's entry
-// on member (workflow's Engine.enter, through Engine.StartPromotedWorker), which writes the row
-// from the gate as it stands. The worker is the planner, the holder of every issue's first working
-// phase: its raise writes the row, and each later holder of the issue inherits it.
+// rolled back once the row is read (toldInSavepoint), so nothing of it stays. In the savepoint it
+// writes the gate rows a person's approval of each of those versions leaves on root, then raises a
+// worker's entry on member (workflow's Engine.enter, through Engine.StartPromotedWorker), which
+// writes the row from the gate as it stands. The worker is the planner, the holder of every
+// issue's first working phase: its raise writes the row, and each later holder of the issue
+// inherits it.
 func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, tree *versionNewsTree, root, member record.Issue) (versionNewsTold, error) {
-	probe, err := tx.Begin(ctx)
-	if err != nil {
-		return versionNewsTold{}, fmt.Errorf("open the savepoint the start path's holder row of %s is read in: %w", member.Key, err)
-	}
-	told, err := func() (versionNewsTold, error) {
+	return toldInSavepoint(ctx, tx, "the start path's holder row of "+member.Key, func(probe pgx.Tx) (versionNewsTold, error) {
 		approved := 1
 		for _, step := range tree.steps() {
 			artifact := tree.spec
@@ -347,12 +393,8 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 		if err := engine.StartPromotedWorker(ctx, probe, planning, claim.RolePlanner); err != nil {
 			return versionNewsTold{}, fmt.Errorf("raise the planner's entry on %s: %w", member.Key, err)
 		}
-		return heldTold(ctx, probe, member.Key)
-	}()
-	if rollback := probe.Rollback(ctx); rollback != nil && err == nil {
-		err = fmt.Errorf("roll back the savepoint the start path's holder row of %s was read in: %w", member.Key, rollback)
-	}
-	return told, err
+		return heldTold(ctx, probe, member.Key, "holder")
+	})
 }
 
 // versionNewsHead is the head of key's pull request.

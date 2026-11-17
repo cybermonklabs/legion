@@ -4913,7 +4913,7 @@ A refusal inside the lib, exit 2, is the script's exit 2 too.
 | check | what it holds |
 | :--- | :--- |
 | `arguments` | `--part` is `one` or `both`; `--control` and `--base-commit` run part one alone, and `--part both` with either is refused; `LEGION_TEST_PG_DSN` is set and loopback; the base, when a run uses it, is a commit of this checkout; part two's inputs are there when part two runs; anything else is refused with exit 2 |
-| `base-tree` | with `--control` or `--base-commit` alone: the base extracted with `git archive <rev> \| tar -x` into a scratch tree under `TMPDIR`, removed on any exit, with this checkout's part-one driver copied into it |
+| `base-tree` | with `--control` or `--base-commit` alone: the base extracted with `git archive <rev> \| tar -x` into a scratch tree under `TMPDIR`, removed on any exit, with this checkout's part-one driver copied into it (both its files: the steps and the seed) |
 | `prerequisites`, `broker`, `driver`, `proof` | [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, for part one over the build tree, which is this checkout or that scratch tree, and for part two over this checkout: `driver` builds the package's `-tags e2e` test binary, and `proof` runs `TestAnApprovedVersionReachesItsHolderLive` (`internal/daemon/approved_version_news_live_test.go`) or `TestRealSessionsTellAndAnswerANewVersionLive` (`internal/daemon/approved_version_news_sessions_live_test.go`, under a deadline of 150 minutes) |
 | `assertions` | each step of part one printed its `ok` line and as many `   assert <step>: …` lines as the script's `part_one_checks` says it makes, 52 in all; the count is made before the run's status is read, so the last line of a failed run names it too |
 | `control` | with `--control` or `--base-commit` alone, in place of `assertions`: part one failed, its driver ran, its first `FAIL` line names `a2-the-reviewer-is-told-the-changed-sections`, that step's five setup checks held before it, and the line holds the one-approval check's own words, `waited … for a task queued for the reviewer of <key> behind its open turn; last seen: …` (`control_failure`); a pass, a failure before the driver ran (the build of the base tree among them), a killed or timed-out driver, a `FAIL` line naming another step, a failure inside A2's setup, and a failure at that check in other words, such as the line the driver prints when its harness fails because the base daemon died, are each `no control`; [`lib/approved-version-news-verdicts.test.ts`](lib/approved-version-news-verdicts.test.ts) (`bun test scripts/e2e/lib`) runs this decision, `control_verdict`, over driver output of each kind |
@@ -4979,7 +4979,7 @@ The plan's own control runs used `2a6ff6c03269dc9377bf60f8f06e6682df55419e`, the
 Part two and the control need the checkout's history down to the base, which a shallow clone lacks.
 The `arguments` check refuses a base it cannot find with exit 2.
 `--control` runs part one's negative control against the base, and `--base-commit <rev>` against `<rev>`.
-The script takes that commit's tree with `git archive | tar -x` into a scratch directory under `TMPDIR`, copies this checkout's part-one driver into it, and builds the daemon and Dispatch both from that tree, so nothing of this checkout is written.
+The script takes that commit's tree with `git archive | tar -x` into a scratch directory under `TMPDIR`, copies this checkout's part-one driver into it (`approved_version_news_live_test.go` and `approved_version_news_seed_live_test.go`), and builds the daemon and Dispatch both from that tree, so nothing of this checkout is written.
 The driver uses no Go symbol the change adds: the start path's functions are main's own, and it reads and writes the told record in SQL alone, so it builds there.
 On that daemon A2's five setup checks hold and its sixth fails, since no task is ever queued for the reviewer.
 The script reports the control as biting only for that failure in that check's own words: `waited … for a task queued for the reviewer of <key> behind its open turn`.
@@ -5004,6 +5004,22 @@ Each run boots the whole daemon on a database, a state directory and a Dispatch 
 Its `review_round_cap` is the loader's own default, 3, which `testConfig` (`internal/daemon/daemon_test.go`) gives every daemon it builds, so the state a pane's `legion` tool reads is one the daemon API contract describes.
 The daemon's own notices go to the package's `noticeListener`, so a session hears the daemon only as a task on its worker stream, and what it hears over Envoy is another session's message.
 The runtime starts only the claims a run seeds, so a phase the daemon starts after a step's act, such as the implementer a stale reviewer's move back starts, runs no session.
+
+Each run seeds its trees where production's trees stand mid-run, through the daemon's own start path, as part one does.
+The issues, their pull requests, gates, slots and lifecycles are written through the store.
+Each role the run seeds is then started by the function part one's seed starts its claims with (`startRoles`):
+a root's architect as admission's promotion starts it (`workflow.Engine.StartArchitect`), and a member's phase worker as the promotion of a mid-phase member starts it (`Engine.StartPromotedWorker`).
+Each start raises its role's entry on the role's phases row.
+A worker's raise also writes its issue's holder row of the told record (`design_news_told`), from the gate the seed wrote.
+Each claim is a launch the daemon before the boot began and never recorded, which the boot relaunches.
+That daemon's outbox ran each start, so the seed takes the start's row off the queue and writes the claim as the start leaves it, given the start's entry.
+A holder whose step needs a task of its own holds that task at that entry, in place of the start's own resume task:
+the `a4` and `off` holders an order to wait, and each `answers` reviewer what its review rests on and an order to wait.
+A root architect took its start's task before the boot and holds none, so its first prompt is the operator's task.
+A root's architect row of the told record comes from its tree's first opening, which the seed does not run.
+So the seed writes that row by hand and checks it against the row that opening writes, read in a savepoint that is rolled back.
+Before the boot, the seed checks each claim by part one's rule: it stands at an entry of 1 or more of its role's phases row, given that entry, and it holds its task at that entry.
+A seed that differs, in a claim or in the architect's row, stops the run as `HARNESS` before any pane starts, and the test log names the claim or the row, the field and both values.
 
 There are two arms.
 The head arm launches each pane on the role prompts the daemon snapshots below its state directory at boot (`prompts.New`).

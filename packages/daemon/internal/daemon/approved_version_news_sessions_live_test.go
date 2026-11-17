@@ -35,6 +35,26 @@
 // a run seeds: a phase the daemon starts beyond them (the implementer a stale reviewer's move back
 // starts) is refused, so no session runs that the step did not ask for.
 //
+// Each run seeds its trees where production's trees stand mid-run (sessionsRun.seed). The issues,
+// their pull requests, gates, slots and lifecycles are written through the store, as part one
+// writes them. Each role the run seeds is then started through the daemon's own start path, by
+// the function part one's seed starts its claims with (startRoles): a root's architect as
+// admission's promotion starts it (workflow.Engine.StartArchitect), and a member's phase worker as
+// the promotion of a mid-phase member starts it (Engine.StartPromotedWorker). Each start raises its
+// role's entry on the role's phases row. A worker's raise also writes its issue's holder row of the
+// told record, from the gate the seed wrote (record.Store.BaselineTold). Each claim is a launch the
+// daemon before the boot began and never recorded, which the boot relaunches. That daemon's outbox
+// ran each start, so the seed takes the start's row off the queue and writes the claim as the
+// start leaves it: given the start's entry. A role whose step needs a task of its own
+// (holderStart, reviewerStart) holds that task at that entry, in place of the start's own resume
+// task. A root architect took its start's task before the boot, and holds none. A root's
+// architect row of the told record comes from its tree's first opening, which the seed does not
+// run, so the seed writes it by hand and checks it against the row that opening writes. Before the
+// boot the seed checks each claim by part one's rule (standAtTheirEntries): it stands at an entry
+// of 1 or more of its role's phases row, given that entry, and it holds its task at that entry. A
+// seed that differs fails the run's harness before any pane starts, and the failure names the
+// claim or the row, the field and both values.
+//
 // Two arms. The head arm launches each pane on the prompts the daemon snapshots below its state
 // directory at boot (prompts.New). The base arm writes the base commit's prompt files,
 // APPROVED_VERSION_NEWS_BASE_PROMPTS, over that snapshot before the first pane starts: a pane
@@ -111,6 +131,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -121,6 +142,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The script's inputs to this driver. The key file is a path, never the key: the script exports
@@ -514,8 +536,9 @@ type sessionsRun struct {
 
 // sessionsMember is one issue of a run's trees: its key, its tree's root, its parent ("" for a
 // root), its phase, the roles whose claims the run seeds, the root's spec and the issue's
-// Verification document with its one check ("" for none), and the start task each role's claim
-// holds at the boot ("" for none).
+// Verification document with its one check ("" for none), and the task each role's claim holds at
+// the boot, at the entry the start path raised for it, in place of that start's own task ("" for a
+// role that took its start's task before the boot: sessionsRun.seedClaim).
 type sessionsMember struct {
 	key, tree, parent string
 	phase             phase.Phase
@@ -669,18 +692,26 @@ func sessionsSpec(summary, design, later string) string {
 	return "# The reader\n\n## Summary\n\n" + summary + "\n\n## Design\n\n" + design + "\n\n## Later work\n\n" + later + "\n"
 }
 
-// seed records every member as the daemon would hold it mid-run, as part one's seed does (an
-// admission slot, an open lifecycle, an open pull request unless it stands in admitted, and each
-// of its roles a launch a previous daemon began, which the boot relaunches), with the start task
-// its role holds where it holds one. A root whose deployment gates spec holds its gate open at
-// version 1, which the person approved on Dispatch too, and each member in a phase with work holds
-// the told row of version 1. No role prompt file is written below the state directory: such a
-// file is a launch's whole prompt (specs.rolePromptPaths), and the composed prompts would reach
-// no pane.
+// seed records every member as the daemon holds it mid-run and starts each role the run seeds
+// through the daemon's own start path, in one transaction under a commit scope
+// (intake.WithCommitHooks), as a fact the daemon applies writes them, as part one's seed does. Each
+// member is recorded in its tree, in its phase, holding an admission slot, on an open pull request
+// unless it stands in admitted, and its tree's lifecycle is opened under the workflow. A root whose
+// deployment gates spec holds its gate open at version 1, which the person approved on Dispatch
+// too, and its architect's row of the told record says so (seedArchitectTold). Each role is then
+// started by part one's startRoles, which raises its entry and, for a phase worker, writes its
+// issue's holder row from that gate. The start's row is taken off the outbox (takeStart), and the
+// claim is written as that start leaves it (seedClaim), once the lifecycles are open. No role
+// prompt file is written below the state directory: such a file is a launch's whole prompt
+// (specs.rolePromptPaths), and the composed prompts would reach no pane.
+//
+// A row the seed writes by hand that differs from the row the start path writes fails the run's
+// harness here, after the transaction commits, naming the row, the field and both values. The
+// claims are checked before the boot (standAtTheirEntries).
 func (r *sessionsRun) seed() {
 	t := r.t
 	t.Helper()
-	ctx := context.Background()
+	ctx, committed := intake.WithCommitHooks(context.Background())
 	gated := len(r.cfg.Gates.Design) > 0
 	if gated {
 		for _, member := range r.members {
@@ -693,9 +724,16 @@ func (r *sessionsRun) seed() {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The engine the booted daemon runs, built from the same configuration (engineConfig), so
+	// each start written through it is the row the daemon's own admission writes.
+	engine := workflow.New(record.NewStore(), engineConfig(r.cfg, "", nil), quietLogger())
 	one := 1
+	var starts map[claim.Token]record.SuperviseRequest
+	var differences []string
 	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
-		for _, member := range r.members {
+		starts, differences = map[claim.Token]record.SuperviseRequest{}, nil
+		issues := make([]record.Issue, len(r.members))
+		for i, member := range r.members {
 			var listed struct {
 				Rank    string `json:"rank"`
 				LastSeq int64  `json:"last_seq"`
@@ -710,6 +748,7 @@ func (r *sessionsRun) seed() {
 				parent := member.parent
 				issue.Parent = &parent
 			}
+			issues[i] = issue
 			if err := r.records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
@@ -722,20 +761,52 @@ func (r *sessionsRun) seed() {
 					return err
 				}
 			}
-			if gated && member.spec != "" {
-				if err := r.records.PutGate(ctx, tx, record.DesignGate{
-					Issue: member.key, Step: record.DesignStepSpec, ArtifactID: member.spec, LatestVersion: 1, ApprovedVersion: &one, EverOpened: true,
-				}); err != nil {
-					return err
-				}
-			}
 			if err := r.admit(ctx, tx, member.key); err != nil {
 				return err
 			}
 		}
+		for i, member := range r.members {
+			if !gated || member.spec == "" {
+				continue
+			}
+			// The opening the architect's row is checked against is read before the gate row is
+			// written, so the probe meets a tree whose gate has never opened.
+			path, err := toldAtFirstOpening(ctx, tx, engine, issues[i], member.spec)
+			if err != nil {
+				return err
+			}
+			if err := r.records.PutGate(ctx, tx, record.DesignGate{
+				Issue: member.key, Step: record.DesignStepSpec, ArtifactID: member.spec, LatestVersion: 1, ApprovedVersion: &one, EverOpened: true,
+			}); err != nil {
+				return err
+			}
+			differs, err := seedArchitectTold(ctx, tx, member.key, path)
+			if err != nil {
+				return err
+			}
+			if differs != "" {
+				differences = append(differences, differs)
+			}
+		}
+		for i, member := range r.members {
+			if err := startRoles(ctx, tx, r.records, engine, issues[i], member.roles); err != nil {
+				return err
+			}
+			for _, role := range member.roles {
+				start, err := takeStart(ctx, tx, member.key, role)
+				if err != nil {
+					return err
+				}
+				starts[r.token(member, role)] = start
+			}
+		}
 		return nil
 	}); err != nil {
-		t.Fatalf("seed the issues: %v", err)
+		t.Fatalf("seed the trees through the daemon's start path: %v", err)
+	}
+	committed()
+	if len(differences) > 0 {
+		t.Fatalf("setup: %s", strings.Join(differences, "; "))
 	}
 	for _, member := range r.members {
 		if member.parent == "" {
@@ -743,47 +814,191 @@ func (r *sessionsRun) seed() {
 				t.Fatalf("open the lifecycle of %s: %v", member.key, err)
 			}
 		}
+	}
+	for _, member := range r.members {
+		for _, role := range member.roles {
+			r.seedClaim(ctx, member, role, starts[r.token(member, role)])
+		}
+		if gated && member.spec != "" {
+			r.note("%s's architect took %s at its tree's first opening, in a row written by hand and the same as the row that opening writes",
+				member.key, sessionsArchitectTook)
+		}
+	}
+}
+
+// sessionsArchitectTook is what the architect's row of the told record holds of a root whose
+// deployment gates spec once its gate opened at version 1 of the spec: that version, as the row
+// prints it.
+const sessionsArchitectTook = `{"spec": 1}`
+
+// seedArchitectTold writes the architect's row of the told record of root by hand, as its tree's
+// first opening leaves it, and answers how it differs from path, the row that opening writes
+// (toldAtFirstOpening), "" where it does not. The opening takes the row's baseline at the version
+// it approves (workflow's putGateTold), so the approval of version 1 that Dispatch carries is news
+// to nobody. It settles no opening on the row: a tree whose root holds no gate row has no step
+// closed by a row of its own, so its standing gate reads open before the opening as after it, and
+// no opened message goes (tellGateMoved). The seed writes the gate open without that opening, so
+// the start path writes no such row here.
+func seedArchitectTold(ctx context.Context, tx pgx.Tx, root string, path versionNewsTold) (string, error) {
+	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
+		values ($1, 'architect', $2::jsonb, false, now())`, root, sessionsArchitectTook); err != nil {
+		return "", fmt.Errorf("seed the architect's told row of %s: %w", root, err)
+	}
+	seeded, err := heldTold(ctx, tx, root, "architect")
+	if err != nil {
+		return "", err
+	}
+	differs := seeded.differences(path)
+	if len(differs) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("the architect's row of the told record of %s: %s, where the start path writes the row at its tree's first opening, "+
+		"at version 1 of its spec", root, strings.Join(differs, ", ")), nil
+}
+
+// toldAtFirstOpening is the architect's row of the told record the daemon writes for root at its
+// tree's first opening, read in a savepoint of tx that is rolled back once the row is read
+// (toldInSavepoint). It is read while root holds no gate row, so the tree has never opened. In the
+// savepoint the architect's registration of spec at version 1 is applied as the daemon applies it
+// (workflow.Engine.Apply), carrying the person's approval of that version as register_gate reads it
+// from Dispatch (intake.GateRegistered): that registration opens the gate, which writes the row.
+func toldAtFirstOpening(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, root record.Issue, spec string) (versionNewsTold, error) {
+	return toldInSavepoint(ctx, tx, "the architect's told row of "+root.Key+" at its first opening", func(probe pgx.Tx) (versionNewsTold, error) {
+		if _, err := engine.Apply(ctx, probe, intake.GateRegistered{Issue: root.Key, Step: record.DesignStepSpec, ArtifactID: spec,
+			Version: 1, DispatchVersion: 1, ApprovedVersion: 1}); err != nil {
+			return versionNewsTold{}, fmt.Errorf("register version 1 of the spec of %s, approved: %w", root.Key, err)
+		}
+		return heldTold(ctx, probe, root.Key, "architect")
+	})
+}
+
+// takeStart takes off the outbox the one start the daemon's start path queued in tx for role on
+// issue, and answers it. Part two's claims are launches the daemon before the boot began, so that
+// daemon's outbox ran their starts: the start's row goes, as that run finished it, and no start
+// of the boot runs it again against the claim the seed writes in its place (seedClaim).
+func takeStart(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (record.SuperviseRequest, error) {
+	rows, err := tx.Query(ctx, `delete from outbox where kind = $1 and issue = $2 and payload->>'op' = 'start' and payload->>'role' = $3
+		returning id, payload`, string(record.OutboxKindSupervise), issue, string(role))
+	if err != nil {
+		return record.SuperviseRequest{}, fmt.Errorf("take the start of the %s of %s off the outbox: %w", role, issue, err)
+	}
+	taken, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (record.OutboxRow, error) {
+		var payload []byte
+		taken := record.OutboxRow{Kind: record.OutboxKindSupervise, Issue: issue}
+		err := row.Scan(&taken.ID, &payload)
+		taken.Payload = payload
+		return taken, err
+	})
+	if err != nil {
+		return record.SuperviseRequest{}, fmt.Errorf("take the start of the %s of %s off the outbox: %w", role, issue, err)
+	}
+	if len(taken) != 1 {
+		return record.SuperviseRequest{}, fmt.Errorf("the daemon's start path queued %d starts of the %s of %s, where it queues one", len(taken), role, issue)
+	}
+	payload, err := record.DecodeOutboxPayload(taken[0])
+	if err != nil {
+		return record.SuperviseRequest{}, err
+	}
+	start, ok := payload.(record.SuperviseRequest)
+	if !ok {
+		return record.SuperviseRequest{}, fmt.Errorf("the start of the %s of %s decoded as %T", role, issue, payload)
+	}
+	return start, nil
+}
+
+// seedClaim records role's claim on member as start, the start the daemon's start path queued for
+// it, leaves it, with that start's launch begun and never recorded by the daemon before the boot,
+// which the boot relaunches: launching, with the hash of a boot token no pane holds. It is given
+// the entry start raised, with the handshake the queue writes beside it (supervise.Claim.GivenEntry,
+// Handshake). A role its step gives a task of its own (member.tasks) holds that task as the
+// delivery of that entry, of the start's phase and run, unconfirmed, in place of the start's own
+// task: the daemon sends it once the relaunched pane is ready. A role with none took its start's
+// task before the boot (supervise.Claim.ServedEntry), as a root architect mid-run has, and holds
+// nothing. The run's runtime launches this claim and the others the run seeds, and no other.
+func (r *sessionsRun) seedClaim(ctx context.Context, member *sessionsMember, role claim.Role, start record.SuperviseRequest) {
+	t := r.t
+	t.Helper()
+	token := r.token(member, role)
+	r.launchable[token] = true
+	now := time.Now()
+	task := member.tasks[role]
+	seeded := supervise.Claim{
+		Token: token, Project: r.project, Tree: member.tree, Issue: member.key, Role: role, Generation: 1,
+		State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)), ServingGeneration: 1,
+		GivenEntry: start.Entry, Handshake: supervise.EntryHandshake{Entry: start.Entry, Generation: start.Generation, QueuedAt: now},
+	}
+	if task == "" {
+		seeded.ServedEntry, seeded.Handshake.ConfirmedAt = start.Entry, now
+	}
+	if _, err := r.st.AdmitClaim(ctx, seeded); err != nil {
+		t.Fatalf("record the %s's unfinished launch on %s: %v", role, member.key, err)
+	}
+	if task == "" {
+		return
+	}
+	if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
+		ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: start.Generation, Phase: start.Phase, Entry: start.Entry, QueuedAt: now,
+	}); err != nil {
+		t.Fatalf("record the start task of %s: %v", token, err)
+	}
+}
+
+// standAtTheirEntries is the seed's SETUP check, part one's (versionNewsLive.standAtTheirEntries)
+// by the same rule (claimEntries, entryRefusal): each claim the seed wrote stands at an entry of 1
+// or more of its role's phases row, given that entry, and a claim that holds a task holds it at
+// that entry. It runs before the boot, where part one's runs after it, because part two's claims
+// are written before the boot rather than by it: a run whose seed differs stops before any pane
+// starts or spends a model call. A claim that stands anywhere else fails the run's harness, and
+// the failure names the claim and both numbers. Each tree's claims are noted with their entries,
+// which is the run's evidence of them.
+func (r *sessionsRun) standAtTheirEntries() {
+	t := r.t
+	t.Helper()
+	ctx := context.Background()
+	var trees []string
+	stood := map[string][]string{}
+	for _, member := range r.members {
+		if !slices.Contains(trees, member.tree) {
+			trees = append(trees, member.tree)
+		}
 		for _, role := range member.roles {
 			token := r.token(member, role)
-			r.launchable[token] = true
-			if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
-				Token: token, Project: r.project, Tree: member.tree, Issue: member.key, Role: role, Generation: 1,
-				State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)), ServingGeneration: 1,
-			}); err != nil {
-				t.Fatalf("record the %s's unfinished launch on %s: %v", role, member.key, err)
+			name := fmt.Sprintf("the %s of %s", role, member.key)
+			entry, given, err := claimEntries(ctx, r.st.Pool(), member.key, role, token)
+			if err != nil {
+				t.Fatalf("setup: read the entries of %s: %v", name, err)
 			}
-			if task := member.tasks[role]; task != "" {
-				if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
-					ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: 1, Phase: member.phase, QueuedAt: time.Now(),
-				}); err != nil {
-					t.Fatalf("record the start task of %s: %v", token, err)
+			if refusal := entryRefusal(name, entry, given); refusal != "" {
+				t.Fatalf("setup: %s", refusal)
+			}
+			var held *int64
+			if err := r.st.Pool().QueryRow(ctx, `select (select entry from pending_task_deliveries where claim_token = $1)`,
+				string(token)).Scan(&held); err != nil {
+				t.Fatalf("setup: read the task %s holds: %v", name, err)
+			}
+			holds := "its start's task taken before the boot"
+			if held != nil {
+				if *held != entry {
+					t.Fatalf("setup: %s holds its start task at entry %d, where the daemon's start path raised entry %d for it", name, *held, entry)
 				}
+				holds = "holding its start task at that entry"
 			}
+			stood[member.tree] = append(stood[member.tree], fmt.Sprintf("the %s of %s at entry %d, %s", role, member.key, entry, holds))
 		}
-		if gated && member.phase != phase.Admitted {
-			if _, err := r.st.Pool().Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
-				values ($1, 'holder', '{"spec": 1}'::jsonb, false, now())`, member.key); err != nil {
-				t.Fatalf("seed the told row of %s: %v", member.key, err)
-			}
-		}
-		// The root architect took version 1 too: the approval of version 1 that Dispatch carries
-		// is the one its gate was opened on, and is news to nobody.
-		if gated && member.parent == "" {
-			if _, err := r.st.Pool().Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
-				values ($1, 'architect', '{"spec": 1}'::jsonb, false, now())`, member.key); err != nil {
-				t.Fatalf("seed the architect's told row of %s: %v", member.key, err)
-			}
-		}
+	}
+	for _, tree := range trees {
+		r.note("tree %s as the daemon's start path left it, each claim given its entry: %s", tree, strings.Join(stood[tree], "; "))
 	}
 }
 
 // boot boots the whole daemon over the local runtime, in the base arm after writing the base
 // commit's prompt files over the snapshot the boot wrote, and waits for every seeded claim's pane
-// to report ready.
+// to report ready. The seed is checked before the daemon starts (standAtTheirEntries).
 func (r *sessionsRun) boot() {
 	t := r.t
 	t.Helper()
 	r.seed()
+	r.standAtTheirEntries()
 	r.daemon = newRecordingLog(r.log())
 	gated := &sessionsRuntime{localRuntime: r.rt, launchable: r.launchable}
 	r.d = startDaemonWithin(t, r.cfg, overrides{
@@ -1359,19 +1574,23 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	return sessionsJudged(unwritten, why)
 }
 
-// holderStart is the start task a holder of the a4 and off steps holds at the boot, in place of the
-// resume the daemon would send a holder with none: this proof runs no repository and no pull
-// request, so a holder that resumed its phase would find nothing to work on and spend its turns
-// saying so. It waits instead, as a holder between turns does, for what the step sends it.
+// holderStart is the start task a holder of the a4 and off steps holds at the boot, at the entry the
+// daemon's start path raised for it, in place of that start's own task, the phase's resume task
+// (workflow.ResumePhaseTask: "Resume the existing phase work"). That task does not serve the step:
+// this proof runs no repository and no pull request, so a holder that resumed its phase would find
+// nothing to work on and spend its turns saying so. It waits instead, as a holder between turns
+// does, for what the step sends it.
 func holderStart(issue string, p phase.Phase) string {
 	return fmt.Sprintf("This proof runs no GitHub and no repository: %s has no pull request or working copy to work on, and you have no "+
 		"GitHub access, so run no `gh`, `git` or `jj`. You hold %s in %s, and its work stands where your earlier session left it. Start no "+
 		"work now: reply with one line that starts with WAITING, and end your turn.", issue, issue, p)
 }
 
-// reviewerStart is the start task a reviewer of the answers step holds at the boot: what its
-// review has read so far and what it rests on, since this proof runs no pull request a review
-// could read, and an order to wait.
+// reviewerStart is the start task a reviewer of the answers step holds at the boot, at the entry
+// the daemon's start path raised for it, in place of that start's own task, the phase's resume
+// task: what its review has read so far and what it rests on, since this proof runs no pull
+// request a review could read, and an order to wait. The resume task names neither, and the step
+// needs both: the news of version 2 is stale or current against the section the review rests on.
 func reviewerStart(issue, spec string) string {
 	return fmt.Sprintf("This proof runs no GitHub: %s has no pull request to read and you have no GitHub access, so run no `gh` and no `git`. "+
 		"You hold the review of %s, and it stands as follows. You read version 1 of its spec (document %s), and you checked the change "+
