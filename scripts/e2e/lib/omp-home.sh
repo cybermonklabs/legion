@@ -67,7 +67,7 @@ make_omp_home() {
 # its own home, the setting that keeps Oh My Pi's first-run setup wizard shut. An interactive Oh My
 # Pi in a terminal (`legion controller start` in a tmux pane, a person's session) opens the wizard
 # ("Setup step 1 of 5", "Sign in to your providers") while the profile's setupVersion is below the
-# build's CURRENT_SETUP_VERSION, so on a fresh profile the wizard blocks the initial controller
+# build's CURRENT_SETUP_VERSION, so on a fresh profile the wizard blocks the session's first
 # command and normal editor interaction (runInteractiveMode in packages/coding-agent/src/main.ts
 # and selectSetupScenes in packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard:
 # false` shuts it whatever setup version the build counts to; `--mode rpc` never opens it. A named
