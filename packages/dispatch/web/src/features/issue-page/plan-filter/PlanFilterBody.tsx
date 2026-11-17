@@ -4,6 +4,7 @@ import {
   memo,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -14,7 +15,6 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 
 import { artifactBlocksQuery } from "../../../api/queries";
-import { QueryError } from "../../../components/QueryError";
 
 import {
   focusVisibleRing,
@@ -30,11 +30,9 @@ import {
 } from "../../../theme/classes";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
-import { focusOnDocument } from "../../shell/roving";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
-import { bringOnScreen } from "../identity-block";
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
@@ -46,7 +44,7 @@ import {
   PLAN_WORDS,
   PRESET_NAMES,
 } from "../page-words";
-import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
+import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
 import {
   needsChip,
@@ -64,10 +62,14 @@ import {
  *  blocks, which are its tasks, and the spec's blocks, which are the statements a task serves. */
 export type PlanRead = "plan" | "statements";
 
-/** A read that failed before it first answered, with the press that asks that read alone again. */
+/** A read that failed before it first answered, with the press that asks that read alone again:
+ *  whether it runs again (`retrying`), and which failure it is (`failure`), as the slot reads
+ *  them (`slots/view-plan.tsx`). */
 export interface FailedRead {
+  readonly failure: number;
   readonly read: PlanRead;
   readonly retry: () => void;
+  readonly retrying: boolean;
 }
 
 /** How the reads the body is drawn from stand: one still out, both answered, or one or both
@@ -216,72 +218,41 @@ export function PlanFilterBody({
   // Each read that failed before it first answered, which the body says over the tree in the
   // order the slot hands them on.
   const unreadable = reads.state === "failed" ? reads.failed : [];
-  const firstUnreadable = unreadable[0]?.read;
-  const box = useRef<HTMLDivElement | null>(null);
-  // The view's own tree while it holds no task to draw, which takes the focus (below).
-  const emptyTree = useRef<HTMLDivElement | null>(null);
   // Whether the empty tree says the view holds no task: once the reads have answered, in the
   // slot's line, which describes the tree.
   const saysEmpty = empty && answered && emptyLine !== undefined;
   const emptyLineId = useId();
-  // A refused read leaves the view nothing to act on but its Retry: the empty tree holds no row,
-  // and Tab from it never reaches the lines above it. So the first Retry drawn takes the focus
-  // where nothing holds it (`tree-focus.ts`'s `focusIsLoose`): where the focus is on the view's
-  // empty tree, which `t p` focuses before the read is refused; on the app's main element, which
-  // the app focuses when a page is opened at the view's address from another issue (`app.tsx`);
-  // and on the page itself. The stage gives a loose focus to a Retry only where the line is its
-  // `FailedReadLine` (`slots/stage.tsx`), which these lines are not, so this view gives its own.
-  // A reader whose focus is anywhere else keeps it.
-  useEffect(() => {
-    if (firstUnreadable === undefined || !focusIsLoose(emptyTree.current)) return;
-    const retry = onward(box.current);
-    if (retry !== null) focusOn(retry);
-  }, [firstUnreadable]);
-  // The focus is kept in the view when an element of it leaves the page with the focus in it,
-  // so the focus of a reader of the keyboard never falls to the page's body: a failed read's
-  // line, whose read asked again with no answer held is out again rather than failed (TanStack
-  // Query's `pending`), whether the reader pressed its Retry or the page asked it again with no
-  // press, on the window's focus or on an event; and the empty tree, once the tasks come. This
-  // says whether the focus was in one of them as it left, until the layout effect after that
-  // render reads it.
-  const fellFrom = useRef(false);
-  // The ref of each of those elements: one function for every element and every render, so React
-  // runs its cleanup only when the element leaves the page. React runs it before it takes the
-  // element off the page, while the focus is still in it; once the element is gone the browser
-  // has moved the focus to the page's body, where nothing says where it was.
-  const keepsFocus = useCallback(
-    (element: HTMLElement | null) =>
+  // The empty tree leaving the page with the focus on it - a reader rested there, then tasks
+  // came - says so as a failed line does (`FailedReadLine`), so the stage puts the focus back in
+  // the view (`slots/stage.tsx`).
+  const leaves = useContext(FailedLineLeaves);
+  const treeBox = useCallback(
+    (element: HTMLDivElement | null) =>
       element === null
         ? undefined
         : () => {
-            if (element.contains(document.activeElement)) fellFrom.current = true;
+            if (element.contains(document.activeElement)) leaves?.();
           },
-    []
+    [leaves]
   );
-  // After every render, since any render can take a line or the empty tree off the page. A
-  // focus that fell goes on (`onward`), or to the empty tree where the view holds no task -
-  // while a read is out, and once the reads have answered with none - unless something else took
-  // it in the same render, where it stays. A Retry drawn later takes it from the tree (above).
-  useLayoutEffect(() => {
-    const fell = fellFrom.current;
-    fellFrom.current = false;
-    if (!fell || !focusOnDocument()) return;
-    const to = onward(box.current) ?? emptyTree.current;
-    if (to !== null) focusOn(to);
-  });
   return (
     <div
       className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
       data-plan-body=""
-      ref={box}
     >
       {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the order the slot hands them on. The lines
-          stand over the tree and never in it: an alert inside a tree would break the tree's own
-          structure of rows. */}
-      {unreadable.map(({ read, retry }) => (
-        <div className="mb-2.5" data-plan-unreadable={read} key={read} ref={keepsFocus}>
-          <QueryError message={UNREADABLE_LINES[read]} onRetry={retry} />
+          Retry that asks that read alone again, in the order the slot hands them on, over the
+          tree (`FailedReadLine`). The stage the view is drawn in keeps the focus in the view when
+          a line leaves with the focus in it, and hands a focus on the empty tree to a Retry or to
+          the rows once they come (`slots/stage.tsx`). */}
+      {unreadable.map(({ failure, read, retry, retrying }) => (
+        <div className="mb-2.5" data-plan-unreadable={read} key={read}>
+          <FailedReadLine
+            failure={failure}
+            message={UNREADABLE_LINES[read]}
+            onRetry={retry}
+            retrying={retrying}
+          />
         </div>
       ))}
       {/* The one control: the chart of time, or the ordered steps. A plan with no task has
@@ -325,25 +296,14 @@ export function PlanFilterBody({
         // its tree in and under the outline's name, which is how `t p` finds it
         // (`useIssueKeymap.ts`'s `reachPart`): it holds nothing, and once the reads have
         // answered the empty line stands under it, as `IssueTree` draws that line, and describes
-        // it. `IssueTree`'s tree takes no focus; this one does, so the chord, or a line that left
-        // with the focus in it, leaves the focus in the view.
-        <div className="mb-3 flex min-w-0 flex-col" ref={keepsFocus}>
+        // it. `IssueTree`'s tree takes no focus; this one does, so the chord and the stage have a
+        // tree in the view to put the focus on.
+        <div className="mb-3 flex min-w-0 flex-col" ref={treeBox}>
           <div
             aria-busy={!answered}
             aria-describedby={saysEmpty ? emptyLineId : undefined}
             aria-label={CONTROL_LABELS.tree}
             className="flex min-w-0 flex-col"
-            onFocus={(event) => {
-              // A focus from outside the view - `t p` from a control elsewhere on the page or
-              // from the page itself - is followed by no render, so the tree hands it on here to
-              // the first Retry. A focus from inside the view - a reader moving on from the
-              // Retry, or a screen reader's cursor - is the reader's own, and stays.
-              if (event.relatedTarget instanceof Node && box.current?.contains(event.relatedTarget))
-                return;
-              const to = onward(box.current);
-              if (to !== null) focusOn(to);
-            }}
-            ref={emptyTree}
             role="tree"
             tabIndex={-1}
           />
@@ -383,31 +343,6 @@ const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
   plan: ANSWER_LINES.plan_unreadable,
   statements: ANSWER_LINES.statements_unreadable,
 };
-
-/** The Retry of a failed read's line; the first in the page is the first failed read's. */
-const UNREADABLE_RETRY = "[data-plan-unreadable] button";
-
-/** Where the focus goes on in `body`, the view's box, from its empty tree or from a line that
- *  left: to the first failed read's Retry, else, where the rows are drawn, to the row that holds
- *  the tree's tab stop (under the chart the first bar's row), else nowhere. */
-function onward(body: HTMLElement | null): HTMLElement | null {
-  return (
-    body?.querySelector<HTMLElement>(UNREADABLE_RETRY) ??
-    body?.querySelector<HTMLElement>(TAB_STOP_ROW) ??
-    null
-  );
-}
-
-/** Puts the focus on `to` without scrolling to it, then brings it on screen in the next frame
- *  where it still holds the focus (`bringOnScreen`). The frame is for `t p` with a read refused:
- *  `reachPart` (`useIssueKeymap.ts`) scrolls the tree to the screen's top after it focuses it,
- *  which would leave the Retry that stands over the tree above the screen. */
-function focusOn(to: HTMLElement): void {
-  to.focus({ preventScroll: true });
-  requestAnimationFrame(() => {
-    if (document.activeElement === to) bringOnScreen(to);
-  });
-}
 
 /** Each document's block ids in the order they are written, or undefined while its read is
  *  out. It is one function for every render, so the reads' answer is one value until a read
@@ -545,8 +480,12 @@ interface DrawnPlace {
  * Were it to take no focus, an address naming a task of a cycle would focus nothing and a plan
  * whose every task is in a cycle would have no Tab stop.
  *
- * The one Tab stop is the row the reader last stood on, else the first bar's, else the first
- * cycle's. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
+ * The one Tab stop is the row the reader last stood on, else the row the address names while the
+ * view is to land on it, else the first bar's, else the first cycle's. The address's row is the
+ * stop so that the stage, which gives a focus nobody holds to the tree's tab-stop row
+ * (`slots/stage.tsx`), gives it to that row, and the landing keeps it (`landOnRow`): given to the
+ * first bar, it would end the landing, which leaves the focus where it is moved before its
+ * frame. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
  * keys move the focus without the browser's own scroll, which knows nothing of the band that
  * stays at the top of the page.
  */
@@ -599,7 +538,11 @@ function PlanChart({
   const [stop, setStop] = useState<string | undefined>(undefined);
   const tabStop = rows.some((place) => place.key === stop)
     ? stop
-    : (rows.find((place) => place.row.kind === "bar") ?? rows[0])?.key;
+    : (
+        rows.find((place) => place.task.id === land) ??
+        rows.find((place) => place.row.kind === "bar") ??
+        rows[0]
+      )?.key;
 
   // The focused row gives its task to Details (`focused-node.tsx`) as the outline gives a focused
   // node, by the outline's own facts of it (`focusedNodeOf`: who wrote it, the item it is, its

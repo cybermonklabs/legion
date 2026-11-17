@@ -46,15 +46,18 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   //
   // A read has answered where it holds data, and not by its status: a refetch that fails keeps
   // the data it last answered, so a view drawn by `isSuccess` would empty itself on one failed
-  // refetch. A read has failed where it holds no data and its status is error
-  // (`failedWithNothing`): refused before it first answered. The view draws its tasks, its
-  // switch and its empty line once both have answered, so it never says the issue has no plan
-  // tasks before they are in; until then its tree holds nothing, and each read that failed is
-  // one line over the tree, in the order plan, statements, with a Retry that asks that read
-  // alone again (`PlanFilterBody`). The view stays mounted through all of it, as the outline does
-  // (`slots/body.tsx`), so no read takes from the reader the press of "Steps", the focused row
-  // and its mark, a step being edited, or the address's step having taken the focus, which it
-  // takes once.
+  // refetch. A read has failed where it holds no data, has failed at least once, and is in error
+  // or running again (`failedWithNothing`): refused before it first answered. A read asked again
+  // that holds no answer goes to TanStack Query's `pending` with its error cleared while it runs,
+  // and keeps its count of failures (`errorUpdateCount`), so its line stays drawn while it runs
+  // again, its Retry busy (`retrying`), and each failure is said again (`failure`). The view
+  // draws its tasks, its switch and its empty line once both reads hold data, so it never says
+  // the issue has no plan tasks before they are in; until then its tree holds nothing, and each
+  // read that failed is one line over the tree, in the order plan, statements, with a Retry that
+  // asks that read alone again (`PlanFilterBody`). The view stays mounted through all of it, as
+  // the outline does (`slots/body.tsx`), so no read takes from the reader the press of "Steps",
+  // the focused row and its mark, a step being edited, or the address's step having taken the
+  // focus, which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
   const planBlocks = useQuery({ ...artifactBlocksQuery(planId ?? ""), enabled: false });
   const specId = spec?.id;
@@ -64,10 +67,20 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
     (specId === undefined || specBlocks.data !== undefined);
   const failed: FailedRead[] = [];
   if (planId !== undefined && failedWithNothing(planBlocks)) {
-    failed.push({ read: "plan", retry: () => void planBlocks.refetch() });
+    failed.push({
+      failure: planBlocks.errorUpdateCount,
+      read: "plan",
+      retry: () => void planBlocks.refetch(),
+      retrying: planBlocks.isFetching,
+    });
   }
   if (specId !== undefined && failedWithNothing(specBlocks)) {
-    failed.push({ read: "statements", retry: () => void specBlocks.refetch() });
+    failed.push({
+      failure: specBlocks.errorUpdateCount,
+      read: "statements",
+      retry: () => void specBlocks.refetch(),
+      retrying: specBlocks.isFetching,
+    });
   }
   const reads: PlanReads =
     failed.length > 0
@@ -135,6 +148,11 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
 }
 
 /** Whether `read` failed with no answer held, by the rule above (`ViewPlanSlot`). */
-function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
-  return read.isError && read.data === undefined;
+function failedWithNothing(read: {
+  readonly data: unknown;
+  readonly errorUpdateCount: number;
+  readonly isError: boolean;
+  readonly isFetching: boolean;
+}): boolean {
+  return read.data === undefined && read.errorUpdateCount > 0 && (read.isError || read.isFetching);
 }
