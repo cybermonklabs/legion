@@ -2955,7 +2955,7 @@ Load refuses a mode written in decimal, quoted or not (`440` would be 0670), one
 A change of a mode replaces no running pod, which keeps the mode its files were written with: the mode reaches each pod made after the change.
 A daemon of an earlier release refuses the key at boot (`unknown key
 runtime.kubernetes.pod.volumes[<n>].secret.default_mode`), so set it only once the daemon runs a release that reads it;
-`legion start --check-config` of that release says so first.
+`legion config check` of that release says so first (`legion start --check-config` on a release from before that command).
 
 A volume may also be an existing network share: [Network shares](#network-shares) lists the sources and what each runtime supports.
 
