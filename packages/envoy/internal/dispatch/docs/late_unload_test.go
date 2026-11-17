@@ -796,11 +796,19 @@ func (r *reloadedRoom) awaitSocketEnd(who string) {
 	}
 }
 
-// awaitFirstClose waits for the first room's close to return.
+// awaitFirstClose waits for the first room's close to return, as long as roomWait allows: what the
+// test binary's deadline leaves after roomWaitMargin (t.Deadline), at most roomWaitCap. A close
+// that never returns fails the test here by name, and leaves the rest of the deadline to the
+// fixture's bounded Shutdown and to the package's later tests.
 func (r *reloadedRoom) awaitFirstClose() {
 	r.t.Helper()
-	if err := <-r.closed; err != nil {
-		r.t.Fatalf("close the first room: %v", err)
+	select {
+	case err := <-r.closed:
+		if err != nil {
+			r.t.Fatalf("close the first room: %v", err)
+		}
+	case <-time.After(roomWait(r.t)):
+		r.t.Fatal("the first room's close never returned")
 	}
 }
 
