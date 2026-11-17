@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -59,6 +61,12 @@ type mintTransportError struct {
 	what, who, class string
 	// read is a failure reading the body of an answer that had begun.
 	read bool
+	// sent is whether the request may have reached the upstream: the transport had a connection
+	// to it, so some or all of the request may have gone out and been served although no answer
+	// came back, whatever the write reported. A call that failed before it had a connection - a
+	// name that did not resolve, a refused dial, a failed TLS handshake - did nothing upstream. A
+	// read that failed is always sent.
+	sent bool
 	// status is the status that answer came with, for a read that failed; 0 where no answer
 	// arrived (answeredStatus).
 	status int
@@ -137,22 +145,24 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 // its answer, attempting it again as mint's Retry allows: classify decides which failures are
 // retried, and mintRetry.again how long the call waits first and whether it may. Each attempt is
 // counted, and resends the request's body from GetBody; a request whose body cannot be read again
-// gets one attempt. resendLost is whether an attempt that got no answer it could read (a
-// *mintTransportError) is sent again at all: such an attempt may have reached the upstream and
-// been served, so a call that mints something nobody will use, as a check's token request does
-// (GitHubApp.installationToken), sends it once rather than have the upstream make it again. what
-// names the call and who the upstream in its errors. No error quotes the request, the answer or
-// the transport's own text: Go's HTTP client quotes a malformed status line, and a status line or
-// body can echo the credential the request carried, so a failed call is named by its class alone
-// (transportFailure). A status other than want is a *mintStatusError, returned with the body, so a
-// caller can read the upstream's own reason from it; an answer whose body was read in part, or
-// past limit, is returned with as much of it as was read; every other failure wraps
-// ErrMintUpstream. answered, where it is not nil, is called with each attempt's answer that came
-// with want but could not be read whole, cut off part of the way or past limit, and that
-// attempt's error, before the call is sent again or answers: the upstream did what was asked, and
-// a call that makes something, as a token request does, gives back what that answer made, which
-// the next attempt's answer would otherwise leave behind (GitHubApp.giveBackHook). The error of a
-// failed call is its last attempt's, and carries the number of attempts made (MintAttempts).
+// gets one attempt. resendLost is whether an attempt that failed after the transport had a
+// connection for it (a *mintTransportError that was sent) is sent again: the upstream may have
+// received it whole and served it, so a call that mints something nobody will use, as a check's
+// token request does (GitHubApp.installationToken), does not have the upstream make it again. An
+// attempt that failed before it had a connection did nothing upstream, and is sent again as any
+// failed call is. what names the call and who the upstream in its errors. No error quotes the
+// request, the answer or the transport's own text: Go's HTTP client quotes a malformed status
+// line, and a status line or body can echo the credential the request carried, so a failed call is
+// named by its class alone (transportFailure). A status other than want is a *mintStatusError,
+// returned with the body, so a caller can read the upstream's own reason from it; an answer whose
+// body was read in part, or past limit, is returned with as much of it as was read; every other
+// failure wraps ErrMintUpstream. answered, where it is not nil, is called with each attempt's
+// answer that came with want but could not be read whole, cut off part of the way or past limit,
+// and that attempt's error, before the call is sent again or answers: the upstream did what was
+// asked, and a call that makes something, as a token request does, gives back what that answer
+// made, which the next attempt's answer would otherwise leave behind (GitHubApp.giveBackHook). The
+// error of a failed call is its last attempt's, and carries the number of attempts made
+// (MintAttempts).
 func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64, resendLost bool, answered func([]byte, error)) ([]byte, error) {
 	if client == nil {
 		client = http.DefaultClient
@@ -170,8 +180,8 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 			answered(body, err)
 		}
 		var transport *mintTransportError
-		lost := errors.As(err, &transport)
-		if !retry || !resendable || lost && !resendLost || !mint.again(ctx, attempt, err) {
+		served := errors.As(err, &transport) && transport.sent
+		if !retry || !resendable || served && !resendLost || !mint.again(ctx, attempt, err) {
 			return body, &attemptsError{err: err, attempts: attempt}
 		}
 	}
@@ -179,10 +189,17 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 
 // mintAttempt is one attempt of a mintCall, under mintAttemptTimeout within the request's own
 // context. A later attempt reads its body from the request's GetBody. A status other than want
-// carries the wait the answer names, read against now (serverWait).
+// carries the wait the answer names, read against now (serverWait). A call that failed says
+// whether the transport had a connection for it first (mintTransportError.sent), read from the
+// attempt's trace: GotConn runs before the transport writes anything and before Do returns, where
+// the trace's report of the write itself does not - an HTTP/1 transport reports a small request
+// written before it flushes it, and a write that delivered every byte can still report an error
+// or report after Do has returned.
 func mintAttempt(client *http.Client, request *http.Request, attempt int, now func() time.Time, what, who string, want int, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(request.Context(), mintAttemptTimeout)
 	defer cancel()
+	var connected atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
 	sent := request.Clone(ctx)
 	if attempt > 1 && request.GetBody != nil {
 		body, err := request.GetBody()
@@ -193,12 +210,12 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	}
 	response, err := client.Do(sent)
 	if err != nil {
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err)}
+		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: connected.Load()}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return body, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true, status: response.StatusCode}
+		return body, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
 	}
 	if int64(len(body)) > limit {
 		return body[:limit], &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}

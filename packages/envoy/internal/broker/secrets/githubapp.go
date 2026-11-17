@@ -235,16 +235,18 @@ const revokedCheckMessage = "broker: GitHub did not revoke a token minted for a 
 const revokedUnusableMessage = "broker: GitHub did not revoke a token it minted whose answer the broker could not use; it lapses at its expiry"
 
 // unrevokableMessage is logged, at WARN, when GitHub answered a token request 201, so it minted a
-// token, and the part of its answer that arrived does not hold the token, so nothing can revoke
-// it, followed by app=, installation= and error=. It lapses at GitHub within the hour GitHub gives
-// an installation token.
-const unrevokableMessage = "broker: GitHub minted a token whose answer did not reach the broker whole, so it cannot be revoked; it lapses at its expiry"
+// token, and the answer the broker holds does not name it - a whole answer with no token, or the
+// part of a cut-off one that arrived before the token - followed by app=, installation= and
+// error=. Nothing can revoke that token, so it stays live at GitHub, held by nobody, until it
+// lapses within the hour GitHub gives an installation token.
+const unrevokableMessage = "broker: GitHub minted a token the broker cannot revoke, since the answer it holds does not name it; that token stays live until it lapses at its expiry"
 
-// revokedUnreleasedMessage is logged, at WARN, when a release that minted a token for one
-// installation fails at a later one, so it hands over none, and GitHub does not confirm the
-// revoke of that earlier token, followed by app=, installation=, expires_at= and error=, which
-// never holds the token.
-const revokedUnreleasedMessage = "broker: GitHub did not revoke a token minted for a release that failed; it lapses at its expiry"
+// revokedUnreleasedMessage is logged, at WARN, when a release that minted a token hands it to
+// nobody - because it failed at a later installation (followed by app=), or, through GiveBack
+// (followed by name=), because it failed after that name or holds that name behind the airlock,
+// whose session gets placeholders - and GitHub does not confirm the revoke of that token, followed
+// by installation=, expires_at= and error=, which never holds the token.
+const revokedUnreleasedMessage = "broker: GitHub did not revoke a token a release minted and handed to nobody; it lapses at its expiry"
 
 // missingActionsMessage is logged, at WARN, when GitHub refuses the permissions a read-only
 // narrowing asked for and the token is minted without actions, followed by app= and
@@ -268,11 +270,15 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry,
 }
 
 // revokeToken is that same revoke under ctx as it is given, retried from the same wait budget,
-// and nothing else. A check's revoke calls it with the caller's own context (Mint): that caller
-// is waiting on the check's answer inside a budget it bounds, and a revoke that outlived the cut
-// context by revokeTimeout there would put a single probe past the 30 s whole-call timeout the
-// agent-secrets client gives every call (leasetime.RenewClientTimeout). A release's revoke runs
-// after its caller may be gone, so it keeps the detached bound revokeInstallationToken gives it.
+// and nothing else. A check's revoke of a token GitHub answered whole calls it with the caller's
+// own context (Mint): that caller is waiting on the check's answer inside a budget it bounds, and a
+// revoke that outlived the cut context by revokeTimeout for each probe would put the check past
+// the 30 s whole-call timeout the agent-secrets client gives every call
+// (leasetime.RenewClientTimeout). A release's revoke runs after its caller may be gone, so it
+// keeps the detached bound revokeInstallationToken gives it, and so does the give-back of a token
+// whose answer a check could not use (giveBackUnusable): the check's bound is the likeliest thing
+// to have cut that answer off, and no mint starts after that bound, so at most one such give-back
+// runs past it.
 func (m GitHubApp) revokeToken(ctx context.Context, mint *mintRetry, token string) error {
 	const what = "revoke GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodDelete, m.base()+"/installation/token", token, nil)
@@ -300,9 +306,9 @@ func (m GitHubApp) revokeToken(ctx context.Context, mint *mintRetry, token strin
 // whose answer came with GitHub's 201 but could not be read whole, cut off part of the way or past
 // accessTokensResponseLimit, minted a token this call will never hold, and the hook gives it back
 // before the request is sent again or the call answers (giveBackUnusable).
-func (m GitHubApp) giveBackHook(ctx context.Context, mint *mintRetry, check bool, appID string, installationID int64) func([]byte, error) {
+func (m GitHubApp) giveBackHook(ctx context.Context, mint *mintRetry, appID string, installationID int64) func([]byte, error) {
 	return func(part []byte, err error) {
-		m.giveBackUnusable(ctx, mint, check, appID, installationID, answeredToken(part), err)
+		m.giveBackUnusable(ctx, mint, appID, installationID, answeredToken(part), err)
 	}
 }
 
@@ -356,40 +362,56 @@ func skipJSONValue(decoder *json.Decoder) error {
 }
 
 // giveBackUnusable tries to revoke token, which GitHub minted for a token request whose answer
-// Mint could not use, so that it does not stay live at GitHub for nobody: a check under the
-// caller's own context, as it revokes every token it mints (revokeToken), and a release under the
-// detached bound its other revoke has (revokeInstallationToken). A revoke GitHub does not confirm
-// is logged (revokedUnusableMessage), and the token stays live until it lapses. An answer whose
-// arrived part does not name its token, "" here, leaves nothing to revoke, and is logged as such
-// with why, the error the answer failed with (unrevokableMessage).
-func (m GitHubApp) giveBackUnusable(ctx context.Context, mint *mintRetry, check bool, appID string, installationID int64, token string, why error) {
+// Mint could not use, so that it does not stay live at GitHub for nobody. The revoke runs under the
+// detached bound a release's revoke has (revokeInstallationToken), for a check as for a release:
+// the likeliest reason a check's answer is cut off is the check's own bound, which has then ended
+// the caller's context too, and a revoke sent on it would never leave the broker. So a check's
+// answer can wait up to revokeTimeout past its bound for this revoke. A revoke GitHub does not
+// confirm is logged (revokedUnusableMessage), and the token stays live until it lapses. An answer
+// whose part the broker holds does not name its token, "" here, leaves nothing to revoke, and is
+// logged as such with why, the error the answer failed with (unrevokableMessage).
+func (m GitHubApp) giveBackUnusable(ctx context.Context, mint *mintRetry, appID string, installationID int64, token string, why error) {
 	if token == "" {
 		slog.Warn(unrevokableMessage, "app", appID, "installation", installationID, "error", why)
 		return
 	}
-	revoke := m.revokeInstallationToken
-	if check {
-		revoke = m.revokeToken
-	}
-	if revokeErr := revoke(ctx, mint, token); revokeErr != nil {
+	if revokeErr := m.revokeInstallationToken(ctx, mint, token); revokeErr != nil {
 		slog.Warn(revokedUnusableMessage, "app", appID, "installation", installationID, "error", revokeErr)
 	}
 }
 
 // revokeUnreleased tries to revoke, under the detached bound a release's revoke has, every token
-// a failed release minted for an installation before the one it failed at: the release hands over
-// none of them. A revoke GitHub does not confirm is logged (revokedUnreleasedMessage). A check
-// holds no token here, having revoked each one at GitHub's answer and blanked it.
-func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, appID string, minted githubMintedInstallations) {
+// in minted, which a release minted and hands to nobody: one that failed at a later installation
+// (Mint), or one whose grant's release failed after this name or holds it behind the airlock
+// (GiveBack). A revoke GitHub does not confirm is logged (revokedUnreleasedMessage) after named,
+// the key and value that say whose token it was. A check holds no token here, having revoked each
+// one at GitHub's answer and blanked it.
+func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, minted githubMintedInstallations, named ...any) {
 	for _, owner := range slices.Sorted(maps.Keys(minted.Installations)) {
 		installation := minted.Installations[owner]
 		if installation.Token == "" {
 			continue
 		}
 		if err := m.revokeInstallationToken(ctx, mint, installation.Token); err != nil {
-			slog.Warn(revokedUnreleasedMessage, "app", appID, "installation", installation.InstallationID, "expires_at", installation.ExpiresAt, "error", err)
+			slog.Warn(revokedUnreleasedMessage, slices.Concat(named, []any{"installation", installation.InstallationID, "expires_at", installation.ExpiresAt, "error", err})...)
 		}
 	}
+}
+
+// GiveBack tries to revoke every installation token in value, a github-app release's JSON object
+// of installations as Mint answered it, which the caller minted for the secret name and hands to
+// nobody (requests.Machine.GiveBacks): the broker's release of a grant that failed after this name
+// was minted, or that holds this name behind the airlock, whose session gets placeholders while the
+// proxy mints a value of its own. Each revoke runs under the detached bound a release's revoke has,
+// whatever ctx does, and one GitHub does not confirm is logged with name= (revokedUnreleasedMessage)
+// and leaves its token live until it lapses. A value that is no such object names no token, and
+// is left alone.
+func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
+	var minted githubMintedInstallations
+	if json.Unmarshal([]byte(value), &minted) != nil {
+		return
+	}
+	m.revokeUnreleased(ctx, m.Retry.start(kindGitHubApp), minted, "name", name)
 }
 
 // Mint returns a token and expiry for every installation of the App in req.Value that is not
@@ -409,24 +431,26 @@ func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, appID 
 // and its token stays live until it lapses.
 // With req.Check it finds out whether that release could be served without serving it, and it
 // releases no token. For a narrowing that names repositories or read-only it makes the release's
-// calls in the same order, but for a token request whose answer was lost, which it sends once
-// (installationToken); it revokes each token GitHub answers with the moment it has it, and
-// answers Minted{} with the error the release would have answered, nil where the release would
-// have succeeded. For a narrowing to its owner alone it lists the App's installations and asks
-// GitHub for no token. Such a narrowing sends GitHub no access_tokens body, so GitHub's answer to
-// the token request can refuse the App but never the narrowing, and heldBy checks nothing of it:
-// the check answers the release's refusal of an account with no installation, and nil for an
-// account with one, even where the release's token request would still fail. A token minted
-// there would hold every permission of the installation before anybody approved the request.
+// calls in the same order, but for a token request that failed once the transport had a connection
+// to GitHub for it, which it does not send again (installationToken); it revokes each token GitHub
+// answers with the moment it has it, and answers Minted{} with the error the release would have
+// answered, nil where the release would have succeeded. For a narrowing to its owner alone it
+// lists the App's installations and asks GitHub for no token. Such a narrowing sends GitHub no
+// access_tokens body, so GitHub's answer to the token request can refuse the App but never the
+// narrowing, and heldBy checks nothing of it: the check answers the release's refusal of an
+// account with no installation, and nil for an account with one, even where the release's token
+// request would still fail. A token minted there would hold every permission of the installation
+// before anybody approved the request.
 // A check needs req.GitHubNarrowing, since a release without one is the owner-wide one the
 // broker already makes; a check without one is refused before GitHub is asked anything.
 // The value is the JSON object stored in the secret, decoded by ParseValue before anything else,
 // so a value it refuses is refused as the stored value even when the narrowing is refused too;
 // it is never part of an error. Every call it makes is retried under m.Retry, all of them
-// waiting from the one wait budget this mint starts. Every error wraps one of
-// ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the refusal of
-// an App with no installation on the account also wraps ErrMintNoInstallation, which is inside
-// ErrMintRefused and which the broker's narrowing check reads.
+// waiting from the one wait budget this mint starts, but for a check's token request that failed
+// once the transport had a connection to GitHub for it, which is not sent again. Every error wraps
+// one of ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the
+// refusal of an App with no installation on the account also wraps ErrMintNoInstallation, which
+// is inside ErrMintRefused and which the broker's narrowing check reads.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err error) {
 	if req.Check && req.GitHubNarrowing == nil {
 		// A programming error in the broker: the caller asked this minter to find out about a
@@ -476,7 +500,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 	// its tokens, so it gives back every one it holds before it answers (revokeUnreleased).
 	defer func() {
 		if err != nil {
-			m.revokeUnreleased(ctx, mint, secret.AppID, minted)
+			m.revokeUnreleased(ctx, mint, minted, "app", secret.AppID)
 		}
 	}()
 	// expires is the earliest expiry of the installations minted so far, zero until the first.
@@ -627,12 +651,15 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 // fields, or holding no token or no expiry - has the token it names given back to GitHub
 // (giveBackUnusable) before the request is sent again or the failure is answered: mintCall calls
 // giveBackHook for an answer it could not read whole, and this gives back one that does not
-// decode. check is whether this is a check's request (MintRequest.Check), which is sent once where
-// its answer is lost (mintCall's resendLost): it mints a token nobody will use, so a lost answer
-// that GitHub served is one token live at GitHub that nothing can name, and sending it again would
-// mint another for a verdict alone. A release sends it again, since its caller is waiting for the
-// token itself, and each answer it loses leaves its token live until it lapses. appID names the
-// App in the lines a give-back logs.
+// decode. check is whether this is a check's request (MintRequest.Check), which is not sent again
+// once an attempt failed after the transport had a connection to GitHub for it (mintCall's
+// resendLost): GitHub may have received it whole and minted a token nobody will use, which nothing
+// can name, and sending it again would mint another for a verdict alone. An attempt that failed
+// before it had a connection - a name that did not resolve, a refused dial, a failed TLS
+// handshake - minted nothing, and a check sends it again as any call is sent again. A release
+// sends either again, since its caller is waiting for the token itself, and each attempt GitHub
+// served whose answer it loses leaves its token live until it lapses. appID names the App in the
+// lines a give-back logs.
 func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt, appID string, installationID int64, body []byte, check bool) (githubInstallationToken, error) {
 	const what = "mint GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodPost, m.base()+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", jwt, body)
@@ -640,7 +667,7 @@ func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt, 
 		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
 	payload, err := mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusCreated, accessTokensResponseLimit, !check,
-		m.giveBackHook(ctx, mint, check, appID, installationID))
+		m.giveBackHook(ctx, mint, appID, installationID))
 	if err != nil {
 		return githubInstallationToken{}, err
 	}
@@ -649,12 +676,12 @@ func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt, 
 	// error: GitHub's token is a secret.
 	if json.Unmarshal(payload, &token) != nil {
 		err := fmt.Errorf("%w: decode GitHub App installation token: not a JSON object of its fields", ErrMintUpstream)
-		m.giveBackUnusable(ctx, mint, check, appID, installationID, answeredToken(payload), err)
+		m.giveBackUnusable(ctx, mint, appID, installationID, answeredToken(payload), err)
 		return githubInstallationToken{}, err
 	}
 	if token.Token == "" || token.ExpiresAt.IsZero() {
 		err := fmt.Errorf("%w: GitHub returned an incomplete installation token", ErrMintUpstream)
-		m.giveBackUnusable(ctx, mint, check, appID, installationID, token.Token, err)
+		m.giveBackUnusable(ctx, mint, appID, installationID, token.Token, err)
 		return githubInstallationToken{}, err
 	}
 	return token, nil

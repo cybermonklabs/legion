@@ -140,9 +140,16 @@ func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 // airlock alone — in the grant's own name order, and takes the split of each name the airlock
 // holds back. Once every value is read, each stored one is checked against the policy as it
 // stands then (recheckStoredSources), so a retag that lands during the reads never releases
-// what the secret stores once it is a kind.
-func (m *Machine) readRelease(ctx context.Context, grantID string, checked grantRelease, want releaseRead) ([]releasedName, error) {
+// what the secret stores once it is a kind. A read that fails after it minted a value for an
+// earlier name hands that value to nobody, so it gives each such value back (giveBack) before it
+// answers the failure.
+func (m *Machine) readRelease(ctx context.Context, grantID string, checked grantRelease, want releaseRead) (_ []releasedName, err error) {
 	read := make([]releasedName, 0, len(checked.granted))
+	defer func() {
+		if err != nil {
+			m.giveBack(ctx, read)
+		}
+	}()
 	for _, g := range checked.granted {
 		entry := m.Airlock.Lookup(g.name)
 		if entry == nil && want.airlockOnly {
@@ -153,18 +160,45 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		if err != nil {
 			return nil, err
 		}
-		released := releasedName{name: g.name, value: minted.Value, expires: minted.Expires, kind: served.Kind()}
+		// Held for the give-back as soon as it is read, so a split that refuses this value gives
+		// it back as well as every value before it.
+		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, kind: served.Kind()})
 		if entry != nil {
+			released := &read[len(read)-1]
 			if released.split, err = airlockSplitOf(entry.Kind, released.kind, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}
-		read = append(read, released)
 	}
 	if err := m.recheckStoredSources(ctx, grantID, checked.granted); err != nil {
 		return nil, err
 	}
 	return read, nil
+}
+
+// giveBack hands each value in read that a kind's minter made back to that kind's upstream
+// (Machine.GiveBacks), for a release that minted it and hands it to nobody: one that failed, or a
+// name the airlock holds back, whose session gets placeholders (heldBack). A stored value, and a
+// value of a kind with no GiveBack, is left as it is.
+func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
+	for _, released := range read {
+		if giveBack := m.GiveBacks[released.kind]; giveBack != nil && released.value != "" {
+			giveBack(ctx, released.name, released.value)
+		}
+	}
+}
+
+// heldBack is the names in read the airlock holds back. A session's release reads or mints each
+// one's value only to learn the slots it hands placeholders for, and the proxy reads or mints a
+// value of its own when it first carries one (AirlockValues), so nobody holds the value read here.
+func heldBack(read []releasedName) []releasedName {
+	var held []releasedName
+	for _, released := range read {
+		if released.behindAirlock() {
+			held = append(held, released)
+		}
+	}
+	return held
 }
 
 // releasedNames is every name a read answered, in the grant's own name order: what the

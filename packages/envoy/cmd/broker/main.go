@@ -1094,6 +1094,7 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
 // unretried too: each holds the one pointer, which kindMinters' copies keep.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
@@ -1103,7 +1104,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
 		Minters: kindMinters(
-			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
+			githubApp,
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
 			// The google-service-account minter takes the deployment's binding of each such
@@ -1115,6 +1116,9 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
 			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
+		// A release that fails after it minted a GitHub App token gives that token back to
+		// GitHub, through the same minter's endpoint and retry.
+		GiveBacks:            map[string]requests.GiveBack{policy.KindGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,

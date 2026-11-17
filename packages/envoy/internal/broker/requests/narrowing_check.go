@@ -42,6 +42,13 @@ const NarrowingCheckSkippedMessage = "broker: the narrowing check was skipped"
 // transaction inside that same call, so the check takes at most a third of the client's budget.
 // A caller that gave up before the broker wrote its pending request is the cost this check
 // removes, so the check must end well inside what the caller is waiting out.
+//
+// One revoke runs past these bounds: the give-back of a token GitHub minted in an answer the check
+// could not use (secrets.GitHubApp's giveBackUnusable) runs under a detached bound of its own,
+// secrets' revokeTimeout (10 seconds), since the check's own bound is the likeliest thing to have
+// cut that answer off. No mint starts once the budget is spent, so at most one such give-back runs
+// past it, and a check takes at most 20 seconds in all: still inside the client's 30, with less
+// of that to spare.
 const (
 	DefaultNarrowingCheckBudget = 10 * time.Second
 	DefaultNarrowingCheckMint   = 5 * time.Second
@@ -229,9 +236,10 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 //
 // Each mint, and the revoke inside it, is bounded by NarrowingCheckMint and by what is left of
 // the check's whole budget, whichever ends first: ctx already carries the budget, so deriving the
-// mint's own bound from it takes the shorter of the two. A budget already spent is answered
-// without asking GitHub anything, and reads as trouble to the caller, which lets the request
-// through.
+// mint's own bound from it takes the shorter of the two. The give-back of a token whose answer the
+// mint could not use runs to a detached bound of its own instead (DefaultNarrowingCheckBudget's
+// comment). A budget already spent is answered without asking GitHub anything, and reads as
+// trouble to the caller, which lets the request through.
 func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) error {
 	if err := ctx.Err(); err != nil {
 		return err
