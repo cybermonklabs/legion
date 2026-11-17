@@ -567,15 +567,29 @@ write identity errors with `identity.WriteError`.
   (migration `0150`), swept beside the idempotency keys. A verified caller is
   `{kind: "session", id: <the token's session>}` carrying either `owner`, the
   person it acts for, or `service`, the fleet of a machine nobody has signed
-  in on — never both and never neither — and `project`, the one project a
-  named-scope token may write, each read from the token and never from a body;
-  a person-scoped token names no single project and carries none. A caller
+  in on or the service a read entry names — never both and never neither —
+  and `project`, the one project a named-scope token may write where its
+  entry names one, each read from the token and never from a body; a
+  person-scoped token names no single project and carries none, and neither
+  does the named token of an entry that names no project. A caller
   naming a service and no person reads everything its session may read, and
   `api.writeNeedsASignedInPerson` refuses its every write
   `403 SIGN_IN_REQUIRED` (`contracts.DispatchSignInRequired`) at one chokepoint
   in front of every mutating route, whatever its write class, naming
   `agent-secrets login` as the remedy: Dispatch records a write under the
-  person who made it, and this credential names none. Since the credential
+  person who made it, and this credential names none. A read-only token is the
+  exception. The broker mints it from a read entry
+  (`BROKER_EXCHANGE_READ_ACCOUNTS`): it names a service and a fixed session,
+  holds the OAuth scope `read` alone and the project scope `none`, and names
+  no person and no project. `brokerTokenVerifier` sets
+  `brokertoken.Options.ServesReadOnly`, so Dispatch accepts that token and
+  marks its credential `model.Credential.ReadOnly`, with no OAuth scope.
+  `api.refuseReadOnlyToken` then answers it `403 READ_ONLY_TOKEN`
+  (`contracts.DispatchReadOnlyToken`) on every route the read list
+  (`readScopeRoutes`) does not name and on `/ws/live`, with no
+  `WWW-Authenticate` challenge. That refusal comes before the scope gate, the
+  sign-in check, the `Idempotency-Key` and the handler, so such a token never
+  reaches the sign-in refusal above. Since the credential
   proves the session, `bearerSessionActor` takes a body with no `actor` at all,
   takes one naming that same session for its `origin`, and refuses one naming
   any other writer `403 ACTOR_SESSION_MISMATCH` naming the session the token
@@ -585,12 +599,14 @@ write identity errors with `identity.WriteError`.
   credential — one naming no session, one naming neither a person nor a
   service, or one issued to a client other than the exchange, which a machine
   login's own access token is, so a body cannot name a session for a credential
-  that proves none —
+  that proves none, or one whose project scope and OAuth scope are a shape no
+  broker mints (the scope `read` beside `named` or `person`, or the project
+  scope `none` in any shape but a read-only token's) —
   `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE`, which is a 503
   for the reason `OIDC_ISSUER_UNAVAILABLE` is: the broker answered nothing, so
   the token was never judged. A proof is single use by its `jti` and `htu`, so
   `api.decideBrokerToken` decides each request once for every layer that
-  resolves its caller, and a websocket's heartbeat re-resolution asks the
+  resolves its caller, and the live socket's heartbeat re-resolution asks the
   broker's answer alone (`brokertoken.Verifier.Live`) rather than presenting the
   upgrade's proof again. Without `DISPATCH_AGENT_SECRETS_URL` the branch has no
   verifier, and a `DPoP` presentation is the `401 UNAUTHORIZED`
@@ -638,7 +654,12 @@ one of the 151 rows carry a sixth value, and most rows need no scope. A name in 
 no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row
 does. `register` gates every row that map names (`gateRouteScopes`) ahead of the keyed, project
 and session layers, so no handler restates a scope, and `envoy-dispatch routes` prints
-each route's `scopes` as `GET /api/v1` does. An unknown path
+each route's `scopes` as `GET /api/v1` does. Beside that map, `readScopeRoutes` lists the routes
+a read-only broker token may call, today `GET /api/v1/projects/{key}/architecture` alone.
+`routes()` stamps it onto `apiRoute.ReadScope`, a listed name that is not a mounted GET row
+refuses to mount (`readRoutesNotMountedAsGET`), and neither `GET /api/v1` nor the OpenAPI document
+carries it. `register` wraps every row in `refuseReadOnlyToken`, outside `gateRouteScopes`, so a
+route added later stays closed to such a token until it is listed. An unknown path
 under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`), and a known path asked with a
 method its route does not serve, is answered by `routes/router.go` with
 `404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1 lists every
@@ -701,6 +722,8 @@ broker-issued token the broker scoped to its person holds both, and one scoped t
 neither; the shared agent token and a Kubernetes service-account token hold neither. A credential
 short of a scope its route needs is `403 OAUTH_SCOPE_REQUIRED` naming that scope, under
 `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).
+A read-only broker token holds neither scope, and every route the read list does not name answers
+it `403 READ_ONLY_TOKEN` with no challenge, since no scope makes that route its to call.
 
 Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header (1 to 128
 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted; anything else is
@@ -857,7 +880,7 @@ untouched; a caller that resolves to nobody keeps the route's own `401` (`refuse
 | `/api/v1/artifacts/{id}/_test/newer-content` | POST | user or bearer, `DISPATCH_TEST_HOOKS=1` only | Append an element no build knows (`docs.InjectUnknownElementForTest`), so the document holds newer content; not mounted otherwise. |
 | `/api/v1/agents/{session_id}/stream/_test/publish` | POST | user or bearer, `person` scope, `DISPATCH_TEST_HOOKS=1` only | Feed every process's in-memory agent relay: one frame, `?as=replay` what a new agent view is answered with, `?as=responder` whether anyone answers on the control subject, `?as=drop` ends every open agent view as `dropped`, so the page subscribes again and rebuilds from that replay; not mounted otherwise. |
 | `/api/v1/writes/_test/slow` | POST | user or bearer, `DISPATCH_TEST_HOOKS=1` only | `{method, path, delay_ms}`: every keyed run of that method and exact path waits `delay_ms` on its handler's context once its key is claimed (`503 SLOW_WRITE_CUT_OFF` when that context ends first); `delay_ms: 0` removes it; it arms the process the call reached, not every process; not mounted otherwise. |
-| `/ws/doc/{room}` | GET | user | Join the Hocuspocus document room. The room takes a signed-in person's cookie and no bearer at all (INFRA-264): the editor is the browser's, and nothing else connects. Every answer the document service's handler sends (`docs.Service.ServeHTTP`), the `101` upgrade and its `401`, `404` and `503` refusals included, carries `X-Dispatch-Process: <host name>` (the pod's name in production), so a check through a load balancer can record which process served each socket. A host name the process cannot read, or one that holds bytes a header cannot carry, sends none. The `400` refusals that run before that handler carry none: a room id or a query parameter that holds U+0000 or bytes that are not UTF-8 (`refuseUnstorableParameters`). A room whose stored tree is outside the Proof schema admits no connection, a provider's reconnect included: the upgrade completes and closes with code `4409` (reason `DOC_SCHEMA`; `DOCUMENT_SCHEMA_CLOSE_CODE` and `DOCUMENT_SCHEMA_CLOSE_REASON` in `packages/contracts`) before any sync, and the dashboard reads that close as the repair state. A room whose stored tree holds an element this build cannot read closes the same way with code `4425` (reason `DOC_NEWER_CONTENT`; `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`), which the Hocuspocus provider reconnects on with its backoff. The check reads a copy of a resident room taken under its lock, as `/text` reads it, so a healthy room under writes is never refused. An open writable socket the live server processes no longer admit is closed by the 15 s re-check with code `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`), once the message in flight on that socket is out; what that close waits for and what a page too slow to take it reads instead are in `README.md`, "Two builds at once". An open socket resolves its caller again on every 15 s heartbeat, as `/ws/live` does, and closes once they no longer resolve (a sign-out, a membership the sign-in issuer no longer confirms), so their editor stops receiving and sending the document's edits. ygo echoes a read-write peer's awareness renewal to its sender and gives a read-only peer a bounded empty awareness response, so an idle provider remains connected without Dispatch writing a keep-alive frame. |
+| `/ws/doc/{room}` | GET | user | Join the Hocuspocus document room. The room takes a signed-in person's cookie and no bearer at all (INFRA-264): the editor is the browser's, and nothing else connects. Every answer the document service's handler sends (`docs.Service.ServeHTTP`), the `101` upgrade and its `401`, `404` and `503` refusals included, carries `X-Dispatch-Process: <host name>` (the pod's name in production), so a check through a load balancer can record which process served each socket. A host name the process cannot read, or one that holds bytes a header cannot carry, sends none. The `400` refusals that run before that handler carry none: a room id or a query parameter that holds U+0000 or bytes that are not UTF-8 (`refuseUnstorableParameters`). A room whose stored tree is outside the Proof schema admits no connection, a provider's reconnect included: the upgrade completes and closes with code `4409` (reason `DOC_SCHEMA`; `DOCUMENT_SCHEMA_CLOSE_CODE` and `DOCUMENT_SCHEMA_CLOSE_REASON` in `packages/contracts`) before any sync, and the dashboard reads that close as the repair state. A room whose stored tree holds an element this build cannot read closes the same way with code `4425` (reason `DOC_NEWER_CONTENT`; `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`), which the Hocuspocus provider reconnects on with its backoff. The check reads a copy of a resident room taken under its lock, as `/text` reads it, so a healthy room under writes is never refused. An open writable socket the live server processes no longer admit is closed by the 15 s re-check with code `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`), once the message in flight on that socket is out; what that close waits for and what a page too slow to take it reads instead are in `README.md`, "Two builds at once". An open socket re-checks the sign-in cookie it was admitted with on every 15 s heartbeat and closes once that cookie no longer resolves (a sign-out, a membership the sign-in issuer no longer confirms), so its person's editor stops receiving and sending the document's edits; a bearer or broker token sent beside the cookie, a read-only one included, is never read and keeps nothing open (`api.signInStillResolves`). ygo echoes a read-write peer's awareness renewal to its sender and gives a read-only peer a bounded empty awareness response, so an idle provider remains connected without Dispatch writing a keep-alive frame. |
 | `/ws/live` | GET | user or bearer | One live socket per browser tab. Each `subscribe` names a delivery, `events`, or `agent` view, the last of which needs the `person` scope the socket read at the upgrade (`OAUTH_SCOPE_REQUIRED` on that subscription id, with no challenge header beside it, since a frame carries no HTTP header); the socket replies on that subscription id with delivery snapshots/deltas/freshness, `events_start` and events, or agent responder/replay/frame data. An `events` resume is its decimal event id, and its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before the subscription goes live, and `false` with no resume, past either bound, or above the head; a delivery resume is its change and revisions; an agent view never resumes. An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on; past them, or once the event log is reset, it ends as `behind` and the page subscribes again. An agent view holds at most 8 MiB of queued frames and ends as `behind` past that. A page that stops reading meets the socket's own bounds first (#2449): the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`); the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces. Every quiet socket receives a `heartbeat` every `StreamHeartbeat` (15 s). It closes with 4001 (`max age`) at a random age in [30, 60) minutes, 1012 on restart, 1008 when the caller stops resolving, and 1013 when its hub queue fills. |
 
 ## Dispatch topics

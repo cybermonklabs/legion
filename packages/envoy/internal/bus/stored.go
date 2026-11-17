@@ -373,7 +373,12 @@ func CheckFilterSubject(subject string) error {
 // may hold wildcards; a wildcard in subject is contained only by a wildcard in pattern at least as
 // wide (`a.>` contains `a.*.b` and `a.>`, `a.*` contains `a.*` but not `a.>`).
 func SubjectContains(pattern, subject string) bool {
-	patternTokens, subjectTokens := strings.Split(pattern, "."), strings.Split(subject, ".")
+	return tokensContain(strings.Split(pattern, "."), strings.Split(subject, "."))
+}
+
+// tokensContain is SubjectContains on two subjects already split into their tokens, for a caller
+// that weighs each subject against many others and splits it once.
+func tokensContain(patternTokens, subjectTokens []string) bool {
 	for index, patternToken := range patternTokens {
 		if patternToken == ">" {
 			return index < len(subjectTokens)
@@ -399,34 +404,70 @@ func SubjectContains(pattern, subject string) bool {
 // (`>` alone when the first tokens differ), until no two overlap. `X` and `X.>` do not overlap (one
 // matches X alone, the other only what lies under X), so both stay. The result is sorted and holds
 // each subject once, so the same set always reduces to the same list.
+//
+// A registration reduces its topics twice (sessionConsumerTarget), inside the request's own time
+// budget, and a session can register hundreds of them. So each subject is split into its tokens
+// once, and every pair is weighed on those tokens; a drop does not restart the scan of the pairs
+// (reduceFilterPairs).
 func ReduceFilterSubjects(subjects []string) []string {
-	reduced := slices.Clone(subjects)
-	for {
-		slices.Sort(reduced)
-		reduced = slices.Compact(reduced)
-		next, changed := reduceFilterPair(reduced)
-		if !changed {
-			return reduced
-		}
-		reduced = next
+	// An empty list reduces to itself, given back nil or empty as it came.
+	if len(subjects) == 0 {
+		return slices.Clone(subjects)
 	}
+	reduced := make([]filterSubject, 0, len(subjects))
+	for _, subject := range subjects {
+		reduced = append(reduced, filterSubject{subject: subject, tokens: strings.Split(subject, ".")})
+	}
+	for merged := true; merged; {
+		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
+		reduced = slices.CompactFunc(reduced, func(a, b filterSubject) bool { return a.subject == b.subject })
+		reduced, merged = reduceFilterPairs(reduced)
+	}
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
+	return filters
 }
 
-// reduceFilterPair applies ReduceFilterSubjects's rule to the first pair of subjects that overlap,
-// reporting false when none do.
-func reduceFilterPair(subjects []string) ([]string, bool) {
-	for i, a := range subjects {
-		for j := i + 1; j < len(subjects); j++ {
-			b := subjects[j]
+// filterSubject is one subject ReduceFilterSubjects weighs, with its tokens.
+type filterSubject struct {
+	subject string
+	tokens  []string
+}
+
+// reduceFilterPairs weighs the pairs of subjects, which are sorted and each held once, in order:
+// it drops each subject another contains, and at the first pair that overlaps without either
+// containing the other it merges that pair and reports true, or reports false when it reaches the
+// last pair with no merge. It changes subjects in place.
+//
+// A pair that does not overlap is weighed by that test alone, which settles most pairs: a subject
+// that contains another overlaps it, so such a pair is neither a drop nor a merge.
+//
+// A drop does not restart the scan. Every pair before the one that dropped a subject was weighed
+// and holds no overlap, and a drop changes no other subject and keeps the rest in their order, so
+// a scan from the first pair would weigh those pairs again to the same end. The scan goes on at
+// the dropped subject's place instead: with the same first subject when the second went, and with
+// the subject that follows when the first went. A merge does restart it, from a sorted list: the
+// merged subject is new, so every subject must be weighed against it, and it takes its own place
+// in the order.
+func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
+	for i := 0; i < len(subjects); i++ {
+		for j := i + 1; j < len(subjects); {
+			a, b := subjects[i], subjects[j]
 			switch {
-			case SubjectContains(a, b):
-				return slices.Delete(slices.Clone(subjects), j, j+1), true
-			case SubjectContains(b, a):
-				return slices.Delete(slices.Clone(subjects), i, i+1), true
-			case subjectsOverlap(a, b):
-				merged := commonTokenPrefix(a, b) + ">"
-				rest := slices.DeleteFunc(slices.Clone(subjects), func(s string) bool { return s == a || s == b })
-				return append(rest, merged), true
+			case !tokensOverlap(a.tokens, b.tokens):
+				j++
+			case tokensContain(a.tokens, b.tokens):
+				subjects = slices.Delete(subjects, j, j+1)
+			case tokensContain(b.tokens, a.tokens):
+				subjects = slices.Delete(subjects, i, i+1)
+				j = i + 1
+			default:
+				tokens := append(commonTokenPrefix(a.tokens, b.tokens), ">")
+				subjects = slices.Delete(subjects, j, j+1)
+				subjects = slices.Delete(subjects, i, i+1)
+				return append(subjects, filterSubject{subject: strings.Join(tokens, "."), tokens: tokens}), true
 			}
 		}
 	}
@@ -434,15 +475,12 @@ func reduceFilterPair(subjects []string) ([]string, bool) {
 }
 
 // commonTokenPrefix is the tokens a and b begin with alike, up to the first that differs or is `>`,
-// with the dot after the last of them, or "" when their first tokens differ.
-func commonTokenPrefix(a, b string) string {
-	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
-	var prefix strings.Builder
-	for index := 0; index < len(aTokens) && index < len(bTokens); index++ {
-		if aTokens[index] != bTokens[index] || aTokens[index] == ">" {
-			break
-		}
-		prefix.WriteString(aTokens[index] + ".")
+// none when their first tokens differ. It is a's own leading tokens with no room past them, so an
+// append to it copies them rather than writing over a.
+func commonTokenPrefix(a, b []string) []string {
+	index := 0
+	for index < len(a) && index < len(b) && a[index] == b[index] && a[index] != ">" {
+		index++
 	}
-	return prefix.String()
+	return a[:index:index]
 }

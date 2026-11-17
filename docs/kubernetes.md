@@ -3639,7 +3639,7 @@ A bearer the controller is given is presented as it is at main: the token `dispa
 That client alone reads the setting, and its name lies outside `AGENT_SECRETS_*` because `agent-secrets NAME -- <cmd>` strips that prefix's variables from its child but for a few (`sessionIdentityVars`, `packages/envoy/cmd/agent-secrets/main.go`), so a `dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
 The setting does not change the controller's own `agent-secrets` secret reads: they are signed exactly as they would be without it.
 What the broker can already issue is [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue).
-`dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and `dispatch://INFRA-264` is where Dispatch accepts one.
+`dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and Dispatch already accepts one, as that section says.
 
 Every role is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh`, the bundle's root (its own, bound there in its namespaces), `GH_CONFIG_DIR` at the issue's repository's owner's directory under it (the table above), and `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
 The `gh` first on its PATH is `/opt/legion/bin/gh`, which runs `legion gh`:
@@ -6174,6 +6174,7 @@ each issue's pod (every role of it alike) and the image probe's.
   every draw records it.
   `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every issue role where the block names none: a launch of a role the list leaves out loads none of this experiment's overlays or instructions while its unit keeps the arm it drew (the operator's and the role's own overlays, and other experiments' arms that reach it, still apply), so an experiment can leave the roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what it changes.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own disk.
   Neither file key is required:
@@ -6214,7 +6215,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
 
 - **What a role of a drawn unit is given.**
-  Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into, in the order the project's file declares the experiments, which outrank both.
+  Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into whose experiment reaches its role (`roles`), in the order the project's file declares the experiments, which outrank both.
   Its system prompt, the file its one `--append-system-prompt` names, ends with each such arm's `instructions`, in that same order, after the deployment's own.
   The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
   The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
@@ -6382,17 +6383,22 @@ An issued token carries these claims and no others:
 - `person` — the person the session acts for.
 
 - `service` — the service a token that names no person is, and nothing for a token that names one.
+  That service is a machine's fleet, or the service a read entry names.
 
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named` or `person`, which says what `projects` means.
+- `project_scope` — `named`, `person` or `none`, which says what `projects` means.
+  Only a read entry's token carries `none`, and that token writes no project.
 
 - `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
-  A token whose trade named none, and a token that names a service and no person, carry none.
+  A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.
 
 - `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
+  Every other token carries none.
+
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token, which holds no other scope.
   Every other token carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
@@ -6400,7 +6406,13 @@ An issued token carries these claims and no others:
   Every other kind of subject token carries none.
 
 The subject token's own kind decides those claims (`packages/envoy/internal/broker/exchange/exchange.go`).
-A pod's token needs an entry for its service account, which gives the project and the person and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
+A pod's token needs an entry for its service account, which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
+A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>`) gives a service and a fixed session in their place.
+The token it mints holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
+That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
+No setting holds a read entry to some projects.
+The broker refuses to start on an account that both settings list, because one account mints one kind of token.
+The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` with `invalid_scope`, under every entry.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
@@ -6433,15 +6445,17 @@ It authenticates with its own Kubernetes service-account token, or, on a machine
 The answer carries `active` and, for a live token, those claims, `exp`, `client_id` and `jkt` (`Introspection`, `packages/envoy/internal/broker/oauth/introspect.go`).
 
 A broker that sets none of `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_GOOGLE_OIDC_AUDIENCE` accepts no pod's token, no workflow run's token and no machine's identity token, and says so at boot with the log line `token exchange state=unconfigured`.
-With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, machine entries included (`packages/envoy/cmd/broker/main.go`).
+With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`) and machine entries included (`packages/envoy/cmd/broker/main.go`).
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/broker/oauth/exchange.go`).
 For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/broker/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its section "Exchange a pod's token".
 
-Nothing Legion runs presents such a token at this release.
+Of what Legion runs, the operator-launched controller is the one process that can present such a token.
 A pod, the daemon, a tmux pane and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes.
-An operator-launched controller presents the token its own file names.
-Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person the token names, and holds a `named` token's writes to its one project (`packages/envoy/internal/dispatch/api/broker_token.go`).
+An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release.
+It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
+The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`brokertoken.Options.ServesReadOnly`), and the listener does not ask.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares

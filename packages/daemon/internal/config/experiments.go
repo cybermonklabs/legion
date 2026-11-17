@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // ExperimentMode is `projects.<KEY>.experiments.<name>.mode`: what the daemon draws for each unit
@@ -67,6 +70,14 @@ type Experiment struct {
 	// Unit is `unit`: what one draw covers and is recorded against, a tree or an issue. A block
 	// that names no unit is ExperimentTree.
 	Unit ExperimentUnit
+	// Roles is `roles`, the Legion issue roles whose launches load this experiment's arms, in the
+	// file's order. A launch of a role the list leaves out loads none of this experiment's
+	// overlays or instructions, while its unit keeps the arm it was drawn into; the operator's and
+	// the role's own overlays, and other experiments' arms that reach the role, still apply. So an
+	// experiment can leave the roles that judge the work (the reviewer, the tester, the architect
+	// who signs a merge off) out of its arms, and read their verdicts as its outcome. Nil where
+	// the block names none, which is every issue role, as before the key existed (Reaches).
+	Roles []claim.Role
 	// OnVariant is `on_variant`: the variant mode on gives every unit, which that mode requires,
 	// and which the other two modes may leave out. It is empty, or the name of a variant of this
 	// experiment's own Variants.
@@ -75,6 +86,14 @@ type Experiment struct {
 	// named once. Order is kept because a draw's files are read in the file's order, and a weight
 	// is read against its siblings' in that order.
 	Variants []Variant
+}
+
+// Reaches is whether a launch of role loads this experiment's arms: every issue role where the
+// block names no `roles`, and only the roles it names where it names some. The controller runs
+// in no experiment whatever this answers, since an experiment's unit is a tree or an issue of one
+// (internal/daemon's controllerSpawnSpec).
+func (experiment Experiment) Reaches(role claim.Role) bool {
+	return experiment.Roles == nil || slices.Contains(experiment.Roles, role)
 }
 
 // Variant is one arm of an experiment: the name a draw records, the weight that draw gives the arm
@@ -88,13 +107,14 @@ type Variant struct {
 	// Weight is `weight`, the arm's share of a random draw against its siblings' weights: a whole
 	// number above zero, 1 where the block names none, so a list of plain variants is a fair coin.
 	Weight int
-	// ConfigFiles are `config_files`, the Oh My Pi settings overlays every role of a unit drawn
-	// into this arm names in PI_CONFIG_FILES, after the operator's own and the role's own
-	// (role_config_files), in the file's order; nil where the arm names none.
+	// ConfigFiles are `config_files`, the Oh My Pi settings overlays each role the experiment
+	// reaches (Experiment.Reaches) of a unit drawn into this arm names in PI_CONFIG_FILES, after
+	// the operator's own and the role's own (role_config_files), in the file's order; nil where
+	// the arm names none.
 	ConfigFiles []string
 	// InstructionsPath is `instructions`, the one markdown file the daemon reads at boot and
-	// appends to the system prompt of every role of a unit drawn into this arm, after the
-	// deployment's own instructions; empty where the arm names none.
+	// appends to the system prompt of each role the experiment reaches of a unit drawn into this
+	// arm, after the deployment's own instructions; empty where the arm names none.
 	InstructionsPath string
 	// ConfigFilesField is the key the operator wrote ConfigFiles under, whole:
 	// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, and
@@ -274,10 +294,11 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 }
 
 // readExperiment is one experiment's block: `mode`, one of the three words (absent is off);
-// `unit`, a tree or an issue (absent is a tree); `variants`, the arms it draws among, which it
-// must have; and `on_variant`, the arm mode on gives every unit, which that mode requires and
-// which must name an arm of this experiment. A mode other than off over one variant is refused:
-// a draw among one arm measures nothing, so the file is missing the arm it compares against.
+// `unit`, a tree or an issue (absent is a tree); `roles`, the issue roles whose launches load its
+// arms (absent is every one); `variants`, the arms it draws among, which it must have; and
+// `on_variant`, the arm mode on gives every unit, which that mode requires and which must name an
+// arm of this experiment. A mode other than off over one variant is refused: a draw among one arm
+// measures nothing, so the file is missing the arm it compares against.
 func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	if value.Kind != yaml.MappingNode {
 		return Experiment{}, fmt.Errorf("%s must be a mapping", key)
@@ -303,6 +324,11 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 			return Experiment{}, fmt.Errorf("%s.unit must be tree or issue (got %q)", key, unit)
 		}
 	}
+	if roles := fields["roles"]; roles != nil {
+		if experiment.Roles, err = readExperimentRoles(roles, key+".roles"); err != nil {
+			return Experiment{}, err
+		}
+	}
 	if experiment.OnVariant, err = stringOf(fields["on_variant"], key+".on_variant"); err != nil {
 		return Experiment{}, err
 	}
@@ -324,6 +350,32 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 		return Experiment{}, fmt.Errorf("%s.on_variant names %q, which is no variant of the experiment (%s)", key, experiment.OnVariant, strings.Join(names, ", "))
 	}
 	return experiment, nil
+}
+
+// readExperimentRoles is an experiment's `roles`: a sequence of at least one Legion issue role
+// (claim.Roles), each named once. The controller is no word of it, since a controller runs in no
+// experiment. An empty list is refused rather than read as every role: it reads as no role, and an
+// experiment whose arms reach no launch treats nothing, so the file would say the opposite of what
+// the daemon did.
+func readExperimentRoles(value *yaml.Node, key string) ([]claim.Role, error) {
+	if value.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be a sequence of Legion issue roles, e.g. [planner, implementer]", key)
+	}
+	if len(value.Content) == 0 {
+		return nil, fmt.Errorf("%s names no role: an experiment whose arms reach no launch treats nothing, so name the roles its arms reach, or leave the key out for every role", key)
+	}
+	roles := make([]claim.Role, 0, len(value.Content))
+	for _, entry := range value.Content {
+		role := claim.Role(entry.Value)
+		if entry.Kind != yaml.ScalarNode || !slices.Contains(claim.Roles, role) {
+			return nil, fmt.Errorf("%s names %q, which is not a Legion issue role (%s)", key, entry.Value, runtime.JoinRoles(claim.Roles))
+		}
+		if slices.Contains(roles, role) {
+			return nil, fmt.Errorf("%s names %s twice", key, role)
+		}
+		roles = append(roles, role)
+	}
+	return roles, nil
 }
 
 // readMode is the `mode` of an experiment's block or of a project's `memory` block: one of the
@@ -464,8 +516,9 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 
 // checkExperiments refuses what a project's declared variants name that no role could load as
 // named, once the rest of the file is settled: the two rules every declaration of overlays
-// answers — a harness other than Oh My Pi on an issue role, and an overlay outside the
-// operator's pod mounts (checkDeclaredOverlays), which the `memory` block answers too.
+// answers — a harness other than Oh My Pi on an issue role the experiment reaches (its `roles`),
+// and an overlay outside the operator's pod mounts (checkDeclaredOverlays), which the `memory`
+// block answers too.
 //
 // Both hold whatever the mode is, `off` included, for the reason checkMemory's own two do: the
 // mode decides which new units are drawn, and a unit already drawn keeps the files of the variant
@@ -492,7 +545,7 @@ func checkExperiments(cfg Config) error {
 				continue
 			}
 			for _, variant := range experiment.Variants {
-				if err := checkDeclaredOverlays(cfg, variant.ConfigFilesField, "the variant", variant.ConfigFiles); err != nil {
+				if err := checkDeclaredOverlays(cfg, variant.ConfigFilesField, "the variant", variant.ConfigFiles, experiment.Roles); err != nil {
 					return err
 				}
 			}

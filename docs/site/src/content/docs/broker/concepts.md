@@ -49,6 +49,19 @@ makes there, so one person signed in on two machines holds a login on each, and 
 in on one machine hold one each. Revoking a sign-in on Dispatch ends its machine login with it:
 every session it enrolled ends, and the box signs in again to work on.
 
+A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
+access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
+pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
+and the one Dispatch project it may write, or no project for an entry that names none
+(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
+service and a fixed session instead, and no person and no project: the token holds the OAuth scope
+`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
+other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
+`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
+source, each component, and every issue of the project, closed and iceboxed ones included. No
+setting holds a read entry to some projects.
+
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
 a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it

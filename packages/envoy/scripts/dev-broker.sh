@@ -44,17 +44,27 @@
 # Kubernetes ServiceAccount token (BROKER_API_ACCOUNTS, verified against BROKER_K8S_OIDC_ISSUER),
 # and so does the RFC 8693 token exchange's subject token. With no cluster to mint one, this
 # script starts cmd/dev-oidc-issuer, the Go tests' local issuer (internal/oidc/oidctest) served on
-# a loopback port, which keeps five tokens in WORK_DIR and rewrites each before it lapses, as a
+# a loopback port, which keeps six tokens in WORK_DIR and rewrites each before it lapses, as a
 # kubelet does a pod's projected token: account-token, for API_ACCOUNT, the caller "dispatch" the
 # broker lists, which agent-secrets-devrelay presents in Dispatch's place to decide a machine
 # login; listener-token, for LISTENER_ACCOUNT, the caller "listener", which the broker lists for
 # introspection alone, so a person can see a listed caller refused a route its name does not
 # carry (403 ACCOUNT_LACKS_POWER); exchange-token, for EXCHANGE_ACCOUNT's pod, which the broker's
-# exchange takes for a Dispatch access token; pod-token, that same pod's token for the broker's
-# own audience, which names it in its registration; and registrar-token, for REGISTRAR_ACCOUNT,
-# the service login (BROKER_SERVICE_LOGINS) that stands in for the deployment's daemon and
-# registers the pod under the session name it writes as. The broker trusts that issuer for all
-# five.
+# exchange takes for a Dispatch access token; read-token, for READ_ACCOUNT's pod, which the
+# broker's exchange takes for a Dispatch access token that only reads; pod-token,
+# EXCHANGE_ACCOUNT's pod's token for the broker's own audience, which names it in its
+# registration; and registrar-token, for REGISTRAR_ACCOUNT, the service login
+# (BROKER_SERVICE_LOGINS) that stands in for the deployment's daemon and registers the pod under
+# the session name it writes as. The broker trusts that issuer for all six.
+#
+# READ_ACCOUNT is a read entry (BROKER_EXCHANGE_READ_ACCOUNTS) beside the one example entry
+# (BROKER_EXCHANGE_ACCOUNTS). The token its pod exchanges for holds the scope read alone, the
+# project scope none, the service READ_SERVICE and the session READ_SESSION, and names no person
+# and no project. Dispatch serves such a token on the routes its read list names (today GET
+# /api/v1/projects/{key}/architecture alone) and answers it 403 READ_ONLY_TOKEN on every other
+# route, which packages/dispatch/e2e/read-token-live.ts drives against this stack and a
+# `bun run dispatch:local` Dispatch. A read entry fixes its session, so its pod needs no
+# registration below, and the broker refuses one with 409 SESSION_FIXED.
 #
 # SERVICE is registered under both halves a service needs: BROKER_SERVICE_LOGINS names the
 # account that logs in as it, and BROKER_SERVICES names the account its pods run as
@@ -158,11 +168,11 @@ GITHUB_CASE_SECRET="DEMO_GITHUB_APP_CASE_PAIR"
 GITHUB_HUMAN_SECRET="DEMO_GITHUB_APP_HUMAN"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
 # token carries, the exchange's own audience, and the four accounts, as internal/broker/brokertest's
-# rig names them. The exchange entry fixes no session, so a pod names its own — and a pod of such
-# an entry exchanges only under a name its deployment registered for it, which here is the
-# registrar account's one call below. The pod's two token files are one pod:
-# dev-oidc-issuer binds one pod uid per service account, as a pod's projected tokens for two
-# audiences carry one uid.
+# rig names them, beside the read entry's account below. The exchange entry fixes no session, so
+# a pod names its own — and a pod of such an entry exchanges only under a name its deployment
+# registered for it, which here is the registrar account's one call below. The pod's two token
+# files are one pod: dev-oidc-issuer binds one pod uid per service account, as a pod's projected
+# tokens for two audiences carry one uid.
 ISSUER_BIN="$BIN_DIR/dev-oidc-issuer"
 ISSUER_LOG="$WORK_DIR/issuer.log"
 BROKER_AUDIENCE="legion-broker-pod"
@@ -181,9 +191,17 @@ SERVICE="legion-daemon"
 EXCHANGE_PROJECT="EXAMPLE"
 # The session name this stack's pod is registered for, the one it exchanges under.
 EXCHANGE_SESSION="example-worker-session"
+# The read entry (see the header), named as BROKER_EXCHANGE_READ_ACCOUNTS' own example in
+# internal/broker/config names it. Its account is a pod account of its own, so dev-oidc-issuer
+# binds its token to a pod of its own, and it is listed in no other setting: the broker refuses an
+# account that both exchange settings name, since one account mints one kind of token.
+READ_ACCOUNT="system:serviceaccount:example-ns:example-reader"
+READ_SERVICE="example-reader"
+READ_SESSION="example-reader-session"
 ACCOUNT_TOKEN_FILE="$WORK_DIR/account-token"
 LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
+READ_TOKEN_FILE="$WORK_DIR/read-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
 # The broker's own sign-in client at that issuer (BROKER_SIGNIN_*), through which a person signs in
@@ -375,6 +393,7 @@ echo "dev-broker: starting dev-oidc-issuer..." >&2
   --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_TOKEN_FILE" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
+  --token "$EXCHANGE_AUDIENCE=$READ_ACCOUNT=$READ_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
@@ -442,6 +461,7 @@ BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
 BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
 BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
 BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+BROKER_EXCHANGE_READ_ACCOUNTS="$READ_ACCOUNT=$READ_SERVICE=$READ_SESSION" \
 BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
 BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
 BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
@@ -559,6 +579,7 @@ dev-broker: ready.
   listener token:      $LISTENER_TOKEN_FILE  ($LISTENER_ACCOUNT, the caller "listener")
   exchange token:      $EXCHANGE_TOKEN_FILE  ($EXCHANGE_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE)
   pod token:           $POD_TOKEN_FILE  (the same pod, audience $BROKER_AUDIENCE: what its registration named it by)
+  read token:          $READ_TOKEN_FILE  ($READ_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: exchanges under $READ_SESSION for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)
   registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE")
   registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
   github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)
@@ -613,7 +634,14 @@ dev-broker: ready.
   That pod exchanges under $EXCHANGE_SESSION and under no other name: this script registered it
   for that one (POST /v1/oauth/exchange/pod-sessions, the registrar token on the Authorization
   header and the pod token in the body), and any other name is refused invalid_grant naming it.
-  Registering the same pod for a second name there is all it takes to add one.
+  Registering the same pod for a second name there is all it takes to add one. The read token
+  exchanges the same way for a token that only reads: service $READ_SERVICE, session
+  $READ_SESSION, no person and no project (BROKER_EXCHANGE_READ_ACCOUNTS). Its entry fixes that
+  session, so its pod needs no registration and a registration of it is refused 409
+  SESSION_FIXED. To drive it against a Dispatch, start one from packages/dispatch with
+  DISPATCH_E2E_AGENT_SECRETS_URL=$PUBLIC_URL and
+  DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE before bun run dispatch:local,
+  and run e2e/read-token-live.ts as its header says.
 EOF
 
 wait "$BROKER_PID"

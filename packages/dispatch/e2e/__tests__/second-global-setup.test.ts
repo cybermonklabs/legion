@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { stacksVariable } from "../harness-ports";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -41,10 +42,6 @@ if (withoutPostgres) {
       "DISPATCH_E2E_PG_IMAGE names a Postgres this run can make two stacks' databases with."
   );
 }
-
-/** Two stacks, each a Go build and an initdb away, and the second reuses the first's build
- *  cache. Measured at about nine minutes cold on a four-core pod. */
-const twoStacks = 1_800_000;
 
 test.skipIf(withoutPostgres)(
   "a second globalSetup starts a Postgres of its own rather than reading the first's",
@@ -66,7 +63,9 @@ test.skipIf(withoutPostgres)(
       "const second = urls();" +
       "await teardown();" +
       "console.log(JSON.stringify({ first, second, plainAfterSetup, manifestAfterTeardown }));";
-    const child = Bun.spawn(["bun", "--eval", script], {
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: ["bun", "--eval", script],
+      bound: "twoStackBuild",
       cwd: dispatchPackage,
       env: {
         PATH: process.env.PATH ?? "",
@@ -86,15 +85,9 @@ test.skipIf(withoutPostgres)(
         ),
         ...Object.fromEntries(pgProvider.map((variable) => [variable, process.env[variable]])),
       },
-      stderr: "pipe",
-      stdout: "pipe",
+      from: import.meta.url,
     });
-    const [code, stderr, stdout] = await Promise.all([
-      child.exited,
-      new Response(child.stderr).text(),
-      new Response(child.stdout).text(),
-    ]);
-    expect(code, stderr).toBe(0);
+    expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
     const read = JSON.parse(stdout) as {
       first: (string | undefined)[];
       second: (string | undefined)[];
@@ -114,5 +107,5 @@ test.skipIf(withoutPostgres)(
     expect(read.plainAfterSetup).toBeNull();
     expect(read.manifestAfterTeardown, `${stacksVariable} outlived the teardown`).toBeNull();
   },
-  twoStacks
+  rowLimit("twoStackBuild")
 );
