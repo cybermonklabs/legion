@@ -459,11 +459,15 @@ func (r sessionOrderRig) views(t *testing.T, session string) (bySubject map[stri
 	return bySubject, view
 }
 
-// takesTheOwnersEventsInOrderThroughATopicFailure is the case: oneBatch writes both events before
-// the outbox starts, so its first batch reads both due, and otherwise the second is written once
-// the first waits out a back-off. The stream refuses the topic family until a batch has settled
-// the second event, so that batch makes or holds the second event's send to S while the first
-// event's topic send has not gone.
+// takesTheOwnersEventsInOrderThroughATopicFailure is the case. The stream refuses the topic family
+// until a batch has settled the second event, so that batch makes or holds the second event's send
+// to S while the first event's topic send has not gone. oneBatch writes both events before the
+// outbox starts, so its first batch reads both due and the first event's topic send is in flight
+// beside the second event's. Otherwise the second is written once the first backed off, with the
+// outbox stopped while the first is set not due for an hour, so no retry of it writes a sooner
+// back-off and the batch that reads the second finds the first not due. Then, with the outbox
+// stopped again, both are made due and the stream captures every subject, and an outbox started
+// afresh publishes both in its first scan.
 func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool) {
 	rig := newSessionOrderRig(t)
 	rig.refuse(t, dispatchTopicPrefix)
@@ -474,20 +478,30 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 		second = rig.write(t, person, "second, by a person")
 	}
 	stop := runOutbox(t, rig.database, rig.client, rig.broker)
-	defer stop()
+	defer func() { stop() }()
 	if !oneBatch {
-		// Refused a third time, the first event waits out a back-off of 4 s (retry.Delay), so the
-		// batch the second event's write wakes finds the first one not due.
-		waitFor(t, 60*time.Second, "the first event refused three times", func() bool {
+		waitFor(t, 60*time.Second, "the first event backed off for the topic family", func() bool {
 			_, attempts := publishedDestinations(t, rig.database, first.ID)
-			return attempts >= 3
+			return attempts > 0
 		})
+		stop()
+		if _, err := rig.database.Pool.Exec(context.Background(),
+			`update events set next_attempt_at = now() + interval '1 hour' where id = $1`, first.ID); err != nil {
+			t.Fatalf("hold the first event not due: %v", err)
+		}
 		second = rig.write(t, person, "second, by a person")
+		stop = runOutbox(t, rig.database, rig.client, rig.broker)
 	}
 	waitFor(t, 60*time.Second, "a batch settled the second event while the topic family was refused", func() bool {
 		return rig.settled(t, second.ID)
 	})
+	stop()
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update events set next_attempt_at = null where id = any($1)`, []int64{first.ID, second.ID}); err != nil {
+		t.Fatalf("make both events due: %v", err)
+	}
 	rig.captureAgain(t)
+	stop = runOutbox(t, rig.database, rig.client, rig.broker)
 	waitFor(t, 120*time.Second, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
@@ -546,6 +560,130 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 	if !slices.Equal(view, want) {
 		t.Errorf("S takes T-1's events as %v, want %v", view, want)
 	}
+}
+
+// In one batch, an owner's send to a session is held back behind the owner's earlier topic send
+// that failed (chainSend.after), whichever route makes it: the issue's session route, its
+// claimant, or a role route's forward to the role's holder. The earlier events are agents'
+// messages, which go to the topic family alone, and the last a person's, which goes to the topic
+// family and to the session, all due in one scan's batch. The first event's topic send fails, so
+// the last event's send to the session is never made: the first event backs off, and every later
+// one is blocked behind it, with no attempt of its own and a next attempt, rather than sent or
+// released. Once the topic family takes sends again, the retry reaches the session only after every
+// event reached the topic family. The last row has two earlier events, so the session send waits
+// on the second's topic send, which the first's failure held back and which was never made.
+func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T) {
+	const topic = "notifications.dispatch.issue.T-1.message.created"
+	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
+	for _, tc := range []struct {
+		name  string
+		route *string
+		claim *model.Actor
+		// copyTopic is the topic the publisher records the session's copy under: its agent
+		// subject, or the role's topic for a forward to the role's holder.
+		copyTopic string
+		earlier   int
+	}{
+		{name: "the issue's session route", route: new("session:S"), copyTopic: contracts.LegacyAgentSubject("S"), earlier: 1},
+		{name: "the issue's claimant", claim: &model.Actor{Kind: "session", ID: "S"}, copyTopic: contracts.LegacyAgentSubject("S"), earlier: 1},
+		{name: "a role's holder by its forward", route: new("role:reviewer"), copyTopic: roleTopic, earlier: 1},
+		{name: "behind a topic send that was held back itself", route: new("session:S"), copyTopic: contracts.LegacyAgentSubject("S"), earlier: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithTransactionTracking(context.Background())
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			seedIssue(t, database, "T-1", tc.route)
+			if tc.claim != nil {
+				claimIssue(t, database, "T-1", *tc.claim)
+			}
+			write := func(actor model.Actor, body string) model.Event {
+				return appendEvent(t, database, broker, model.Event{
+					IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+					Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+				})
+			}
+			var written []model.Event
+			for index := range tc.earlier {
+				written = append(written, write(agent, fmt.Sprintf("earlier %d, by an agent", index+1)))
+			}
+			written = append(written, write(person, "last, by a person"))
+			publisher := &recordingPublisher{failTopic: topic}
+			outbox := holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher}))
+			outbox.scan(ctx, unfenced{})
+
+			if got := topicsOf(publisher.all()); len(got) != 0 {
+				t.Fatalf("the batch sent %v while the first event's topic send failed, want nothing: the last event's copy for the session went before the first event reached the topic family", got)
+			}
+			ids := make([]int64, 0, len(written))
+			for index, event := range written {
+				ids = append(ids, event.ID)
+				want := 0
+				if index == 0 {
+					want = 1
+				}
+				if attempts, due := nextAttempt(t, database, event.ID); attempts != want || due == nil {
+					t.Fatalf("event %d has %d attempts and next attempt %v, want %d and a next attempt: the first event backs off and each later one waits behind it, none released",
+						event.ID, attempts, due, want)
+				}
+			}
+
+			publisher.setFailTopic("")
+			if _, err := database.Pool.Exec(ctx, `update events set next_attempt_at = null where id = any($1)`, ids); err != nil {
+				t.Fatalf("make the retry due: %v", err)
+			}
+			outbox.scan(ctx, unfenced{})
+			want := append(slices.Repeat([]string{topic}, len(written)), tc.copyTopic)
+			if got := topicsOf(publisher.all()); !slices.Equal(got, want) {
+				t.Fatalf("the retry sent %v, want %v: the session's copy only once every event reached the topic family", got, want)
+			}
+			for _, event := range written {
+				if publishedAt(t, database, event.ID) == nil {
+					t.Fatalf("event %d is not published after the retry", event.ID)
+				}
+			}
+		})
+	}
+}
+
+// In one batch, an owner's send to a session waits for the answer to the owner's earlier topic
+// send, rather than going beside it (chainSend.after). Event 1 goes to the topic family alone and
+// event 2 to the topic family and to S's own subject, both due in one batch: the batch sends event
+// 1's topic send alone, and holds event 2's topic send behind it on the topic family's chain and
+// event 2's send to S until NATS answers it. Once it does, both go.
+func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "session:S"
+	seedIssue(t, database, "T-1", &route)
+	write := func(actor model.Actor, body string) model.Event {
+		return appendEvent(t, database, broker, model.Event{
+			IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+		})
+	}
+	first := write(model.Actor{Kind: "session", ID: "agent-other"}, "first, by an agent")
+	second := write(model.Actor{Kind: "user", ID: "alice"}, "second, by a person")
+	publisher := &heldPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.LegacyAgentSubject("S")
+	waitFor(t, 5*time.Second, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
+	time.Sleep(200 * time.Millisecond)
+	if got := publisher.sent(); !slices.Equal(got, []string{topic}) {
+		t.Fatalf("sent %v before any answer, want only the first event's topic send: the second event's copy for S went while that send had no answer", got)
+	}
+	publisher.accept(0, 1)
+	waitFor(t, 5*time.Second, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) == 3 })
+	if got := publisher.sent()[1:]; !slices.Contains(got, topic) || !slices.Contains(got, session) {
+		t.Fatalf("sent %v once the first event's topic send was answered, want the second event's to the topic family and to %s", got, session)
+	}
+	publisher.accept(1, 3)
+	waitFor(t, 5*time.Second, "both events marked published", func() bool {
+		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil
+	})
 }
 
 // shiftedClock moves database's clock an hour ahead of the pod's, as a database host whose clock

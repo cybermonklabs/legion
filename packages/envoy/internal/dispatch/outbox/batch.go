@@ -497,7 +497,11 @@ type chain struct {
 // one-sided: a session key reaches its one session, which takes the owner's events in order from
 // the topic family as well, so a session key that stalls holds back that key alone and the owner's
 // topic family goes on (TestABackedOffEventHoldsBackOnlyItsDestination,
-// TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish).
+// TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish,
+// TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch). A mention's copies are outside
+// the hold: the API's own mention send is no send of the outbox's, and a comment_fallback_copies
+// row is the fallback pass's to publish (below), so either can reach a session before an earlier
+// event of the owner whose topic send has not gone.
 //
 // The other hold wider than a destination is an event whose recipient read failed
 // (batchEvent.incomplete): its list ends at the read, so it may be bound for any session the read
