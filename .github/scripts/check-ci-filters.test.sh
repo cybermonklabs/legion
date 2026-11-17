@@ -74,7 +74,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -2076,6 +2076,43 @@ check "names the workflow and what it no longer builds" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of this workflow runs a \`go test\` with -race")"
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
+
+# Rule 20. darwin_vet <root> <tags>: a step of the app job that vets ./lib for darwin with
+# -tags <tags> (none when empty), pinned as an exact entry whose Run carries that platform and
+# those tags, as ci_job_reads.py's darwin_vet pins this repository's three. lib gets a file under
+# the build tag probe, one under linux, a platform and never a tag, and one under race, which
+# go_build_tags.NOT_TAGS leaves to the toolchain.
+darwin_vet() {
+  local flag=""
+  [ -n "$2" ] && flag="-tags $2 "
+  printf '//go:build probe\n\npackage lib\n\nfunc Probe() {}\n' > "$1/mod/lib/probe.go"
+  printf '//go:build linux\n\npackage lib\n\nfunc Linux() {}\n' > "$1/mod/lib/linux_only.go"
+  printf '//go:build race\n\npackage lib\n\nconst Race = true\n' > "$1/mod/lib/race_on.go"
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    "      - name: Vet the library for darwin"$'\n'"        run: GOOS=darwin GOARCH=arm64 go vet ${flag}./lib"$'\n'"        working-directory: mod"$'\n'"      - name: Test the app"
+  replace "$1/.github/scripts/ci_job_reads.py" "from ci_filter_coverage import Read, at, gate, run" \
+    "from ci_filter_coverage import Read, at, exact, gate, run"
+  replace "$1/.github/scripts/ci_job_reads.py" '    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),' \
+    "    ], exact=[exact(\"Vet the library for darwin\", \"mod\", \"GOOS=darwin GOARCH=arm64 go vet ${flag}./lib\", ["$'\n'"        run(\"mod\", [\"./lib\"], \"the darwin vet\", tags=\"$2\", mode=\"vet\", env={\"GOOS\": \"darwin\", \"GOARCH\": \"arm64\"}),"$'\n'"    ])], reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\")]),"
+}
+
+echo "case: a darwin vet whose -tags names every tag its package's files are built under"
+root=$(fixture vet-tags-whole)
+darwin_vet "$root" probe
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and reports what it judged" \
+  "$(contains "$out" 'report: job app step "Vet the library for darwin": vets mod for darwin with -tags probe; go list passes over 2 files there, 0 of them for want of a tag')"
+
+echo "case: a darwin vet whose -tags leaves out a tag a file of its package is built under"
+root=$(fixture vet-tags-missing)
+darwin_vet "$root" ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the tag that would compile it" \
+  "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin with -tags (none), so it never compiles mod/lib/probe.go, which tag probe would')"
+check "and passes over the platform's and the toolchain's files" \
+  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go')" false)"
 
 # No case runs this rule, or any other rule of check-ci-filters.sh, over this repository's own
 # tree: ci.yaml's ci-filters job runs the whole check there (.github/workflows/ci-job-ci-filters.yaml,

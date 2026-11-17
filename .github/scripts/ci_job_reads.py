@@ -55,6 +55,7 @@ from typing import NamedTuple
 
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, go_skips_dir, run
 from ci_filter_coverage import at as at_in, gate as gate_in
+from go_build_tags import module_tags
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -69,6 +70,7 @@ CI = ".github/workflows/ci.yaml"
 DOCS_SITE = ".github/workflows/docs-site.yaml"
 BROWSER_SITE = ".github/workflows/dispatch-browser.yaml"
 BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
+BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 
 def job_file(job: str) -> str:
@@ -126,16 +128,42 @@ def pinned_step(job, step, workdir, script, runs, workflow=""):
                                          for where, pkgs, what, options in runs])
 
 
-def darwin_vet(job, step, workdir, tags):
-    """A step that vets every package of a module, its tests and the tagged files under `tags`
-    included, as darwin/arm64 compiles them: the vet each Go module's job runs so that a file
-    compiling on linux alone fails the pull request, not a Mac. GOOS and GOARCH in front of the
-    go command are outside the simple form, so the step is pinned whole and its one Run carries
-    them, which makes the closure the one darwin compiles."""
-    script = f"GOOS=darwin GOARCH=arm64 go vet -tags {tags} ./..."
+def darwin_vet(job, step, workdir):
+    """A step that vets every package of a module, its tests and every tagged file included, as
+    darwin/arm64 compiles them: the vet each Go module's job runs so that a file compiling on
+    linux alone fails the pull request, not a Mac. The step reads its -tags off the module's own
+    `//go:build` lines with BUILD_TAGS, so a command substitution and GOOS and GOARCH in front of
+    the go command put it outside the simple form: it is pinned whole, and its one Run carries
+    the platform and the tags that script prints for the module now, which makes the closure the
+    one darwin compiles. check-ci-filters.sh's rule 20 then asks go list whether that vet passes
+    over any file a tag would bring in.
+
+    The gate reads BUILD_TAGS and every .go file of the module, whose `//go:build` lines it scans;
+    darwin_vet_reads names both for the gate's `reads`."""
+    up = "/".join([".."] * len(Path(workdir).parts))
+    script = (f"tags=$(python3 {up}/{BUILD_TAGS} .)\n"
+              'echo "Vetting for darwin with -tags $tags"\n'
+              'GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...')
+    tags = ",".join(module_tags(Path(workdir)))
     return pinned_step(job, step, workdir, script, [
-        (workdir, ["./..."], script, {"tags": tags, "mode": "vet", "env": {"GOOS": "darwin", "GOARCH": "arm64"}}),
+        (workdir, ["./..."], f"GOOS=darwin GOARCH=arm64 go vet -tags {tags or '(none)'} ./...",
+         {"tags": tags, "mode": "vet", "env": {"GOOS": "darwin", "GOARCH": "arm64"}}),
     ])
+
+
+def darwin_vet_reads(job, step, workdir):
+    """What darwin_vet's step reads beside its go command's closure: the script that prints its
+    -tags, and the .go files whose `//go:build` lines that script scans."""
+    return reads(
+        (BUILD_TAGS, f"{at(job, step)} runs it for the vet's -tags"),
+        (f"{workdir}/**/*.go", f"{at(job, step)}: {BUILD_TAGS} reads the `//go:build` line of each"),
+    )
+
+
+# The three darwin vet steps, one per Go module that ships for darwin.
+DAEMON_DARWIN_VET = "Vet the Go daemon for darwin, its e2e-tagged live proofs included"
+ENVOY_DARWIN_VET = "Vet envoy for darwin, its tagged tests included"
+INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
 
 def reads(*entries):
@@ -2038,6 +2066,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
+        (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2241 imports this table to derive the plain step's -run lists"),
         ("AGENTS.md", "check-ci-filters.test.sh:2695-2717 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
@@ -2084,8 +2113,8 @@ GATES = [
         step_run("typecheck", "Vet the Go daemon, its e2e-tagged live proofs included", "go vet -tags e2e ./...", DAEMON, ["./..."],
                  tags="e2e", mode="vet"),
     ], exact=[
-        darwin_vet("typecheck", "Vet the Go daemon for darwin, its e2e-tagged live proofs included", DAEMON, "e2e"),
-    ], reads=setup_go("typecheck", f"{DAEMON}/go.mod")),
+        darwin_vet("typecheck", DAEMON_DARWIN_VET, DAEMON),
+    ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
     # the plain step over every package of the module but the three concurrent ones and the text
@@ -2695,8 +2724,7 @@ GATES = [
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test ./internal/dispatch/pmdoc/", {}),
         ]),
-        darwin_vet("envoy-go-checks", "Vet envoy for darwin, its tagged tests included", ENVOY,
-                   "gcplive,memory,modellive,multiprocess,natslive,serverchange,smoke,twobuild"),
+        darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(
         (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
@@ -2760,7 +2788,8 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/spec-check')} judges the action's default path "
          "(.github/actions/spec-check/action.yml:17), which check.sh:70 resolves against GITHUB_WORKSPACE "
          "and the command it runs at check.sh:80 reads"),
-    ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
+    ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
+      + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)),
 
 
     gate("envoy_infra_go", "envoy-infra-go", runs=[
@@ -2781,14 +2810,14 @@ GATES = [
             (INFRA, [pkg], f"go test -tags natslive {pkg}", {"tags": "natslive"})
             for pkg in INFRA_NATSLIVE_PACKAGES
         ]),
-        darwin_vet("envoy-infra-go", "Vet envoy-infra for darwin, its live-test tags included", INFRA, "pulumilive,natslive"),
+        darwin_vet("envoy-infra-go", INFRA_DARWIN_VET, INFRA),
     ], reads=reads(
         (f"{INFRA}/**", f"{at('envoy-infra-go', 'Check Go formatting')}: gofmt -l . in packages/envoy/infra reads every .go file under it"),
         (".github/actions/pull-test-images/**", at("envoy-infra-go", "Pull the NATS and Postgres test container images")),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
-    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod")),
+    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
     # directory, the Dispatch API's source guards by name, and the supervise table's two pure
@@ -3088,6 +3117,8 @@ GATES = [
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
+        (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's -tags, and ci_filter_coverage.py's rule 20 "
+                     "imports its NOT_TAGS and its //go:build reader"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
         (GO_TARGETS, "ci_job_reads.py expands the notices and pack runs over it"),
         (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),

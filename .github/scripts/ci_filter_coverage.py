@@ -2364,6 +2364,75 @@ def rewrite(path: str, lines: list, blocks: dict, wanted: dict, heads=lambda nam
         (REPO / path).write_text(text)
 
 
+def check_vet_tags(session: Session, data, problems: list) -> list:
+    """Rule 20: a vet for another platform, a Run of mode vet whose env sets GOOS, passes over no
+    file of its packages that a build tag would compile. Such a vet is the one compile of its
+    module for that platform, and a file under a tag its -tags leaves out is a file it never
+    reads, while the vet still passes. go list decides, under the Run's own platform and tags:
+    of the files it ignores there (IgnoredGoFiles, test files included), each whose `//go:build`
+    line names a tag the Run does not set is a candidate, and a candidate go list compiles once
+    those tags are added is a file the vet skips for want of a tag. A tag is a name of such a
+    line that is neither a GOOS nor a GOARCH of `go tool dist list`, run with the module's own
+    toolchain, nor one go_build_tags.NOT_TAGS names: that set is the one place the names Go's
+    toolchain sets are written, and the script the darwin vets take their -tags from reads it
+    too, so the two agree on what a missing tag is while this rule asks go list, not that script,
+    which files the vet compiles."""
+    from go_build_tags import NOT_TAG_PATTERN, NOT_TAGS, constraint, names_of
+
+    report = []
+    platforms: dict = {}
+    for g in data.GATES:
+        for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:
+            goos = dict(r.env).get("GOOS")
+            if r.mode != "vet" or not goos:
+                continue
+            if r.workdir not in platforms:
+                listed = subprocess.run([session.toolchain(r.workdir), "tool", "dist", "list"], cwd=REPO / r.workdir,
+                                        capture_output=True, text=True)
+                platforms[r.workdir] = {part for line in listed.stdout.split() for part in line.split("/")}
+                if listed.returncode != 0 or not platforms[r.workdir]:
+                    problems.append(error(None, f"in {r.workdir}, go tool dist list failed, so which names of a "
+                                                f"//go:build line are platforms is unknown: "
+                                                f"{' '.join(listed.stderr.split())[:300]}"))
+            known = platforms[r.workdir]
+            if not known:
+                continue
+            tags = set(filter(None, r.tags.split(",")))
+            ignored = ignored_files(session, r, tags)
+            needed: dict = {}
+            for path in sorted(ignored):
+                extra = {name for name in names_of(constraint(REPO / path) or "")
+                         if not (name in known or name in NOT_TAGS or NOT_TAG_PATTERN.fullmatch(name))} - tags
+                if extra:
+                    needed[path] = extra
+            skipped = sorted(needed.keys() - ignored_files(session, r, tags.union(*needed.values()))) if needed else []
+            where = f'job {g.job} step "{step}"' if step else f"job {g.job}"
+            report.append(f"{where}: vets {r.workdir} for {goos} with -tags {r.tags or '(none)'}; go list passes over "
+                          f"{len(ignored)} files there, {len(skipped)} of them for want of a tag")
+            for path in skipped:
+                problems.append(error(path, f"{where} vets {r.workdir} for {goos} with -tags {r.tags or '(none)'}, "
+                                            f"so it never compiles {path}, which tag "
+                                            f"{','.join(sorted(needed[path]))} would: the vet passes without "
+                                            f"reading the file. The darwin vets take their -tags from "
+                                            f".github/scripts/go_build_tags.py, which must print every tag the "
+                                            f"module's //go:build lines name"))
+    return report
+
+
+def ignored_files(session: Session, r: Run, tags: set) -> set:
+    """The files go list ignores in the Run's packages under its platform and `tags`, as
+    repository paths: IgnoredGoFiles, which holds a package's test files too."""
+    args = ["list", "-e", "-json=Dir,IgnoredGoFiles"]
+    if tags:
+        args += ["-tags", ",".join(sorted(tags))]
+    out = set()
+    for pkg in decode_stream(session.go(r, args + list(r.pkgs))):
+        d = rel(pkg["Dir"]) if pkg.get("Dir") else None
+        if d is not None:
+            out |= {f"{d}/{name}" for name in pkg.get("IgnoredGoFiles") or []}
+    return out
+
+
 def check() -> int:
     # The mode check-ci-filters.sh was called in: `check`, which refuses a generated block that
     # is not what rule 17 computes, or `write`, which writes those blocks into ci.yaml instead.
@@ -2458,6 +2527,8 @@ def check() -> int:
     lines = read_repository_text(REPO / WORKFLOW).splitlines()
     listed = listed_owners(documents, lines, problems)
     check_dead_gate_patterns(data, filters, gate_files, expander, selection, listed, problems)
+    # Rule 20: a vet for another platform passes over no file a build tag would compile.
+    report += check_vet_tags(session, data, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, gate_files, selection, listed, expander,

@@ -320,7 +320,19 @@
 #      it selects, and nothing else here would say so. A reference to a step that is no
 #      paths-filter step carries no filter and is held only to being a step of the job: that is
 #      the step merging the three steps' verdicts into the `filter_verdicts` output
-#      .github/scripts/ci-ok.jq reads as one object.
+#      .github/scripts/ci-ok.jq reads as one object,
+#  20. a vet for another platform - a Run of mode vet whose env sets GOOS, today the three darwin
+#      vets ci_job_reads.py's darwin_vet pins - that passes over a file a build tag would
+#      compile, naming the file, the job, the step and the tag. Such a vet is its module's one
+#      compile for that platform, and a file under a tag its -tags leaves out is never read while
+#      the vet still passes: the miss a hand-kept tag list makes the day a tag lands. go list
+#      decides, under the Run's own platform and tags: of the files it ignores there, each whose
+#      //go:build line names a tag the Run does not set (a name that is no GOOS or GOARCH of
+#      `go tool dist list` and none of .github/scripts/go_build_tags.py's NOT_TAGS) is listed
+#      again with those tags added, and one go list then compiles is the miss. The darwin vets
+#      read their -tags off the module with that script at run time and ci_job_reads.py gives
+#      their Runs what it prints now, so this rule fails when the script stops printing a tag
+#      the module uses.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

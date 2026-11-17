@@ -184,11 +184,15 @@ jobs:
       # Every package of the module, its tests included, as macOS compiles it: the agent-secrets
       # command ships for darwin (.github/agent-secrets-client-targets.json), and a file with no
       # build constraint that uses a symbol only a `//go:build linux` file defines compiles on this
-      # runner and nowhere else. The tags are every tag a file of the module is built under but
-      # race, whose `!race` files the tag would take out, so the tagged suites are vetted too. One
+      # runner and nowhere else. The tags are read off the module's own `//go:build` lines by
+      # .github/scripts/go_build_tags.py, every one but the platform's and the toolchain's, so a
+      # file under a tag that lands later is vetted too rather than passed over in silence. One
       # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
       - name: Vet envoy for darwin, its tagged tests included
-        run: GOOS=darwin GOARCH=arm64 go vet -tags gcplive,memory,modellive,multiprocess,natslive,serverchange,smoke,twobuild ./...
+        run: |
+          tags=$(python3 ../../.github/scripts/go_build_tags.py .)
+          echo "Vetting for darwin with -tags $tags"
+          GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...
         working-directory: packages/envoy
       # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
       - name: Pack envoy binaries
