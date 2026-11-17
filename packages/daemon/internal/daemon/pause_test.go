@@ -397,3 +397,110 @@ func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
 		t.Fatalf("the held notice's wake is marked with pause %v and release %d, want pause %d and no release", held, release, pause.ID)
 	}
 }
+
+// The resume launches an operator's spawn of another project's root architect that the pause
+// stopped owing a launch (resumeOwedSpawns), and that launch's ready reads the root's record by
+// key (workflow's claimReady). On a database shared with another project's daemon that record is
+// that daemon's, and it is no record of this daemon's, as it is for the pause's stop
+// (projectPause.pauseIssue), for a wake (wakeReleased) and for a worker's ready
+// (readyWorkerTask): a catch-up built from it would be a row keyed by an issue whose rows the
+// other project's daemon runs, and its drop of the root's queued catch-ups would delete that
+// daemon's own. So after the resume the relaunched spawn's ready queues no row keyed by the other
+// project's issue and deletes none of that daemon's rows.
+func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectAtItsReady(t *testing.T) {
+	r := newPauseDaemonRig(t, nil)
+	r.boot()
+	const issue = "OTHERPROJECT-9"
+	recorded := r.root(issue, phase.Planning)
+	recorded.Project = "OTHERPROJECT"
+	if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
+	}
+	const task = "Summarize the incident for the operator."
+	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait.", Task: task})
+	pause := r.pauseProject()
+	testwait.Eventually(t, "the pause's stop of the spawn to be held until its agent is ready", func() bool {
+		return r.claim(token).SuspensionHeld
+	})
+	launched := r.claim(token)
+	const session = "ses-other-root-architect"
+	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
+	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
+	r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
+	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and claim = $2 and ended_as = 'stopped' and launch_owed`,
+		pause.ID, string(token)); got != 1 {
+		t.Fatalf("the spawn's stops recorded stopped owing a launch = %d, want 1", got)
+	}
+
+	// The other project's daemon has a catch-up of its own architect of the root queued.
+	theirs := r.enqueue(issue, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "OTHERPROJECT's own catch-up of its root",
+		CatchUp: &record.CatchUp{Generation: 1, Launch: 1, Gates: []record.CatchUpGate{}, Issues: []record.CatchUpIssue{}}})
+	rowsOf := func() map[int64]string {
+		t.Helper()
+		rows, err := r.pool.Query(r.ctx, `select id, kind || '/' || coalesce(payload->>'kind', payload->>'op', '') from outbox where issue = $1`, issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		found := map[int64]string{}
+		for rows.Next() {
+			var id int64
+			var what string
+			if err := rows.Scan(&id, &what); err != nil {
+				t.Fatal(err)
+			}
+			found[id] = what
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	before := rowsOf()
+
+	launches := len(r.rt.launchesOf(token))
+	r.resumeProject()
+	if !testwait.Holds(testwait.Bounded(t, 20*time.Second, time.Second), testwait.Poll, func() bool {
+		if len(r.rt.launchesOf(token)) > launches {
+			return true
+		}
+		for _, wake := range r.state().WakesWaiting {
+			if wake.Claim == token {
+				r.clock.advanceTo(wake.DueAt)
+			}
+		}
+		return false
+	}) {
+		c := r.claim(token)
+		t.Fatalf("after the resume the spawn owed a launch is %s by %s; want it launched once through the pacing", c.State, c.SuspendedBy)
+	}
+	relaunched := r.claim(token)
+	r.dialShim(lastLaunch(t, r.rt.Runtime, token).BootToken)
+	testwait.Eventually(t, "the relaunched spawn's shim to say hello", func() bool {
+		return r.claim(token).State == supervise.StateShimConnected
+	})
+	r.handle(token, supervise.RequestRegister{Claim: token, Generation: relaunched.Generation, Session: session,
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+	r.handle(token, supervise.RequestReady{Claim: token, Generation: relaunched.Generation, Session: session})
+	testwait.Eventually(t, "the relaunched spawn's agent to be ready", func() bool {
+		state := r.claim(token).State
+		return state == supervise.StateReady || state == supervise.StateWorking || state == supervise.StateIdle
+	})
+	// The ready's fact is applied after the machine records the ready, in a transaction of its
+	// own; two seconds is ample for it, and what this test reads is the absence of its rows.
+	time.Sleep(2 * time.Second)
+
+	after := rowsOf()
+	if _, kept := after[theirs]; !kept {
+		t.Errorf("the other project's daemon's catch-up row %d keyed %s is gone after the resumed spawn's ready: this daemon deleted a row of another project's issue",
+			theirs, issue)
+	}
+	for id, what := range after {
+		if _, had := before[id]; !had {
+			t.Errorf("the resumed spawn's ready queued outbox row %d (%s) keyed %s, want none: this daemon's outbox runs no row of another project's issue, and that project's daemon runs every one",
+				id, what, issue)
+		}
+	}
+}
