@@ -92,7 +92,7 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 // completionAnswer is the writer answerCompletion answers through: it keeps the first status
 // written and the code writeFailure tells it of the refusal it writes (noteRefusal), which the
 // route's line names. It has no Write of its own, so the body goes to the wrapped writer as
-// writeJSON wrote it, under the Content-Type writeJSON set.
+// writeAnswerFrom wrote it, under the Content-Type writeAnswerFrom set.
 type completionAnswer struct {
 	http.ResponseWriter
 	status int

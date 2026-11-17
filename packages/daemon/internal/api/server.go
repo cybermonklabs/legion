@@ -726,10 +726,10 @@ func (s *server) stopRefusal(request string) string {
 //
 // http.TimeoutHandler is not the way to do this and must not be added: it buffers the whole
 // response into a buffer of its own before writing it, and the state's body is buffered once
-// already — writeJSON hands the body to json.Marshal, which materialises all of it before a byte
-// is written — so the handler would hold a second full copy of a body that measured 4,055,424
-// bytes on the production deployment on 2026-11-12. One such copy per concurrent read is a
-// second resource failure inside the first one this bounds.
+// already — writeAnswerFrom hands the body to json.Marshal, which materialises all of it before
+// a byte is written — so the handler would hold a second full copy of a body that measured
+// 4,055,424 bytes on the production deployment on 2026-11-12. One such copy per concurrent read
+// is a second resource failure inside the first one this bounds.
 func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")

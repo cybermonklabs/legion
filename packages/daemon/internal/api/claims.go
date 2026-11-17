@@ -164,7 +164,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 			if err := s.roleHoldersChanged(ctx, c); err != nil {
 				s.log.Warn("api: refused a ready: the daemon could not queue the publication of its issue's role sessions",
 					"claim", c.Token, "issue", c.Issue, "error", err)
-				writeJSON(w, http.StatusServiceUnavailable, errorBody("the daemon could not queue the role publication; try the ready again"))
+				s.refuse(w, r, http.StatusServiceUnavailable, "the daemon could not queue the role publication; try the ready again")
 				return
 			}
 		}

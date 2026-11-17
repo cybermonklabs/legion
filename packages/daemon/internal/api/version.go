@@ -2181,22 +2181,31 @@ package api
 // of shaping.go's stateNarrowings, and this contract is served above it: a caller below 146 is
 // served every issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`
 // (`withoutEntryTimes`, the band of `entryTimesContract`).
-// Four settings keys are read loosely by every plugin and recorded at every contract, with no
-// band and no strip, as 87's two settings keys are. That rests on one measurement, made the way
-// entry 87's was: `legionSettings` in `packages/contracts/src/legion-api.ts` is a `z.looseObject`
-// that types `review_round_cap` and `worker_boot_timeout_seconds` alone, nothing types the
-// parents of these keys under it (`projects`, `experiments`, `runtime`, `kubernetes` and
-// `agent_secrets`), and no plugin source names the keys (`experiments`, `memory_guard`, `roles`
-// under `experiments`, and `exchange_audience`), so no reader refuses them. The four keys, each
+// Five settings keys are read loosely by every plugin and recorded at every contract, with no
+// band and no strip. That rests on one measurement, made the way the measurement of #3982's two
+// stand-in keys below was (`pod_update_retask_hours` and `pod_update_notice_hours`, read at the
+// commit of each of the 24 contracts from 46 to 111): `legionSettings` in
+// `packages/contracts/src/legion-api.ts` is a `z.looseObject` that types `review_round_cap` and
+// `worker_boot_timeout_seconds` alone, nothing types the parents of these keys under it
+// (`projects`, `experiments`, `runtime`, `kubernetes`, `agent_secrets` and `sandbox`), and no
+// plugin source names the keys (`experiments`, `memory_guard`, `roles` under `experiments`,
+// `exchange_audience`, and the sandbox's own `canary_issues`, `microvm`, `compute_class`,
+// `workload_pool` and `identity_provider`; the `sandbox` a plugin names is a claim locator's or
+// a repository cache's, never a settings key), so no reader refuses them. The five keys, each
 // with the commits that measurement was made at, are these. 141's
-// `settings.projects.<KEY>.experiments`, at the commit of each contract since: 123 (25f3e38a),
-// 132 (8b0f29b9), 133 (2e546572) and 137 (7baa398b), so the reading of 46 to 111 holds to 137.
+// `settings.projects.<KEY>.experiments`, at the commit of each contract from 111 to 141: 123
+// (25f3e38a), 132 (8b0f29b9), 133 (2e546572) and 137 (7baa398b), so the measurement of 46 to
+// 111 holds to 137.
 // `settings.runtime.kubernetes.memory_guard`, the one key 144 adds to the state, at 141's commit
 // (7ed02373) and 144's (adebbf6d); 144's records are 141's under its own number.
 // `settings.projects.<KEY>.experiments.<name>.roles`, which main's #4241 (4357585e) added with no
 // contract number of its own, at 146's commit (858e9645), at #4241's and at this change's merge
 // with it. `settings.runtime.kubernetes.agent_secrets.exchange_audience`, which main's #4153
 // (8a4dbb9f) added the same way, at #4153's commit and at this change's merge with it.
+// `settings.runtime.kubernetes.sandbox`, the one key main's 151 (d9299f7a) adds to the state, at
+// 151's commit and at this change's merge with it. Its key paths are in the state record of
+// every contract; 151's records are 146's under its own number with them, and a caller at 151 is
+// served what one at 146 is, with this contract above it.
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller

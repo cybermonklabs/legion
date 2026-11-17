@@ -899,7 +899,7 @@ jobs:
             # packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
             # for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
             # outside the daemon: contracts' fixtures
-            # (internal/api/state_golden_test.go:1215, internal/intake/intake_test.go:802), the
+            # (internal/api/state_golden_test.go:1215, internal/intake/intake_test.go:855,955), the
             # agents internal/prompts/roles_test.go:261 stats and the tools skill its :689 holds
             # roles/mechanics/headless.md to, the GitHub App helper
             # internal/api/real_github_test.go:115 sources, and the examples and
@@ -2268,7 +2268,7 @@ jobs:
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/legion.test.ts:1422,4052 and src/capability-report.test.ts:768-776.
+              # extensions/legion.test.ts:1422,4052 and src/capability-report.test.ts:848,968.
               - 'packages/contracts/fixtures/daemon-api/**'
               - 'packages/contracts/fixtures/capability-redaction.json'
               - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'

@@ -860,7 +860,7 @@ const mergeWaitContract = 133
 // keys it has read since 49 and no assignments, and a caller below 49 neither. The field's
 // `variant` and `mode` ride whatever they hold and are no enumeration, so no value strip is owed.
 // `settings.projects.<KEY>.experiments` arrived at this contract too, and every plugin reads the
-// settings loosely, so it is recorded at every contract, as 87's two settings keys are.
+// settings loosely, so it is recorded at every contract (version.go's 154 names the measurement).
 //
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
 // that constant, and the contract the field arrived at stays where it is.
@@ -1614,8 +1614,8 @@ var answerWritten func(pattern string, id AnswerID)
 
 // writeAnswer writes body as the answer id names it, shaped down to the contracts the caller
 // reads at (contractsFor, shapeAnswer). Every body this package writes goes through it, or
-// through writeAnswerFrom which it stands on, and nothing else calls writeJSON, so a shape a
-// later contract moves cannot be written past the shaping.
+// through writeAnswerFrom which it stands on, and writeAnswerFrom is the one place a body is
+// written, so a shape a later contract moves cannot be written past the shaping.
 //
 // It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
 // contract is placed by its header alone, and the state and the record are the two answers whose
@@ -1634,6 +1634,10 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // body once (shapeAnswer), and writes to the log what that shaping reported it took off
 // (recordShaping) before it writes the body.
 //
+// It is the one writer of a response body in this package: the encoding and the write are its
+// own, and no other function of the package writes a body, so a body written around it is one
+// a route writes by hand, which is a body no contract shaped.
+//
 // It is also where the pair a write makes — the route's own pattern and the answer id it writes
 // under — is told to answerWritten, so that the package's own census can hold each pair to the
 // table (daemon_contract_header_test.go). Nothing is told anything in a daemon: answerWritten is
@@ -1645,23 +1649,7 @@ func (s *server) writeAnswerFrom(w http.ResponseWriter, r *http.Request, id Answ
 	at := s.contractsFor(r, claims)
 	shaped, took := shapeAnswer(id, body, at.restore, at.strip)
 	s.recordShaping(r, id, at, took)
-	writeJSON(w, status, shaped)
-}
-
-// writeUnparsedAnswer writes a body no plugin parses: the operator's claim answers, the
-// controller's secret and credential, and the readiness probe's 200 and 503 (answerUnparsed). It
-// is written through the one writer like every other body, so a route cannot reach writeJSON
-// around the shaping; what it says is that there is no contract to shape this body to. A refusal
-// on the operator's and the controller's routes is a refusal like any other, and is written as
-// AnswerRefusal.
-func (s *server) writeUnparsedAnswer(w http.ResponseWriter, r *http.Request, status int, body any) {
-	s.writeAnswer(w, r, answerUnparsed, status, body)
-}
-
-// writeJSON is the one writer of a response body in this package. Only writeAnswerFrom calls it,
-// and it stays unexported for that reason: a body written around it is a body no contract shaped.
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	encoded, err := json.Marshal(body)
+	encoded, err := json.Marshal(shaped)
 	if err != nil {
 		slog.Error("api: encode response", "error", err)
 		http.Error(w, `{"error":"encode failed"}`, http.StatusInternalServerError)
@@ -1672,4 +1660,14 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	if _, err := w.Write(append(encoded, '\n')); err != nil {
 		slog.Debug("api: write response", "error", err)
 	}
+}
+
+// writeUnparsedAnswer writes a body no plugin parses: the operator's claim answers, the
+// controller's secret and credential, and the readiness probe's 200 and 503 (answerUnparsed). It
+// is written through the one writer like every other body, so a route cannot write it around
+// the shaping; what it says is that there is no contract to shape this body to. A refusal on the
+// operator's and the controller's routes is a refusal like any other, and is written as
+// AnswerRefusal.
+func (s *server) writeUnparsedAnswer(w http.ResponseWriter, r *http.Request, status int, body any) {
+	s.writeAnswer(w, r, answerUnparsed, status, body)
 }

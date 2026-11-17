@@ -25,7 +25,7 @@ func recordAsked(t *testing.T, handler http.Handler, remote, key string, contrac
 }
 
 // recordOf is the record route's answer for key, which must be a 200, with the newline the
-// writer ends every body with left off (writeJSON): that newline is no part of the record.
+// writer ends every body with left off (writeAnswerFrom): that newline is no part of the record.
 func recordOf(t *testing.T, handler http.Handler, remote, key string, contract int) []byte {
 	t.Helper()
 	recorder := recordAsked(t, handler, remote, key, contract)
@@ -168,7 +168,7 @@ func TestTheRecordRouteAnswersACallerNoPodClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal the fixture's record: %v", err)
 	}
-	// The writer ends every body with a newline (writeJSON), which is no part of the record.
+	// The writer ends every body with a newline (writeAnswerFrom), which is no part of the record.
 	if got := strings.TrimSpace(record.Body.String()); got != string(written) {
 		t.Errorf("the record = %s,\nwant the record this contract writes %s", got, written)
 	}

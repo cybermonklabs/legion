@@ -180,8 +180,10 @@ func (f declaredField) String() string { return f.typ + "." + f.name }
 // shapeSettingsFile is a tmux legion.yaml that sets every key the maximal kubernetes file of
 // this package (settingsFixtureFile) leaves unset: the Oh My Pi invocation and its launch
 // prefix, a role's stall backstop, a project's memory block and an experiment of its own with
-// every field an experiment has, and the `runtime.tmux` block itself, which no file of the kubernetes runtime carries. Together the two files write every
-// key the settings block has.
+// every field an experiment has, and the `runtime.tmux` block itself, which no file of the
+// kubernetes runtime carries. The maximal file sets no `runtime.kubernetes.sandbox` block
+// either, and sandboxSettingsBlock is one, so the two files and that block write every key the
+// settings block has.
 const shapeSettingsFile = `project: SHAPES
 postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
 state_dir: /var/lib/legion
@@ -225,6 +227,24 @@ runtime:
     pane_env: {FIXTURE_PANE_FLAG: fixture-pane-value}
     pi_config_files: [/etc/legion/pane-overlay.yml]
     take_over: kubernetes
+`
+
+// sandboxSettingsBlock is a `runtime.kubernetes.sandbox` block that sets every member the
+// settings show (version.go's 151): a canary list, and a microvm block with its compute class,
+// its storage class and both members of its metadata endpoint. It is appended to
+// settingsFixtureFile, as the settings tests append each block of theirs to it
+// (TestSettingsOfTheSandboxShowsEachMember), rather than written into that file, where a block
+// of its own would be a second `sandbox` key beside each one those tests append. The third state
+// body carries it (stateCarryingEveryDeclaredValue), so the records describe the microvm block
+// and its keys, which no body of the maximal file alone carries. Names and hosts are placeholders.
+const sandboxSettingsBlock = `    sandbox:
+      canary_issues: [LEGION-208]
+      microvm:
+        compute_class: example-microvm
+        storage_class: example-microvm-disk
+        metadata:
+          workload_pool: example-project.svc.id.goog
+          identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example
 `
 
 // stateCarryingTheRestOfTheShape is the second state body, and it carries what populatedState
@@ -333,6 +353,11 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // at their architect paths, and the value comparison reads no value there. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the twelve issues carry all eight words at both key paths.
+//
+// Its settings are the maximal kubernetes file with a sandbox block that sets every member
+// (sandboxSettingsBlock), which neither other body carries: populatedState's settings are that
+// file alone, and stay so because the state golden is written from them, and the second body's
+// are a tmux file's.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -451,14 +476,15 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Admission:    Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
 		Issues:       issues,
 		WakesWaiting: wakes,
+		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
 	}
 }
 
 // stateFixtures are the state bodies the records of the state and of the issue record are taken
 // from: the populated state every other golden of this package is written from, a second one of
 // this case's own carrying what the first cannot (stateCarryingTheRestOfTheShape), and a third
-// carrying every value the enumerated fields declare above the floor
-// (stateCarryingEveryDeclaredValue).
+// carrying every value the enumerated fields declare above the floor and the settings' sandbox
+// block (stateCarryingEveryDeclaredValue).
 func stateFixtures(t *testing.T) []State {
 	t.Helper()
 	return []State{populatedState(t), stateCarryingTheRestOfTheShape(t), stateCarryingEveryDeclaredValue(t)}
