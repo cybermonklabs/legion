@@ -121,7 +121,7 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 		})
 	})
 
-	t.Run("the hand-backs the current clients send with no client_instance_id", func(t *testing.T) {
+	t.Run("a hand-back with no client_instance_id naming the role's lane", func(t *testing.T) {
 		for name, topics := range map[string]string{
 			"the role's lane alone":            fmtTopics(lane),
 			"the lane beside a notice subject": fmtTopics(podNoticeTopic, lane),
