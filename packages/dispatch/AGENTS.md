@@ -131,14 +131,18 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   margin, a phone thread view's Back - with the comment's body it was written over
   (`AwayDraft.base`; a refused edit's request carries its own, `SentRequest.edit.base`), and the
   editor drawn for that comment next puts the edit back only while the comment still holds that
-  body. Over a body another writer has changed since, the field shows the newer body, read only,
-  and the edit waits beside it (`changed` in `MentionComposer`: `This comment changed since you
-  wrote your edit. The field shows the comment as it reads now. Your edit is kept here:`), with
-  Save refused until the reader presses Use my edit, which puts it back in the field for their own
-  Save, or Discard my edit: nothing is saved over a version of the comment the reader has not seen.
-  The Conversation keeps each thread's open editor by the thread's root (`editingIn` in
-  `ConversationTab`), as the margin keeps its own (`useMarginSheet`), so a phone thread view drawn
-  afresh opens with it. The reader's own move onto an address that keeps
+  body, or reads as the edit would save it (`changedUnder`). Over a body another writer has
+  changed since, the field shows the newer body, read only, and the edit waits beside it
+  (`changed` in `MentionComposer`: `This comment changed since you wrote your edit. The field
+  shows the comment as it reads now. Your edit is kept here:`), with Save refused until the reader
+  presses Use my edit, which puts it back in the field for their own Save, or Discard my edit:
+  nothing is saved over a version of the comment the reader has not seen. A change under an open
+  editor does the same: the field takes the newer body and what the reader wrote there waits
+  beside it, kept at once in its refusal or for the comment with the body it was written over, so
+  a host's move meanwhile loses nothing; while a save of the editor's own is out, the field only
+  takes the body. The Conversation keeps each thread's open editor by the thread's root
+  (`editingIn` in `ConversationTab`), as the margin keeps its own (`useMarginSheet`), so a phone
+  thread view drawn afresh opens with it. The reader's own move onto an address that keeps
   a draft of its own - Cancel reply back to a message kept for the issue, or to a refusal's own
   address - carries nothing either, so nothing is written over: each draft stays where it was
   written, as the phone thread composer's Cancel reply over the docked composer's draft (below).

@@ -567,6 +567,15 @@ function keptAwayLine({ owner, replyTo }: AwayDraft): ReactNode {
   );
 }
 
+/** Whether an edit whose draft is `draft`, written over the comment's body `base`, waits beside
+ *  the comment rather than going in the field, now that the comment reads `body` (`changed`): the
+ *  comment changed since the edit was written, and not to what the edit would save. A save sends
+ *  the field trimmed, and the field reads each CR LF as LF, so a comment that reads as the edit
+ *  would save it leaves nothing to offer. */
+function changedUnder(draft: SentDraft, base: string | undefined, body: string): boolean {
+  return base !== body && textareaValue(draft.body).trim() !== textareaValue(body).trim();
+}
+
 /** A composer's field as its host hands it a draft the reader carried there from another
  *  composer with that composer's own control (`intake`). */
 export interface DraftIntake {
@@ -717,8 +726,9 @@ export function MentionComposer({
   // the channel seeds. A refusal the host has moved the composer off since - another reply, a
   // newer message - gives way to a draft the reader wrote here and that was kept for it, since
   // the refusal keeps its own draft for its own address. An edit refused or kept over a body
-  // another writer has changed since - one the comment no longer holds - is not put back in the
-  // field, which opens on the newer body, and waits beside it (`changed`, below).
+  // another writer has changed since - one the comment no longer holds, and not into what the
+  // edit would save - is not put back in the field, which opens on the newer body, and waits
+  // beside it (`changedUnder`, `changed`).
   const [initial] = useState(() => {
     const held = outgoing.held;
     const unsentHere = unsentName === undefined ? undefined : unsent.read(unsentName);
@@ -746,7 +756,7 @@ export function MentionComposer({
       if (
         held.status === "refused" &&
         edit !== undefined &&
-        held.request.edit?.base !== edit.body
+        changedUnder(held.draft.draft, held.request.edit?.base, edit.body)
       ) {
         return { ...fresh, changed: held.draft.draft };
       }
@@ -761,7 +771,9 @@ export function MentionComposer({
       };
     }
     if (kept !== undefined) {
-      if (edit !== undefined && kept.base !== edit.body) return { ...fresh, changed: kept.draft };
+      if (edit !== undefined && changedUnder(kept.draft, kept.base, edit.body)) {
+        return { ...fresh, changed: kept.draft };
+      }
       return {
         ask: kept.ask,
         away: unsentHere === undefined,
@@ -796,10 +808,11 @@ export function MentionComposer({
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
   const [mentions, setMentions] = useState<AcceptedMention[]>(initial.mentions);
-  /** An edit written over a body the comment no longer holds, refused or kept for the comment
-   *  while its editor was off the page: it waits beside the newer body the field shows until the
-   *  reader takes it back into the field (`takeChanged`) or drops it (`discard`). Meanwhile the
-   *  field is read only and Save refuses, so nothing is saved over a body the reader has not
+  /** An edit written over a body the comment no longer holds (`changedUnder`): refused or kept
+   *  for the comment while its editor was off the page, or written in the open editor when another
+   *  writer changed the comment under it. It waits beside the newer body the field shows until
+   *  the reader takes it back into the field (`takeChanged`) or drops it (`discard`). Meanwhile
+   *  the field is read only and Save refuses, so nothing is saved over a body the reader has not
    *  seen, and nothing they wrote goes with no word. */
   const [changed, setChanged] = useState<SentDraft | undefined>(initial.changed);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
@@ -910,14 +923,6 @@ export function MentionComposer({
     seededFor.current = seedKey;
     replaceDraft(seededDraft(seedMentions, { body, mentions }, owner));
   }, [seedKey]);
-  // An edit's body is the draft when the edit opens, and again whenever the comment it edits
-  // changes - never over the held draft a mount took.
-  const editedFrom = useRef(editBody);
-  useEffect(() => {
-    if (editBody === undefined || editedFrom.current === editBody) return;
-    editedFrom.current = editBody;
-    replaceDraft({ body: editBody, mentions: [] });
-  }, [editBody, replaceDraft]);
   // The edited comment's blocks, read when the edit opens and again whenever the comment changes,
   // then followed through every edit of the field, so Save carries each block's id. A read that
   // fails (an older server has no blocks route), or that answers the comment not indexed, leaves
@@ -1129,6 +1134,36 @@ export function MentionComposer({
     );
   };
   useEffect(() => () => keepAway.current(), []);
+  // An edit's body is the draft when the edit opens, and the field takes the comment again
+  // whenever it changes under the open edit: another writer saved it, or a save of this editor's
+  // landed. What the reader wrote over the body before is not written over with no word: unless
+  // the comment now reads as the edit would save it (`changedUnder`), it waits beside the newer
+  // body (`changed`), as it does when the editor comes back to a comment that changed while it
+  // was away. It is kept at once where the editor looks for it when it mounts - the held refusal,
+  // or the draft kept for the comment with the body it was written over - so the host can take
+  // the editor away meanwhile and lose nothing. While a save of this editor's is out, the send
+  // keeps the draft and the change is likely its own, so the field only takes the body.
+  const editedFrom = useRef(editBody);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the comment's body is the trigger; the field, the send and the keeps are read as they stand at the change
+  useEffect(() => {
+    if (editBody === undefined || editedFrom.current === editBody) return;
+    const writtenOver = editedFrom.current;
+    editedFrom.current = editBody;
+    const written = { body, mentions, replacement };
+    if (
+      changed === undefined &&
+      !(holdsSend && heldRefusal === undefined) &&
+      body !== writtenOver &&
+      changedUnder(written, writtenOver, editBody)
+    ) {
+      if (heldRefusal !== undefined) keepDraft.current();
+      else if (awayName !== undefined) {
+        unsent.writeAway(awayName, replyTo, { base: writtenOver, draft: written, owner, replyTo });
+      }
+      setChanged(written);
+    }
+    replaceDraft({ body: editBody, mentions: [] });
+  }, [editBody]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
   useEffect(() => {
     const write = window.setTimeout(() => keepDraft.current(), KEEP_DRAFT_MS);

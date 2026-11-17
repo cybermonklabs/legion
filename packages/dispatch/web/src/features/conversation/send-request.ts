@@ -65,9 +65,10 @@ export interface SentRequest {
   readonly edit:
     | {
         /** The comment's body the edit was written over, as the editor last saw it at the press:
-         *  a refused edit is put back in its editor only while the comment still holds this body
-         *  (`MentionComposer`'s `changed`). Undefined in a send kept by a build that kept none,
-         *  which is offered beside the comment as one written over another body is. */
+         *  a refused edit is put back in its editor only while the comment still holds this body,
+         *  or reads as the edit would save it (`MentionComposer`'s `changedUnder`). Undefined in a
+         *  send kept by a build that kept none, which is offered beside the comment as one
+         *  written over another body is. */
         readonly base?: string;
         /** The block ids the save carries, worked out at the press from the blocks the editor
          *  followed through the edit (`carriedIdsOf`), and kept with the send across a reload, so
