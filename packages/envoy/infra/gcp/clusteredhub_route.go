@@ -48,7 +48,8 @@ const (
 // password (route.go:702-713, :1092-1094). Authorization fences a process that tries to join after
 // it and not one that joined before, so once authorization is on every pod the rollout checks
 // each pod's /routez against the pods' IPs and server ids, and each pod's log since env against
-// the pods' IPs (docs/nats-hub.md, Route authorization).
+// the pods' IPs, a log that begins with the container's own "Starting nats-server" line or the
+// whole log from Cloud Logging (docs/nats-hub.md, Route authorization).
 var clusteredHubRouteStageNames = [...]string{
 	routeStageEnv:           "env",
 	routeStageRoutes:        "routes",

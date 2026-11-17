@@ -1150,20 +1150,27 @@ route a peer opened comes from an ephemeral one, so one server's four routes to 
 ports.
 
 `/routez` shows only who still holds a route, so a process that read the password and then left
-passes it. In the same pass, read each pod's nats container log since the `env` roll (`routes`
-and `authorization` are reloads, so that one log covers the rollout) and require the IP of every
-`Route connection created` peer (`server/route.go:2104`; each log line names the peer's address)
-to be one of the three pod IPs, by IP alone, since a peer-opened connection's port is ephemeral.
-Any other address or id in either read means a process joined during `env` or `routes`, and a pod
-that restarted since `env` keeps no log of its routes before the restart, so neither can be ruled
-out. Either way, treat the password as read, cut that process's reach, and change the password,
-below. One process neither read can see: one in a hub pod's own network namespace, such as the
-reloader or the exporter, has that pod's IP, so the log check passes it, and `remote_id` catches
-it only while it holds a route. A change of the password goes back to `env`, which drops
-`authorization` from `nats.conf`, so the routes are open again during its `env` and `routes`
-applies, and the same two reads follow its own `authorization` apply. The component cannot make
-that check, since it runs at an apply and reads no pod; the rollout that applies the stages runs
-it.
+passes it. In the same pass, read each pod's nats container log since the `env` roll and require
+the IP of every `Route connection created` peer (`server/route.go:2104`; each log line names the
+peer's address) to be one of the three pod IPs, by IP alone, since a peer-opened connection's port
+is ephemeral. `routes` and `authorization` are reloads, so the container's log since `env` covers
+the rollout, but `kubectl logs` returns only the latest log file, which the kubelet rotates at
+10 MiB by default
+([Logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/)),
+and the process this check looks for can rotate the earlier lines away, for example with failed
+client logins. So a read covers the rollout only when it begins with the container's first line,
+`Starting nats-server` (`server/server.go:2295`), which it wrote at the `env` roll; or read the
+pod's whole log since `env` from Cloud Logging, which keeps the rotated files. Any other address
+or id in either read means a process joined during `env` or `routes`, and a read that does not
+begin at that line, or a pod that restarted since `env`, keeps no log of the routes before it, so
+neither can be ruled out. Either way, treat the password as read, cut that process's reach, and
+change the password, below. One process neither read can see: one in a hub pod's own network
+namespace, such as the reloader or the exporter, has that pod's IP, so the log check passes it,
+and `remote_id` catches it only while it holds a route. A change of the password goes back to
+`env`, which drops `authorization` from `nats.conf`, so the routes are open again during its
+`env` and `routes` applies, and the same two reads follow its own `authorization` apply. The
+component cannot make that check, since it runs at an apply and reads no pod; the rollout that
+applies the stages runs it.
 
 Lowering `stage` below `routes`, or removing `routeAuthorization` from a hub at `routes` or
 `authorization`, makes each server log every route URL it removes with the route password in it
