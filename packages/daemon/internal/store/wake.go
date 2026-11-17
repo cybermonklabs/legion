@@ -121,7 +121,7 @@ func CancelPodBackstops(ctx context.Context, tx pgx.Tx, project, issue string, r
 // of an issue or of its tree takes the whole released pod over, and the arming of a release's
 // backstops drops what the release before it armed; both name no role. Dropping the backstops is
 // the whole of what taking a released pod over leaves to do, since a wake's own record is the
-// resume the index holds (TakePodWake).
+// resume the index holds (TakeHeldPodWake).
 func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, role) })
 }
@@ -571,9 +571,9 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 	return oneReleasedClaim(ctx, tx, `and session = $4`, p.project, session, "session")
 }
 
-// TakePodWake takes one wake of issue's role inside the caller's transaction, and is the whole
-// of what taking a wake is: the mark under the wake's own key, the resume recorded against the
-// release that wake ends, and the role's own backstop cancelled. It answers whether this call
+// TakeHeldPodWake takes one wake of issue's role inside the caller's transaction, and is the
+// whole of what taking a wake is: the mark under the wake's own key, the resume recorded against
+// the release that wake ends, and the role's own backstop cancelled. It answers whether this call
 // took the wake; false is a wake another pass already took, and then the caller resumes nothing,
 // because the first wake is already bringing the pod back.
 //
@@ -600,20 +600,16 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 // saw holds nothing back at the next release; a release that suspends none closes no resume,
 // because it ends no wake, and the resumes its pod leaves behind are the heal's.
 //
-// Every wake runs through here — the four the workflow applies inside a fact's transaction and
-// the delivery wake the outbox takes in one of its own (Store.TakePodWake) — so there is one
-// account of what a wake writes and one order it writes it in.
-func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
-	return p.TakeHeldPodWake(ctx, tx, issue, role, kind, at, 0)
-}
-
-// TakeHeldPodWake is TakePodWake for a wake a project's pause holds: pause is the pause's id
-// (store's Pause), and 0 is a wake no pause holds, which is TakePodWake itself. A held wake
-// records its pause on the resume (pod_resumes.pause_id) and pairs with release 0 rather than the
-// issue's latest release (decision 15 of dispatch://INFRA-3759): the pause, not a release, is
-// what kept the role down, so the release measurements leave its wait out. It is taken like every
-// other wake — one open resume per role, the role's own backstop cancelled — so the stop
-// transaction of a pause takes its owed launch (pods.WakePause) through the same insert.
+// Every wake runs through here — the four the workflow applies inside a fact's transaction, the
+// delivery wake the outbox takes in one of its own (Store.TakePodWake) and the stop transaction's
+// owed launch (pods.WakePause) — so there is one account of what a wake writes and one order it
+// writes it in.
+//
+// pause is the pause that holds the wake (WakePause decides it for every wake but the stop's own,
+// which names its pause), and 0 is a wake no pause holds. A held wake records its pause on the
+// resume (pod_resumes.pause_id) and pairs with release 0 rather than the issue's latest release
+// (decision 15 of dispatch://INFRA-3759): the pause, not a release, is what kept the role down,
+// so the release measurements leave its wait out.
 func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error) {
 	var release int64
 	if pause == 0 {

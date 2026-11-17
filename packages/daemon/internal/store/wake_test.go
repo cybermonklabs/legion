@@ -112,15 +112,15 @@ func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 	records := podRecords(t, store)
 	at := time.Now().UTC().Truncate(time.Millisecond)
 	inTx(t, store, func(tx pgx.Tx) error {
-		first, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at)
+		first, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at, 0)
 		if err != nil || !first {
 			t.Fatalf("the implementer's first wake = %t, %v; want it taken", first, err)
 		}
-		again, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeRoleMessage, at)
+		again, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeRoleMessage, at, 0)
 		if err != nil || again {
 			t.Fatalf("a second wake of the implementer = %t, %v; want it refused: its pod is coming back", again, err)
 		}
-		other, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeRoleMessage, at)
+		other, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeRoleMessage, at, 0)
 		if err != nil || !other {
 			t.Fatalf("the architect's wake = %t, %v; want it taken: a wake resumes one claim", other, err)
 		}
@@ -131,7 +131,7 @@ func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 		t.Fatalf("stamp the implementer's first turn: %v", err)
 	}
 	inTx(t, store, func(tx pgx.Tx) error {
-		next, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at)
+		next, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at, 0)
 		if err != nil || !next {
 			t.Fatalf("a wake after the first turn = %t, %v; want it taken: that resume is closed", next, err)
 		}

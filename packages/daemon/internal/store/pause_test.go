@@ -540,7 +540,7 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 		if taken, err := records.TakeHeldPodWake(ctx, tx, "LEGION-208", claim.RoleImplementer, pods.WakePause, pausedAt, pause.ID); err != nil || !taken {
 			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
 		}
-		if taken, err := records.TakePodWake(ctx, tx, "LEGION-208", claim.RoleTester, pods.WakeChecks, pausedAt); err != nil || !taken {
+		if taken, err := records.TakeHeldPodWake(ctx, tx, "LEGION-208", claim.RoleTester, pods.WakeChecks, pausedAt, 0); err != nil || !taken {
 			t.Fatalf("take the tester's wake = %t, %v; want it taken", taken, err)
 		}
 		return nil
