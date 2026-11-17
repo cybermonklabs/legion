@@ -108,12 +108,17 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
-	// Proven says the request's credential itself proved Kind and ID: a browser's cookie its
-	// person, a broker-issued token its session, and actingPerson's person. It is set by the
-	// server and never read from a request body. An actor whose ID the body named - under the
-	// shared agent token, a personal token or a service-account token, none of which proves a
-	// session - carries none, and neither does any row recorded before the mark existed, so a
-	// reader that counts only proven writers counts no claimed one.
+	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
+	// broker-issued token its session, and actingPerson's person. It is set by the server and
+	// never read from a request body. An actor whose ID the body named - under the shared agent
+	// token, a personal token or a service-account token, none of which proves a session -
+	// carries none, and neither does any row recorded before the mark existed, so a reader that
+	// counts only proven writers counts no claimed one. A row Dispatch derives from an earlier
+	// write carries that write's actor, and so its mark, whatever credential the request that
+	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
+	// answer it gives the open approval request name the person whose review it carries, proven
+	// when that review's credential proved them, even when the request that wrote the version
+	// proved nobody.
 	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
