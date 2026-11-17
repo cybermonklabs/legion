@@ -1598,7 +1598,9 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 	t.Run("a live mention holds the keep until it settles", func(t *testing.T) {
 		database, publisher, commentID, event, deps := keptFor(t, "pending")
 
+		before := time.Now()
 		holding(t, deps).scan(ctx, unfenced{})
+		after := time.Now()
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the outbox kept %d copies while the comment's mentions were still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming no mentioned session shows the comment a second time to whichever of them claims the role",
@@ -1611,8 +1613,8 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 		if attempts != 0 {
 			t.Fatalf("attempt_count = %d while the keep waits on a mention, want 0: a wait is no failure", attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+		if !waitsFromScan(due, before, after) {
+			t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 		}
 
 		// Both sends land and their senders settle the attempts, as they do within the lease.
@@ -1697,7 +1699,9 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 		t.Fatalf("the later event does not notify, so it takes no role route and proves nothing: %#v", update)
 	}
 
+	before := time.Now()
 	holding(t, deps).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if kept := publisher.keeps(); len(kept) > 0 {
 		t.Fatalf("the outbox kept %d copies while the comment's copy waited on its mention, the first of event %s under %q, want none: the role's next holder would be handed the issue's later event first",
@@ -1712,8 +1716,8 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 			t.Fatalf("event %d (%s) counts attempt_count = %d while a copy waits on a mention, want 0: a wait is no failure",
 				event.ID, event.Type, attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("event %d (%s) is due at %v, want about %v from now, the wait a blocked event takes",
+		if !waitsFromScan(due, before, after) {
+			t.Fatalf("event %d (%s) is due at %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes",
 				event.ID, event.Type, due, mentionPendingDelay)
 		}
 	}
@@ -1790,7 +1794,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
+		before := time.Now()
 		holding(t, deps).scan(ctx, unfenced{})
+		after := time.Now()
 
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
@@ -1803,8 +1809,8 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		if attempts != 0 {
 			t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+		if !waitsFromScan(due, before, after) {
+			t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 		}
 
 		// The holder's send lands and its sender settles the attempt, as one does within the
@@ -1928,7 +1934,9 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 			comment.Notify, edit.Notify)
 	}
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -1955,8 +1963,8 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the holder's own mention", at)
@@ -1980,8 +1988,8 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("the edit counts attempt_count = %d while it waits behind the comment's forward, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("the edit is due at %v, want about %v from now, the wait its blocker takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("the edit is due at %v, want mentionPendingDelay = %v from the scan, the wait its blocker takes", due, mentionPendingDelay)
 	}
 
 	// The holder's own mention lands and its sender settles the attempt, as one does within the

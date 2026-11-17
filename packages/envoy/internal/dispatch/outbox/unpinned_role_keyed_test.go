@@ -134,7 +134,9 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "pending")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if forwards := recv.received(); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",
@@ -152,8 +154,8 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the copies wait on two unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 
 	// Both senders resolve, find no session, and fail their attempts, as they do within a round
